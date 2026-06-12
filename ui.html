@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Property Video Studio</title>
+<style>
+  /* ── Reset & base ───────────────────────────────────────────────────── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --ink:     #1a1a1a;
+    --paper:   #f7f5f0;
+    --card:    #ffffff;
+    --rule:    #e2ddd6;
+    --accent:  #c8a96e;       /* warm gold — estate agency feel */
+    --accent2: #3d5a47;       /* deep green — grounded, trustworthy */
+    --muted:   #7a7469;
+    --danger:  #c0392b;
+    --success: #2d6a4f;
+    --radius:  6px;
+    --font-display: 'Georgia', 'Times New Roman', serif;
+    --font-body:    'Inter', 'Helvetica Neue', Arial, sans-serif;
+  }
+
+  body {
+    font-family: var(--font-body);
+    background: var(--paper);
+    color: var(--ink);
+    min-height: 100vh;
+  }
+
+  /* ── Header ─────────────────────────────────────────────────────────── */
+  header {
+    background: var(--accent2);
+    color: #fff;
+    padding: 20px 40px;
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    border-bottom: 3px solid var(--accent);
+  }
+  header h1 {
+    font-family: var(--font-display);
+    font-size: 1.6rem;
+    font-weight: normal;
+    letter-spacing: 0.02em;
+  }
+  header span {
+    font-size: 0.8rem;
+    opacity: 0.65;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  /* ── Layout ──────────────────────────────────────────────────────────── */
+  main {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+
+  section + section { margin-top: 40px; }
+
+  .section-label {
+    font-size: 0.68rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .section-label::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--rule);
+  }
+
+  /* ── Cards ───────────────────────────────────────────────────────────── */
+  .card {
+    background: var(--card);
+    border: 1px solid var(--rule);
+    border-radius: var(--radius);
+    padding: 24px;
+  }
+
+  /* ── Form elements ───────────────────────────────────────────────────── */
+  label { display: block; font-size: 0.82rem; color: var(--muted); margin-bottom: 5px; }
+  input[type="text"], textarea, select {
+    width: 100%;
+    padding: 9px 12px;
+    border: 1px solid var(--rule);
+    border-radius: var(--radius);
+    font-family: var(--font-body);
+    font-size: 0.9rem;
+    background: var(--paper);
+    color: var(--ink);
+    transition: border-color 0.15s;
+  }
+  input[type="text"]:focus, textarea:focus, select:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  textarea { resize: vertical; min-height: 70px; }
+
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 560px) { .row2 { grid-template-columns: 1fr; } }
+
+  /* ── Toggles ─────────────────────────────────────────────────────────── */
+  .toggle-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 16px;
+    font-size: 0.85rem;
+  }
+  .toggle {
+    position: relative;
+    width: 38px;
+    height: 22px;
+    flex-shrink: 0;
+  }
+  .toggle input { opacity: 0; width: 0; height: 0; }
+  .toggle-slider {
+    position: absolute; inset: 0;
+    background: var(--rule);
+    border-radius: 22px;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+  .toggle-slider::before {
+    content: '';
+    position: absolute;
+    width: 16px; height: 16px;
+    left: 3px; top: 3px;
+    background: #fff;
+    border-radius: 50%;
+    transition: transform 0.2s;
+  }
+  .toggle input:checked + .toggle-slider { background: var(--accent2); }
+  .toggle input:checked + .toggle-slider::before { transform: translateX(16px); }
+
+  /* ── Credit banner ───────────────────────────────────────────────────── */
+  #credit-banner {
+    display: none;
+    margin-bottom: 24px;
+    border-radius: var(--radius);
+    overflow: hidden;
+    border: 1px solid #f5c6c2;
+  }
+  .credit-banner-header {
+    background: #c0392b;
+    color: white;
+    padding: 10px 16px;
+    font-size: 0.82rem;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .credit-banner-body {
+    background: #fdf0ef;
+    padding: 12px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .credit-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 0.83rem;
+  }
+  .credit-row-name { font-weight: 600; color: var(--ink); }
+  .credit-row-value { color: #c0392b; }
+  .credit-row-ok { color: var(--success); }
+  .credit-topup {
+    font-size: 0.78rem;
+    color: var(--accent2);
+    text-decoration: none;
+    border: 1px solid var(--accent2);
+    border-radius: 3px;
+    padding: 2px 8px;
+  }
+  .credit-topup:hover { background: var(--accent2); color: white; }
+  .credit-checked {
+    font-size: 0.72rem;
+    color: var(--muted);
+    margin-top: 4px;
+  }
+
+  /* ── Credit indicator in header ──────────────────────────────────────── */
+  #header-credit-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+    display: inline-block;
+    margin-left: 12px;
+    cursor: pointer;
+    title: "Credits OK";
+  }
+  #header-credit-dot.low { background: #e74c3c; animation: pulse 1.5s infinite; }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; } 50% { opacity: 0.4; }
+  }
+
+
+  #drop-zone {
+    border: 2px dashed var(--rule);
+    border-radius: var(--radius);
+    padding: 40px 24px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+    position: relative;
+  }
+  #drop-zone.drag-over {
+    border-color: var(--accent);
+    background: #fdf8ef;
+  }
+  #drop-zone input[type="file"] {
+    position: absolute; inset: 0; opacity: 0; cursor: pointer;
+  }
+  #drop-zone .drop-icon { font-size: 2rem; margin-bottom: 8px; }
+  #drop-zone p { font-size: 0.85rem; color: var(--muted); }
+  #drop-zone strong { color: var(--accent2); }
+
+  /* ── Scene cards ─────────────────────────────────────────────────────── */
+  #scenes-container { display: flex; flex-direction: column; gap: 16px; }
+
+  .scene-card {
+    background: var(--card);
+    border: 1px solid var(--rule);
+    border-radius: var(--radius);
+    overflow: hidden;
+    transition: box-shadow 0.15s;
+  }
+  .scene-card:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.07); }
+
+  .scene-header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 12px 16px;
+    background: #fafaf8;
+    border-bottom: 1px solid var(--rule);
+  }
+  .scene-thumb {
+    width: 72px;
+    height: 50px;
+    object-fit: cover;
+    border-radius: 3px;
+    border: 1px solid var(--rule);
+    flex-shrink: 0;
+  }
+  .scene-num {
+    font-size: 0.7rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .scene-filename { font-size: 0.82rem; color: var(--ink); }
+  .scene-remove {
+    margin-left: auto;
+    background: none;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 1.1rem;
+    padding: 4px 8px;
+    border-radius: 4px;
+    transition: color 0.15s, background 0.15s;
+  }
+  .scene-remove:hover { color: var(--danger); background: #fdf0ef; }
+
+  .scene-fields { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+
+  .duration-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 0.82rem;
+  }
+  .duration-row input[type="range"] {
+    flex: 1; accent-color: var(--accent2);
+  }
+  .duration-val {
+    min-width: 28px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    color: var(--accent2);
+    font-weight: 600;
+  }
+
+  /* ── Submit ──────────────────────────────────────────────────────────── */
+  .btn-primary {
+    background: var(--accent2);
+    color: #fff;
+    border: none;
+    border-radius: var(--radius);
+    padding: 13px 32px;
+    font-size: 0.95rem;
+    font-family: var(--font-body);
+    cursor: pointer;
+    letter-spacing: 0.03em;
+    transition: background 0.15s, transform 0.1s;
+  }
+  .btn-primary:hover:not(:disabled) { background: #2e4535; }
+  .btn-primary:active:not(:disabled) { transform: scale(0.98); }
+  .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* ── Progress ────────────────────────────────────────────────────────── */
+  #progress-section { display: none; }
+  .progress-bar-wrap {
+    height: 8px;
+    background: var(--rule);
+    border-radius: 8px;
+    overflow: hidden;
+    margin: 14px 0 8px;
+  }
+  .progress-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent2), var(--accent));
+    border-radius: 8px;
+    transition: width 0.4s ease;
+    width: 0%;
+  }
+  .progress-msg { font-size: 0.82rem; color: var(--muted); }
+  .progress-pct { font-size: 1.1rem; font-weight: 600; color: var(--accent2); }
+
+  /* ── Result ──────────────────────────────────────────────────────────── */
+  #result-section { display: none; }
+  #video-preview {
+    width: 100%;
+    border-radius: var(--radius);
+    border: 1px solid var(--rule);
+    background: #000;
+  }
+  .btn-download {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--accent);
+    color: var(--ink);
+    border: none;
+    border-radius: var(--radius);
+    padding: 11px 28px;
+    font-size: 0.9rem;
+    font-family: var(--font-body);
+    cursor: pointer;
+    font-weight: 600;
+    margin-top: 14px;
+    text-decoration: none;
+    transition: background 0.15s;
+  }
+  .btn-download:hover { background: #b8944f; }
+
+  .alert {
+    padding: 12px 16px;
+    border-radius: var(--radius);
+    font-size: 0.85rem;
+    margin-top: 12px;
+  }
+  .alert-error { background: #fdf0ef; border: 1px solid #f5c6c2; color: var(--danger); }
+  .alert-success { background: #edf7f1; border: 1px solid #b7dfca; color: var(--success); }
+
+  .empty-state {
+    text-align: center;
+    padding: 32px;
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Property Video Studio</h1>
+  <span>Real Estate · AI Video Generator</span>
+  <span id="header-credit-dot" onclick="document.getElementById('credit-banner').scrollIntoView({behavior:'smooth'})" title="Checking credits…"></span>
+</header>
+
+<main>
+
+  <!-- Credit warning banner (hidden until credits are low) ─────────────── -->
+  <div id="credit-banner">
+    <div class="credit-banner-header">⚠ Low Credits Warning — action needed before next job</div>
+    <div class="credit-banner-body" id="credit-banner-body"></div>
+  </div>
+
+  <!-- ① Property details ──────────────────────────────────────────────── -->
+  <section>
+    <p class="section-label">Property details</p>
+    <div class="card">
+      <div class="row2">
+        <div>
+          <label for="prop-name">Property name / reference</label>
+          <input type="text" id="prop-name" placeholder="e.g. 14 Kensington Gardens" />
+        </div>
+        <div>
+          <label for="voice-id">ElevenLabs voice ID <span style="color:var(--muted)">(optional)</span></label>
+          <input type="text" id="voice-id" placeholder="Leave blank for default voice" />
+        </div>
+      </div>
+      <div class="toggle-row">
+        <label class="toggle">
+          <input type="checkbox" id="do-lighting" checked />
+          <span class="toggle-slider"></span>
+        </label>
+        <span>Lighting &amp; colour correction</span>
+        <span style="margin-left:24px"></span>
+        <label class="toggle">
+          <input type="checkbox" id="do-upscale" checked />
+          <span class="toggle-slider"></span>
+        </label>
+        <span>AI image upscaling (slower, higher quality)</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ② Image upload ───────────────────────────────────────────────────── -->
+  <section>
+    <p class="section-label">Photos — drag to reorder after upload</p>
+    <div id="drop-zone">
+      <input type="file" id="file-input" accept="image/*" multiple />
+      <div class="drop-icon">🏠</div>
+      <p><strong>Drop photos here</strong> or click to browse</p>
+      <p style="margin-top:6px">JPEG · PNG · WebP &nbsp;·&nbsp; Multiple files supported</p>
+    </div>
+  </section>
+
+  <!-- ③ Scene editor ───────────────────────────────────────────────────── -->
+  <section>
+    <p class="section-label">Scenes — one per photo</p>
+    <div id="scenes-container">
+      <div class="empty-state">Upload photos above to configure scenes</div>
+    </div>
+  </section>
+
+  <!-- ④ Generate ───────────────────────────────────────────────────────── -->
+  <section>
+    <button class="btn-primary" id="generate-btn" disabled>Generate Video</button>
+    <div id="error-msg"></div>
+  </section>
+
+  <!-- ⑤ Progress ──────────────────────────────────────────────────────── -->
+  <section id="progress-section">
+    <p class="section-label">Progress</p>
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <span class="progress-msg" id="progress-msg">Starting…</span>
+        <span class="progress-pct" id="progress-pct">0%</span>
+      </div>
+      <div class="progress-bar-wrap">
+        <div class="progress-bar-fill" id="progress-bar"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ⑥ Result ────────────────────────────────────────────────────────── -->
+  <section id="result-section">
+    <p class="section-label">Your video is ready</p>
+    <div class="card">
+      <video id="video-preview" controls></video>
+      <a class="btn-download" id="download-link" href="#">⬇ Download MP4</a>
+    </div>
+  </section>
+
+</main>
+
+<script>
+// ── State ─────────────────────────────────────────────────────────────────────
+const API_BASE = '';   // same origin; if server is elsewhere, set e.g. 'http://yourserver.com'
+let files = [];        // File objects in scene order
+let pollTimer = null;
+
+// ── DOM refs ──────────────────────────────────────────────────────────────────
+const dropZone        = document.getElementById('drop-zone');
+const fileInput       = document.getElementById('file-input');
+const scenesContainer = document.getElementById('scenes-container');
+const generateBtn     = document.getElementById('generate-btn');
+const errorMsg        = document.getElementById('error-msg');
+const progressSection = document.getElementById('progress-section');
+const resultSection   = document.getElementById('result-section');
+
+// ── File handling ─────────────────────────────────────────────────────────────
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('drag-over');
+  addFiles([...e.dataTransfer.files]);
+});
+fileInput.addEventListener('change', () => {
+  addFiles([...fileInput.files]);
+  fileInput.value = '';
+});
+
+function addFiles(newFiles) {
+  const imgs = newFiles.filter(f => f.type.startsWith('image/'));
+  files = [...files, ...imgs];
+  renderScenes();
+}
+
+function removeScene(index) {
+  files.splice(index, 1);
+  renderScenes();
+}
+
+// ── Scene renderer ────────────────────────────────────────────────────────────
+function renderScenes() {
+  generateBtn.disabled = files.length === 0;
+  if (files.length === 0) {
+    scenesContainer.innerHTML = '<div class="empty-state">Upload photos above to configure scenes</div>';
+    return;
+  }
+  scenesContainer.innerHTML = '';
+  files.forEach((file, i) => {
+    const url = URL.createObjectURL(file);
+    const card = document.createElement('div');
+    card.className = 'scene-card';
+    card.dataset.index = i;
+    card.innerHTML = `
+      <div class="scene-header">
+        <img class="scene-thumb" src="${url}" alt="Scene ${i+1}" />
+        <div>
+          <div class="scene-num">Scene ${i+1}</div>
+          <div class="scene-filename">${file.name}</div>
+        </div>
+        <button class="scene-remove" onclick="removeScene(${i})" title="Remove scene">✕</button>
+      </div>
+      <div class="scene-fields">
+        <div>
+          <label>Caption shown on screen</label>
+          <input type="text" class="scene-caption" placeholder="e.g. Bright open-plan living room" />
+        </div>
+        <div>
+          <label>Voiceover text (read aloud)</label>
+          <textarea class="scene-voiceover" placeholder="e.g. Step into this stunning living space…"></textarea>
+        </div>
+        <div>
+          <label>Clip duration</label>
+          <div class="duration-row">
+            <span style="font-size:0.78rem;color:var(--muted)">6s</span>
+            <input type="range" class="scene-duration" min="6" max="20" step="2" value="8"
+              oninput="this.closest('.scene-fields').querySelector('.duration-val').textContent = this.value+'s'" />
+            <span style="font-size:0.78rem;color:var(--muted)">20s</span>
+            <span class="duration-val">8s</span>
+          </div>
+        </div>
+      </div>`;
+    scenesContainer.appendChild(card);
+  });
+}
+
+// ── Build config from scene cards ─────────────────────────────────────────────
+function getScenesConfig() {
+  return [...scenesContainer.querySelectorAll('.scene-card')].map(card => ({
+    caption:   card.querySelector('.scene-caption').value.trim(),
+    voiceover: card.querySelector('.scene-voiceover').value.trim(),
+    duration:  parseInt(card.querySelector('.scene-duration').value, 10),
+  }));
+}
+
+// ── Submit job ────────────────────────────────────────────────────────────────
+generateBtn.addEventListener('click', async () => {
+  errorMsg.innerHTML = '';
+  if (files.length === 0) return;
+
+  const config = getScenesConfig();
+  const hasContent = config.some(s => s.caption || s.voiceover);
+  if (!hasContent) {
+    showError('Add a caption or voiceover to at least one scene before generating.');
+    return;
+  }
+
+  generateBtn.disabled = true;
+  generateBtn.textContent = 'Submitting…';
+  resultSection.style.display = 'none';
+  progressSection.style.display = 'block';
+  updateProgress(0, 'Uploading photos…');
+
+  const fd = new FormData();
+  files.forEach(f => fd.append('images', f));
+  fd.append('config',          JSON.stringify(config));
+  fd.append('property_name',   document.getElementById('prop-name').value || 'Property');
+  fd.append('voice_id',        document.getElementById('voice-id').value.trim());
+  fd.append('enhance_images',  document.getElementById('do-lighting').checked);
+  fd.append('upscale_images',  document.getElementById('do-upscale').checked);
+
+  try {
+    const res = await fetch(`${API_BASE}/jobs/`, { method: 'POST', body: fd });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Server error ${res.status}`);
+    }
+    const { job_id } = await res.json();
+    generateBtn.textContent = 'Processing…';
+    startPolling(job_id);
+  } catch (e) {
+    showError(e.message);
+    generateBtn.disabled = false;
+    generateBtn.textContent = 'Generate Video';
+  }
+});
+
+// ── Polling ───────────────────────────────────────────────────────────────────
+function startPolling(jobId) {
+  clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/jobs/${jobId}`);
+      if (!res.ok) return;
+      const job = await res.json();
+
+      updateProgress(job.progress, job.message);
+
+      if (job.status === 'done') {
+        clearInterval(pollTimer);
+        showResult(jobId, job.property_name || 'Property');
+        generateBtn.disabled = false;
+        generateBtn.textContent = 'Generate Video';
+      } else if (job.status === 'failed') {
+        clearInterval(pollTimer);
+        showError(job.message || 'Pipeline failed. Check server logs.');
+        generateBtn.disabled = false;
+        generateBtn.textContent = 'Generate Video';
+      }
+    } catch {}
+  }, 3000);
+}
+
+// ── UI helpers ────────────────────────────────────────────────────────────────
+function updateProgress(pct, msg) {
+  document.getElementById('progress-bar').style.width = pct + '%';
+  document.getElementById('progress-pct').textContent  = pct + '%';
+  document.getElementById('progress-msg').textContent  = msg;
+}
+
+function showResult(jobId, propName) {
+  const dlUrl = `${API_BASE}/jobs/${jobId}/download`;
+  document.getElementById('video-preview').src = dlUrl;
+  document.getElementById('download-link').href = dlUrl;
+  document.getElementById('download-link').download = `${propName.replace(/\s+/g,'_')}_video.mp4`;
+  resultSection.style.display = 'block';
+  resultSection.scrollIntoView({ behavior: 'smooth' });
+}
+
+function showError(msg) {
+  errorMsg.innerHTML = `<div class="alert alert-error">⚠ ${msg}</div>`;
+}
+
+// ── Credit monitoring ─────────────────────────────────────────────────────────
+async function checkCredits() {
+  try {
+    const res = await fetch(`${API_BASE}/credits`);
+    if (!res.ok) return;
+    const data = await res.json();
+    const dot  = document.getElementById('header-credit-dot');
+    const banner = document.getElementById('credit-banner');
+    const body   = document.getElementById('credit-banner-body');
+
+    if (!data.any_low) {
+      dot.classList.remove('low');
+      dot.title = `Credits OK — checked ${data.checked_at}`;
+      banner.style.display = 'none';
+      return;
+    }
+
+    // Show warning dot
+    dot.classList.add('low');
+    dot.title = 'Low credits — click to see details';
+
+    // Build banner rows
+    let rows = '';
+    const fal = data.fal;
+    if (!fal.ok && fal.balance !== null) {
+      rows += `
+        <div class="credit-row">
+          <span class="credit-row-name">fal.ai</span>
+          <span class="credit-row-value">$${fal.balance.toFixed(2)} remaining</span>
+          <a class="credit-topup" href="https://fal.ai/dashboard" target="_blank">Top up →</a>
+        </div>`;
+    }
+    const el = data.elevenlabs;
+    if (!el.ok && el.characters_remaining !== null) {
+      rows += `
+        <div class="credit-row">
+          <span class="credit-row-name">ElevenLabs</span>
+          <span class="credit-row-value">${el.characters_remaining.toLocaleString()} characters left</span>
+          <a class="credit-topup" href="https://elevenlabs.io/app/subscription" target="_blank">Top up →</a>
+        </div>`;
+    }
+    rows += `<div class="credit-checked">Last checked: ${data.checked_at} · <a href="#" onclick="checkCredits();return false;">Refresh</a></div>`;
+
+    body.innerHTML   = rows;
+    banner.style.display = 'block';
+  } catch {}
+}
+
+// Check credits on page load and every 10 minutes
+checkCredits();
+setInterval(checkCredits, 10 * 60 * 1000);
+</script>
+</body>
+</html>
