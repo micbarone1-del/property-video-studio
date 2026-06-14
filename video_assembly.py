@@ -368,7 +368,7 @@ if __name__ == "__main__":
         if final_path:
             print(f"\nProcess completed successfully. Final video at: {final_path}")
 
-def assemble_property_video(scenes_config, video_clip_paths, audio_paths, image_paths, output_path, property_name):
+def assemble_property_video(scenes_config, video_clip_paths, audio_paths, image_paths, output_path, property_name, transition_style="fade"):
     """Wrapper called by api_server to assemble the final video."""
     try:
         from video_editor import StorySequencer
