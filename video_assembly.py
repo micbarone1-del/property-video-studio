@@ -5,7 +5,7 @@ import argparse
 import shutil
 import datetime
 import uuid
-from moviepy import AudioFileClip, VideoFileClip, ImageClip
+from moviepy import AudioFileClip, VideoFileClip, ImageClip, CompositeAudioClip
 
 # Import pandas for Excel support
 try:
@@ -386,6 +386,9 @@ def assemble_property_video(scenes_config, video_clip_paths, audio_paths, image_
 
         # --- Load and prepare each scene clip ---
         clips = []
+        audio_segments = []   # (AudioFileClip, start_time_in_final_timeline)
+        timeline_cursor = 0.0
+
         for i, scene in enumerate(scenes_config):
             video_path = video_clip_paths[i] if i < len(video_clip_paths) else None
             audio_path = audio_paths[i] if i < len(audio_paths) else None
@@ -397,7 +400,7 @@ def assemble_property_video(scenes_config, video_clip_paths, audio_paths, image_
                     dur = ac.duration if ac else 5.0
                     clip = ImageClip(str(image_path)).with_duration(dur)
                     if ac:
-                        clip = clip.with_audio(ac)
+                        audio_segments.append((ac, timeline_cursor))
                 else:
                     continue
             else:
@@ -407,12 +410,13 @@ def assemble_property_video(scenes_config, video_clip_paths, audio_paths, image_
                     if ac.duration > clip.duration:
                         loops = math.ceil(ac.duration / clip.duration)
                         clip = concatenate_videoclips([clip] * loops)
-                    clip = clip.with_duration(ac.duration).with_audio(ac)
+                    clip = clip.with_duration(ac.duration)
+                    audio_segments.append((ac, timeline_cursor))
 
             if clip.size != (TARGET_W, TARGET_H):
                 clip = clip.resized((TARGET_W, TARGET_H))
+            timeline_cursor += clip.duration
             clips.append(clip)
-
         if not clips:
             import logging
             logging.error("assemble_property_video: no clips to assemble")
@@ -453,6 +457,12 @@ def assemble_property_video(scenes_config, video_clip_paths, audio_paths, image_
 
         else:
             final = concatenate_videoclips(clips, method="compose")
+
+        # Attach all TTS audio tracks positioned correctly on the final timeline
+        if audio_segments:
+            positioned = [ac.with_start(t) for ac, t in audio_segments]
+            combined_audio = CompositeAudioClip(positioned) if len(positioned) > 1 else positioned[0]
+            final = final.with_audio(combined_audio)
 
         print(f"[Assemble] transition_style={transition_style!r}, clips={len(clips)}, output={output_path}")
         final.write_videofile(

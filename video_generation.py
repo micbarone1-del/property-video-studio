@@ -32,45 +32,53 @@ _SMALLROOM_KEYWORDS = ["bathroom", "wc", "toilet", "hallway", "corridor", "laund
 # Adapted from the proven prompt, split by space type.
 
 _BASE_RULES = (
-    "No people. No animals. No human figures, hands, arms, or limbs of any kind. "
-    "All furniture, objects and surfaces remain completely frozen and stationary. "
-    "Do not add any new objects, people, or content not present in the source image. "
-    "Do not hallucinate new rooms, doorways, corridors, ceilings, or spaces. "
-    "Horizon stays level. No camera shake, bobbing, or sudden jolts. "
-    "No movement through windows, mirrors, or reflective surfaces. "
-    "Photorealistic textures and lighting unchanged from source image. "
-    "Remove any watermarks or text overlays."
+    "No people, hands, arms, or limbs visible. "
+    "Strictly level horizon line with strict 0-degree vertical tilt "
+    "and absolutely zero vertical bobbing, camera shake, or human stepping motion. "
+    "Do not morph the architecture, blur the walls, or hallucinate new rooms, "
+    "unseen fixtures, doors, window panes, or non-existent areas. "
+    "The sequence must be entirely non-generative regarding structural layout. "
+    "Upscale visual textures to 4K clarity, applying enhanced HDR lighting "
+    "to significantly brighten and open up dark areas, and cinema-grade color correction. "
+    "Digitally remove and inpaint any watermarks or text overlays from frame one to the end."
 )
 
 _PROMPT_LARGE = (
-    "Cinematic real estate interior video. "
-    "The camera glides slowly forward through the room. "
-    "Near objects (sofa, table, chairs) drift apart naturally as the camera advances, "
-    "revealing depth behind them. Far walls and windows stay fixed. "
+    "A professional high-end real estate cinematography sequence. "
+    "The video begins tightly framed on a high-resolution, upscaled inner sub-section of the original image. "
+    "From this inner starting point, the camera path acts strictly as a slow reveal outward, "
+    "completely preventing the generation of unseen angles beyond the original frame boundaries. "
+    "For this large room or exterior: perform a slow, smooth linear dolly-in push "
+    "or a gentle horizontal pan toward the frame edges. "
     "{camera_hint}"
-    "Maximum lateral pan 12 degrees. No spinning. No whip pans. "
-    "Room layout identical to source image throughout. "
+    "The camera must never zoom tightly into windows, mirrors, glass, or open balcony spaces. "
+    "Keep the focus broad, showcasing the existing layout. "
     + _BASE_RULES
 )
 
 _PROMPT_SMALL = (
-    "Cinematic real estate interior video. "
-    "The camera makes a very slow, gentle forward glide through the compact space. "
-    "Near surfaces drift slightly as camera advances, giving subtle depth. "
+    "A professional high-end real estate cinematography sequence. "
+    "The video begins tightly framed on a high-resolution, upscaled inner sub-section of the original image. "
+    "From this inner starting point, the camera path acts strictly as a slow reveal outward, "
+    "completely preventing the generation of unseen angles beyond the original frame boundaries. "
+    "For this small or compact interior: restrict the movement to a very shallow, slow lateral slider shift "
+    "tracking parallel to the main wall. "
     "{camera_hint}"
-    "Maximum lateral pan 8 degrees. Minimal movement. No spinning. No whip pans. "
-    "Room layout identical to source image throughout. "
+    "The camera must never zoom tightly into windows, mirrors, glass, or fixtures. "
+    "Keep the focus broad, showcasing the existing compact layout. "
     + _BASE_RULES
 )
 
 _PROMPT_OUTDOOR = (
-    "Cinematic real estate exterior video. "
-    "The camera glides slowly forward or gently arcs. "
-    "Foreground landscaping or terrace drifts apart naturally as camera advances, "
-    "revealing depth toward the facade. Sky remains static. "
+    "A professional high-end real estate cinematography sequence. "
+    "The video begins tightly framed on a high-resolution, upscaled inner sub-section of the original image. "
+    "From this inner starting point, the camera path acts strictly as a slow reveal outward across known pixels, "
+    "completely preventing the generation of unseen angles beyond the original frame boundaries. "
+    "For this exterior or outdoor space: perform a slow, smooth linear dolly-in push "
+    "or a gentle arc revealing the full exterior. "
     "{camera_hint}"
-    "Maximum arc 12 degrees. No spinning. No whip pans. "
-    "Building and garden layout identical to source image throughout. "
+    "The camera must never zoom tightly into windows, glass, or pool water surfaces. "
+    "Keep the focus broad, showcasing the existing exterior layout. "
     + _BASE_RULES
 )
 
