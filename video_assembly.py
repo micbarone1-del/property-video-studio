@@ -16,7 +16,8 @@ except ImportError:
     _PIL_AVAILABLE = False
 
 def _burn_caption(clip, caption_text, font_size=38):
-    """Burn a caption bar at the bottom of a MoviePy clip using PIL. No ImageMagick needed."""
+    """Burn a caption bar at the bottom of a MoviePy clip using PIL. No ImageMagick needed.
+    Uses fl_image() to preserve all clip metadata (fps, size, duration, audio)."""
     if not caption_text or not _PIL_AVAILABLE:
         return clip
     try:
@@ -33,14 +34,12 @@ def _burn_caption(clip, caption_text, font_size=38):
             except Exception:
                 font = ImageFont.load_default()
 
-        def make_frame(t):
-            frame = clip.get_frame(t)
+        def add_caption_to_frame(frame):
+            """Applied per-frame via fl_image — preserves clip fps/duration/size."""
             img = Image.fromarray(frame)
-            # Draw semi-transparent black bar at bottom
             overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
             draw = ImageDraw.Draw(overlay)
             draw.rectangle([(0, h - bar_h), (w, h)], fill=(0, 0, 0, 180))
-            # Measure text
             try:
                 bbox = draw.textbbox((0, 0), caption_text, font=font)
                 tw = bbox[2] - bbox[0]
@@ -53,10 +52,8 @@ def _burn_caption(clip, caption_text, font_size=38):
             combined = Image.alpha_composite(base, overlay)
             return np.array(combined.convert("RGB"))
 
-        from moviepy import VideoClip
-        caption_clip = VideoClip(make_frame, duration=clip.duration)
-        caption_clip = caption_clip.with_fps(clip.fps if hasattr(clip, 'fps') and clip.fps else 24)
-        return caption_clip
+        # fl_image applies a function to every frame while keeping fps/size/duration intact
+        return clip.fl_image(add_caption_to_frame)
     except Exception as e:
         print(f"[Caption] Failed to burn caption: {e}")
         return clip
@@ -473,8 +470,8 @@ def assemble_property_video(scenes_config, video_clip_paths, audio_paths, image_
         scene_caption = str(scene.get("caption", "")).strip() if scene else ""
         if scene_caption:
             clip = _burn_caption(clip, scene_caption)
-            timeline_cursor += clip.duration
-            clips.append(clip)
+        timeline_cursor += clip.duration
+        clips.append(clip)
         if not clips:
             import logging
             logging.error("assemble_property_video: no clips to assemble")
