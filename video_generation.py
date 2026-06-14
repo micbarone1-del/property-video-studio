@@ -32,53 +32,58 @@ _SMALLROOM_KEYWORDS = ["bathroom", "wc", "toilet", "hallway", "corridor", "laund
 # Adapted from the proven prompt, split by space type.
 
 _BASE_RULES = (
-    "No people, hands, arms, or limbs visible. "
-    "Strictly level horizon line with strict 0-degree vertical tilt "
-    "and absolutely zero vertical bobbing, camera shake, or human stepping motion. "
-    "Do not morph the architecture, blur the walls, or hallucinate new rooms, "
-    "unseen fixtures, doors, window panes, or non-existent areas. "
-    "The sequence must be entirely non-generative regarding structural layout. "
-    "Upscale visual textures to 4K clarity, applying enhanced HDR lighting "
-    "to significantly brighten and open up dark areas, and cinema-grade color correction. "
-    "Digitally remove and inpaint any watermarks or text overlays from frame one to the end."
+    "STRICT RULES: No people, no human figures, no hands, no arms, no limbs, no animals visible at any point. "
+    "The camera horizon must remain perfectly level at all times with exactly 0 degrees of vertical tilt. "
+    "Zero vertical bobbing, zero camera shake, zero stepping motion. "
+    "HALLUCINATION PREVENTION: Do not generate, invent, or reveal any room, corridor, door, window, fixture, "
+    "or architectural element that is not clearly visible in the original still image. "
+    "Do not morph, distort, blur, or warp existing walls, floors, or ceilings. "
+    "The structural geometry of the space must remain 100 percent faithful to the source image. "
+    "Apply 4K upscaling, enhanced HDR lighting to brighten dark areas, and cinema-grade color grading. "
+    "Remove and inpaint any visible watermarks or text overlays throughout."
 )
 
 _PROMPT_LARGE = (
-    "A professional high-end real estate cinematography sequence. "
-    "The video begins tightly framed on a high-resolution, upscaled inner sub-section of the original image. "
-    "From this inner starting point, the camera path acts strictly as a slow reveal outward, "
-    "completely preventing the generation of unseen angles beyond the original frame boundaries. "
-    "For this large room or exterior: perform a slow, smooth linear dolly-in push "
-    "or a gentle horizontal pan toward the frame edges. "
+    "Professional high-end real estate cinematography. "
+    "Large interior space or open area. "
+    "The camera performs a single slow, smooth movement: either a gentle forward dolly-in toward the centre of the room, "
+    "or a slow horizontal pan from one side of the frame to the other. "
     "{camera_hint}"
-    "The camera must never zoom tightly into windows, mirrors, glass, or open balcony spaces. "
-    "Keep the focus broad, showcasing the existing layout. "
+    "The movement speed is very slow and cinematic, covering no more than 20 percent of the frame width over the full clip duration. "
+    "The camera simulates natural parallax depth — foreground elements drift subtly relative to background — "
+    "using only the depth information already present in the image, without generating any new surfaces or spaces. "
+    "Do not zoom into, or pan toward, windows, mirrors, glass surfaces, or open balcony openings, "
+    "as these areas have no depth information and will produce distortion. Keep the lens pointed at solid walls and furnishings. "
+    "Stay within the boundaries of what is already visible. No new rooms, no unseen areas, no fabricated geometry. "
     + _BASE_RULES
 )
 
 _PROMPT_SMALL = (
-    "A professional high-end real estate cinematography sequence. "
-    "The video begins tightly framed on a high-resolution, upscaled inner sub-section of the original image. "
-    "From this inner starting point, the camera path acts strictly as a slow reveal outward, "
-    "completely preventing the generation of unseen angles beyond the original frame boundaries. "
-    "For this small or compact interior: restrict the movement to a very shallow, slow lateral slider shift "
-    "tracking parallel to the main wall. "
+    "Professional high-end real estate cinematography. "
+    "Small or compact interior space such as a bathroom, hallway, or utility room. "
+    "The camera performs a single slow, very shallow lateral slide movement parallel to the main wall — "
+    "a smooth tracker shot moving no more than 10 percent of the frame width over the entire clip. "
     "{camera_hint}"
-    "The camera must never zoom tightly into windows, mirrors, glass, or fixtures. "
-    "Keep the focus broad, showcasing the existing compact layout. "
+    "The movement is extremely restrained to avoid generating unseen geometry in tight spaces. "
+    "The camera simulates gentle parallax depth using only the depth cues already present in the image. "
+    "Do not zoom in, do not tilt, do not move toward mirrors, glass, taps, or shiny fixtures — "
+    "these surfaces cause reflection distortion and hallucinations. Keep the lens wide and centred on tiled walls or main surfaces. "
+    "Stay within the visible frame. No invented spaces, no fabricated elements beyond what the source image shows. "
     + _BASE_RULES
 )
 
 _PROMPT_OUTDOOR = (
-    "A professional high-end real estate cinematography sequence. "
-    "The video begins tightly framed on a high-resolution, upscaled inner sub-section of the original image. "
-    "From this inner starting point, the camera path acts strictly as a slow reveal outward across known pixels, "
-    "completely preventing the generation of unseen angles beyond the original frame boundaries. "
-    "For this exterior or outdoor space: perform a slow, smooth linear dolly-in push "
-    "or a gentle arc revealing the full exterior. "
+    "Professional high-end real estate cinematography. "
+    "Exterior or outdoor space such as a facade, garden, terrace, or swimming pool area. "
+    "The camera performs a single slow cinematic movement: either a gentle forward dolly-in toward the building facade, "
+    "or a slow smooth arc sweeping left or right to reveal the full exterior. "
     "{camera_hint}"
-    "The camera must never zoom tightly into windows, glass, or pool water surfaces. "
-    "Keep the focus broad, showcasing the existing exterior layout. "
+    "The movement is slow and elegant, covering no more than 25 percent of the frame width over the full clip. "
+    "The camera simulates natural parallax depth between foreground landscaping and the background structure "
+    "using only the depth information visible in the source image. "
+    "Do not zoom toward windows, glazed doors, pool water surfaces, or glass balustrades — "
+    "transparent or reflective surfaces produce hallucinations. Keep the lens focused on solid architectural elements. "
+    "Stay strictly within the visible frame boundaries. No invented structures, no unseen areas. "
     + _BASE_RULES
 )
 
