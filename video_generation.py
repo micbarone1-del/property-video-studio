@@ -32,42 +32,45 @@ _SMALLROOM_KEYWORDS = ["bathroom", "wc", "toilet", "hallway", "corridor", "laund
 # Adapted from the proven prompt, split by space type.
 
 _BASE_RULES = (
-    "No people, hands, arms, or limbs visible. "
-    "Strictly level horizon, zero vertical tilt, zero camera shake or bobbing. "
-    "Do not morph architecture, blur walls, or hallucinate new rooms, fixtures, doors, or unseen areas. "
-    "No wind effect on curtains, plants, or surfaces. "
-    "Do not zoom into windows, mirrors, glass, or balcony openings. "
-    "Upscale visual textures to 4K clarity with enhanced HDR lighting and cinema-grade colour correction. "
-    "Remove any watermarks or text overlays from all frames."
+    "No people. No animals. No human figures, hands, arms, or limbs of any kind. "
+    "All furniture, objects and surfaces remain completely frozen and stationary. "
+    "Do not add any new objects, people, or content not present in the source image. "
+    "Do not hallucinate new rooms, doorways, corridors, ceilings, or spaces. "
+    "Horizon stays level. No camera shake, bobbing, or sudden jolts. "
+    "No movement through windows, mirrors, or reflective surfaces. "
+    "Photorealistic textures and lighting unchanged from source image. "
+    "Remove any watermarks or text overlays."
 )
 
 _PROMPT_LARGE = (
-    "Professional high-end real estate cinematography. "
-    "Photorealistic interior scene. "
+    "Cinematic real estate interior video. "
+    "The camera glides slowly forward through the room. "
+    "Near objects (sofa, table, chairs) drift apart naturally as the camera advances, "
+    "revealing depth behind them. Far walls and windows stay fixed. "
     "{camera_hint}"
-    "Movement must be slow, smooth, and controlled. No full rotations, no spinning, no whip pans. "
-    "Maximum camera rotation is 15 degrees. Maintain consistent room geometry and realistic depth throughout. "
-    "Do not create new rooms, doorways, or spaces that are not in the original image. "
+    "Maximum lateral pan 12 degrees. No spinning. No whip pans. "
+    "Room layout identical to source image throughout. "
     + _BASE_RULES
 )
 
 _PROMPT_SMALL = (
-    "Professional high-end real estate cinematography. "
-    "Photorealistic compact interior scene. "
+    "Cinematic real estate interior video. "
+    "The camera makes a very slow, gentle forward glide through the compact space. "
+    "Near surfaces drift slightly as camera advances, giving subtle depth. "
     "{camera_hint}"
-    "Movement is minimal and controlled. No full rotations, no spinning, no whip pans. "
-    "Maximum camera rotation is 10 degrees. Maintain realistic compact-space proportions. "
-    "Do not create new rooms or spaces beyond what is visible. "
+    "Maximum lateral pan 8 degrees. Minimal movement. No spinning. No whip pans. "
+    "Room layout identical to source image throughout. "
     + _BASE_RULES
 )
 
 _PROMPT_OUTDOOR = (
-    "Professional high-end real estate cinematography. "
-    "Photorealistic exterior or outdoor scene. "
+    "Cinematic real estate exterior video. "
+    "The camera glides slowly forward or gently arcs. "
+    "Foreground landscaping or terrace drifts apart naturally as camera advances, "
+    "revealing depth toward the facade. Sky remains static. "
     "{camera_hint}"
-    "Movement must be slow, smooth, and controlled. No full rotations, no spinning, no whip pans. "
-    "Maximum camera rotation is 15 degrees. Maintain consistent outdoor geometry, sky, and lighting. "
-    "Do not create new buildings or structures not visible in the original image. "
+    "Maximum arc 12 degrees. No spinning. No whip pans. "
+    "Building and garden layout identical to source image throughout. "
     + _BASE_RULES
 )
 
