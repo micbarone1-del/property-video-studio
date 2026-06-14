@@ -440,6 +440,10 @@ async def run_rework(rework_id: str, parent_job_id: str, cfg: dict):
         JOBS[rework_id]["output_path"] = output_path
         update("done", 100, "Rework video ready for download")
         _save_job(rework_id)
+        # Clean up old job_meta.json to free up disk space
+        old_meta = parent_dir / "job_meta.json"
+        if old_meta.exists():
+            old_meta.unlink()
 
     except Exception as e:
         log.error(f"[Rework {rework_id}] Failed: {e}", exc_info=True)

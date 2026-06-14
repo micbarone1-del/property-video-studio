@@ -45,7 +45,9 @@ _PROMPT_LARGE = (
     "Professional high-end real estate cinematography. "
     "Begin tightly framed on a high-resolution inner section of the image. "
     "{camera_hint}"
-    "Reveal the space outward across existing pixels only. Do not create new rooms or spaces. "
+    "Movement must be slow and controlled. No full rotations, no spinning, no whip pans. "
+    "Maximum camera rotation is 15 degrees. Reveal the space outward across existing pixels only. "
+    "Do not create new rooms or spaces. "
     + _BASE_RULES
 )
 
@@ -53,7 +55,8 @@ _PROMPT_SMALL = (
     "Professional high-end real estate cinematography. "
     "Begin tightly framed on a high-resolution inner section of the image. "
     "{camera_hint}"
-    "Movement is minimal and controlled. Do not create new rooms or spaces. "
+    "Movement is minimal and controlled. No full rotations, no spinning, no whip pans. "
+    "Maximum camera rotation is 10 degrees. Do not create new rooms or spaces. "
     + _BASE_RULES
 )
 
@@ -61,7 +64,9 @@ _PROMPT_OUTDOOR = (
     "Professional high-end real estate cinematography. "
     "Begin tightly framed on a high-resolution inner section of the image. "
     "{camera_hint}"
-    "Reveal the exterior space outward across existing pixels only. Do not create new structures or spaces. "
+    "Movement must be slow and controlled. No full rotations, no spinning, no whip pans. "
+    "Maximum camera rotation is 15 degrees. Reveal the exterior space outward across existing pixels only. "
+    "Do not create new structures or spaces. "
     + _BASE_RULES
 )
 
@@ -96,6 +101,15 @@ def _build_prompt(space_hint: str, camera_hint: str) -> str:
     """
     movement_text = CAMERA_MOVEMENTS.get(camera_hint, "")
     space_type    = _detect_space_type(space_hint)
+
+    # Auto mode: use a sensible slow walk-in default per space type
+    if not movement_text:
+        if space_type == "outdoor":
+            movement_text = "Slow smooth dolly-in push toward the centre of the frame, combined with a very slight upward tilt. "
+        elif space_type == "small":
+            movement_text = "Slow subtle dolly-in push toward the centre of the frame with minimal lateral drift. "
+        else:
+            movement_text = "Slow smooth dolly-in push toward the centre of the frame, combined with a very slight 10-degree arc pan. "
 
     if space_type == "outdoor":
         return _PROMPT_OUTDOOR.format(camera_hint=movement_text)
