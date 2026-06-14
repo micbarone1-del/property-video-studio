@@ -32,6 +32,44 @@ JOBS_DIR.mkdir(exist_ok=True)
 
 JOBS: dict = {}
 
+def _save_job(job_id: str):
+    """Persist job metadata to disk so it survives server restarts."""
+    try:
+        job = JOBS.get(job_id)
+        if job is None:
+            return
+        meta_path = JOBS_DIR / job_id / "job_meta.json"
+        meta_path.parent.mkdir(parents=True, exist_ok=True)
+        import json as _json
+        with open(meta_path, "w") as f:
+            _json.dump(job, f)
+    except Exception as e:
+        log.warning(f"[Jobs] Could not save job meta for {job_id}: {e}")
+
+def _load_jobs_from_disk():
+    """On startup, reload completed job metadata from disk into JOBS."""
+    import json as _json
+    loaded = 0
+    for job_dir in JOBS_DIR.iterdir():
+        if not job_dir.is_dir():
+            continue
+        meta_path = job_dir / "job_meta.json"
+        if not meta_path.exists():
+            continue
+        try:
+            with open(meta_path) as f:
+                meta = _json.load(f)
+            job_id = job_dir.name
+            if job_id not in JOBS:
+                JOBS[job_id] = meta
+                loaded += 1
+        except Exception as e:
+            log.warning(f"[Jobs] Could not reload {job_dir.name}: {e}")
+    if loaded:
+        log.info(f"[Jobs] Restored {loaded} jobs from disk on startup.")
+
+_load_jobs_from_disk()
+
 app = FastAPI(title="Real Estate Video Generator", version="2.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
@@ -115,6 +153,7 @@ async def create_job(
         "transition_style": transition_style,
     }
 
+    _save_job(job_id)
     background_tasks.add_task(
         run_pipeline,
         job_id=job_id,
@@ -305,12 +344,14 @@ async def run_pipeline(
 
         JOBS[job_id]["output_path"] = output_path
         update("done", 100, "Video ready for download")
+        _save_job(job_id)
 
         check_and_alert(job_id=job_id, property_name=property_name)
 
     except Exception as e:
         log.error(f"[Job {job_id}] Pipeline failed: {e}", exc_info=True)
         JOBS[job_id].update({"status": "failed", "message": f"Error: {str(e)}"})
+        _save_job(job_id)
 
 
 # ── Rework runner ──────────────────────────────────────────────────────────────
@@ -398,6 +439,7 @@ async def run_rework(rework_id: str, parent_job_id: str, cfg: dict):
 
         JOBS[rework_id]["output_path"] = output_path
         update("done", 100, "Rework video ready for download")
+        _save_job(rework_id)
 
     except Exception as e:
         log.error(f"[Rework {rework_id}] Failed: {e}", exc_info=True)
