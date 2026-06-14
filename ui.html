@@ -297,6 +297,17 @@ const CAMERA_OPTS = {
 function renderScenes() {
   genBtn.disabled = files.length === 0;
   if (!files.length) { scenesCont.innerHTML = '<div class="empty-state">Upload photos above to configure scenes</div>'; return; }
+  // Save existing user-typed field values BEFORE clearing the DOM
+  const savedValues = {};
+  [...scenesCont.querySelectorAll('.scene-card')].forEach(card => {
+    const idx = card.dataset.index;
+    savedValues[idx] = {
+      caption:    card.querySelector('.sc-caption')?.value   || '',
+      voiceover:  card.querySelector('.sc-voiceover')?.value || '',
+      duration:   card.querySelector('.sc-duration')?.value  || '8',
+      camera:     card.querySelector('.sc-camera')?.value    || 'auto',
+    };
+  });
   scenesCont.innerHTML = '';
   files.forEach((file, i) => {
     const url  = URL.createObjectURL(file);
@@ -355,7 +366,24 @@ function renderScenes() {
         </div>
       </div>`;
     scenesCont.appendChild(card);
-  });
+  
+  // Restore user-typed values if they existed before the re-render
+  const saved = savedValues[i];
+  if (saved) {
+    const capEl = card.querySelector('.sc-caption');
+    const voiEl = card.querySelector('.sc-voiceover');
+    const durEl = card.querySelector('.sc-duration');
+    const camEl = card.querySelector('.sc-camera');
+    if (capEl  && saved.caption)   capEl.value = saved.caption;
+    if (voiEl  && saved.voiceover) voiEl.value = saved.voiceover;
+    if (durEl  && saved.duration) {
+      durEl.value = saved.duration;
+      const durVal = card.querySelector('.dur-val');
+      if (durVal) durVal.textContent = saved.duration + 's';
+    }
+    if (camEl  && saved.camera)    camEl.value = saved.camera;
+  }
+});
 }
 
 function toggleRework(i) {
