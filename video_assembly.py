@@ -7,6 +7,60 @@ import datetime
 import uuid
 from moviepy import AudioFileClip, VideoFileClip, ImageClip, CompositeAudioClip
 
+# PIL-based caption overlay (no ImageMagick required)
+try:
+    from PIL import Image, ImageDraw, ImageFont
+    import numpy as np
+    _PIL_AVAILABLE = True
+except ImportError:
+    _PIL_AVAILABLE = False
+
+def _burn_caption(clip, caption_text, font_size=38):
+    """Burn a caption bar at the bottom of a MoviePy clip using PIL. No ImageMagick needed."""
+    if not caption_text or not _PIL_AVAILABLE:
+        return clip
+    try:
+        w, h = clip.size
+        bar_h = font_size + 24
+        padding = 12
+
+        # Try to load a system font, fall back to default
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
+        except Exception:
+            try:
+                font = ImageFont.truetype("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf", font_size)
+            except Exception:
+                font = ImageFont.load_default()
+
+        def make_frame(t):
+            frame = clip.get_frame(t)
+            img = Image.fromarray(frame)
+            # Draw semi-transparent black bar at bottom
+            overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(overlay)
+            draw.rectangle([(0, h - bar_h), (w, h)], fill=(0, 0, 0, 180))
+            # Measure text
+            try:
+                bbox = draw.textbbox((0, 0), caption_text, font=font)
+                tw = bbox[2] - bbox[0]
+            except Exception:
+                tw = len(caption_text) * (font_size // 2)
+            tx = max(padding, (w - tw) // 2)
+            ty = h - bar_h + (bar_h - font_size) // 2
+            draw.text((tx, ty), caption_text, font=font, fill=(255, 255, 255, 255))
+            base = img.convert("RGBA")
+            combined = Image.alpha_composite(base, overlay)
+            return np.array(combined.convert("RGB"))
+
+        from moviepy import VideoClip
+        caption_clip = VideoClip(make_frame, duration=clip.duration)
+        caption_clip = caption_clip.with_fps(clip.fps if hasattr(clip, 'fps') and clip.fps else 24)
+        return caption_clip
+    except Exception as e:
+        print(f"[Caption] Failed to burn caption: {e}")
+        return clip
+
 # Import pandas for Excel support
 try:
     import pandas as pd
@@ -415,6 +469,10 @@ def assemble_property_video(scenes_config, video_clip_paths, audio_paths, image_
 
             if clip.size != (TARGET_W, TARGET_H):
                 clip = clip.resized((TARGET_W, TARGET_H))
+        # Burn caption text onto clip if provided
+        scene_caption = str(scene.get("caption", "")).strip() if scene else ""
+        if scene_caption:
+            clip = _burn_caption(clip, scene_caption)
             timeline_cursor += clip.duration
             clips.append(clip)
         if not clips:

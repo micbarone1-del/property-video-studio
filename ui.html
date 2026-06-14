@@ -475,6 +475,7 @@ async function submitRework(reworkScenes) {
     const res = await fetch(`${API_BASE}/jobs/${currentJobId}/rework`, { method:'POST', body:fd });
         if (!res.ok) { let errMsg = "Server error " + res.status; try { const errData = await res.json(); errMsg = errData.detail || errMsg; } catch(ex) {} throw new Error(errMsg); }
     const { job_id } = await res.json();
+    currentJobId = job_id;
     genBtn.textContent = 'Processing rework…';
     startPolling(job_id);
   } catch(e) {
