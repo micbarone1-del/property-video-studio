@@ -5,607 +5,456 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Property Video Studio</title>
 <style>
-  /* ── Reset & base ───────────────────────────────────────────────────── */
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
   :root {
-    --ink:     #1a1a1a;
-    --paper:   #f7f5f0;
-    --card:    #ffffff;
-    --rule:    #e2ddd6;
-    --accent:  #c8a96e;       /* warm gold — estate agency feel */
-    --accent2: #3d5a47;       /* deep green — grounded, trustworthy */
-    --muted:   #7a7469;
-    --danger:  #c0392b;
-    --success: #2d6a4f;
-    --radius:  6px;
-    --font-display: 'Georgia', 'Times New Roman', serif;
-    --font-body:    'Inter', 'Helvetica Neue', Arial, sans-serif;
+    --ink:    #1a1a1a;
+    --paper:  #f7f5f0;
+    --card:   #ffffff;
+    --rule:   #e2ddd6;
+    --accent: #c8a96e;
+    --green:  #3d5a47;
+    --muted:  #7a7469;
+    --danger: #c0392b;
+    --ok:     #2d6a4f;
+    --radius: 6px;
+    --serif:  'Georgia','Times New Roman',serif;
+    --sans:   'Inter','Helvetica Neue',Arial,sans-serif;
   }
+  body { font-family: var(--sans); background: var(--paper); color: var(--ink); min-height:100vh; }
 
-  body {
-    font-family: var(--font-body);
-    background: var(--paper);
-    color: var(--ink);
-    min-height: 100vh;
-  }
+  /* Header */
+  header { background: var(--green); color:#fff; padding:18px 40px; display:flex; align-items:baseline; gap:16px; border-bottom:3px solid var(--accent); }
+  header h1 { font-family:var(--serif); font-size:1.5rem; font-weight:normal; }
+  header span.sub { font-size:0.75rem; opacity:.6; letter-spacing:.1em; text-transform:uppercase; }
+  #credit-dot { width:9px; height:9px; border-radius:50%; background:var(--accent); display:inline-block; margin-left:auto; cursor:pointer; flex-shrink:0; }
+  #credit-dot.low { background:#e74c3c; animation:pulse 1.5s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1}50%{opacity:.35} }
 
-  /* ── Header ─────────────────────────────────────────────────────────── */
-  header {
-    background: var(--accent2);
-    color: #fff;
-    padding: 20px 40px;
-    display: flex;
-    align-items: baseline;
-    gap: 16px;
-    border-bottom: 3px solid var(--accent);
-  }
-  header h1 {
-    font-family: var(--font-display);
-    font-size: 1.6rem;
-    font-weight: normal;
-    letter-spacing: 0.02em;
-  }
-  header span {
-    font-size: 0.8rem;
-    opacity: 0.65;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-  }
+  /* Layout */
+  main { max-width:920px; margin:0 auto; padding:36px 24px 80px; }
+  section + section { margin-top:36px; }
+  .sec-label { font-size:.67rem; letter-spacing:.14em; text-transform:uppercase; color:var(--muted); margin-bottom:10px; display:flex; align-items:center; gap:10px; }
+  .sec-label::after { content:''; flex:1; height:1px; background:var(--rule); }
+  .card { background:var(--card); border:1px solid var(--rule); border-radius:var(--radius); padding:22px; }
 
-  /* ── Layout ──────────────────────────────────────────────────────────── */
-  main {
-    max-width: 900px;
-    margin: 0 auto;
-    padding: 40px 24px 80px;
-  }
+  /* Form */
+  label { display:block; font-size:.8rem; color:var(--muted); margin-bottom:4px; }
+  input[type=text], textarea, select { width:100%; padding:8px 11px; border:1px solid var(--rule); border-radius:var(--radius); font-family:var(--sans); font-size:.88rem; background:var(--paper); color:var(--ink); transition:border-color .15s; }
+  input[type=text]:focus, textarea:focus, select:focus { outline:none; border-color:var(--accent); }
+  textarea { resize:vertical; min-height:64px; }
+  .row2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  @media(max-width:560px){ .row2 { grid-template-columns:1fr; } }
 
-  section + section { margin-top: 40px; }
+  /* Toggles */
+  .toggle-row { display:flex; align-items:center; gap:10px; margin-top:14px; font-size:.84rem; flex-wrap:wrap; }
+  .toggle { position:relative; width:38px; height:22px; flex-shrink:0; }
+  .toggle input { opacity:0; width:0; height:0; }
+  .tog-sl { position:absolute; inset:0; background:var(--rule); border-radius:22px; cursor:pointer; transition:background .2s; }
+  .tog-sl::before { content:''; position:absolute; width:16px; height:16px; left:3px; top:3px; background:#fff; border-radius:50%; transition:transform .2s; }
+  .toggle input:checked + .tog-sl { background:var(--green); }
+  .toggle input:checked + .tog-sl::before { transform:translateX(16px); }
 
-  .section-label {
-    font-size: 0.68rem;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--muted);
-    margin-bottom: 12px;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-  .section-label::after {
-    content: '';
-    flex: 1;
-    height: 1px;
-    background: var(--rule);
-  }
+  /* Credit banner */
+  #credit-banner { display:none; margin-bottom:22px; border:1px solid #f5c6c2; border-radius:var(--radius); overflow:hidden; }
+  .cb-head { background:#c0392b; color:#fff; padding:9px 16px; font-size:.8rem; font-weight:600; }
+  .cb-body { background:#fdf0ef; padding:12px 16px; display:flex; flex-direction:column; gap:8px; }
+  .cb-row { display:flex; align-items:center; justify-content:space-between; font-size:.82rem; }
+  .cb-low { color:#c0392b; }
+  .cb-topup { font-size:.76rem; color:var(--green); border:1px solid var(--green); border-radius:3px; padding:2px 8px; text-decoration:none; }
+  .cb-topup:hover { background:var(--green); color:#fff; }
+  .cb-time { font-size:.7rem; color:var(--muted); margin-top:2px; }
 
-  /* ── Cards ───────────────────────────────────────────────────────────── */
-  .card {
-    background: var(--card);
-    border: 1px solid var(--rule);
-    border-radius: var(--radius);
-    padding: 24px;
-  }
+  /* Drop zone */
+  #drop-zone { border:2px dashed var(--rule); border-radius:var(--radius); padding:36px 24px; text-align:center; cursor:pointer; transition:border-color .2s,background .2s; position:relative; }
+  #drop-zone.drag-over { border-color:var(--accent); background:#fdf8ef; }
+  #drop-zone input[type=file] { position:absolute; inset:0; opacity:0; cursor:pointer; }
+  #drop-zone .di { font-size:1.8rem; margin-bottom:6px; }
+  #drop-zone p { font-size:.83rem; color:var(--muted); }
+  #drop-zone strong { color:var(--green); }
 
-  /* ── Form elements ───────────────────────────────────────────────────── */
-  label { display: block; font-size: 0.82rem; color: var(--muted); margin-bottom: 5px; }
-  input[type="text"], textarea, select {
-    width: 100%;
-    padding: 9px 12px;
-    border: 1px solid var(--rule);
-    border-radius: var(--radius);
-    font-family: var(--font-body);
-    font-size: 0.9rem;
-    background: var(--paper);
-    color: var(--ink);
-    transition: border-color 0.15s;
-  }
-  input[type="text"]:focus, textarea:focus, select:focus {
-    outline: none;
-    border-color: var(--accent);
-  }
-  textarea { resize: vertical; min-height: 70px; }
+  /* Global options */
+  .global-opts { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:14px; }
+  @media(max-width:560px){ .global-opts { grid-template-columns:1fr; } }
 
-  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-  @media (max-width: 560px) { .row2 { grid-template-columns: 1fr; } }
+  /* Scene cards */
+  #scenes-container { display:flex; flex-direction:column; gap:14px; }
+  .scene-card { background:var(--card); border:1px solid var(--rule); border-radius:var(--radius); overflow:hidden; }
+  .scene-card.failed { border-color:#f5c6c2; }
+  .scene-card.ok     { border-color:#b7dfca; }
+  .sc-head { display:flex; align-items:center; gap:12px; padding:10px 14px; background:#fafaf8; border-bottom:1px solid var(--rule); }
+  .sc-thumb { width:68px; height:46px; object-fit:cover; border-radius:3px; border:1px solid var(--rule); flex-shrink:0; }
+  .sc-num { font-size:.68rem; letter-spacing:.1em; text-transform:uppercase; color:var(--muted); }
+  .sc-name { font-size:.8rem; }
+  .sc-badge { font-size:.65rem; padding:2px 6px; border-radius:10px; margin-left:6px; }
+  .sc-badge.ok     { background:#edf7f1; color:var(--ok); }
+  .sc-badge.failed { background:#fdf0ef; color:var(--danger); }
+  .sc-remove { margin-left:auto; background:none; border:none; color:var(--muted); cursor:pointer; font-size:1rem; padding:4px 8px; border-radius:4px; }
+  .sc-remove:hover { color:var(--danger); background:#fdf0ef; }
+  .sc-fields { padding:14px; display:flex; flex-direction:column; gap:11px; }
+  .sc-row3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; }
+  @media(max-width:680px){ .sc-row3 { grid-template-columns:1fr; } }
+  .dur-row { display:flex; align-items:center; gap:8px; font-size:.8rem; }
+  .dur-row input[type=range] { flex:1; accent-color:var(--green); }
+  .dur-val { min-width:26px; text-align:right; color:var(--green); font-weight:600; font-variant-numeric:tabular-nums; }
 
-  /* ── Toggles ─────────────────────────────────────────────────────────── */
-  .toggle-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin-top: 16px;
-    font-size: 0.85rem;
-  }
-  .toggle {
-    position: relative;
-    width: 38px;
-    height: 22px;
-    flex-shrink: 0;
-  }
-  .toggle input { opacity: 0; width: 0; height: 0; }
-  .toggle-slider {
-    position: absolute; inset: 0;
-    background: var(--rule);
-    border-radius: 22px;
-    cursor: pointer;
-    transition: background 0.2s;
-  }
-  .toggle-slider::before {
-    content: '';
-    position: absolute;
-    width: 16px; height: 16px;
-    left: 3px; top: 3px;
-    background: #fff;
-    border-radius: 50%;
-    transition: transform 0.2s;
-  }
-  .toggle input:checked + .toggle-slider { background: var(--accent2); }
-  .toggle input:checked + .toggle-slider::before { transform: translateX(16px); }
+  /* Rework panel */
+  .rework-panel { display:none; background:#f0f4f2; border-top:1px solid var(--rule); padding:12px 14px; }
+  .rework-panel.open { display:block; }
+  .rework-panel label { color:var(--green); font-weight:600; font-size:.78rem; margin-bottom:8px; display:block; }
+  .rework-checks { display:flex; gap:16px; flex-wrap:wrap; font-size:.82rem; }
+  .rework-checks label { font-weight:normal; color:var(--ink); display:flex; align-items:center; gap:6px; cursor:pointer; }
+  .btn-rework-toggle { background:none; border:1px solid var(--green); color:var(--green); border-radius:var(--radius); padding:4px 12px; font-size:.76rem; cursor:pointer; margin-left:auto; }
+  .btn-rework-toggle:hover { background:var(--green); color:#fff; }
 
-  /* ── Credit banner ───────────────────────────────────────────────────── */
-  #credit-banner {
-    display: none;
-    margin-bottom: 24px;
-    border-radius: var(--radius);
-    overflow: hidden;
-    border: 1px solid #f5c6c2;
-  }
-  .credit-banner-header {
-    background: #c0392b;
-    color: white;
-    padding: 10px 16px;
-    font-size: 0.82rem;
-    font-weight: 600;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .credit-banner-body {
-    background: #fdf0ef;
-    padding: 12px 16px;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-  .credit-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    font-size: 0.83rem;
-  }
-  .credit-row-name { font-weight: 600; color: var(--ink); }
-  .credit-row-value { color: #c0392b; }
-  .credit-row-ok { color: var(--success); }
-  .credit-topup {
-    font-size: 0.78rem;
-    color: var(--accent2);
-    text-decoration: none;
-    border: 1px solid var(--accent2);
-    border-radius: 3px;
-    padding: 2px 8px;
-  }
-  .credit-topup:hover { background: var(--accent2); color: white; }
-  .credit-checked {
-    font-size: 0.72rem;
-    color: var(--muted);
-    margin-top: 4px;
-  }
+  /* Buttons */
+  .btn-primary { background:var(--green); color:#fff; border:none; border-radius:var(--radius); padding:12px 30px; font-size:.92rem; font-family:var(--sans); cursor:pointer; letter-spacing:.02em; transition:background .15s,transform .1s; }
+  .btn-primary:hover:not(:disabled) { background:#2e4535; }
+  .btn-primary:active:not(:disabled) { transform:scale(.98); }
+  .btn-primary:disabled { opacity:.5; cursor:not-allowed; }
+  .btn-secondary { background:none; border:1px solid var(--green); color:var(--green); border-radius:var(--radius); padding:10px 22px; font-size:.88rem; font-family:var(--sans); cursor:pointer; margin-left:12px; }
+  .btn-secondary:hover { background:var(--green); color:#fff; }
 
-  /* ── Credit indicator in header ──────────────────────────────────────── */
-  #header-credit-dot {
-    width: 8px; height: 8px;
-    border-radius: 50%;
-    background: var(--accent);
-    display: inline-block;
-    margin-left: 12px;
-    cursor: pointer;
-    title: "Credits OK";
-  }
-  #header-credit-dot.low { background: #e74c3c; animation: pulse 1.5s infinite; }
-  @keyframes pulse {
-    0%, 100% { opacity: 1; } 50% { opacity: 0.4; }
-  }
+  /* Progress */
+  #progress-section { display:none; }
+  .prog-wrap { height:8px; background:var(--rule); border-radius:8px; overflow:hidden; margin:12px 0 6px; }
+  .prog-fill { height:100%; background:linear-gradient(90deg,var(--green),var(--accent)); border-radius:8px; transition:width .4s ease; width:0%; }
+  .prog-msg { font-size:.8rem; color:var(--muted); }
+  .prog-pct { font-size:1.05rem; font-weight:600; color:var(--green); }
 
+  /* Scene progress list */
+  #scene-progress { margin-top:12px; display:flex; flex-direction:column; gap:4px; }
+  .sp-row { display:flex; align-items:center; gap:10px; font-size:.78rem; color:var(--muted); }
+  .sp-dot { width:8px; height:8px; border-radius:50%; background:var(--rule); flex-shrink:0; }
+  .sp-dot.running { background:var(--accent); animation:pulse 1s infinite; }
+  .sp-dot.ok      { background:var(--ok); }
+  .sp-dot.failed  { background:var(--danger); }
 
-  #drop-zone {
-    border: 2px dashed var(--rule);
-    border-radius: var(--radius);
-    padding: 40px 24px;
-    text-align: center;
-    cursor: pointer;
-    transition: border-color 0.2s, background 0.2s;
-    position: relative;
-  }
-  #drop-zone.drag-over {
-    border-color: var(--accent);
-    background: #fdf8ef;
-  }
-  #drop-zone input[type="file"] {
-    position: absolute; inset: 0; opacity: 0; cursor: pointer;
-  }
-  #drop-zone .drop-icon { font-size: 2rem; margin-bottom: 8px; }
-  #drop-zone p { font-size: 0.85rem; color: var(--muted); }
-  #drop-zone strong { color: var(--accent2); }
+  /* Result */
+  #result-section { display:none; }
+  #video-preview { width:100%; border-radius:var(--radius); border:1px solid var(--rule); background:#000; }
+  .btn-download { display:inline-flex; align-items:center; gap:8px; background:var(--accent); color:var(--ink); border:none; border-radius:var(--radius); padding:10px 26px; font-size:.88rem; font-family:var(--sans); cursor:pointer; font-weight:600; margin-top:12px; text-decoration:none; }
+  .btn-download:hover { background:#b8944f; }
 
-  /* ── Scene cards ─────────────────────────────────────────────────────── */
-  #scenes-container { display: flex; flex-direction: column; gap: 16px; }
+  /* Scene result grid */
+  #scene-results { margin-top:16px; display:grid; grid-template-columns:repeat(auto-fill,minmax(160px,1fr)); gap:10px; }
+  .sr-card { border:1px solid var(--rule); border-radius:var(--radius); overflow:hidden; font-size:.76rem; }
+  .sr-card.failed { border-color:#f5c6c2; }
+  .sr-card.ok     { border-color:#b7dfca; }
+  .sr-thumb { width:100%; height:90px; object-fit:cover; }
+  .sr-info { padding:6px 8px; }
+  .sr-label { font-weight:600; margin-bottom:2px; }
+  .sr-status { color:var(--muted); }
+  .sr-redo { display:block; width:100%; margin-top:6px; background:none; border:1px solid var(--accent); color:var(--ink); border-radius:3px; padding:3px; font-size:.72rem; cursor:pointer; }
+  .sr-redo:hover { background:var(--accent); }
 
-  .scene-card {
-    background: var(--card);
-    border: 1px solid var(--rule);
-    border-radius: var(--radius);
-    overflow: hidden;
-    transition: box-shadow 0.15s;
-  }
-  .scene-card:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.07); }
-
-  .scene-header {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    padding: 12px 16px;
-    background: #fafaf8;
-    border-bottom: 1px solid var(--rule);
-  }
-  .scene-thumb {
-    width: 72px;
-    height: 50px;
-    object-fit: cover;
-    border-radius: 3px;
-    border: 1px solid var(--rule);
-    flex-shrink: 0;
-  }
-  .scene-num {
-    font-size: 0.7rem;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--muted);
-  }
-  .scene-filename { font-size: 0.82rem; color: var(--ink); }
-  .scene-remove {
-    margin-left: auto;
-    background: none;
-    border: none;
-    color: var(--muted);
-    cursor: pointer;
-    font-size: 1.1rem;
-    padding: 4px 8px;
-    border-radius: 4px;
-    transition: color 0.15s, background 0.15s;
-  }
-  .scene-remove:hover { color: var(--danger); background: #fdf0ef; }
-
-  .scene-fields { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
-
-  .duration-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    font-size: 0.82rem;
-  }
-  .duration-row input[type="range"] {
-    flex: 1; accent-color: var(--accent2);
-  }
-  .duration-val {
-    min-width: 28px;
-    text-align: right;
-    font-variant-numeric: tabular-nums;
-    color: var(--accent2);
-    font-weight: 600;
-  }
-
-  /* ── Submit ──────────────────────────────────────────────────────────── */
-  .btn-primary {
-    background: var(--accent2);
-    color: #fff;
-    border: none;
-    border-radius: var(--radius);
-    padding: 13px 32px;
-    font-size: 0.95rem;
-    font-family: var(--font-body);
-    cursor: pointer;
-    letter-spacing: 0.03em;
-    transition: background 0.15s, transform 0.1s;
-  }
-  .btn-primary:hover:not(:disabled) { background: #2e4535; }
-  .btn-primary:active:not(:disabled) { transform: scale(0.98); }
-  .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
-
-  /* ── Progress ────────────────────────────────────────────────────────── */
-  #progress-section { display: none; }
-  .progress-bar-wrap {
-    height: 8px;
-    background: var(--rule);
-    border-radius: 8px;
-    overflow: hidden;
-    margin: 14px 0 8px;
-  }
-  .progress-bar-fill {
-    height: 100%;
-    background: linear-gradient(90deg, var(--accent2), var(--accent));
-    border-radius: 8px;
-    transition: width 0.4s ease;
-    width: 0%;
-  }
-  .progress-msg { font-size: 0.82rem; color: var(--muted); }
-  .progress-pct { font-size: 1.1rem; font-weight: 600; color: var(--accent2); }
-
-  /* ── Result ──────────────────────────────────────────────────────────── */
-  #result-section { display: none; }
-  #video-preview {
-    width: 100%;
-    border-radius: var(--radius);
-    border: 1px solid var(--rule);
-    background: #000;
-  }
-  .btn-download {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    background: var(--accent);
-    color: var(--ink);
-    border: none;
-    border-radius: var(--radius);
-    padding: 11px 28px;
-    font-size: 0.9rem;
-    font-family: var(--font-body);
-    cursor: pointer;
-    font-weight: 600;
-    margin-top: 14px;
-    text-decoration: none;
-    transition: background 0.15s;
-  }
-  .btn-download:hover { background: #b8944f; }
-
-  .alert {
-    padding: 12px 16px;
-    border-radius: var(--radius);
-    font-size: 0.85rem;
-    margin-top: 12px;
-  }
-  .alert-error { background: #fdf0ef; border: 1px solid #f5c6c2; color: var(--danger); }
-  .alert-success { background: #edf7f1; border: 1px solid #b7dfca; color: var(--success); }
-
-  .empty-state {
-    text-align: center;
-    padding: 32px;
-    color: var(--muted);
-    font-size: 0.85rem;
-  }
+  .alert { padding:11px 14px; border-radius:var(--radius); font-size:.83rem; margin-top:10px; }
+  .alert-error   { background:#fdf0ef; border:1px solid #f5c6c2; color:var(--danger); }
+  .empty-state   { text-align:center; padding:28px; color:var(--muted); font-size:.83rem; }
 </style>
 </head>
 <body>
 
 <header>
   <h1>Property Video Studio</h1>
-  <span>Real Estate · AI Video Generator</span>
-  <span id="header-credit-dot" onclick="document.getElementById('credit-banner').scrollIntoView({behavior:'smooth'})" title="Checking credits…"></span>
+  <span class="sub">Real Estate · AI Video Generator</span>
+  <span id="credit-dot" onclick="document.getElementById('credit-banner').scrollIntoView({behavior:'smooth'})" title="Checking credits…"></span>
 </header>
 
 <main>
 
-  <!-- Credit warning banner (hidden until credits are low) ─────────────── -->
+  <!-- Credit banner -->
   <div id="credit-banner">
-    <div class="credit-banner-header">⚠ Low Credits Warning — action needed before next job</div>
-    <div class="credit-banner-body" id="credit-banner-body"></div>
+    <div class="cb-head">⚠ Low Credits — action needed before next job</div>
+    <div class="cb-body" id="credit-body"></div>
   </div>
 
-  <!-- ① Property details ──────────────────────────────────────────────── -->
+  <!-- ① Property details -->
   <section>
-    <p class="section-label">Property details</p>
+    <p class="sec-label">Property details</p>
     <div class="card">
       <div class="row2">
         <div>
           <label for="prop-name">Property name / reference</label>
-          <input type="text" id="prop-name" placeholder="e.g. 14 Kensington Gardens" />
+          <input type="text" id="prop-name" placeholder="e.g. Via Roma 14" />
         </div>
         <div>
           <label for="voice-id">ElevenLabs voice ID <span style="color:var(--muted)">(optional)</span></label>
-          <input type="text" id="voice-id" placeholder="Leave blank for default voice" />
+          <input type="text" id="voice-id" placeholder="Leave blank for default" />
         </div>
       </div>
       <div class="toggle-row">
-        <label class="toggle">
-          <input type="checkbox" id="do-lighting" checked />
-          <span class="toggle-slider"></span>
-        </label>
+        <label class="toggle"><input type="checkbox" id="do-lighting" checked /><span class="tog-sl"></span></label>
         <span>Lighting &amp; colour correction</span>
-        <span style="margin-left:24px"></span>
-        <label class="toggle">
-          <input type="checkbox" id="do-upscale" checked />
-          <span class="toggle-slider"></span>
-        </label>
-        <span>AI image upscaling (slower, higher quality)</span>
+        <span style="margin-left:18px"></span>
+        <label class="toggle"><input type="checkbox" id="do-upscale" checked /><span class="tog-sl"></span></label>
+        <span>AI image upscaling</span>
+      </div>
+      <div class="global-opts" style="margin-top:16px">
+        <div>
+          <label for="transition-style">Transition between clips</label>
+          <select id="transition-style">
+            <option value="fade">Fade to black</option>
+            <option value="fade_white">Fade to white</option>
+            <option value="slide_left">Slide left</option>
+            <option value="slide_right">Slide right</option>
+            <option value="cut">Hard cut (no transition)</option>
+          </select>
+        </div>
       </div>
     </div>
   </section>
 
-  <!-- ② Image upload ───────────────────────────────────────────────────── -->
+  <!-- ② Upload -->
   <section>
-    <p class="section-label">Photos — drag to reorder after upload</p>
+    <p class="sec-label">Photos</p>
     <div id="drop-zone">
       <input type="file" id="file-input" accept="image/*" multiple />
-      <div class="drop-icon">🏠</div>
+      <div class="di">🏠</div>
       <p><strong>Drop photos here</strong> or click to browse</p>
-      <p style="margin-top:6px">JPEG · PNG · WebP &nbsp;·&nbsp; Multiple files supported</p>
+      <p style="margin-top:5px">JPEG · PNG · WebP · multiple files supported</p>
     </div>
   </section>
 
-  <!-- ③ Scene editor ───────────────────────────────────────────────────── -->
+  <!-- ③ Scenes -->
   <section>
-    <p class="section-label">Scenes — one per photo</p>
+    <p class="sec-label">Scenes — one per photo</p>
     <div id="scenes-container">
       <div class="empty-state">Upload photos above to configure scenes</div>
     </div>
   </section>
 
-  <!-- ④ Generate ───────────────────────────────────────────────────────── -->
+  <!-- ④ Generate -->
   <section>
     <button class="btn-primary" id="generate-btn" disabled>Generate Video</button>
     <div id="error-msg"></div>
   </section>
 
-  <!-- ⑤ Progress ──────────────────────────────────────────────────────── -->
+  <!-- ⑤ Progress -->
   <section id="progress-section">
-    <p class="section-label">Progress</p>
+    <p class="sec-label">Progress</p>
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:baseline">
-        <span class="progress-msg" id="progress-msg">Starting…</span>
-        <span class="progress-pct" id="progress-pct">0%</span>
+        <span class="prog-msg" id="prog-msg">Starting…</span>
+        <span class="prog-pct" id="prog-pct">0%</span>
       </div>
-      <div class="progress-bar-wrap">
-        <div class="progress-bar-fill" id="progress-bar"></div>
-      </div>
+      <div class="prog-wrap"><div class="prog-fill" id="prog-bar"></div></div>
+      <div id="scene-progress"></div>
     </div>
   </section>
 
-  <!-- ⑥ Result ────────────────────────────────────────────────────────── -->
+  <!-- ⑥ Result -->
   <section id="result-section">
-    <p class="section-label">Your video is ready</p>
+    <p class="sec-label">Your video is ready</p>
     <div class="card">
       <video id="video-preview" controls></video>
       <a class="btn-download" id="download-link" href="#">⬇ Download MP4</a>
+      <div id="scene-results"></div>
     </div>
   </section>
 
 </main>
 
 <script>
-// ── State ─────────────────────────────────────────────────────────────────────
-const API_BASE = '';   // same origin; if server is elsewhere, set e.g. 'http://yourserver.com'
-let files = [];        // File objects in scene order
+const API_BASE = '';
+let files = [];
 let pollTimer = null;
+let currentJobId = null;
+let sceneStatuses = [];
 
-// ── DOM refs ──────────────────────────────────────────────────────────────────
-const dropZone        = document.getElementById('drop-zone');
-const fileInput       = document.getElementById('file-input');
-const scenesContainer = document.getElementById('scenes-container');
-const generateBtn     = document.getElementById('generate-btn');
-const errorMsg        = document.getElementById('error-msg');
-const progressSection = document.getElementById('progress-section');
-const resultSection   = document.getElementById('result-section');
+const dropZone   = document.getElementById('drop-zone');
+const fileInput  = document.getElementById('file-input');
+const scenesCont = document.getElementById('scenes-container');
+const genBtn     = document.getElementById('generate-btn');
+const errorMsg   = document.getElementById('error-msg');
+const progSec    = document.getElementById('progress-section');
+const resultSec  = document.getElementById('result-section');
 
 // ── File handling ─────────────────────────────────────────────────────────────
 dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
 dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
-dropZone.addEventListener('drop', e => {
-  e.preventDefault();
-  dropZone.classList.remove('drag-over');
-  addFiles([...e.dataTransfer.files]);
-});
-fileInput.addEventListener('change', () => {
-  addFiles([...fileInput.files]);
-  fileInput.value = '';
-});
+dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('drag-over'); addFiles([...e.dataTransfer.files]); });
+fileInput.addEventListener('change', () => { addFiles([...fileInput.files]); fileInput.value=''; });
 
 function addFiles(newFiles) {
-  const imgs = newFiles.filter(f => f.type.startsWith('image/'));
-  files = [...files, ...imgs];
+  files = [...files, ...newFiles.filter(f => f.type.startsWith('image/'))];
   renderScenes();
 }
+function removeScene(i) { files.splice(i,1); renderScenes(); }
 
-function removeScene(index) {
-  files.splice(index, 1);
-  renderScenes();
-}
+// ── Camera movement options ───────────────────────────────────────────────────
+const CAMERA_OPTS = {
+  auto:       'Auto (detect room type)',
+  dolly_in:   'Dolly in — push toward centre',
+  pan_left:   'Pan left',
+  pan_right:  'Pan right',
+  slider:     'Slider shift (small rooms)',
+  zoom_out:   'Zoom out — reveal the space',
+  tilt_up:    'Tilt up — floor to ceiling',
+  static:     'Static — no movement',
+};
 
 // ── Scene renderer ────────────────────────────────────────────────────────────
 function renderScenes() {
-  generateBtn.disabled = files.length === 0;
-  if (files.length === 0) {
-    scenesContainer.innerHTML = '<div class="empty-state">Upload photos above to configure scenes</div>';
-    return;
-  }
-  scenesContainer.innerHTML = '';
+  genBtn.disabled = files.length === 0;
+  if (!files.length) { scenesCont.innerHTML = '<div class="empty-state">Upload photos above to configure scenes</div>'; return; }
+  scenesCont.innerHTML = '';
   files.forEach((file, i) => {
-    const url = URL.createObjectURL(file);
+    const url  = URL.createObjectURL(file);
+    const prev = sceneStatuses[i];
+    const statusBadge = prev
+      ? `<span class="sc-badge ${prev.video}">${prev.video === 'ok' ? '✓ done' : '✗ failed'}</span>`
+      : '';
     const card = document.createElement('div');
-    card.className = 'scene-card';
+    card.className = `scene-card${prev ? ' '+prev.video : ''}`;
     card.dataset.index = i;
+
+    const camOpts = Object.entries(CAMERA_OPTS).map(([v,l]) =>
+      `<option value="${v}">${l}</option>`).join('');
+
     card.innerHTML = `
-      <div class="scene-header">
-        <img class="scene-thumb" src="${url}" alt="Scene ${i+1}" />
+      <div class="sc-head">
+        <img class="sc-thumb" src="${url}" alt="Scene ${i+1}" />
         <div>
-          <div class="scene-num">Scene ${i+1}</div>
-          <div class="scene-filename">${file.name}</div>
+          <div class="sc-num">Scene ${i+1}</div>
+          <div class="sc-name">${file.name}${statusBadge}</div>
         </div>
-        <button class="scene-remove" onclick="removeScene(${i})" title="Remove scene">✕</button>
+        <button class="btn-rework-toggle" onclick="toggleRework(${i})" style="${prev?'':'display:none'}" id="rw-btn-${i}">Redo this scene</button>
+        <button class="sc-remove" onclick="removeScene(${i})">✕</button>
       </div>
-      <div class="scene-fields">
+      <div class="sc-fields">
         <div>
-          <label>Caption shown on screen</label>
-          <input type="text" class="scene-caption" placeholder="e.g. Bright open-plan living room" />
+          <label>Caption shown on screen <span style="color:var(--muted)">(optional)</span></label>
+          <input type="text" class="sc-caption" placeholder="e.g. Open-plan living room" />
         </div>
         <div>
-          <label>Voiceover text (read aloud)</label>
-          <textarea class="scene-voiceover" placeholder="e.g. Step into this stunning living space…"></textarea>
+          <label>Voiceover text <span style="color:var(--muted)">(optional)</span></label>
+          <textarea class="sc-voiceover" placeholder="e.g. Step into this stunning space…"></textarea>
         </div>
-        <div>
-          <label>Clip duration</label>
-          <div class="duration-row">
-            <span style="font-size:0.78rem;color:var(--muted)">6s</span>
-            <input type="range" class="scene-duration" min="6" max="20" step="2" value="8"
-              oninput="this.closest('.scene-fields').querySelector('.duration-val').textContent = this.value+'s'" />
-            <span style="font-size:0.78rem;color:var(--muted)">20s</span>
-            <span class="duration-val">8s</span>
+        <div class="sc-row3">
+          <div>
+            <label>Camera movement</label>
+            <select class="sc-camera">${camOpts}</select>
+          </div>
+          <div style="grid-column:span 2">
+            <label>Clip duration</label>
+            <div class="dur-row">
+              <span style="font-size:.76rem;color:var(--muted)">6s</span>
+              <input type="range" class="sc-duration" min="6" max="20" step="2" value="8"
+                oninput="this.closest('.sc-fields').querySelector('.dur-val').textContent=this.value+'s'" />
+              <span style="font-size:.76rem;color:var(--muted)">20s</span>
+              <span class="dur-val">8s</span>
+            </div>
           </div>
         </div>
+      </div>
+      <div class="rework-panel" id="rw-panel-${i}">
+        <label>Redo options for Scene ${i+1}</label>
+        <div class="rework-checks">
+          <label><input type="checkbox" class="rw-video" checked /> Regenerate video clip</label>
+          <label><input type="checkbox" class="rw-audio" /> Regenerate voiceover audio</label>
+        </div>
       </div>`;
-    scenesContainer.appendChild(card);
+    scenesCont.appendChild(card);
   });
 }
 
-// ── Build config from scene cards ─────────────────────────────────────────────
+function toggleRework(i) {
+  const panel = document.getElementById(`rw-panel-${i}`);
+  panel.classList.toggle('open');
+}
+
+// ── Build config ──────────────────────────────────────────────────────────────
 function getScenesConfig() {
-  return [...scenesContainer.querySelectorAll('.scene-card')].map(card => ({
-    caption:   card.querySelector('.scene-caption').value.trim(),
-    voiceover: card.querySelector('.scene-voiceover').value.trim(),
-    duration:  parseInt(card.querySelector('.scene-duration').value, 10),
+  return [...scenesCont.querySelectorAll('.scene-card')].map(card => ({
+    caption:     card.querySelector('.sc-caption').value.trim(),
+    voiceover:   card.querySelector('.sc-voiceover').value.trim(),
+    duration:    parseInt(card.querySelector('.sc-duration').value, 10),
+    camera_hint: card.querySelector('.sc-camera').value,
   }));
 }
 
 // ── Submit job ────────────────────────────────────────────────────────────────
-generateBtn.addEventListener('click', async () => {
+genBtn.addEventListener('click', async () => {
   errorMsg.innerHTML = '';
-  if (files.length === 0) return;
+  if (!files.length) return;
 
-  const config = getScenesConfig();
-  const hasContent = config.some(s => s.caption || s.voiceover);
-  if (!hasContent) {
-    showError('Add a caption or voiceover to at least one scene before generating.');
+  // Check for rework mode — any scene with rework panel open
+  const reworkScenes = [];
+  document.querySelectorAll('.rework-panel.open').forEach(panel => {
+    const i = parseInt(panel.id.replace('rw-panel-',''));
+    reworkScenes.push(i);
+  });
+
+  if (reworkScenes.length > 0 && currentJobId) {
+    await submitRework(reworkScenes);
     return;
   }
 
-  generateBtn.disabled = true;
-  generateBtn.textContent = 'Submitting…';
-  resultSection.style.display = 'none';
-  progressSection.style.display = 'block';
+  genBtn.disabled = true;
+  genBtn.textContent = 'Submitting…';
+  resultSec.style.display = 'none';
+  progSec.style.display   = 'block';
   updateProgress(0, 'Uploading photos…');
 
+  const config = getScenesConfig();
   const fd = new FormData();
   files.forEach(f => fd.append('images', f));
-  fd.append('config',          JSON.stringify(config));
-  fd.append('property_name',   document.getElementById('prop-name').value || 'Property');
-  fd.append('voice_id',        document.getElementById('voice-id').value.trim());
-  fd.append('enhance_images',  document.getElementById('do-lighting').checked);
-  fd.append('upscale_images',  document.getElementById('do-upscale').checked);
+  fd.append('config',           JSON.stringify(config));
+  fd.append('property_name',    document.getElementById('prop-name').value || 'Property');
+  fd.append('voice_id',         document.getElementById('voice-id').value.trim());
+  fd.append('enhance_images',   document.getElementById('do-lighting').checked);
+  fd.append('upscale_images',   document.getElementById('do-upscale').checked);
+  fd.append('transition_style', document.getElementById('transition-style').value);
 
   try {
-    const res = await fetch(`${API_BASE}/jobs/`, { method: 'POST', body: fd });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.detail || `Server error ${res.status}`);
-    }
+    const res = await fetch(`${API_BASE}/jobs/`, { method:'POST', body:fd });
+    if (!res.ok) { const e = await res.json().catch(()=>({}))); throw new Error(e.detail||`Server error ${res.status}`); }
     const { job_id } = await res.json();
-    generateBtn.textContent = 'Processing…';
+    currentJobId = job_id;
+    genBtn.textContent = 'Processing…';
     startPolling(job_id);
-  } catch (e) {
+  } catch(e) {
     showError(e.message);
-    generateBtn.disabled = false;
-    generateBtn.textContent = 'Generate Video';
+    genBtn.disabled = false;
+    genBtn.textContent = 'Generate Video';
   }
 });
+
+// ── Rework submission ─────────────────────────────────────────────────────────
+async function submitRework(reworkScenes) {
+  genBtn.disabled = true;
+  genBtn.textContent = 'Submitting rework…';
+  progSec.style.display = 'block';
+  resultSec.style.display = 'none';
+  updateProgress(0, 'Starting rework…');
+
+  const updatedScenes = getScenesConfig();
+  const firstReworkCard = document.querySelector(`[data-index="${reworkScenes[0]}"]`);
+  const redoVideo = firstReworkCard?.querySelector('.rw-video')?.checked ?? true;
+  const redoAudio = firstReworkCard?.querySelector('.rw-audio')?.checked ?? false;
+
+  const cfg = {
+    scenes:         reworkScenes,
+    redo_video:     redoVideo,
+    redo_audio:     redoAudio,
+    updated_scenes: updatedScenes,
+  };
+
+  const fd = new FormData();
+  fd.append('rework_config', JSON.stringify(cfg));
+
+  try {
+    const res = await fetch(`${API_BASE}/jobs/${currentJobId}/rework`, { method:'POST', body:fd });
+    if (!res.ok) { const e = await res.json().catch(()=>({}))); throw new Error(e.detail||`Server error ${res.status}`); }
+    const { job_id } = await res.json();
+    genBtn.textContent = 'Processing rework…';
+    startPolling(job_id);
+  } catch(e) {
+    showError(e.message);
+    genBtn.disabled = false;
+    genBtn.textContent = 'Generate Video';
+  }
+}
 
 // ── Polling ───────────────────────────────────────────────────────────────────
 function startPolling(jobId) {
@@ -615,38 +464,74 @@ function startPolling(jobId) {
       const res = await fetch(`${API_BASE}/jobs/${jobId}`);
       if (!res.ok) return;
       const job = await res.json();
-
       updateProgress(job.progress, job.message);
-
+      if (job.scenes && job.scenes.length) renderSceneProgress(job.scenes);
       if (job.status === 'done') {
         clearInterval(pollTimer);
-        showResult(jobId, job.property_name || 'Property');
-        generateBtn.disabled = false;
-        generateBtn.textContent = 'Generate Video';
+        sceneStatuses = job.scenes || [];
+        showResult(jobId, job.property_name || 'Property', job.scenes || []);
+        renderScenes();
+        genBtn.disabled  = false;
+        genBtn.textContent = 'Generate Video';
       } else if (job.status === 'failed') {
         clearInterval(pollTimer);
         showError(job.message || 'Pipeline failed. Check server logs.');
-        generateBtn.disabled = false;
-        generateBtn.textContent = 'Generate Video';
+        genBtn.disabled  = false;
+        genBtn.textContent = 'Generate Video';
       }
     } catch {}
   }, 3000);
 }
 
-// ── UI helpers ────────────────────────────────────────────────────────────────
-function updateProgress(pct, msg) {
-  document.getElementById('progress-bar').style.width = pct + '%';
-  document.getElementById('progress-pct').textContent  = pct + '%';
-  document.getElementById('progress-msg').textContent  = msg;
+function renderSceneProgress(scenes) {
+  const el = document.getElementById('scene-progress');
+  el.innerHTML = scenes.map(s =>
+    `<div class="sp-row">
+      <span class="sp-dot ${s.video}"></span>
+      Scene ${s.index+1}: video ${s.video} · audio ${s.audio}
+      ${s.caption ? '— '+s.caption : ''}
+    </div>`
+  ).join('');
 }
 
-function showResult(jobId, propName) {
+// ── UI helpers ────────────────────────────────────────────────────────────────
+function updateProgress(pct, msg) {
+  document.getElementById('prog-bar').style.width = pct+'%';
+  document.getElementById('prog-pct').textContent  = pct+'%';
+  document.getElementById('prog-msg').textContent  = msg;
+}
+
+function showResult(jobId, propName, scenes) {
   const dlUrl = `${API_BASE}/jobs/${jobId}/download`;
   document.getElementById('video-preview').src = dlUrl;
   document.getElementById('download-link').href = dlUrl;
   document.getElementById('download-link').download = `${propName.replace(/\s+/g,'_')}_video.mp4`;
-  resultSection.style.display = 'block';
-  resultSection.scrollIntoView({ behavior: 'smooth' });
+
+  // Scene result grid
+  const grid = document.getElementById('scene-results');
+  if (scenes.length) {
+    grid.innerHTML = '<p style="font-size:.78rem;color:var(--muted);margin:14px 0 8px">Scene results — click Redo on any failed scene:</p>' +
+      scenes.map((s,i) => {
+        const thumb = files[i] ? `<img class="sr-thumb" src="${URL.createObjectURL(files[i])}" />` : '';
+        return `<div class="sr-card ${s.video}">
+          ${thumb}
+          <div class="sr-info">
+            <div class="sr-label">Scene ${s.index+1}</div>
+            <div class="sr-status">Video: ${s.video} · Audio: ${s.audio}</div>
+            ${s.video==='failed'?`<button class="sr-redo" onclick="openRedo(${i})">↺ Redo this clip</button>`:''}
+          </div>
+        </div>`;
+      }).join('');
+  }
+
+  resultSec.style.display = 'block';
+  resultSec.scrollIntoView({ behavior:'smooth' });
+}
+
+function openRedo(i) {
+  renderScenes();
+  const panel = document.getElementById(`rw-panel-${i}`);
+  if (panel) { panel.classList.add('open'); panel.scrollIntoView({behavior:'smooth'}); }
 }
 
 function showError(msg) {
@@ -656,54 +541,26 @@ function showError(msg) {
 // ── Credit monitoring ─────────────────────────────────────────────────────────
 async function checkCredits() {
   try {
-    const res = await fetch(`${API_BASE}/credits`);
+    const res  = await fetch(`${API_BASE}/credits`);
     if (!res.ok) return;
     const data = await res.json();
-    const dot  = document.getElementById('header-credit-dot');
+    const dot  = document.getElementById('credit-dot');
     const banner = document.getElementById('credit-banner');
-    const body   = document.getElementById('credit-banner-body');
-
-    if (!data.any_low) {
-      dot.classList.remove('low');
-      dot.title = `Credits OK — checked ${data.checked_at}`;
-      banner.style.display = 'none';
-      return;
-    }
-
-    // Show warning dot
+    const body   = document.getElementById('credit-body');
+    if (!data.any_low) { dot.classList.remove('low'); banner.style.display='none'; return; }
     dot.classList.add('low');
-    dot.title = 'Low credits — click to see details';
-
-    // Build banner rows
     let rows = '';
-    const fal = data.fal;
-    if (!fal.ok && fal.balance !== null) {
-      rows += `
-        <div class="credit-row">
-          <span class="credit-row-name">fal.ai</span>
-          <span class="credit-row-value">$${fal.balance.toFixed(2)} remaining</span>
-          <a class="credit-topup" href="https://fal.ai/dashboard" target="_blank">Top up →</a>
-        </div>`;
-    }
-    const el = data.elevenlabs;
-    if (!el.ok && el.characters_remaining !== null) {
-      rows += `
-        <div class="credit-row">
-          <span class="credit-row-name">ElevenLabs</span>
-          <span class="credit-row-value">${el.characters_remaining.toLocaleString()} characters left</span>
-          <a class="credit-topup" href="https://elevenlabs.io/app/subscription" target="_blank">Top up →</a>
-        </div>`;
-    }
-    rows += `<div class="credit-checked">Last checked: ${data.checked_at} · <a href="#" onclick="checkCredits();return false;">Refresh</a></div>`;
-
-    body.innerHTML   = rows;
+    if (!data.fal.ok && data.fal.balance!=null)
+      rows += `<div class="cb-row"><span><strong>fal.ai</strong></span><span class="cb-low">$${data.fal.balance.toFixed(2)} remaining</span><a class="cb-topup" href="https://fal.ai/dashboard" target="_blank">Top up →</a></div>`;
+    if (!data.elevenlabs.ok && data.elevenlabs.characters_remaining!=null)
+      rows += `<div class="cb-row"><span><strong>ElevenLabs</strong></span><span class="cb-low">${data.elevenlabs.characters_remaining.toLocaleString()} chars left</span><a class="cb-topup" href="https://elevenlabs.io/app/subscription" target="_blank">Top up →</a></div>`;
+    rows += `<div class="cb-time">Checked ${data.checked_at} · <a href="#" onclick="checkCredits();return false">Refresh</a></div>`;
+    body.innerHTML = rows;
     banner.style.display = 'block';
   } catch {}
 }
-
-// Check credits on page load and every 10 minutes
 checkCredits();
-setInterval(checkCredits, 10 * 60 * 1000);
+setInterval(checkCredits, 10*60*1000);
 </script>
 </body>
 </html>

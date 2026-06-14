@@ -1,165 +1,249 @@
+"""
+video_generation.py  (real-estate edition v2)
+──────────────────────────────────────────────
+Improvements in v2:
+  - Space-adaptive prompting: detects outdoor/large room/small room and applies
+    the right cinematic technique for each (dolly, pan, slider)
+  - User camera hint per scene: passed as `camera_hint` parameter
+  - Full anti-hallucination master prompt based on proven real estate prompt
+  - Wind effect suppressed via explicit prompt instruction
+  - Upscaling instruction embedded in the video prompt itself
+  - return True added after download_video() (was returning None on success)
+  - resolution/aspect_ratio params removed (not supported by LTX-2.3)
+"""
+
 import os
-import fal_client
+import logging
 import requests
-import mimetypes
+import fal_client
 from dotenv import load_dotenv
-import logging as log 
-
-
-DEFAULT_VISION_ENDPOINT = "openrouter/router/vision"
-DEFAULT_VISION_MODEL = "google/gemini-2.5-flash" 
-DEFAULT_VIDEO_ENDPOINT = "fal-ai/ltx-2.3/image-to-video/fast"
-
-
-DEFAULT_VOICE_ID = "b8jhBTcGAq4kQGWmKprT" 
-ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 
 load_dotenv()
+log = logging.getLogger(__name__)
 
-def generate_video_single(image_path, duration, output_path, prompt=None, model_endpoint=DEFAULT_VIDEO_ENDPOINT, test_mode = False):
+VALID_DURATIONS     = [6, 8, 10, 12, 14, 16, 18, 20]
+DEFAULT_VIDEO_ENDPOINT = "fal-ai/ltx-2.3/image-to-video/fast"
+
+# ── Space type keywords ────────────────────────────────────────────────────────
+_OUTDOOR_KEYWORDS   = ["exterior", "garden", "terrace", "balcony", "facade", "outdoor", "pool", "courtyard", "street", "roof"]
+_SMALLROOM_KEYWORDS = ["bathroom", "wc", "toilet", "hallway", "corridor", "laundry", "utility", "cloakroom", "ensuite"]
+
+# ── Master anti-hallucination prompt ──────────────────────────────────────────
+# Adapted from the proven prompt, split by space type.
+
+_BASE_RULES = (
+    "No people, hands, arms, or limbs visible. "
+    "Strictly level horizon, zero vertical tilt, zero camera shake or bobbing. "
+    "Do not morph architecture, blur walls, or hallucinate new rooms, fixtures, doors, or unseen areas. "
+    "No wind effect on curtains, plants, or surfaces. "
+    "Do not zoom into windows, mirrors, glass, or balcony openings. "
+    "Upscale visual textures to 4K clarity with enhanced HDR lighting and cinema-grade colour correction. "
+    "Remove any watermarks or text overlays from all frames."
+)
+
+_PROMPT_LARGE = (
+    "Professional high-end real estate cinematography. "
+    "Begin tightly framed on a high-resolution inner section of the image, "
+    "then perform a slow smooth linear dolly-in push or a 30-degree horizontal pan "
+    "revealing the full space outward across existing pixels only. "
+    "{camera_hint}"
+    + _BASE_RULES
+)
+
+_PROMPT_SMALL = (
+    "Professional high-end real estate cinematography. "
+    "Begin tightly framed on a high-resolution inner section of the image, "
+    "then perform a very shallow slow lateral slider shift tracking parallel to the main wall. "
+    "Movement is minimal and controlled. "
+    "{camera_hint}"
+    + _BASE_RULES
+)
+
+_PROMPT_OUTDOOR = (
+    "Professional high-end real estate cinematography. "
+    "Begin tightly framed on a high-resolution inner section of the image, "
+    "then perform a slow smooth dolly-in push or wide horizontal pan "
+    "revealing the exterior space outward across existing pixels only. "
+    "{camera_hint}"
+    + _BASE_RULES
+)
+
+# Camera movement options (shown in UI dropdown)
+CAMERA_MOVEMENTS = {
+    "auto":         "",   # let space-type detection decide
+    "dolly_in":     "Slow dolly-in push toward the centre of the frame. ",
+    "pan_left":     "Slow smooth pan from right to left across the space. ",
+    "pan_right":    "Slow smooth pan from left to right across the space. ",
+    "slider":       "Very shallow lateral slider shift parallel to the main wall. ",
+    "zoom_out":     "Slow gradual zoom out from tight crop to reveal the full room. ",
+    "tilt_up":      "Slow subtle tilt upward from floor level to ceiling. ",
+    "static":       "Completely static locked-off shot with no camera movement. ",
+}
+
+
+def _detect_space_type(hint: str) -> str:
+    """Returns 'outdoor', 'small', or 'large' based on keywords in the hint."""
+    h = hint.lower()
+    if any(k in h for k in _OUTDOOR_KEYWORDS):
+        return "outdoor"
+    if any(k in h for k in _SMALLROOM_KEYWORDS):
+        return "small"
+    return "large"
+
+
+def _build_prompt(space_hint: str, camera_hint: str) -> str:
     """
-    Generates a single video with specific parameters.
+    Builds the final video generation prompt.
+    space_hint: caption/room description from the user
+    camera_hint: specific camera movement key from CAMERA_MOVEMENTS
     """
-    if not os.path.exists(image_path):
-        log.error("Image not found")
+    movement_text = CAMERA_MOVEMENTS.get(camera_hint, "")
+    space_type    = _detect_space_type(space_hint)
 
-    log.info(f"\nProcessing: {image_path}")
+    if space_type == "outdoor":
+        return _PROMPT_OUTDOOR.format(camera_hint=movement_text)
+    elif space_type == "small":
+        return _PROMPT_SMALL.format(camera_hint=movement_text)
+    else:
+        return _PROMPT_LARGE.format(camera_hint=movement_text)
 
-    try:
-        # Upload Image
-        log.info("  [1/4] Uploading image to Fal.ai storage...")
-        image_url = fal_client.upload_file(image_path)
-        
-        # Vision Model 
-        log.info("  [2/4] Analyzing image with Vision model...")
-        
-        # Construct request for vision model
-        vision_prompt = (
-            "Based on this image high-quality prompt for an 8s video generation model. "
-            "Be succint, not verbose; A good prompt should ideally be short"
-            "The video should be a simple animation of the image"
-            "Showcase items in frame, do not add any new items or people."
-            "Output ONLY the final video generation prompt, nothing else."
-        )
-        
-        # add hint
-        if not test_mode:
-            if prompt:
-                vision_prompt += f" \nIMPORTANT style/context instruction: {prompt}"
 
-            vision_result = fal_client.subscribe(
-                DEFAULT_VISION_ENDPOINT,
-                arguments={
-                    "image_urls": [image_url],
-                    "prompt": vision_prompt,
-                    "model": DEFAULT_VISION_MODEL
-                }
-            )
-            print(vision_result)
-        
-        # Extract the generated text
-            generated_prompt = vision_result.get('output', '').strip()
-            log.info(f"  --> Generated Prompt: \"{generated_prompt}\"")
+def _snap_duration(d: int) -> int:
+    if d in VALID_DURATIONS:
+        return d
+    for v in VALID_DURATIONS:
+        if v >= d:
+            return v
+    return VALID_DURATIONS[-1]
 
-            if not generated_prompt:
-                log.error("  Error: Vision model returned empty prompt. Using fallback.")
-                generated_prompt = "A cinematic video of this scene, high quality, 4k"
 
-        # Video Generation
-        log.info(f"  [3/4] Generating video using {model_endpoint}...")
-
-        result = None
-
-        if not test_mode:
-
-            while (duration in [6, 8, 10, 12, 14, 16, 18, 20]) == False:
-                duration += 1
-                if duration > 20:
-                    duration = 20
-
-        
-            video_handler = fal_client.submit(
-                model_endpoint,
-                arguments={
-                    "image_url": image_url,
-                    "prompt": generated_prompt,
-                    "duration": duration
-                }
-            )
-            result = video_handler.get()
-
-            print (result)
-
-        # Download
-        if result != None:
-            if 'video' in result and 'url' in result['video']:
-                video_url = result['video']['url']
-                log.info("  [4/4] Video generated successfully. Downloading...")
-                download_video(video_url, output_path)
-                return True
-
-        elif test_mode:
-            video_url = "https://v3b.fal.media/files/b/0a8866f6/dmGBclH_CBmaku8J31ZE8_output.mp4"
-            log.info("defaulting...")
-            download_video(video_url, output_path)
-            return True
-
-        else:
-            log.error(f"  Error: No video URL returned. Result: {result}")
-
-    except Exception as e:
-        log.error(f"  Error processing {image_path}: {e}")
-
-def mass_generation(
-    image_dict, 
-    duration = 5,
-    model_endpoint = DEFAULT_VIDEO_ENDPOINT, 
-    test_mode = False):
+def generate_video_single(
+    image_path: str,
+    duration: int,
+    output_path: str,
+    prompt: str = "",
+    camera_hint: str = "auto",
+    model_endpoint: str = DEFAULT_VIDEO_ENDPOINT,
+    test_mode: bool = False,
+) -> bool:
     """
-    1. Uploads local images to Fal.
-    2. Uses a Vision model to generate a custom cinematic prompt.
-    3. Sends the image + generated prompt to the Video generation API.
-    4. Downloads the result.
+    Generates a single video clip from one image.
 
     Args:
-        image_dict (dict): { "path/to/image.jpg": "Optional hint (or None)" }
-        model_endpoint (str): The video generation model endpoint.
-        duration (str): Duration (e.g., "5s"). Different models have different options, so check documentation.
-        download_path (str): Folder to save downloaded videos.
+        image_path:    Local path to the source image.
+        duration:      Desired duration in seconds.
+        output_path:   Where to save the resulting .mp4.
+        prompt:        Room description / caption (used for space detection).
+        camera_hint:   Camera movement key from CAMERA_MOVEMENTS dict.
+        model_endpoint: fal.ai model string.
+        test_mode:     If True, downloads a sample video instead of calling API.
+
+    Returns:
+        True on success, False on failure.
     """
-    
-    if not os.environ.get("FAL_KEY"):
-        log.critical("Error: FAL_KEY not found. Check .env")
-        return
+    if not os.path.exists(image_path):
+        log.error(f"[VideoGen] Image not found: {image_path}")
+        return False
 
-    total = len(image_dict)
-    
-    for i, (image_path, user_hint) in enumerate(image_dict.items(), 1):
-        generate_video_single(image_path, user_hint, duration, output_path, model_endpoint=model_endpoint, test_mode=False)
-        
-    return 
+    duration = _snap_duration(duration)
 
-
-def download_video(url, output_path):
-    """Downloads video directly to a specific file path."""
     try:
-        response = requests.get(url, stream=True)
+        if test_mode:
+            sample = "https://v3b.fal.media/files/b/0a8866f6/dmGBclH_CBmaku8J31ZE8_output.mp4"
+            log.info("[VideoGen] test_mode=True — downloading sample video.")
+            return download_video(sample, output_path)
+
+        # Build the final prompt
+        final_prompt = _build_prompt(prompt, camera_hint)
+        log.info(f"[VideoGen] Space type detected from: '{prompt}'")
+        log.info(f"[VideoGen] Camera hint: {camera_hint}")
+        log.info(f"[VideoGen] Final prompt (first 120 chars): {final_prompt[:120]}...")
+
+        # Upload image
+        log.info(f"[VideoGen] Uploading: {image_path}")
+        image_url = fal_client.upload_file(image_path)
+
+        # Submit to fal.ai
+        log.info(f"[VideoGen] Generating {duration}s clip via {model_endpoint}...")
+        result = fal_client.subscribe(
+            model_endpoint,
+            arguments={
+                "image_url": image_url,
+                "prompt":    final_prompt,
+                "duration":  duration,
+            }
+        )
+
+        video_url = (result.get("video") or {}).get("url")
+        if not video_url:
+            log.error(f"[VideoGen] No video URL in result: {result}")
+            return False
+
+        log.info("[VideoGen] Downloading generated clip...")
+        success = download_video(video_url, output_path)
+        return True if success else False
+
+    except Exception as e:
+        log.error(f"[VideoGen] Error processing {image_path}: {e}", exc_info=True)
+        return False
+
+
+def mass_generation(
+    image_dict: dict,
+    output_dir: str,
+    duration: int = 8,
+    model_endpoint: str = DEFAULT_VIDEO_ENDPOINT,
+    test_mode: bool = False,
+) -> dict:
+    """Batch generate. image_dict = { image_path: {"hint": str, "camera": str} }"""
+    if not os.environ.get("FAL_KEY"):
+        log.critical("[VideoGen] FAL_KEY not set.")
+        return {}
+
+    os.makedirs(output_dir, exist_ok=True)
+    results = {}
+
+    for image_path, meta in image_dict.items():
+        hint   = meta.get("hint", "") if isinstance(meta, dict) else str(meta)
+        camera = meta.get("camera", "auto") if isinstance(meta, dict) else "auto"
+        base   = os.path.splitext(os.path.basename(image_path))[0]
+        out    = os.path.join(output_dir, f"{base}_video.mp4")
+        ok     = generate_video_single(
+            image_path=image_path,
+            duration=duration,
+            output_path=out,
+            prompt=hint,
+            camera_hint=camera,
+            model_endpoint=model_endpoint,
+            test_mode=test_mode,
+        )
+        results[image_path] = out if ok else None
+
+    return results
+
+
+def download_video(url: str, output_path: str) -> bool:
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+        response = requests.get(url, stream=True, timeout=120)
         response.raise_for_status()
-        
-        with open(output_path, 'wb') as f:
+        with open(output_path, "wb") as f:
             for chunk in response.iter_content(chunk_size=8192):
                 f.write(chunk)
-        print(f"  Saved to: {output_path}")
+        log.info(f"[VideoGen] Saved: {output_path}")
+        return True
     except Exception as e:
-        print(f"  Failed to download: {e}")
-
+        log.error(f"[VideoGen] Download failed: {e}")
+        return False
 
 
 if __name__ == "__main__":
-
-    image_file_1 = "testing_tools/input_videos/davide.jpg"
-    image_file_2 = "testing_tools/input_videos/retrospettiva.jpg"
-    image_file_3 = "testing_tools/input_videos/testaccio.jpg"
-    image_dict = {image_file_1:None, image_file_2: None, image_file_3: None}
-
-    mass_generation(image_dict)
+    import sys
+    logging.basicConfig(level=logging.INFO)
+    if len(sys.argv) < 3:
+        print("Usage: python video_generation.py <image.jpg> <output.mp4> [caption] [camera_hint]")
+        sys.exit(1)
+    hint   = sys.argv[3] if len(sys.argv) > 3 else ""
+    camera = sys.argv[4] if len(sys.argv) > 4 else "auto"
+    ok = generate_video_single(sys.argv[1], 8, sys.argv[2], hint, camera)
+    sys.exit(0 if ok else 1)
