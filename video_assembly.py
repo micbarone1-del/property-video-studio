@@ -369,31 +369,107 @@ if __name__ == "__main__":
             print(f"\nProcess completed successfully. Final video at: {final_path}")
 
 def assemble_property_video(scenes_config, video_clip_paths, audio_paths, image_paths, output_path, property_name, transition_style="fade"):
-    """Wrapper called by api_server to assemble the final video."""
+    """Assembles the final property video with the selected transition style.
+    Supports: cut, fade, slide_left, slide_right.
+    """
     try:
-        from video_editor import StorySequencer
-        sequencer = StorySequencer(output_width=1920, output_height=1080)
-        scenes_added = 0
+        from moviepy import (
+            VideoFileClip, AudioFileClip, ImageClip, ColorClip,
+            CompositeVideoClip, concatenate_videoclips
+        )
+        import moviepy.video.fx as vfx
+        import os, math
+
+        TRANSITION_DURATION = 0.5  # seconds of overlap for fade/slide
+        TARGET_W, TARGET_H = 1920, 1080
+        FPS = 24
+
+        # --- Load and prepare each scene clip ---
+        clips = []
         for i, scene in enumerate(scenes_config):
             video_path = video_clip_paths[i] if i < len(video_clip_paths) else None
             audio_path = audio_paths[i] if i < len(audio_paths) else None
             image_path = image_paths[i] if i < len(image_paths) else None
-            if video_path is None:
-                continue
-            title = scene.get('caption', '')
-            caption = scene.get('voiceover', '')
-            sequencer.add_scene(
-                video_path=str(video_path),
-                audio_path=str(audio_path) if audio_path else None,
-                title=title,
-                caption=caption,
-            )
-            scenes_added += 1
-        if scenes_added > 0:
-            sequencer.render(output_path, fps=24)
-            return True
-        return False
+
+            if not video_path or not os.path.exists(str(video_path)):
+                if image_path and os.path.exists(str(image_path)):
+                    ac = AudioFileClip(str(audio_path)) if audio_path and os.path.exists(str(audio_path)) else None
+                    dur = ac.duration if ac else 5.0
+                    clip = ImageClip(str(image_path)).with_duration(dur)
+                    if ac:
+                        clip = clip.with_audio(ac)
+                else:
+                    continue
+            else:
+                clip = VideoFileClip(str(video_path))
+                if audio_path and os.path.exists(str(audio_path)):
+                    ac = AudioFileClip(str(audio_path))
+                    if ac.duration > clip.duration:
+                        loops = math.ceil(ac.duration / clip.duration)
+                        clip = concatenate_videoclips([clip] * loops)
+                    clip = clip.with_duration(ac.duration).with_audio(ac)
+
+            if clip.size != (TARGET_W, TARGET_H):
+                clip = clip.resized((TARGET_W, TARGET_H))
+            clips.append(clip)
+
+        if not clips:
+            import logging
+            logging.error("assemble_property_video: no clips to assemble")
+            return False
+
+        # --- Build final video with chosen transition ---
+        td = TRANSITION_DURATION
+
+        if transition_style == "cut" or len(clips) == 1:
+            final = concatenate_videoclips(clips, method="compose")
+
+        elif transition_style == "fade":
+            result = []
+            current_start = 0.0
+            for idx, clip in enumerate(clips):
+                c = clip.with_start(current_start)
+                if idx > 0:
+                    c = c.with_effects([vfx.CrossFadeIn(td)])
+                result.append(c)
+                current_start += clip.duration if idx == len(clips) - 1 else clip.duration - td
+            total_dur = current_start
+            bg = ColorClip(size=(TARGET_W, TARGET_H), color=(0, 0, 0), duration=total_dur)
+            final = CompositeVideoClip([bg] + result)
+
+        elif transition_style in ("slide_left", "slide_right"):
+            side = "left" if transition_style == "slide_left" else "right"
+            result = []
+            current_start = 0.0
+            for idx, clip in enumerate(clips):
+                c = clip.with_start(current_start)
+                if idx > 0:
+                    c = c.with_effects([vfx.SlideIn(td, side)])
+                result.append(c)
+                current_start += clip.duration if idx == len(clips) - 1 else clip.duration - td
+            total_dur = current_start
+            bg = ColorClip(size=(TARGET_W, TARGET_H), color=(0, 0, 0), duration=total_dur)
+            final = CompositeVideoClip([bg] + result)
+
+        else:
+            final = concatenate_videoclips(clips, method="compose")
+
+        print(f"[Assemble] transition_style={transition_style!r}, clips={len(clips)}, output={output_path}")
+        final.write_videofile(
+            str(output_path),
+            fps=FPS,
+            codec="libx264",
+            audio_codec="aac",
+            threads=2,
+            logger=None,
+        )
+        for c in clips:
+            try: c.close()
+            except: pass
+        return True
+
     except Exception as e:
-        import logging; logging.error(f"assemble_property_video error: {e}")
-        import traceback; traceback.print_exc()
+        import logging, traceback
+        logging.error(f"assemble_property_video error: {e}")
+        traceback.print_exc()
         return False
