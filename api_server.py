@@ -297,9 +297,13 @@ async def run_pipeline(
             audio_out = str(audio_dir / f"scene_{i:03d}.mp3")
             update("running", int(25 + (i / n) * 20), f"Generating audio {i+1} of {n}…")
             if voiceover:
+                log.info(f"[TTS] Scene {i+1}: generating speech ({len(voiceover)} chars): {voiceover[:60]}...")
                 ok = await asyncio.to_thread(generate_voice, voiceover, audio_out, voice_id=voice_id or None)
+                if not ok:
+                    log.warning(f"[TTS] Scene {i+1}: speech generation FAILED (ElevenLabs returned error)")
                 audio_paths.append(audio_out if ok else None)
             else:
+                log.info(f"[TTS] Scene {i+1}: no voiceover text provided — skipping audio")
                 audio_paths.append(None)
 
         # Stage 3 — AI video generation
