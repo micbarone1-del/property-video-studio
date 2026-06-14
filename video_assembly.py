@@ -466,12 +466,12 @@ def assemble_property_video(scenes_config, video_clip_paths, audio_paths, image_
 
             if clip.size != (TARGET_W, TARGET_H):
                 clip = clip.resized((TARGET_W, TARGET_H))
-        # Burn caption text onto clip if provided
-        scene_caption = str(scene.get("caption", "")).strip() if scene else ""
-        if scene_caption:
-            clip = _burn_caption(clip, scene_caption)
-        timeline_cursor += clip.duration
-        clips.append(clip)
+            # Burn caption text onto clip if provided
+            scene_caption = str(scene.get("caption", "")).strip() if scene else ""
+            if scene_caption:
+                clip = _burn_caption(clip, scene_caption)
+            timeline_cursor += clip.duration
+            clips.append(clip)
         if not clips:
             import logging
             logging.error("assemble_property_video: no clips to assemble")
