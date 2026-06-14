@@ -31,7 +31,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
@@ -244,7 +244,7 @@ async def run_pipeline(
             enhanced_paths.append(result)
 
         # ── Stage 2: TTS audio ────────────────────────────────────────────
-        from voice_generation import generate_voice
+        from voice_generation import generate_speech as generate_voice
 
         for i, (scene, img) in enumerate(zip(scenes_config, enhanced_paths)):
             voiceover = scene.get("voiceover", "").strip()
@@ -253,7 +253,7 @@ async def run_pipeline(
 
             if voiceover:
                 ok = await asyncio.to_thread(
-                    generate_voice, voiceover, audio_out, voice_id=voice_id or None
+                    generate_voice, voiceover, audio_out, voice_id=voice_id or os.environ.get("DEFAULT_VOICE_ID") or None
                 )
                 audio_paths.append(audio_out if ok else None)
             else:
@@ -270,7 +270,7 @@ async def run_pipeline(
 
             ok = await asyncio.to_thread(
                 generate_video_single,
-                img, clip_out, duration, hint
+                img, duration, clip_out, hint
             )
             video_clip_paths.append(clip_out if ok else None)
 

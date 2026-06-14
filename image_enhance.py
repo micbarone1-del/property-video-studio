@@ -37,6 +37,8 @@ except ImportError:
     log.warning("Pillow / numpy not installed. Lighting correction will be skipped.")
     _PIL_OK = False
 
+from dotenv import load_dotenv
+load_dotenv(override=True)
 try:
     import fal_client
     _FAL_OK = True
