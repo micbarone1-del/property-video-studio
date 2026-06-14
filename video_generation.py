@@ -43,30 +43,31 @@ _BASE_RULES = (
 
 _PROMPT_LARGE = (
     "Professional high-end real estate cinematography. "
-    "Begin tightly framed on a high-resolution inner section of the image. "
+    "Photorealistic interior scene. "
     "{camera_hint}"
-    "Movement must be slow and controlled. No full rotations, no spinning, no whip pans. "
-    "Maximum camera rotation is 15 degrees. Reveal the space outward across existing pixels only. "
-    "Do not create new rooms or spaces. "
+    "Movement must be slow, smooth, and controlled. No full rotations, no spinning, no whip pans. "
+    "Maximum camera rotation is 15 degrees. Maintain consistent room geometry and realistic depth throughout. "
+    "Do not create new rooms, doorways, or spaces that are not in the original image. "
     + _BASE_RULES
 )
 
 _PROMPT_SMALL = (
     "Professional high-end real estate cinematography. "
-    "Begin tightly framed on a high-resolution inner section of the image. "
+    "Photorealistic compact interior scene. "
     "{camera_hint}"
     "Movement is minimal and controlled. No full rotations, no spinning, no whip pans. "
-    "Maximum camera rotation is 10 degrees. Do not create new rooms or spaces. "
+    "Maximum camera rotation is 10 degrees. Maintain realistic compact-space proportions. "
+    "Do not create new rooms or spaces beyond what is visible. "
     + _BASE_RULES
 )
 
 _PROMPT_OUTDOOR = (
     "Professional high-end real estate cinematography. "
-    "Begin tightly framed on a high-resolution inner section of the image. "
+    "Photorealistic exterior or outdoor scene. "
     "{camera_hint}"
-    "Movement must be slow and controlled. No full rotations, no spinning, no whip pans. "
-    "Maximum camera rotation is 15 degrees. Reveal the exterior space outward across existing pixels only. "
-    "Do not create new structures or spaces. "
+    "Movement must be slow, smooth, and controlled. No full rotations, no spinning, no whip pans. "
+    "Maximum camera rotation is 15 degrees. Maintain consistent outdoor geometry, sky, and lighting. "
+    "Do not create new buildings or structures not visible in the original image. "
     + _BASE_RULES
 )
 

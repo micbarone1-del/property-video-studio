@@ -298,7 +298,7 @@ async def run_pipeline(
             update("running", int(25 + (i / n) * 20), f"Generating audio {i+1} of {n}…")
             if voiceover:
                 log.info(f"[TTS] Scene {i+1}: generating speech ({len(voiceover)} chars): {voiceover[:60]}...")
-                ok = await asyncio.to_thread(generate_voice, voiceover, audio_out, voice_id=voice_id or None)
+                ok = await asyncio.to_thread(generate_voice, voiceover, audio_out, voice_id=voice_id or os.getenv("DEFAULT_VOICE_ID") or "b8jhBTcGAq4kQGWmKprT")
                 if not ok:
                     log.warning(f"[TTS] Scene {i+1}: speech generation FAILED (ElevenLabs returned error)")
                 audio_paths.append(audio_out if ok else None)
