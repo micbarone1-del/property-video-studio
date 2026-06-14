@@ -401,7 +401,7 @@ def assemble_property_video(scenes_config, video_clip_paths, audio_paths, image_
                 else:
                     continue
             else:
-                clip = VideoFileClip(str(video_path))
+                clip = VideoFileClip(str(video_path)).without_audio()  # strip fal.ai ambient audio
                 if audio_path and os.path.exists(str(audio_path)):
                     ac = AudioFileClip(str(audio_path))
                     if ac.duration > clip.duration:

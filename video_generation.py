@@ -43,28 +43,25 @@ _BASE_RULES = (
 
 _PROMPT_LARGE = (
     "Professional high-end real estate cinematography. "
-    "Begin tightly framed on a high-resolution inner section of the image, "
-    "then perform a slow smooth linear dolly-in push or a 30-degree horizontal pan "
-    "revealing the full space outward across existing pixels only. "
+    "Begin tightly framed on a high-resolution inner section of the image. "
     "{camera_hint}"
+    "Reveal the space outward across existing pixels only. Do not create new rooms or spaces. "
     + _BASE_RULES
 )
 
 _PROMPT_SMALL = (
     "Professional high-end real estate cinematography. "
-    "Begin tightly framed on a high-resolution inner section of the image, "
-    "then perform a very shallow slow lateral slider shift tracking parallel to the main wall. "
-    "Movement is minimal and controlled. "
+    "Begin tightly framed on a high-resolution inner section of the image. "
     "{camera_hint}"
+    "Movement is minimal and controlled. Do not create new rooms or spaces. "
     + _BASE_RULES
 )
 
 _PROMPT_OUTDOOR = (
     "Professional high-end real estate cinematography. "
-    "Begin tightly framed on a high-resolution inner section of the image, "
-    "then perform a slow smooth dolly-in push or wide horizontal pan "
-    "revealing the exterior space outward across existing pixels only. "
+    "Begin tightly framed on a high-resolution inner section of the image. "
     "{camera_hint}"
+    "Reveal the exterior space outward across existing pixels only. Do not create new structures or spaces. "
     + _BASE_RULES
 )
 
