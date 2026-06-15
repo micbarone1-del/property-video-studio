@@ -53,7 +53,11 @@ def _burn_caption(clip, caption_text, font_size=38):
             return np.array(combined.convert("RGB"))
 
         # fl_image applies a function to every frame while keeping fps/size/duration intact
-        return clip.fl_image(add_caption_to_frame)
+        # MoviePy 2.x uses image_transform() instead of fl_image()
+        try:
+            return clip.image_transform(add_caption_to_frame)
+        except AttributeError:
+            return clip.fl_image(add_caption_to_frame)
     except Exception as e:
         print(f"[Caption] Failed to burn caption: {e}")
         return clip
@@ -459,9 +463,11 @@ def assemble_property_video(scenes_config, video_clip_paths, audio_paths, image_
                 if audio_path and os.path.exists(str(audio_path)):
                     ac = AudioFileClip(str(audio_path))
                     if ac.duration > clip.duration:
-                        loops = math.ceil(ac.duration / clip.duration)
-                        clip = concatenate_videoclips([clip] * loops)
-                    clip = clip.with_duration(ac.duration)
+                        # Trim audio to clip duration — never loop the video
+                        ac = ac.subclipped(0, clip.duration)
+                    elif ac.duration < clip.duration:
+                        # Trim clip to audio duration for tight sync
+                        clip = clip.subclipped(0, ac.duration)
                     audio_segments.append((ac, timeline_cursor))
 
             if clip.size != (TARGET_W, TARGET_H):
