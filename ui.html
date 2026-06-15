@@ -497,7 +497,7 @@ function startPolling(jobId) {
       if (job.scenes && job.scenes.length) renderSceneProgress(job.scenes);
       if (job.status === 'done') {
         clearInterval(pollTimer);
-        sceneStatuses = job.scenes || [];
+        if (job.scenes && job.scenes.length) sceneStatuses = job.scenes; // keep prev if rework returns no scenes
         showResult(jobId, job.property_name || 'Property', job.scenes || []);
         renderScenes();
         genBtn.disabled  = false;
@@ -547,7 +547,7 @@ function showResult(jobId, propName, scenes) {
           <div class="sr-info">
             <div class="sr-label">Scene ${s.index+1}</div>
             <div class="sr-status">Video: ${s.video} · Audio: ${s.audio}</div>
-            ${s.video==='failed'?`<button class="sr-redo" onclick="openRedo(${i})">↺ Redo this clip</button>`:''}
+            `<button class="sr-redo" onclick="openRedo(${i})">↻ Redo this clip</button>`
           </div>
         </div>`;
       }).join('');

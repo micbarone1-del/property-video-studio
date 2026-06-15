@@ -484,6 +484,18 @@ async def run_rework(rework_id: str, parent_job_id: str, cfg: dict):
             raise RuntimeError("Rework assembly failed")
 
         JOBS[rework_id]["output_path"] = output_path
+        # Merge parent scenes with rework results so UI can show redo button again
+        parent_scenes = list(parent.get("scenes", []) or [])
+        for scene_index in scenes_to_redo:
+            # Mark each reworked scene as ok (video succeeded if we got here)
+            if scene_index < len(parent_scenes):
+                parent_scenes[scene_index] = dict(parent_scenes[scene_index])
+                parent_scenes[scene_index]["video"] = "ok"
+            else:
+                while len(parent_scenes) <= scene_index:
+                    parent_scenes.append({"index": len(parent_scenes), "video": "ok", "audio": "ok"})
+                parent_scenes[scene_index] = {"index": scene_index, "video": "ok", "audio": "ok"}
+        JOBS[rework_id]["scenes"] = parent_scenes
         update("done", 100, "Rework video ready for download")
         _save_job(rework_id)
 
