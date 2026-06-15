@@ -209,3 +209,21 @@ def download_video(url: str, output_path: str) -> bool:
     except Exception as exc:
         log.error("[VideoGen] download failed: %s", exc)
         return False
+
+
+def generate_video_single(
+    image_path: str,
+    duration: int,
+    output_path: str,
+    caption: str = "",
+    camera_hint: str = "auto",
+) -> bool:
+    """Wrapper matching the api_server call signature.
+    Maps to generate_video() using caption as the space_hint."""
+    return generate_video(
+        image_path=image_path,
+        output_path=output_path,
+        space_hint=caption if caption else "living room",
+        camera_hint=camera_hint,
+        duration=duration,
+    )
