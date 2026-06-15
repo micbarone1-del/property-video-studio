@@ -1,10 +1,14 @@
 """
-video_generation.py  (real-estate edition v3)
-──────────────────────────────────────────────
-v3 changes:
-- 3D walk-in + rotation prompts
-- No objects moving rules
-- Space-adaptive rotation caps
+video_generation.py  (real-estate edition v3 — Lyra 2.0)
+──────────────────────────────────────────────────────────
+Changes in v3:
+  - PRIMARY model switched to fal-ai/lyra-2/zoom (true 3D camera movement)
+  - Camera movement now passed as a PARAMETER (zoom_in_trajectory) not a prompt
+  - Lyra uses num_frames not duration — mapping table included
+  - Prompt rewritten for Lyra: camera-path language, not restriction language
+  - LTX-2.3 kept as automatic fallback if Lyra fails
+  - model_used logged in result so QC can flag LTX fallback clips
+  - Portrait output (720x1280) from Lyra — assembly will handle aspect ratio
 """
 
 import os
@@ -16,214 +20,287 @@ from dotenv import load_dotenv
 load_dotenv()
 log = logging.getLogger(__name__)
 
-VALID_DURATIONS        = [6, 8, 10, 12, 14, 16, 18, 20]
-DEFAULT_VIDEO_ENDPOINT = "fal-ai/ltx-2.3/image-to-video/fast"
+# ── Model endpoints ────────────────────────────────────────────────────────────
+LYRA_ENDPOINT = "fal-ai/lyra-2/zoom"
+LTX_ENDPOINT  = "fal-ai/ltx-2.3/image-to-video/fast"   # fallback only
 
-_OUTDOOR_KEYWORDS  = ["exterior", "garden", "terrace", "balcony", "facade",
-                       "outdoor", "pool", "courtyard", "street", "roof"]
-_SMALLROOM_KEYWORDS = ["bathroom", "wc", "toilet", "hallway", "corridor",
-                        "laundry", "utility", "cloakroom", "ensuite"]
-
-_BASE_RULES = (
-    "STRICT RULES: "
-    "No people, no human figures, no hands, no arms, no limbs, no animals at any point. "
-    "STATIC OBJECTS: Every object in the scene must remain completely stationary throughout. "
-    "No doors opening or closing. No windows opening. No fans, curtains, or fabrics moving. "
-    "No water rippling. No plants swaying. No lights flickering. Zero wind effects. "
-    "The camera is the ONLY thing that moves — everything else is frozen still. "
-    "GEOMETRY LOCK: Do not generate, invent, or reveal any room, corridor, door, window, fixture, "
-    "or architectural element that is not clearly visible in the original still image. "
-    "Do not morph, distort, blur, or warp existing walls, floors, or ceilings. "
-    "The structural geometry must remain 100 percent faithful to the source image. "
-    "HORIZON LOCK: Camera horizon must remain perfectly level with exactly 0 degrees of vertical tilt. "
-    "Zero vertical bobbing. Zero camera shake. Zero stepping motion. "
-    "POST-PROCESSING: Apply 4K upscaling, enhanced HDR lighting to brighten dark areas, "
-    "and cinema-grade color grading. Remove and inpaint any visible watermarks or text overlays."
-)
-
-_PROMPT_LARGE = (
-    "Professional high-end real estate cinematography sequence. "
-    "Large interior space. "
-    "CAMERA MOVEMENT - 3D WALK-IN WITH HORIZONTAL ARC: "
-    "The camera begins at the near edge of the room and performs a slow, smooth forward dolly-in, "
-    "physically moving deeper into the space as if a person is walking slowly into the room. "
-    "Simultaneously the camera rotates horizontally no more than 30 degrees in a single direction "
-    "(left or right arc), sweeping to reveal the width of the space. "
-    "This combined forward push plus horizontal arc creates genuine three-dimensional parallax: "
-    "nearby furniture grows larger and shifts sideways while the far wall slowly approaches. "
-    "{camera_hint}"
-    "The movement is slow, smooth, and cinematic — the entire arc takes the full clip duration. "
-    "FORBIDDEN camera targets: do not point the lens toward windows, mirrors, glass surfaces, "
-    "or open balcony openings at any point in the arc. "
-    "Keep the lens aimed at solid walls, ceilings, and furnishings. "
-    "Stay strictly within the boundaries of the original visible frame. "
-    + _BASE_RULES
-)
-
-_PROMPT_SMALL = (
-    "Professional high-end real estate cinematography sequence. "
-    "Small or compact interior space (bathroom, hallway, utility room). "
-    "CAMERA MOVEMENT - SLOW FORWARD CREEP WITH MICRO LATERAL DRIFT: "
-    "The camera performs a very slow, shallow forward push deeper into the space, "
-    "combined with an extremely subtle lateral drift of no more than 10 degrees. "
-    "This gentle combined motion creates a quiet three-dimensional parallax in a confined space "
-    "without revealing any unseen geometry beyond the original frame. "
-    "{camera_hint}"
-    "Movement is extremely restrained and slow to avoid generating hallucinations in tight spaces. "
-    "FORBIDDEN camera targets: do not move toward or zoom into mirrors, glass, taps, "
-    "or shiny fixtures. Keep the lens aimed at tiled walls and main solid surfaces. "
-    "Stay within the visible frame. "
-    + _BASE_RULES
-)
-
-_PROMPT_OUTDOOR = (
-    "Professional high-end real estate cinematography sequence. "
-    "Exterior or outdoor space (facade, garden, terrace, pool area). "
-    "CAMERA MOVEMENT - SLOW ARC FLYBY WITH 3D DEPTH: "
-    "The camera performs a slow smooth horizontal arc up to 40 degrees, "
-    "combined with a gentle forward push toward the building or main subject. "
-    "This arc-dolly combination creates strong three-dimensional depth separation: "
-    "foreground landscaping slides past in one direction while the building facade fills the frame. "
-    "{camera_hint}"
-    "The movement is elegant and unhurried, covering the full arc over the entire clip duration. "
-    "FORBIDDEN camera targets: do not point the lens toward windows, glazed doors, pool water surfaces, "
-    "or glass balustrades. Keep the lens focused on solid architectural elements. "
-    "Stay strictly within the visible original frame boundaries. "
-    + _BASE_RULES
-)
-
-CAMERA_MOVEMENTS = {
-    "auto":       "",
-    "dolly_in":   "Camera move: slow forward dolly-in push toward the centre of the room. ",
-    "pan_left":   "Camera move: slow smooth pan from right to left across the space. ",
-    "pan_right":  "Camera move: slow smooth pan from left to right across the space. ",
-    "slider":     "Camera move: very shallow lateral slider shift parallel to the main wall. ",
-    "zoom_out":   "Camera move: slow gradual zoom out from tight crop to reveal the full room. ",
-    "tilt_up":    "Camera move: slow subtle tilt upward from floor level to ceiling. ",
-    "static":     "Camera move: completely static locked-off shot with zero camera movement. ",
+# ── Lyra frame mapping ─────────────────────────────────────────────────────────
+# Lyra uses num_frames not seconds. At 16fps:
+#   81 frames  = ~5s
+#   161 frames = ~10s
+#   241 frames = ~15s
+# We map requested duration to nearest valid frame count.
+_DURATION_TO_FRAMES = {
+    6:  81,
+    8:  81,
+    10: 161,
+    12: 161,
+    14: 161,
+    16: 241,
+    18: 241,
+    20: 241,
 }
 
+# ── Lyra trajectory mapping ────────────────────────────────────────────────────
+# camera_hint from UI dropdown → Lyra zoom_in_trajectory parameter
+# These are GUARANTEED by the model architecture, not just prompt suggestions.
+_CAMERA_TO_TRAJECTORY = {
+    "auto":      "orbit_horizontal",   # best general-purpose for rooms
+    "dolly_in":  "horizontal_zoom",    # straight push toward centre
+    "pan_left":  "orbit_horizontal",   # Lyra orbits; closest to pan
+    "pan_right": "orbit_horizontal",
+    "slider":    "horizontal_zoom_bend", # slight arc — good for small rooms
+    "zoom_out":  "horizontal_zoom",    # we set zoom_direction=out below
+    "tilt_up":   "spiral",             # spiraling approach gives vertical reveal
+    "static":    "horizontal_zoom",    # minimal strength = near-static
+    "orbit":     "orbit_horizontal",   # explicit orbit for exteriors
+}
+
+# ── Space type detection ───────────────────────────────────────────────────────
+_OUTDOOR_KEYWORDS   = ["exterior","garden","terrace","balcony","facade","outdoor","pool","courtyard","street","roof","driveway","entrance"]
+_SMALLROOM_KEYWORDS = ["bathroom","wc","toilet","hallway","corridor","laundry","utility","cloakroom","ensuite","closet","pantry"]
 
 def _detect_space_type(hint: str) -> str:
-    """Returns outdoor, small, or large based on keywords in the hint."""
     h = hint.lower()
-    if any(k in h for k in _OUTDOOR_KEYWORDS):
-        return "outdoor"
-    if any(k in h for k in _SMALLROOM_KEYWORDS):
-        return "small"
+    if any(k in h for k in _OUTDOOR_KEYWORDS):   return "outdoor"
+    if any(k in h for k in _SMALLROOM_KEYWORDS): return "small"
     return "large"
 
+# ── Lyra prompts ───────────────────────────────────────────────────────────────
+# Lyra is a camera-control model. The prompt describes the SCENE STATE,
+# not the camera. Camera movement is controlled by the trajectory parameter.
+# Key rule: describe everything as FROZEN/STILL — this prevents hallucinations.
 
-def _build_prompt(space_hint: str, camera_hint: str) -> str:
-    """Builds the final video generation prompt."""
-    movement_text = CAMERA_MOVEMENTS.get(camera_hint, "")
-    space_type = _detect_space_type(space_hint)
+_LYRA_PROMPT_LARGE = (
+    "A professional real estate interior. "
+    "The scene is completely frozen and motionless — no movement in any element. "
+    "All furniture, surfaces, walls, floors, and ceilings remain perfectly still. "
+    "The lighting is fixed. No people, no wind effect, no door movement. "
+    "High-end HDR clarity, cinema-grade colour grading, 4K texture detail."
+)
+
+_LYRA_PROMPT_SMALL = (
+    "A professional real estate interior — a compact space. "
+    "The scene is completely frozen and motionless. "
+    "All surfaces, fixtures, and fittings remain perfectly still. "
+    "No people, no wind, no door or window movement. "
+    "High-end HDR clarity, cinema-grade colour grading, 4K texture detail."
+)
+
+_LYRA_PROMPT_OUTDOOR = (
+    "A professional real estate exterior. "
+    "The scene is completely frozen and motionless — no movement in any element. "
+    "All architectural surfaces, landscaping, and sky remain perfectly still. "
+    "No people, no wind effect on trees or plants, no movement. "
+    "High-end HDR clarity, cinema-grade colour grading, 4K texture detail."
+)
+
+def _build_lyra_args(
+    image_url: str,
+    prompt: str,
+    camera_hint: str,
+    duration: int,
+) -> dict:
+    """
+    Builds the complete argument dict for the Lyra 2.0 API call.
+    Camera movement is controlled via trajectory parameters, not the prompt.
+    """
+    space_type = _detect_space_type(prompt)
+
     if space_type == "outdoor":
-        template = _PROMPT_OUTDOOR
+        scene_prompt = _LYRA_PROMPT_OUTDOOR
     elif space_type == "small":
-        template = _PROMPT_SMALL
+        scene_prompt = _LYRA_PROMPT_SMALL
     else:
-        template = _PROMPT_LARGE
-    return template.format(camera_hint=movement_text)
+        scene_prompt = _LYRA_PROMPT_LARGE
 
+    trajectory = _CAMERA_TO_TRAJECTORY.get(camera_hint, "orbit_horizontal")
+    num_frames  = _DURATION_TO_FRAMES.get(duration, 81)
 
-# ── fal.ai helpers ─────────────────────────────────────────────────────────────
+    # zoom_out hint: reverse the direction
+    zoom_direction = "out" if camera_hint == "zoom_out" else "in"
 
-def _fal_image_url(image_path: str) -> str:
-    """Upload a local image to fal.ai storage and return its CDN URL."""
-    with open(image_path, "rb") as f:
-        url = fal_client.upload(f, content_type="image/jpeg")
-    return url
+    # static hint: minimal strength so movement is barely perceptible
+    strength = 0.15 if camera_hint == "static" else 0.45
 
-
-def generate_video(
-    image_path: str,
-    output_path: str,
-    space_hint: str  = "living room",
-    camera_hint: str = "auto",
-    duration: int    = 8,
-    endpoint: str    = DEFAULT_VIDEO_ENDPOINT,
-) -> bool:
-    """Generate a short video clip from a still image using fal.ai LTX-2.3."""
-    if duration not in VALID_DURATIONS:
-        log.warning("Duration %s not in VALID_DURATIONS; clamping to 8.", duration)
-        duration = 8
-
-    prompt = _build_prompt(space_hint, camera_hint)
-    log.info("[VideoGen] space=%s camera=%s duration=%s", space_hint, camera_hint, duration)
-    log.info("[VideoGen] prompt=%.200s", prompt)
-
-    try:
-        image_url = _fal_image_url(image_path)
-        log.info("[VideoGen] image uploaded -> %s", image_url)
-    except Exception as exc:
-        log.error("[VideoGen] image upload failed: %s", exc)
-        return False
-
-    payload = {
-        "prompt":              prompt,
-        "image_url":           image_url,
-        "num_frames":          duration * 8,
-        "guidance_scale":      3.5,
-        "num_inference_steps": 30,
+    return {
+        "image_url":          image_url,
+        "prompt":             scene_prompt,
+        "zoom_direction":     zoom_direction,
+        "zoom_in_trajectory": trajectory,
+        "zoom_in_strength":   strength,
+        "num_frames":         num_frames,
+        "resolution":         "480p",    # 480x832 portrait — fast and cost-efficient
+        "use_dmd":            True,      # fast mode — 4-step scheduler
+        "frames_per_second":  16,
+        "guidance_scale":     5,
     }
 
+# ── LTX fallback prompt ────────────────────────────────────────────────────────
+_LTX_FALLBACK_PROMPT = (
+    "Professional real estate cinematography. "
+    "Slow steady camera push revealing the space. "
+    "No people, no wind, no door movement, no hallucinated rooms or fixtures. "
+    "Level horizon, zero camera shake. "
+    "HDR lighting, cinema-grade colour correction."
+)
+
+# ── Duration snapping for LTX fallback ────────────────────────────────────────
+_LTX_VALID_DURATIONS = [6, 8, 10, 12, 14, 16, 18, 20]
+
+def _snap_duration(d: int) -> int:
+    if d in _LTX_VALID_DURATIONS:
+        return d
+    for v in _LTX_VALID_DURATIONS:
+        if v >= d:
+            return v
+    return _LTX_VALID_DURATIONS[-1]
+
+
+# ── Main generation function ───────────────────────────────────────────────────
+
+def generate_video_single(
+    image_path:     str,
+    duration:       int,
+    output_path:    str,
+    prompt:         str  = "",
+    camera_hint:    str  = "auto",
+    model_endpoint: str  = LYRA_ENDPOINT,
+    test_mode:      bool = False,
+) -> bool:
+    """
+    Generates a single video clip from one image using Lyra 2.0.
+    Falls back to LTX-2.3 automatically if Lyra fails.
+
+    Returns True on success, False on failure.
+    Logs which model was actually used so QC can flag LTX fallbacks.
+    """
+    if not os.path.exists(image_path):
+        log.error(f"[VideoGen] Image not found: {image_path}")
+        return False
+
     try:
-        log.info("[VideoGen] submitting to %s ...", endpoint)
-        result = fal_client.run(endpoint, arguments=payload)
-        log.info("[VideoGen] fal.ai result keys: %s", list(result.keys()) if isinstance(result, dict) else type(result))
-    except Exception as exc:
-        log.error("[VideoGen] fal.ai call failed: %s", exc)
+        if test_mode:
+            sample = "https://v3b.fal.media/files/b/0a8866f6/dmGBclH_CBmaku8J31ZE8_output.mp4"
+            log.info("[VideoGen] test_mode=True — downloading sample video.")
+            return download_video(sample, output_path)
+
+        # Upload image once — used by both Lyra and LTX if needed
+        log.info(f"[VideoGen] Uploading image: {image_path}")
+        image_url = fal_client.upload_file(image_path)
+
+        # ── Try Lyra 2.0 first ─────────────────────────────────────────────
+        log.info(f"[VideoGen] Trying Lyra 2.0 | camera={camera_hint} | space={_detect_space_type(prompt)}")
+        try:
+            lyra_args = _build_lyra_args(image_url, prompt, camera_hint, duration)
+            log.info(f"[VideoGen] Lyra args: trajectory={lyra_args['zoom_in_trajectory']} frames={lyra_args['num_frames']} direction={lyra_args['zoom_direction']}")
+
+            result = fal_client.subscribe(
+                LYRA_ENDPOINT,
+                arguments=lyra_args
+            )
+
+            video_url = (result.get("video") or {}).get("url")
+            if not video_url:
+                raise ValueError(f"Lyra returned no video URL. Result: {result}")
+
+            log.info(f"[VideoGen] ✓ Lyra succeeded — downloading...")
+            success = download_video(video_url, output_path)
+            if success:
+                log.info(f"[VideoGen] model_used=lyra-2 output={output_path}")
+                return True
+            raise ValueError("Lyra video download failed")
+
+        except Exception as lyra_err:
+            log.warning(f"[VideoGen] Lyra failed: {lyra_err} — falling back to LTX-2.3")
+
+        # ── LTX-2.3 fallback ──────────────────────────────────────────────
+        log.info(f"[VideoGen] Using LTX-2.3 fallback | duration={_snap_duration(duration)}s")
+        ltx_result = fal_client.subscribe(
+            LTX_ENDPOINT,
+            arguments={
+                "image_url": image_url,
+                "prompt":    _LTX_FALLBACK_PROMPT,
+                "duration":  _snap_duration(duration),
+            }
+        )
+
+        video_url = (ltx_result.get("video") or {}).get("url")
+        if not video_url:
+            log.error(f"[VideoGen] LTX fallback also returned no URL: {ltx_result}")
+            return False
+
+        log.info(f"[VideoGen] ✓ LTX fallback succeeded — downloading...")
+        success = download_video(video_url, output_path)
+        if success:
+            log.warning(f"[VideoGen] model_used=ltx-fallback output={output_path} — FLAGGED FOR QC REVIEW")
+        return success
+
+    except Exception as e:
+        log.error(f"[VideoGen] Complete failure for {image_path}: {e}", exc_info=True)
         return False
 
-    video_url = None
-    if isinstance(result, dict):
-        if "video" in result:
-            v = result["video"]
-            video_url = v.get("url") if isinstance(v, dict) else v
-        elif "videos" in result and result["videos"]:
-            v = result["videos"][0]
-            video_url = v.get("url") if isinstance(v, dict) else v
-        elif "url" in result:
-            video_url = result["url"]
 
-    if not video_url:
-        log.error("[VideoGen] no video URL in result: %s", result)
-        return False
+# ── Batch wrapper ──────────────────────────────────────────────────────────────
 
-    return download_video(video_url, output_path)
+def mass_generation(
+    image_dict:     dict,
+    output_dir:     str,
+    duration:       int  = 8,
+    model_endpoint: str  = LYRA_ENDPOINT,
+    test_mode:      bool = False,
+) -> dict:
+    """Batch generate. image_dict = { image_path: {"hint": str, "camera": str} }"""
+    if not os.environ.get("FAL_KEY"):
+        log.critical("[VideoGen] FAL_KEY not set.")
+        return {}
 
+    os.makedirs(output_dir, exist_ok=True)
+    results = {}
+
+    for image_path, meta in image_dict.items():
+        hint   = meta.get("hint",   "") if isinstance(meta, dict) else str(meta)
+        camera = meta.get("camera", "auto") if isinstance(meta, dict) else "auto"
+        base   = os.path.splitext(os.path.basename(image_path))[0]
+        out    = os.path.join(output_dir, f"{base}_video.mp4")
+        ok     = generate_video_single(
+            image_path=image_path,
+            duration=duration,
+            output_path=out,
+            prompt=hint,
+            camera_hint=camera,
+            test_mode=test_mode,
+        )
+        results[image_path] = out if ok else None
+
+    return results
+
+
+# ── Download helper ────────────────────────────────────────────────────────────
 
 def download_video(url: str, output_path: str) -> bool:
-    """Download a video from a URL to a local file path."""
     try:
-        log.info("[VideoGen] downloading from %s ...", url)
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
         response = requests.get(url, stream=True, timeout=120)
         response.raise_for_status()
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
         with open(output_path, "wb") as f:
             for chunk in response.iter_content(chunk_size=8192):
                 f.write(chunk)
-        log.info("[VideoGen] saved to %s", output_path)
+        log.info(f"[VideoGen] Saved: {output_path}")
         return True
-    except Exception as exc:
-        log.error("[VideoGen] download failed: %s", exc)
+    except Exception as e:
+        log.error(f"[VideoGen] Download failed: {e}")
         return False
 
 
-def generate_video_single(
-    image_path: str,
-    duration: int,
-    output_path: str,
-    caption: str = "",
-    camera_hint: str = "auto",
-) -> bool:
-    """Wrapper matching the api_server call signature.
-    Maps to generate_video() using caption as the space_hint."""
-    return generate_video(
-        image_path=image_path,
-        output_path=output_path,
-        space_hint=caption if caption else "living room",
-        camera_hint=camera_hint,
-        duration=duration,
-    )
+# ── CLI quick test ─────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    import sys
+    logging.basicConfig(level=logging.INFO)
+    if len(sys.argv) < 3:
+        print("Usage: python video_generation.py <image.jpg> <output.mp4> [caption] [camera_hint]")
+        sys.exit(1)
+    hint   = sys.argv[3] if len(sys.argv) > 3 else ""
+    camera = sys.argv[4] if len(sys.argv) > 4 else "auto"
+    ok = generate_video_single(sys.argv[1], 8, sys.argv[2], hint, camera)
+    sys.exit(0 if ok else 1)
