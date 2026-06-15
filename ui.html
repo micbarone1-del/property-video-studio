@@ -179,7 +179,7 @@
         </div>
         <div>
           <label for="voice-id">ElevenLabs voice ID <span style="color:var(--muted)">(optional)</span></label>
-          <input type="text" id="voice-id" placeholder="ElevenLabs Voice ID" value="b8jhBTcGAq4kQGWmKprT" />
+          <input type="text" id="voice-id" placeholder="Leave blank for default" />
         </div>
       </div>
       <div class="toggle-row">
@@ -283,31 +283,23 @@ function removeScene(i) { files.splice(i,1); renderScenes(); }
 
 // ── Camera movement options ───────────────────────────────────────────────────
 const CAMERA_OPTS = {
-  auto:       'Auto (detect room type)',
-  dolly_in:   'Dolly in — push toward centre',
-  pan_left:   'Pan left',
-  pan_right:  'Pan right',
-  slider:     'Slider shift (small rooms)',
-  zoom_out:   'Zoom out — reveal the space',
-  tilt_up:    'Tilt up — floor to ceiling',
-  static:     'Static — no movement',
+  auto:              'Auto — adapts to room type',
+  pullback_orbit:    '⭐ Pull back + orbit — cinematic reveal (recommended)',
+  pullback_dolly:    'Pull back + dolly in — classic push',
+  wide_reveal_orbit: 'Wide reveal + orbit — dramatic exterior/large room',
+  dolly_in:          'Dolly in — straight push toward centre',
+  orbit:             'Orbit — arc around the space',
+  arc_push:          'Arc push — gentle curve (best for small rooms)',
+  spiral:            'Spiral approach — spiraling push in',
+  dolly_zoom:        'Dolly zoom — Hitchcock / vertigo effect',
+  pull_back:         'Pull back only — camera retreats',
+  static:            'Static — near-motionless',
 };
 
 // ── Scene renderer ────────────────────────────────────────────────────────────
 function renderScenes() {
   genBtn.disabled = files.length === 0;
   if (!files.length) { scenesCont.innerHTML = '<div class="empty-state">Upload photos above to configure scenes</div>'; return; }
-  // Save existing user-typed field values BEFORE clearing the DOM
-  const savedValues = {};
-  [...scenesCont.querySelectorAll('.scene-card')].forEach(card => {
-    const idx = card.dataset.index;
-    savedValues[idx] = {
-      caption:    card.querySelector('.sc-caption')?.value   || '',
-      voiceover:  card.querySelector('.sc-voiceover')?.value || '',
-      duration:   card.querySelector('.sc-duration')?.value  || '8',
-      camera:     card.querySelector('.sc-camera')?.value    || 'auto',
-    };
-  });
   scenesCont.innerHTML = '';
   files.forEach((file, i) => {
     const url  = URL.createObjectURL(file);
@@ -366,24 +358,7 @@ function renderScenes() {
         </div>
       </div>`;
     scenesCont.appendChild(card);
-  
-  // Restore user-typed values if they existed before the re-render
-  const saved = savedValues[i];
-  if (saved) {
-    const capEl = card.querySelector('.sc-caption');
-    const voiEl = card.querySelector('.sc-voiceover');
-    const durEl = card.querySelector('.sc-duration');
-    const camEl = card.querySelector('.sc-camera');
-    if (capEl  && saved.caption)   capEl.value = saved.caption;
-    if (voiEl  && saved.voiceover) voiEl.value = saved.voiceover;
-    if (durEl  && saved.duration) {
-      durEl.value = saved.duration;
-      const durVal = card.querySelector('.dur-val');
-      if (durVal) durVal.textContent = saved.duration + 's';
-    }
-    if (camEl  && saved.camera)    camEl.value = saved.camera;
-  }
-});
+  });
 }
 
 function toggleRework(i) {
@@ -436,7 +411,7 @@ genBtn.addEventListener('click', async () => {
 
   try {
     const res = await fetch(`${API_BASE}/jobs/`, { method:'POST', body:fd });
-        if (!res.ok) { let errMsg = "Server error " + res.status; try { const errData = await res.json(); errMsg = errData.detail || errMsg; } catch(ex) {} throw new Error(errMsg); }
+    if (!res.ok) { const e = await res.json().catch(()=>({}))); throw new Error(e.detail||`Server error ${res.status}`); }
     const { job_id } = await res.json();
     currentJobId = job_id;
     genBtn.textContent = 'Processing…';
@@ -473,9 +448,8 @@ async function submitRework(reworkScenes) {
 
   try {
     const res = await fetch(`${API_BASE}/jobs/${currentJobId}/rework`, { method:'POST', body:fd });
-        if (!res.ok) { let errMsg = "Server error " + res.status; try { const errData = await res.json(); errMsg = errData.detail || errMsg; } catch(ex) {} throw new Error(errMsg); }
+    if (!res.ok) { const e = await res.json().catch(()=>({}))); throw new Error(e.detail||`Server error ${res.status}`); }
     const { job_id } = await res.json();
-    currentJobId = job_id;
     genBtn.textContent = 'Processing rework…';
     startPolling(job_id);
   } catch(e) {
@@ -497,7 +471,7 @@ function startPolling(jobId) {
       if (job.scenes && job.scenes.length) renderSceneProgress(job.scenes);
       if (job.status === 'done') {
         clearInterval(pollTimer);
-        if (job.scenes && job.scenes.length) sceneStatuses = job.scenes; // keep prev if rework returns no scenes
+        sceneStatuses = job.scenes || [];
         showResult(jobId, job.property_name || 'Property', job.scenes || []);
         renderScenes();
         genBtn.disabled  = false;
@@ -547,7 +521,7 @@ function showResult(jobId, propName, scenes) {
           <div class="sr-info">
             <div class="sr-label">Scene ${s.index+1}</div>
             <div class="sr-status">Video: ${s.video} · Audio: ${s.audio}</div>
-            `<button class="sr-redo" onclick="openRedo(${i})">↻ Redo this clip</button>`
+            ${s.video==='failed'?`<button class="sr-redo" onclick="openRedo(${i})">↺ Redo this clip</button>`:''}
           </div>
         </div>`;
       }).join('');
