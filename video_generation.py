@@ -72,27 +72,33 @@ def _detect_space_type(hint: str) -> str:
 # Key rule: describe everything as FROZEN/STILL — this prevents hallucinations.
 
 _LYRA_PROMPT_LARGE = (
-    "A professional real estate interior. "
-    "The scene is completely frozen and motionless — no movement in any element. "
-    "All furniture, surfaces, walls, floors, and ceilings remain perfectly still. "
-    "The lighting is fixed. No people, no wind effect, no door movement. "
-    "High-end HDR clarity, cinema-grade colour grading, 4K texture detail."
+    "Professional real estate interior. "
+    "Camera at human eye level, approximately 1.6m height, moving forward slowly "
+    "as if a person is walking into and exploring the space. "
+    "All objects, furniture, doors, windows, curtains, and fixtures are completely "
+    "motionless — only the camera moves along a ground-level path. "
+    "No floating, no aerial angle, no objects moving. "
+    "Smooth dolly-forward motion. HDR lighting, cinema colour, 4K detail."
 )
 
 _LYRA_PROMPT_SMALL = (
-    "A professional real estate interior — a compact space. "
-    "The scene is completely frozen and motionless. "
-    "All surfaces, fixtures, and fittings remain perfectly still. "
-    "No people, no wind, no door or window movement. "
-    "High-end HDR clarity, cinema-grade colour grading, 4K texture detail."
+    "Professional real estate interior — a compact space. "
+    "Camera at human eye level, approximately 1.6m height, making a short step "
+    "forward then a slow gentle pan, as a person naturally surveys a small room. "
+    "All surfaces, fixtures and fittings are completely motionless — only the camera "
+    "moves along a short, ground-level path. "
+    "No floating, no aerial angle, no objects moving. "
+    "Smooth movement, no shake. HDR lighting, cinema colour, 4K detail."
 )
 
 _LYRA_PROMPT_OUTDOOR = (
-    "A professional real estate exterior. "
-    "The scene is completely frozen and motionless — no movement in any element. "
-    "All architectural surfaces, landscaping, and sky remain perfectly still. "
-    "No people, no wind effect on trees or plants, no movement. "
-    "High-end HDR clarity, cinema-grade colour grading, 4K texture detail."
+    "Professional real estate exterior. "
+    "Camera at human eye level, approximately 1.6m height, moving slowly forward "
+    "or along the facade at a natural walking pace, as if approaching the property. "
+    "All architectural surfaces, landscaping, and sky are completely motionless — "
+    "only the camera moves along a ground-level path. "
+    "No floating, no aerial angle, no wind, no plants or trees moving. "
+    "Smooth arc or dolly movement. HDR lighting, cinema colour, 4K detail."
 )
 
 def _build_lyra_args(
@@ -120,8 +126,17 @@ def _build_lyra_args(
     # zoom_out hint: reverse the direction
     zoom_direction = "out" if camera_hint == "zoom_out" else "in"
 
-    # static hint: minimal strength so movement is barely perceptible
-    strength = 0.15 if camera_hint == "static" else 0.45
+    # For "auto" camera: pick trajectory based on space type for natural movement
+    # Large/small interiors → forward dolly (horizontal_zoom) = person walking in
+    # Outdoor → orbit (arc around facade) = person approaching
+    if camera_hint == "auto":
+        if space_type == "outdoor":
+            trajectory = "orbit_horizontal"
+        else:
+            trajectory = "horizontal_zoom"
+
+    # Strength: 0.55 normal, 0.15 static — enough for visible 3D movement
+    strength = 0.15 if camera_hint == "static" else 0.55
 
     return {
         "image_url":          image_url,
