@@ -212,8 +212,25 @@ async def rework_job(
       ]
     }
     """
+    # If the job_id is a rework ID not in JOBS, try to find its parent
     if job_id not in JOBS:
-        raise HTTPException(status_code=404, detail="Job not found")
+        # Look for any job in JOBS that has this as parent, or strip _rw suffix
+        parent_id = None
+        # Check if any loaded job has parent_job_id == job_id
+        for jid, jdata in JOBS.items():
+            if jdata.get("parent_job_id") == job_id:
+                parent_id = jid
+                break
+        # Try stripping _rw... suffix (e.g. 3244e17d_rwc3bc -> 3244e17d)
+        if parent_id is None:
+            base = job_id.split("_rw")[0] if "_rw" in job_id else None
+            if base and base in JOBS:
+                parent_id = base
+        if parent_id:
+            log.info(f"[Rework] job_id {job_id} not in JOBS; redirecting to parent {parent_id}")
+            job_id = parent_id
+        else:
+            raise HTTPException(status_code=404, detail="Job not found")
 
     original = JOBS[job_id]
     if original["status"] not in ["done", "failed"]:
