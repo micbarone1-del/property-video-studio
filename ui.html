@@ -411,7 +411,11 @@ genBtn.addEventListener('click', async () => {
 
   try {
     const res = await fetch(`${API_BASE}/jobs/`, { method:'POST', body:fd });
-    var _eb = {}; try { _eb = await res.json(); } catch(_je) {} throw new Error(_eb.detail || ("Server error " + res.status));
+    if (!res.ok) {
+      var _eb2 = {};
+      try { _eb2 = await res.json(); } catch (_je2) {}
+      throw new Error(_eb2.detail || ("Server error " + res.status));
+    }
     const { job_id } = await res.json();
     currentJobId = job_id;
     genBtn.textContent = 'Processing…';
@@ -448,7 +452,11 @@ async function submitRework(reworkScenes) {
 
   try {
     const res = await fetch(`${API_BASE}/jobs/${currentJobId}/rework`, { method:'POST', body:fd });
-    var _eb = {}; try { _eb = await res.json(); } catch(_je) {} throw new Error(_eb.detail || ("Server error " + res.status));
+    if (!res.ok) {
+      var _eb2 = {};
+      try { _eb2 = await res.json(); } catch (_je2) {}
+      throw new Error(_eb2.detail || ("Server error " + res.status));
+    }
     const { job_id } = await res.json();
     genBtn.textContent = 'Processing rework…';
     startPolling(job_id);
