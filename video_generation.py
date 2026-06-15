@@ -1,16 +1,14 @@
 """
-video_generation.py  (real-estate edition v2)
+video_generation.py  (real-estate edition v3)
 ──────────────────────────────────────────────
-Improvements in v2:
-  - Space-adaptive prompting: detects outdoor/large room/small room and applies
-    the right cinematic technique for each (dolly, pan, slider)
-  - User camera hint per scene: passed as `camera_hint` parameter
-  - Full anti-hallucination master prompt based on proven real estate prompt
-  - Wind effect suppressed via explicit prompt instruction
-  - Upscaling instruction embedded in the video prompt itself
-  - return True added after download_video() (was returning None on success)
-  - resolution/aspect_ratio params removed (not supported by LTX-2.3)
-"""
+v3 changes:
+- 3D walk-in + rotation prompts: camera physically moves into the space
+  and arcs horizontally, creating genuine parallax depth
+  - Rotation capped per space type (large: 30 deg, small: 10 deg, outdoor: 40 deg)
+  - Explicit "no objects moving" rules to prevent doors opening, fans spinning, etc.
+  - Space-adaptive: large rooms get dolly-in + arc, small rooms get forward creep
+    + micro lateral drift, outdoors get arc flyby with depth separation
+    """
 
 import os
 import logging
@@ -21,257 +19,214 @@ from dotenv import load_dotenv
 load_dotenv()
 log = logging.getLogger(__name__)
 
-VALID_DURATIONS     = [6, 8, 10, 12, 14, 16, 18, 20]
+VALID_DURATIONS       = [6, 8, 10, 12, 14, 16, 18, 20]
 DEFAULT_VIDEO_ENDPOINT = "fal-ai/ltx-2.3/image-to-video/fast"
 
 # ── Space type keywords ────────────────────────────────────────────────────────
-_OUTDOOR_KEYWORDS   = ["exterior", "garden", "terrace", "balcony", "facade", "outdoor", "pool", "courtyard", "street", "roof"]
-_SMALLROOM_KEYWORDS = ["bathroom", "wc", "toilet", "hallway", "corridor", "laundry", "utility", "cloakroom", "ensuite"]
+_OUTDOOR_KEYWORDS  = ["exterior", "garden", "terrace", "balcony", "facade",
+                                             "outdoor", "pool", "courtyard", "street", "roof"]
+_SMALLROOM_KEYWORDS = ["bathroom", "wc", "toilet", "hallway", "corridor",
+                                               "laundry", "utility", "cloakroom", "ensuite"]
 
-# ── Master anti-hallucination prompt ──────────────────────────────────────────
-# Adapted from the proven prompt, split by space type.
-
+# ── Master anti-hallucination + no-moving-objects rules ───────────────────────
 _BASE_RULES = (
-    "STRICT RULES: No people, no human figures, no hands, no arms, no limbs, no animals visible at any point. "
-    "The camera horizon must remain perfectly level at all times with exactly 0 degrees of vertical tilt. "
-    "Zero vertical bobbing, zero camera shake, zero stepping motion. "
-    "HALLUCINATION PREVENTION: Do not generate, invent, or reveal any room, corridor, door, window, fixture, "
-    "or architectural element that is not clearly visible in the original still image. "
-    "Do not morph, distort, blur, or warp existing walls, floors, or ceilings. "
-    "The structural geometry of the space must remain 100 percent faithful to the source image. "
-    "Apply 4K upscaling, enhanced HDR lighting to brighten dark areas, and cinema-grade color grading. "
-    "Remove and inpaint any visible watermarks or text overlays throughout."
+      "STRICT RULES: "
+      "No people, no human figures, no hands, no arms, no limbs, no animals at any point. "
+      "STATIC OBJECTS: Every object in the scene must remain completely stationary throughout. "
+      "No doors opening or closing. No windows opening. No fans, curtains, or fabrics moving. "
+      "No water rippling. No plants swaying. No lights flickering. Zero wind effects. "
+      "The camera is the ONLY thing that moves — everything else is frozen still. "
+      "GEOMETRY LOCK: Do not generate, invent, or reveal any room, corridor, door, window, fixture, "
+      "or architectural element that is not clearly visible in the original still image. "
+      "Do not morph, distort, blur, or warp existing walls, floors, or ceilings. "
+      "The structural geometry must remain 100 percent faithful to the source image. "
+      "HORIZON LOCK: Camera horizon must remain perfectly level with exactly 0 degrees of vertical tilt. "
+      "Zero vertical bobbing. Zero camera shake. Zero stepping motion. "
+      "POST-PROCESSING: Apply 4K upscaling, enhanced HDR lighting to brighten dark areas, "
+      "and cinema-grade color grading. Remove and inpaint any visible watermarks or text overlays."
 )
 
 _PROMPT_LARGE = (
-    "Professional high-end real estate cinematography. "
-    "Large interior space or open area. "
-    "The camera performs a single slow, smooth movement: either a gentle forward dolly-in toward the centre of the room, "
-    "or a slow horizontal pan from one side of the frame to the other. "
-    "{camera_hint}"
-    "The movement speed is very slow and cinematic, covering no more than 20 percent of the frame width over the full clip duration. "
-    "The camera simulates natural parallax depth — foreground elements drift subtly relative to background — "
-    "using only the depth information already present in the image, without generating any new surfaces or spaces. "
-    "Do not zoom into, or pan toward, windows, mirrors, glass surfaces, or open balcony openings, "
-    "as these areas have no depth information and will produce distortion. Keep the lens pointed at solid walls and furnishings. "
-    "Stay within the boundaries of what is already visible. No new rooms, no unseen areas, no fabricated geometry. "
-    + _BASE_RULES
+      "Professional high-end real estate cinematography sequence. "
+      "Large interior space. "
+      "CAMERA MOVEMENT — 3D WALK-IN WITH HORIZONTAL ARC: "
+      "The camera begins at the near edge of the room and performs a slow, smooth forward dolly-in, "
+      "physically moving deeper into the space as if a person is walking slowly into the room. "
+      "Simultaneously the camera rotates horizontally no more than 30 degrees in a single direction "
+      "(left or right arc), sweeping to reveal the width of the space. "
+      "This combined forward push plus horizontal arc creates genuine three-dimensional parallax: "
+      "nearby furniture grows larger and shifts sideways while the far wall slowly approaches. "
+      "{camera_hint}"
+      "The movement is slow, smooth, and cinematic — the entire arc takes the full clip duration. "
+      "FORBIDDEN camera targets: do not point the lens toward windows, mirrors, glass surfaces, "
+      "or open balcony openings at any point in the arc — these areas have no depth data and cause "
+      "distortion hallucinations. Keep the lens aimed at solid walls, ceilings, and furnishings. "
+      "Stay strictly within the boundaries of the original visible frame. "
+      + _BASE_RULES
 )
 
 _PROMPT_SMALL = (
-    "Professional high-end real estate cinematography. "
-    "Small or compact interior space such as a bathroom, hallway, or utility room. "
-    "The camera performs a single slow, very shallow lateral slide movement parallel to the main wall — "
-    "a smooth tracker shot moving no more than 10 percent of the frame width over the entire clip. "
-    "{camera_hint}"
-    "The movement is extremely restrained to avoid generating unseen geometry in tight spaces. "
-    "The camera simulates gentle parallax depth using only the depth cues already present in the image. "
-    "Do not zoom in, do not tilt, do not move toward mirrors, glass, taps, or shiny fixtures — "
-    "these surfaces cause reflection distortion and hallucinations. Keep the lens wide and centred on tiled walls or main surfaces. "
-    "Stay within the visible frame. No invented spaces, no fabricated elements beyond what the source image shows. "
-    + _BASE_RULES
+      "Professional high-end real estate cinematography sequence. "
+      "Small or compact interior space (bathroom, hallway, utility room). "
+      "CAMERA MOVEMENT — SLOW FORWARD CREEP WITH MICRO LATERAL DRIFT: "
+      "The camera performs a very slow, shallow forward push deeper into the space — "
+      "as if carefully stepping forward by one pace — combined with an extremely subtle lateral drift "
+      "of no more than 10 degrees, tracking slightly left or right along the main wall. "
+      "This gentle combined motion creates a quiet three-dimensional parallax in a confined space "
+      "without revealing any unseen geometry beyond the original frame. "
+      "{camera_hint}"
+      "Movement is extremely restrained and slow to avoid generating hallucinations in tight spaces. "
+      "FORBIDDEN camera targets: do not move toward or zoom into mirrors, glass, taps, "
+      "or shiny fixtures — reflective surfaces cause distortion. Keep the lens aimed at tiled walls "
+      "and main solid surfaces. Stay within the visible frame. "
+      + _BASE_RULES
 )
 
 _PROMPT_OUTDOOR = (
-    "Professional high-end real estate cinematography. "
-    "Exterior or outdoor space such as a facade, garden, terrace, or swimming pool area. "
-    "The camera performs a single slow cinematic movement: either a gentle forward dolly-in toward the building facade, "
-    "or a slow smooth arc sweeping left or right to reveal the full exterior. "
-    "{camera_hint}"
-    "The movement is slow and elegant, covering no more than 25 percent of the frame width over the full clip. "
-    "The camera simulates natural parallax depth between foreground landscaping and the background structure "
-    "using only the depth information visible in the source image. "
-    "Do not zoom toward windows, glazed doors, pool water surfaces, or glass balustrades — "
-    "transparent or reflective surfaces produce hallucinations. Keep the lens focused on solid architectural elements. "
-    "Stay strictly within the visible frame boundaries. No invented structures, no unseen areas. "
-    + _BASE_RULES
+      "Professional high-end real estate cinematography sequence. "
+      "Exterior or outdoor space (facade, garden, terrace, pool area). "
+      "CAMERA MOVEMENT — SLOW ARC FLYBY WITH 3D DEPTH: "
+      "The camera performs a slow smooth horizontal arc — sweeping left or right up to 40 degrees — "
+      "combined with a gentle forward push toward the building or main subject. "
+      "This arc-dolly combination creates strong three-dimensional depth separation: "
+      "foreground landscaping, planters, or paving slides past in one direction "
+      "while the building facade gradually fills the frame. "
+      "{camera_hint}"
+      "The movement is elegant and unhurried, covering the full arc over the entire clip duration. "
+      "FORBIDDEN camera targets: do not point the lens toward windows, glazed doors, pool water surfaces, "
+      "or glass balustrades — transparent and reflective surfaces produce hallucinations. "
+      "Keep the lens focused on solid architectural elements, stone, brick, or planted areas. "
+      "Stay strictly within the visible original frame boundaries. "
+      + _BASE_RULES
 )
 
 # Camera movement options (shown in UI dropdown)
 CAMERA_MOVEMENTS = {
-    "auto":         "",   # let space-type detection decide
-    "dolly_in":     "Slow dolly-in push toward the centre of the frame. ",
-    "pan_left":     "Slow smooth pan from right to left across the space. ",
-    "pan_right":    "Slow smooth pan from left to right across the space. ",
-    "slider":       "Very shallow lateral slider shift parallel to the main wall. ",
-    "zoom_out":     "Slow gradual zoom out from tight crop to reveal the full room. ",
-    "tilt_up":      "Slow subtle tilt upward from floor level to ceiling. ",
-    "static":       "Completely static locked-off shot with no camera movement. ",
+      "auto":       "",
+      "dolly_in":   "Camera move: slow forward dolly-in push toward the centre of the room. ",
+      "pan_left":   "Camera move: slow smooth pan from right to left across the space. ",
+      "pan_right":  "Camera move: slow smooth pan from left to right across the space. ",
+      "slider":     "Camera move: very shallow lateral slider shift parallel to the main wall. ",
+      "zoom_out":   "Camera move: slow gradual zoom out from tight crop to reveal the full room. ",
+      "tilt_up":    "Camera move: slow subtle tilt upward from floor level to ceiling. ",
+      "static":     "Camera move: completely static locked-off shot with zero camera movement. ",
 }
 
 
 def _detect_space_type(hint: str) -> str:
-    """Returns 'outdoor', 'small', or 'large' based on keywords in the hint."""
-    h = hint.lower()
-    if any(k in h for k in _OUTDOOR_KEYWORDS):
-        return "outdoor"
-    if any(k in h for k in _SMALLROOM_KEYWORDS):
-        return "small"
-    return "large"
+      """Returns 'outdoor', 'small', or 'large' based on keywords in the hint."""
+      h = hint.lower()
+      if any(k in h for k in _OUTDOOR_KEYWORDS):
+                return "outdoor"
+            if any(k in h for k in _SMALLROOM_KEYWORDS):
+                      return "small"
+                  return "large"
 
 
 def _build_prompt(space_hint: str, camera_hint: str) -> str:
-    """
-    Builds the final video generation prompt.
-    space_hint: caption/room description from the user
-    camera_hint: specific camera movement key from CAMERA_MOVEMENTS
-    """
+      """
+          Builds the final video generation prompt.
+              space_hint  : caption/room description from the user
+                  camera_hint : specific camera movement key from CAMERA_MOVEMENTS
+                      """
     movement_text = CAMERA_MOVEMENTS.get(camera_hint, "")
     space_type    = _detect_space_type(space_hint)
 
-    # Auto mode: use a sensible slow walk-in default per space type
-    if not movement_text:
-        if space_type == "outdoor":
-            movement_text = "Slow smooth dolly-in push toward the centre of the frame, combined with a very slight upward tilt. "
-        elif space_type == "small":
-            movement_text = "Slow subtle dolly-in push toward the centre of the frame with minimal lateral drift. "
-        else:
-            movement_text = "Slow smooth dolly-in push toward the centre of the frame, combined with a very slight 10-degree arc pan. "
-
     if space_type == "outdoor":
-        return _PROMPT_OUTDOOR.format(camera_hint=movement_text)
-    elif space_type == "small":
-        return _PROMPT_SMALL.format(camera_hint=movement_text)
-    else:
-        return _PROMPT_LARGE.format(camera_hint=movement_text)
+              template = _PROMPT_OUTDOOR
+elif space_type == "small":
+        template = _PROMPT_SMALL
+else:
+        template = _PROMPT_LARGE
+
+    return template.format(camera_hint=movement_text)
 
 
-def _snap_duration(d: int) -> int:
-    if d in VALID_DURATIONS:
-        return d
-    for v in VALID_DURATIONS:
-        if v >= d:
-            return v
-    return VALID_DURATIONS[-1]
+# ── fal.ai helpers ─────────────────────────────────────────────────────────────
+
+def _fal_image_url(image_path: str) -> str:
+      """Upload a local image to fal.ai storage and return its CDN URL."""
+    with open(image_path, "rb") as f:
+              url = fal_client.upload(f, content_type="image/jpeg")
+          return url
 
 
-def generate_video_single(
-    image_path: str,
-    duration: int,
-    output_path: str,
-    prompt: str = "",
-    camera_hint: str = "auto",
-    model_endpoint: str = DEFAULT_VIDEO_ENDPOINT,
-    test_mode: bool = False,
+def generate_video(
+      image_path: str,
+      output_path: str,
+      space_hint: str  = "living room",
+      camera_hint: str = "auto",
+      duration: int    = 8,
+      endpoint: str    = DEFAULT_VIDEO_ENDPOINT,
 ) -> bool:
-    """
-    Generates a single video clip from one image.
+      """
+          Generate a short video clip from a still image using fal.ai LTX-2.3.
 
-    Args:
-        image_path:    Local path to the source image.
-        duration:      Desired duration in seconds.
-        output_path:   Where to save the resulting .mp4.
-        prompt:        Room description / caption (used for space detection).
-        camera_hint:   Camera movement key from CAMERA_MOVEMENTS dict.
-        model_endpoint: fal.ai model string.
-        test_mode:     If True, downloads a sample video instead of calling API.
+              Returns True on success, False on failure.
+                  """
+    if duration not in VALID_DURATIONS:
+              log.warning("Duration %s not in VALID_DURATIONS; clamping to 8.", duration)
+              duration = 8
 
-    Returns:
-        True on success, False on failure.
-    """
-    if not os.path.exists(image_path):
-        log.error(f"[VideoGen] Image not found: {image_path}")
-        return False
-
-    duration = _snap_duration(duration)
+    prompt = _build_prompt(space_hint, camera_hint)
+    log.info("[VideoGen] space=%s camera=%s duration=%s", space_hint, camera_hint, duration)
+    log.info("[VideoGen] prompt=%.200s", prompt)
 
     try:
-        if test_mode:
-            sample = "https://v3b.fal.media/files/b/0a8866f6/dmGBclH_CBmaku8J31ZE8_output.mp4"
-            log.info("[VideoGen] test_mode=True — downloading sample video.")
-            return download_video(sample, output_path)
-
-        # Build the final prompt
-        final_prompt = _build_prompt(prompt, camera_hint)
-        log.info(f"[VideoGen] Space type detected from: '{prompt}'")
-        log.info(f"[VideoGen] Camera hint: {camera_hint}")
-        log.info(f"[VideoGen] Final prompt (first 120 chars): {final_prompt[:120]}...")
-
-        # Upload image
-        log.info(f"[VideoGen] Uploading: {image_path}")
-        image_url = fal_client.upload_file(image_path)
-
-        # Submit to fal.ai
-        log.info(f"[VideoGen] Generating {duration}s clip via {model_endpoint}...")
-        result = fal_client.subscribe(
-            model_endpoint,
-            arguments={
-                "image_url": image_url,
-                "prompt":    final_prompt,
-                "duration":  duration,
-            }
-        )
-
-        video_url = (result.get("video") or {}).get("url")
-        if not video_url:
-            log.error(f"[VideoGen] No video URL in result: {result}")
-            return False
-
-        log.info("[VideoGen] Downloading generated clip...")
-        success = download_video(video_url, output_path)
-        return True if success else False
-
-    except Exception as e:
-        log.error(f"[VideoGen] Error processing {image_path}: {e}", exc_info=True)
+              image_url = _fal_image_url(image_path)
+              log.info("[VideoGen] image uploaded → %s", image_url)
+except Exception as exc:
+        log.error("[VideoGen] image upload failed: %s", exc)
         return False
 
+    payload = {
+              "prompt":           prompt,
+              "image_url":        image_url,
+              "num_frames":       duration * 8,   # ~8 fps target for LTX-2.3/fast
+              "guidance_scale":   3.5,
+              "num_inference_steps": 30,
+    }
 
-def mass_generation(
-    image_dict: dict,
-    output_dir: str,
-    duration: int = 8,
-    model_endpoint: str = DEFAULT_VIDEO_ENDPOINT,
-    test_mode: bool = False,
-) -> dict:
-    """Batch generate. image_dict = { image_path: {"hint": str, "camera": str} }"""
-    if not os.environ.get("FAL_KEY"):
-        log.critical("[VideoGen] FAL_KEY not set.")
-        return {}
+    try:
+              log.info("[VideoGen] submitting to %s …", endpoint)
+        result = fal_client.run(endpoint, arguments=payload)
+        log.info("[VideoGen] fal.ai result keys: %s", list(result.keys()) if isinstance(result, dict) else type(result))
+except Exception as exc:
+        log.error("[VideoGen] fal.ai call failed: %s", exc)
+        return False
 
-    os.makedirs(output_dir, exist_ok=True)
-    results = {}
+    # ── Extract video URL ──────────────────────────────────────────────────────
+    video_url = None
+    if isinstance(result, dict):
+              # Common response shapes from LTX-2.3
+              if "video" in result:
+                            v = result["video"]
+                            video_url = v.get("url") if isinstance(v, dict) else v
+    elif "videos" in result and result["videos"]:
+                  v = result["videos"][0]
+                  video_url = v.get("url") if isinstance(v, dict) else v
+elif "url" in result:
+              video_url = result["url"]
 
-    for image_path, meta in image_dict.items():
-        hint   = meta.get("hint", "") if isinstance(meta, dict) else str(meta)
-        camera = meta.get("camera", "auto") if isinstance(meta, dict) else "auto"
-        base   = os.path.splitext(os.path.basename(image_path))[0]
-        out    = os.path.join(output_dir, f"{base}_video.mp4")
-        ok     = generate_video_single(
-            image_path=image_path,
-            duration=duration,
-            output_path=out,
-            prompt=hint,
-            camera_hint=camera,
-            model_endpoint=model_endpoint,
-            test_mode=test_mode,
-        )
-        results[image_path] = out if ok else None
+    if not video_url:
+              log.error("[VideoGen] no video URL in result: %s", result)
+              return False
 
-    return results
+    return download_video(video_url, output_path)
 
 
 def download_video(url: str, output_path: str) -> bool:
-    try:
-        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-        response = requests.get(url, stream=True, timeout=120)
-        response.raise_for_status()
-        with open(output_path, "wb") as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-        log.info(f"[VideoGen] Saved: {output_path}")
-        return True
-    except Exception as e:
-        log.error(f"[VideoGen] Download failed: {e}")
+      """Download a video from a URL to a local file path."""
+      try:
+                log.info("[VideoGen] downloading from %s …", url)
+                response = requests.get(url, stream=True, timeout=120)
+                response.raise_for_status()
+                os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                with open(output_path, "wb") as f:
+                              for chunk in response.iter_content(chunk_size=8192):
+                                                f.write(chunk)
+                                        log.info("[VideoGen] saved to %s", output_path)
+                          return True
+except Exception as exc:
+        log.error("[VideoGen] download failed: %s", exc)
         return False
-
-
-if __name__ == "__main__":
-    import sys
-    logging.basicConfig(level=logging.INFO)
-    if len(sys.argv) < 3:
-        print("Usage: python video_generation.py <image.jpg> <output.mp4> [caption] [camera_hint]")
-        sys.exit(1)
-    hint   = sys.argv[3] if len(sys.argv) > 3 else ""
-    camera = sys.argv[4] if len(sys.argv) > 4 else "auto"
-    ok = generate_video_single(sys.argv[1], 8, sys.argv[2], hint, camera)
-    sys.exit(0 if ok else 1)
