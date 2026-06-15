@@ -85,12 +85,36 @@ def get_credits():
     return get_all_credits()
 
 
+
+# ——— Duration helper ——————————————————————————————————————
+_LYRA_VALID_DURATIONS = [8, 10, 12, 14, 16, 18, 20]
+
+def _estimate_duration_from_voiceover(scene: dict) -> int:
+    """Return clip duration in seconds, auto-sized from voiceover word count.
+    Falls back to 8s when no voiceover or when user set explicit duration != 8.
+    """
+    explicit = int(scene.get("duration", 8))
+    if explicit != 8:
+        return explicit
+    voiceover = scene.get("voiceover", "").strip()
+    if not voiceover:
+        return 8
+    words = len(voiceover.split())
+    estimated = int(words / 2.5) + 2
+    estimated = max(8, min(20, estimated))
+    for v in _LYRA_VALID_DURATIONS:
+        if v >= estimated:
+            return v
+    return 20
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "time": datetime.utcnow().isoformat()}
 
 
 @app.post("/jobs/")
+
 async def create_job(
     background_tasks: BackgroundTasks,
     images: list[UploadFile] = File(...),
@@ -323,11 +347,12 @@ async def run_pipeline(
                 log.info(f"[TTS] Scene {i+1}: no voiceover text provided — skipping audio")
                 audio_paths.append(None)
 
+
         # Stage 3 — AI video generation
         from video_generation import generate_video_single
         for i, (scene, img) in enumerate(zip(scenes_config, enhanced_paths)):
             clip_out    = str(video_clips_dir / f"scene_{i:03d}.mp4")
-            duration    = int(scene.get("duration", 8))
+            duration    = _estimate_duration_from_voiceover(scene)
             caption     = scene.get("caption", "")
             camera_hint = scene.get("camera_hint", "auto")
             update("running", int(45 + (i / n) * 35), f"Generating video clip {i+1} of {n}…")
@@ -426,7 +451,7 @@ async def run_rework(rework_id: str, parent_job_id: str, cfg: dict):
                 if not Path(enhanced_img).exists():
                     enhanced_img = str(parent_dir / "images" / f"scene_{scene_index:03d}.jpg")
                 clip_out    = str(rework_dir / "clips" / f"scene_{scene_index:03d}.mp4")
-                duration    = int(scene.get("duration", 8))
+                duration    = _estimate_duration_from_voiceover(scene)
                 caption     = scene.get("caption", "")
                 camera_hint = scene.get("camera_hint", "auto")
                 update("running", int(40 + (idx/n)*40), f"Regenerating video clip for scene {scene_index+1}…")

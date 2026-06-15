@@ -73,32 +73,38 @@ def _detect_space_type(hint: str) -> str:
 
 _LYRA_PROMPT_LARGE = (
     "Professional real estate interior. "
-    "Camera at human eye level, approximately 1.6m height, moving forward slowly "
-    "as if a person is walking into and exploring the space. "
+    "Camera at human eye level, approximately 1.6m height. "
+    "The camera walks forward into the space, then gently pans left and right "
+    "to survey the full room, as a person naturally would when entering and exploring. "
     "All objects, furniture, doors, windows, curtains, and fixtures are completely "
     "motionless — only the camera moves along a ground-level path. "
     "No floating, no aerial angle, no objects moving. "
-    "Smooth dolly-forward motion. HDR lighting, cinema colour, 4K detail."
+    "Smooth walk-in with natural panning rotation. HDR lighting, cinema colour, 4K detail."
 )
 
 _LYRA_PROMPT_SMALL = (
     "Professional real estate interior — a compact space. "
-    "Camera at human eye level, approximately 1.6m height, making a short step "
-    "forward then a slow gentle pan, as a person naturally surveys a small room. "
+    "Camera at human eye level, approximately 1.6m height. "
+    "The camera steps forward slightly then slowly rotates left and right to survey "
+    "the entire compact room, as a person would naturally look around upon entering. "
     "All surfaces, fixtures and fittings are completely motionless — only the camera "
-    "moves along a short, ground-level path. "
+    "moves along a short, ground-level path with natural rotation. "
     "No floating, no aerial angle, no objects moving. "
     "Smooth movement, no shake. HDR lighting, cinema colour, 4K detail."
 )
 
 _LYRA_PROMPT_OUTDOOR = (
     "Professional real estate exterior. "
-    "Camera at human eye level, approximately 1.6m height, moving slowly forward "
-    "or along the facade at a natural walking pace, as if approaching the property. "
+    "Camera at human eye level, approximately 1.6m height. "
+    "The camera approaches the property walking forward, then slowly pans or arcs "
+    "along the facade to reveal the full exterior, as a person would naturally do "
+    "when arriving and surveying the property. "
     "All architectural surfaces, landscaping, and sky are completely motionless — "
-    "only the camera moves along a ground-level path. "
+    "only the camera moves along a ground-level path with natural rotation. "
     "No floating, no aerial angle, no wind, no plants or trees moving. "
-    "Smooth arc or dolly movement. HDR lighting, cinema colour, 4K detail."
+    "No people, no wind, no door movement, no hallucinated rooms or fixtures. "
+    "Level horizon, zero camera shake. "
+    "HDR lighting, cinema-grade colour correction."
 )
 
 def _build_lyra_args(
