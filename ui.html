@@ -283,17 +283,17 @@ function removeScene(i) { files.splice(i,1); renderScenes(); }
 
 // ── Camera movement options ───────────────────────────────────────────────────
 const CAMERA_OPTS = {
-  auto:              'Auto — adapts to room type',
-  pullback_orbit:    '⭐ Pull back + orbit — cinematic reveal (recommended)',
-  pullback_dolly:    'Pull back + dolly in — classic push',
-  wide_reveal_orbit: 'Wide reveal + orbit — dramatic exterior/large room',
-  dolly_in:          'Dolly in — straight push toward centre',
-  orbit:             'Orbit — arc around the space',
-  arc_push:          'Arc push — gentle curve (best for small rooms)',
-  spiral:            'Spiral approach — spiraling push in',
-  dolly_zoom:        'Dolly zoom — Hitchcock / vertigo effect',
-  pull_back:         'Pull back only — camera retreats',
-  static:            'Static — near-motionless',
+  auto:         '⭐ Auto — adapts to room type (recommended)',
+  gentle_arc:   'Gentle arc push — most rooms',
+  straight_push:'Straight dolly in — direct walk-in',
+  soft_orbit:   'Soft lateral sweep — gentle arc, stays in frame',
+  minimal:      'Minimal movement — balconies and tight spaces',
+  spiral:       'Spiral approach',
+  dolly_zoom:   'Dolly zoom — Hitchcock effect',
+  static:       'Static — near-motionless',
+  strong_orbit: '⚠ Strong lateral sweep — may hallucinate edges',
+  pullback_arc: '⚠ Pull back + arc — two-step, use with care',
+  wide_reveal:  '⚠ Wide reveal — outdoor/large rooms only',
 };
 
 // ── Scene renderer ────────────────────────────────────────────────────────────
@@ -411,7 +411,7 @@ genBtn.addEventListener('click', async () => {
 
   try {
     const res = await fetch(`${API_BASE}/jobs/`, { method:'POST', body:fd });
-    if (!res.ok) { var _se = res.status; var _sd = ''; try { var _sj = await res.json(); _sd = _sj.detail || ''; } catch (_si) {} throw new Error(_sd || 'Server error ' + _se); }
+    if (!res.ok) { const e = await res.json().catch(()=>({}))); throw new Error(e.detail||`Server error ${res.status}`); }
     const { job_id } = await res.json();
     currentJobId = job_id;
     genBtn.textContent = 'Processing…';
@@ -448,7 +448,7 @@ async function submitRework(reworkScenes) {
 
   try {
     const res = await fetch(`${API_BASE}/jobs/${currentJobId}/rework`, { method:'POST', body:fd });
-    if (!res.ok) { var _se = res.status; var _sd = ''; try { var _sj = await res.json(); _sd = _sj.detail || ''; } catch (_si) {} throw new Error(_sd || 'Server error ' + _se); }
+    if (!res.ok) { const e = await res.json().catch(()=>({}))); throw new Error(e.detail||`Server error ${res.status}`); }
     const { job_id } = await res.json();
     genBtn.textContent = 'Processing rework…';
     startPolling(job_id);
@@ -521,7 +521,7 @@ function showResult(jobId, propName, scenes) {
           <div class="sr-info">
             <div class="sr-label">Scene ${s.index+1}</div>
             <div class="sr-status">Video: ${s.video} · Audio: ${s.audio}</div>
-            ${s.video==='failed' ? '<button class="sr-redo" onclick="openRedo('+i+')">\u21bb Redo this clip</button>' : ''}
+            ${s.video==='failed'?`<button class="sr-redo" onclick="openRedo(${i})">↺ Redo this clip</button>`:''}
           </div>
         </div>`;
       }).join('');
