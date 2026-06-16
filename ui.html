@@ -225,7 +225,7 @@
         <span>AI image upscaling</span>
         <span style="margin-left:16px"></span>
         <label class="toggle"><input type="checkbox" id="do-video-upscale" checked /><span class="tog-sl"></span></label>
-        <span>Video upscale to ~1440p <span style="color:var(--muted);font-size:.75rem">(+~€0.10/clip)</span></span>
+        <span>Video upscale to 1080p <span style="color:var(--muted);font-size:.75rem">(+~€0.10/clip)</span></span>
         <span style="margin-left:16px"></span>
         <label class="toggle"><input type="checkbox" id="do-vision-qc" checked /><span class="tog-sl"></span></label>
         <span>Auto QC</span>
@@ -623,7 +623,7 @@ async function updateCostEstimate() {
   let html = '';
   html += `<div class="cost-row"><span>Generazione video (${n} clip Lyra 2.0 720p)</span><span>€${videoCost.toFixed(3)}</span></div>`;
   if (upCost > 0) html += `<div class="cost-row"><span>Upscaling immagini AI (${n} immagini)</span><span>€${upCost.toFixed(3)}</span></div>`;
-  if (vidUpCost > 0) html += `<div class="cost-row"><span>Upscaling video Topaz ~1440p (${n} clip)</span><span>€${vidUpCost.toFixed(3)}</span></div>`;
+  if (vidUpCost > 0) html += `<div class="cost-row"><span>Upscaling video Topaz 1080p (${n} clip)</span><span>€${vidUpCost.toFixed(3)}</span></div>`;
   if (ttsCost > 0) html += `<div class="cost-row"><span>Voiceover (${chars.toLocaleString()} caratteri)</span><span>€${ttsCost.toFixed(4)}</span></div>`;
   if (visCost > 0) html += `<div class="cost-row"><span>Vision QC (${n*2} analisi)</span><span>€${visCost.toFixed(4)}</span></div>`;
   html += `<div class="cost-row"><span>Quota infrastruttura</span><span>€${INFRA.toFixed(2)}</span></div>`;

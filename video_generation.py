@@ -388,7 +388,7 @@ def generate_video_single(
                     os.remove(lyra_path)
                 except Exception:
                     pass
-                log.info(f"[VideoGen] ✓ Final clip at ~1440p: {output_path}")
+                log.info(f"[VideoGen] ✓ Final clip at 1080p: {output_path}")
                 return True
             else:
                 # Upscale failed — use 720p clip as fallback
