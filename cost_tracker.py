@@ -36,8 +36,8 @@ LYRA_COST_241_FRAMES = 0.125   # ~15s clip
 # LTX-2.3 fallback — billed per clip
 LTX_COST_PER_CLIP = 0.020
 
-# fal.ai aura-sr upscaling — per image
-UPSCALE_COST_PER_IMAGE = 0.030
+# Topaz video upscaling — per second of video
+TOPAZ_COST_PER_SEC = 0.02   # 720p → 1080p tier
 
 # Florence-2 vision analysis — per call
 FLORENCE_COST_PER_CALL = 0.0002
@@ -67,57 +67,44 @@ _FRAME_COST = {
 # ── Cost estimation (before generation) ───────────────────────────────────────
 
 def estimate_job_cost(
-    scenes:          list,
-    do_upscale:      bool = True,
-    do_vision_qc:    bool = True,
+    scenes:           list,
+    do_upscale:       bool = True,
+    do_video_upscale: bool = True,
+    do_vision_qc:     bool = True,
 ) -> dict:
-    """
-    Estimates the total cost of a job before generation starts.
-
-    Args:
-        scenes:       List of scene config dicts with 'duration' and 'voiceover' keys.
-        do_upscale:   Whether AI upscaling is enabled.
-        do_vision_qc: Whether vision QC is enabled.
-
-    Returns cost breakdown dict in EUR.
-    """
+    """Estimates the total cost of a job before generation starts."""
     n = len(scenes)
 
-    # Video generation — Lyra per clip
-    video_cost = 0.0
+    video_cost         = 0.0
+    video_upscale_cost = 0.0
     for scene in scenes:
         duration = int(scene.get("duration", 8))
         frames   = _DURATION_TO_FRAMES.get(duration, 81)
         video_cost += _FRAME_COST.get(frames, LYRA_COST_81_FRAMES)
+        if do_video_upscale:
+            video_upscale_cost += duration * TOPAZ_COST_PER_SEC
 
-    # Upscaling
     upscale_cost = (UPSCALE_COST_PER_IMAGE * n) if do_upscale else 0.0
-
-    # ElevenLabs TTS — count characters
-    total_chars = sum(len(s.get("voiceover", "")) for s in scenes)
-    tts_cost    = total_chars * ELEVENLABS_COST_PER_CHAR
-
-    # Vision analysis — input + output QC per scene
-    vision_calls = (n * 2) if do_vision_qc else 0  # input + output per scene
+    total_chars  = sum(len(s.get("voiceover", "")) for s in scenes)
+    tts_cost     = total_chars * ELEVENLABS_COST_PER_CHAR
+    vision_calls = (n * 2) if do_vision_qc else 0
     vision_cost  = vision_calls * FLORENCE_COST_PER_CALL
-
-    # Infrastructure
-    infra_cost = INFRA_COST_PER_JOB
-
-    total = video_cost + upscale_cost + tts_cost + vision_cost + infra_cost
+    infra_cost   = INFRA_COST_PER_JOB
+    total = video_cost + upscale_cost + video_upscale_cost + tts_cost + vision_cost + infra_cost
 
     return {
-        "type":          "estimate",
-        "scenes":        n,
-        "video_eur":     round(video_cost,   4),
-        "upscale_eur":   round(upscale_cost, 4),
-        "tts_eur":       round(tts_cost,     4),
-        "tts_chars":     total_chars,
-        "vision_eur":    round(vision_cost,  4),
-        "vision_calls":  vision_calls,
-        "infra_eur":     round(infra_cost,   4),
-        "total_eur":     round(total,        3),
-        "calculated_at": datetime.utcnow().isoformat(),
+        "type":               "estimate",
+        "scenes":             n,
+        "video_eur":          round(video_cost,          4),
+        "upscale_eur":        round(upscale_cost,        4),
+        "video_upscale_eur":  round(video_upscale_cost,  4),
+        "tts_eur":            round(tts_cost,            4),
+        "tts_chars":          total_chars,
+        "vision_eur":         round(vision_cost,         4),
+        "vision_calls":       vision_calls,
+        "infra_eur":          round(infra_cost,          4),
+        "total_eur":          round(total,               3),
+        "calculated_at":      datetime.utcnow().isoformat(),
     }
 
 

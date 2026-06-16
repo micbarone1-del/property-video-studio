@@ -222,7 +222,10 @@
         <span>Lighting correction</span>
         <span style="margin-left:16px"></span>
         <label class="toggle"><input type="checkbox" id="do-upscale" checked /><span class="tog-sl"></span></label>
-        <span>AI upscaling</span>
+        <span>AI image upscaling</span>
+        <span style="margin-left:16px"></span>
+        <label class="toggle"><input type="checkbox" id="do-video-upscale" checked /><span class="tog-sl"></span></label>
+        <span>Video upscale to ~1440p <span style="color:var(--muted);font-size:.75rem">(+~€0.10/clip)</span></span>
         <span style="margin-left:16px"></span>
         <label class="toggle"><input type="checkbox" id="do-vision-qc" checked /><span class="tog-sl"></span></label>
         <span>Auto QC</span>
@@ -587,11 +590,13 @@ async function updateCostEstimate() {
 
   // Client-side cost estimate (mirrors cost_tracker.py logic)
   const upscale      = document.getElementById('do-upscale').checked;
+  const videoUpscale = document.getElementById('do-video-upscale').checked;
   const visionQc     = document.getElementById('do-vision-qc').checked;
   const LYRA_81      = 0.045;
   const LYRA_161     = 0.085;
   const LYRA_241     = 0.125;
   const UPSCALE      = 0.030;
+  const VIDEO_UPSCALE_PER_SEC = 0.02;  // Topaz 720p→1080p tier
   const EL_PER_CHAR  = 0.0003;
   const FLORENCE     = 0.0002;
   const INFRA        = 52.45 / 20;
@@ -600,10 +605,14 @@ async function updateCostEstimate() {
   const n         = config.length;
   const videoCost = config.reduce((s,sc) => s + frameCost(sc.duration), 0);
   const upCost    = upscale ? n * UPSCALE : 0;
+  // Video upscale cost: duration in seconds × rate
+  const vidUpCost = videoUpscale
+    ? config.reduce((s,sc) => s + (sc.duration * VIDEO_UPSCALE_PER_SEC), 0)
+    : 0;
   const chars     = config.reduce((s,sc) => s + sc.voiceover.length, 0);
   const ttsCost   = chars * EL_PER_CHAR;
   const visCost   = visionQc ? n * 2 * FLORENCE : 0;
-  const total     = videoCost + upCost + ttsCost + visCost + INFRA;
+  const total     = videoCost + upCost + vidUpCost + ttsCost + visCost + INFRA;
 
   const panel = document.getElementById('cost-panel');
   const lines = document.getElementById('cost-lines');
@@ -612,8 +621,9 @@ async function updateCostEstimate() {
   document.getElementById('cost-total').textContent = `€${total.toFixed(2)}`;
 
   let html = '';
-  html += `<div class="cost-row"><span>Generazione video (${n} clip Lyra 2.0)</span><span>€${videoCost.toFixed(3)}</span></div>`;
-  if (upCost > 0) html += `<div class="cost-row"><span>Upscaling AI (${n} immagini)</span><span>€${upCost.toFixed(3)}</span></div>`;
+  html += `<div class="cost-row"><span>Generazione video (${n} clip Lyra 2.0 720p)</span><span>€${videoCost.toFixed(3)}</span></div>`;
+  if (upCost > 0) html += `<div class="cost-row"><span>Upscaling immagini AI (${n} immagini)</span><span>€${upCost.toFixed(3)}</span></div>`;
+  if (vidUpCost > 0) html += `<div class="cost-row"><span>Upscaling video Topaz ~1440p (${n} clip)</span><span>€${vidUpCost.toFixed(3)}</span></div>`;
   if (ttsCost > 0) html += `<div class="cost-row"><span>Voiceover (${chars.toLocaleString()} caratteri)</span><span>€${ttsCost.toFixed(4)}</span></div>`;
   if (visCost > 0) html += `<div class="cost-row"><span>Vision QC (${n*2} analisi)</span><span>€${visCost.toFixed(4)}</span></div>`;
   html += `<div class="cost-row"><span>Quota infrastruttura</span><span>€${INFRA.toFixed(2)}</span></div>`;
@@ -638,10 +648,11 @@ genBtn.addEventListener('click', async () => {
   fd.append('config',           JSON.stringify(config));
   fd.append('property_name',    document.getElementById('prop-name').value || 'Property');
   fd.append('voice_id',         document.getElementById('voice-id').value.trim());
-  fd.append('enhance_images',   document.getElementById('do-lighting').checked);
-  fd.append('upscale_images',   document.getElementById('do-upscale').checked);
-  fd.append('transition_style', document.getElementById('transition-style').value);
-  fd.append('enable_vision_qc', document.getElementById('do-vision-qc').checked);
+  fd.append('enhance_images',    document.getElementById('do-lighting').checked);
+  fd.append('upscale_images',    document.getElementById('do-upscale').checked);
+  fd.append('do_video_upscale',  document.getElementById('do-video-upscale').checked);
+  fd.append('transition_style',  document.getElementById('transition-style').value);
+  fd.append('enable_vision_qc',  document.getElementById('do-vision-qc').checked);
 
   try {
     const res = await fetch(`${API_BASE}/jobs/`, { method: 'POST', body: fd });
@@ -899,7 +910,7 @@ document.getElementById('diag-modal').addEventListener('click', e => {
 });
 
 // ── Cost estimate on toggle changes ───────────────────────────────────────────
-['do-upscale','do-vision-qc'].forEach(id => {
+['do-upscale','do-vision-qc','do-video-upscale'].forEach(id => {
   document.getElementById(id).addEventListener('change', updateCostEstimate);
 });
 </script>

@@ -251,6 +251,7 @@ async def create_job(
     voice_id: str = Form(""),
     enhance_images: bool = Form(True),
     upscale_images: bool = Form(True),
+    do_video_upscale: bool = Form(True),
     transition_style: str = Form("fade"),
     enable_vision_qc: bool = Form(True),
 ):
@@ -327,6 +328,7 @@ async def create_job(
         "total_scenes":     len(images),
         "transition_style": transition_style,
         "enable_vision_qc": enable_vision_qc,
+        "do_video_upscale": do_video_upscale,
         "cost_estimate":    format_cost_display(cost_estimate),
         "cost_actual":      None,
         "reworks":          [],
@@ -347,6 +349,7 @@ async def create_job(
         do_upscale=upscale_images,
         transition_style=transition_style,
         enable_vision_qc=enable_vision_qc,
+        do_video_upscale=do_video_upscale,
     )
 
     return {
@@ -482,16 +485,17 @@ async def rework_job(
 # ── Pipeline runner ────────────────────────────────────────────────────────────
 
 async def run_pipeline(
-    job_id:         str,
-    job_dir:        Path,
-    image_paths:    list,
-    scenes_config:  list,
-    property_name:  str,
-    voice_id:       str,
-    do_lighting:    bool,
-    do_upscale:     bool,
+    job_id:           str,
+    job_dir:          Path,
+    image_paths:      list,
+    scenes_config:    list,
+    property_name:    str,
+    voice_id:         str,
+    do_lighting:      bool,
+    do_upscale:       bool,
     transition_style: str  = "fade",
     enable_vision_qc: bool = True,
+    do_video_upscale: bool = True,
 ):
     def update(status, progress, message):
         JOBS[job_id].update({"status": status, "progress": progress, "message": message})
@@ -576,7 +580,8 @@ async def run_pipeline(
             update("running", int(35 + (i/n)*40), f"Generating video clip {i+1} of {n}…")
 
             ok = await asyncio.to_thread(
-                generate_video_single, img, duration, clip_out, caption, camera_hint
+                generate_video_single, img, duration, clip_out, caption, camera_hint,
+                LYRA_ENDPOINT, False, do_video_upscale
             )
 
             model = "lyra-2"
