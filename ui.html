@@ -307,6 +307,7 @@
     <div class="card">
       <video id="video-preview" controls></video>
       <a class="btn-download" id="download-link" href="#">⬇ Download MP4</a>
+    <button class="btn-redo" id="rework-btn" onclick="requestRework()" style="margin-top:10px;display:block;width:100%;">&#8635; Rifare video</button>
       <div id="actual-cost" style="margin-top:16px"></div>
     </div>
   </section>
@@ -826,6 +827,28 @@ function renderSceneProgress(scenes) {
       ${s.caption ? '— ' + s.caption : ''}
     </div>`;
   }).join('');
+}
+
+async function requestRework() {
+  if (!currentJobId) return;
+  const btn = document.getElementById('rework-btn');
+  if (!confirm('Confermi il rifacimento del video? Il costo stimato verra addebitato.')) return;
+  btn.disabled = true;
+  btn.textContent = 'Invio richiesta...';
+  try {
+    const fd = new FormData();
+    fd.append('rework_config', JSON.stringify({scenes: [], redo_video: true, redo_audio: false, then_assemble: true}));
+    const res = await fetch(API_BASE + '/jobs/' + currentJobId + '/rework', {method: 'POST', body: fd});
+    if (!res.ok) { const e = await res.json(); throw new Error(e.detail || 'Errore'); }
+    const data = await res.json();
+    currentJobId = data.job_id;
+    alert('Rifacimento avviato! Il video si aggiornerà.');
+    btn.textContent = 'Rifacimento in corso...';
+  } catch(err) {
+    alert('Errore: ' + err.message);
+    btn.disabled = false;
+    btn.textContent = String.fromCharCode(8635) + ' Rifare video';
+  }
 }
 
 function showResult(jobId, propName) {

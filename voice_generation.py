@@ -86,6 +86,8 @@ def generate_speech(
         sentence_pause (float): Seconds of silence after each period.
         noise_gate_threshold (float): dB threshold for removing breath sounds.
     """
+    # Guard against None voice_id (fallback to default)
+    voice_id = voice_id or DEFAULT_VOICE_ID
     # 1. Get API Key
     key = api_key or os.environ.get("ELEVENLABS_API_KEY")
     if not key:

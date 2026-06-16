@@ -37,8 +37,7 @@ log = logging.getLogger(__name__)
 FLORENCE_ENDPOINT = "fal-ai/florence-2-large/more-detailed-caption"
 
 # ── Space classification keywords (parsed from Florence description) ───────────
-_ELEVATED_KW  = ["balcony","terrace","loggia","rooftop","roof","outdoor seating",
-                  "railing","balustrade","parapet","open air","overlooking"]
+_ELEVATED_KW = ["balcony","terrace","loggia","rooftop","roof terrace","roof top","balustrade","parapet","roof deck","roof garden"]
 _OUTDOOR_KW   = ["garden","yard","pool","swimming","driveway","facade","courtyard",
                   "exterior","patio","lawn","grass","trees","plants","outdoor",
                   "street","pathway","entrance gate","letterbox"]

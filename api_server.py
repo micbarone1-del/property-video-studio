@@ -546,7 +546,7 @@ async def run_pipeline(
             if voiceover:
                 ok = await asyncio.to_thread(
                     generate_voice, voiceover, audio_out,
-                    voice_id=voice_id or None
+                    voice_id=voice_id or os.getenv("DEFAULT_VOICE_ID")
                 )
                 if ok:
                     # TTS QC
