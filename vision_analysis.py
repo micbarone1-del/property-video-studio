@@ -39,7 +39,7 @@ FLORENCE_ENDPOINT = "fal-ai/florence-2-large/more-detailed-caption"
 # ── Space classification keywords (parsed from Florence description) ───────────
 _ELEVATED_KW = ["balcony","terrace","loggia","rooftop","roof terrace","roof top","balustrade","parapet","roof deck","roof garden"]
 _OUTDOOR_KW   = ["garden","yard","pool","swimming","driveway","facade","courtyard",
-                  "exterior","patio","lawn","grass","trees","plants","outdoor",
+                  "exterior","patio","lawn","grass","outdoor",
                   "street","pathway","entrance gate","letterbox"]
 _SMALLROOM_KW = ["bathroom","shower","bathtub","toilet","wc","sink","basin",
                   "hallway","corridor","laundry","utility room","closet","pantry",
@@ -104,30 +104,76 @@ def _classify_space(description: str) -> tuple[str, float]:
                           small_interior, ground_exterior, elevated
     confidence is 0.0-1.0
     """
+    import re as _re
     d = description.lower()
 
-    # Check elevated first (most specific)
-    if any(k in d for k in _ELEVATED_KW):
-        return "elevated", 0.85
+    # Phrases indicating the elevated/outdoor element is visible in the background
+    # but is NOT the primary subject of the image
+    _BACKGROUND_CTX = [
+        "leads to a balcony", "leads to the balcony", "leads to a terrace",
+        "lead to a balcony", "lead to a terrace",
+        "door that leads to", "doors that lead", "doors lead to",
+        "opening to a balcony", "opening onto",
+        "through the window", "through the door", "outside the window",
+        "glass door", "sliding door", "sliding glass",
+        "terrace door", "terrace doors", "balcony door", "balcony doors",
+        "in the background", "outside the room", "can be seen", "seen through",
+        "from the window", "view of", "visible through",
+    ]
 
-    # Check outdoor
+    # Interior room subject words — if present alongside elevated keyword,
+    # the elevated keyword is likely background context
+    _INTERIOR_SUBJ = [
+        "living room", "bedroom", "kitchen", "dining room", "bathroom",
+        "hallway", "corridor", "salon", "lounge", "apartment", "flat",
+        "study", "office", "room with", "sofa", "bed ", "wardrobe",
+        "ceiling", "floor is", "floor of", "walls are", "painted",
+        "furniture", "the image shows a",
+    ]
+
+    # Check elevated — but verify it is the PRIMARY subject, not background
+    elevated_found = any(k in d for k in _ELEVATED_KW)
+    if elevated_found:
+        background_override = any(ctx in d for ctx in _BACKGROUND_CTX)
+        interior_subject    = any(kw  in d for kw  in _INTERIOR_SUBJ)
+
+        if background_override and interior_subject:
+            pass  # interior room with outdoor visible through door/window
+        elif ("rooftops" in d and interior_subject
+              and not any(k in d for k in ["on the rooftop", "rooftop terrace",
+                                            "roof terrace", "roof garden"])):
+            pass  # interior room with rooftops visible through window
+        elif _re.search(r"\b(window|room)\b.{0,50}\boverloo", d) and interior_subject:
+            pass  # "window overlooks" pattern in interior room
+        else:
+            return "elevated", 0.85
+
+    # Check outdoor / ground exterior
     if any(k in d for k in _OUTDOOR_KW):
         return "ground_exterior", 0.85
 
-    # Check small rooms
+    # Check small rooms (bathroom, corridor, etc.)
     if any(k in d for k in _SMALLROOM_KW):
         return "small_interior", 0.90
 
-    # Check bedroom
-    if any(k in d for k in _BEDROOM_KW):
+    # Check bedroom — only truly bedroom-specific terms (wardrobe removed as too generic)
+    _STRICT_BEDROOM_KW = [
+        "bedroom", "mattress", "pillows", "headboard",
+        "nightstand", "bedside", "duvet", "bedroom furniture", "sleeping",
+        "bed frame", "double bed", "single bed", "king size", "queen size",
+    ]
+    if any(k in d for k in _STRICT_BEDROOM_KW):
         return "bedroom", 0.90
+    # standalone "bed" (not bedside / bedroom / bedspread)
+    if _re.search(r"\bbed\b", d) and not _re.search(r"bed(side|room|spread|ding)", d):
+        return "bedroom", 0.85
 
     # Estimate interior size from description cues
-    size_cues_large  = ["spacious","open","large","expansive","wide","high ceiling",
-                         "open plan","generous","airy","grand","living room","salon"]
-    size_cues_medium = ["medium","modest","cosy","cozy","comfortable","dining",
-                         "kitchen","study","office","studio"]
-
+    size_cues_large  = ["spacious", "open", "large", "expansive", "wide",
+                        "high ceiling", "open plan", "generous", "airy",
+                        "grand", "living room", "salon"]
+    size_cues_medium = ["medium", "modest", "cosy", "cozy", "comfortable",
+                        "dining", "kitchen", "study", "office", "studio"]
     large_score  = sum(1 for k in size_cues_large  if k in d)
     medium_score = sum(1 for k in size_cues_medium if k in d)
 
@@ -136,7 +182,7 @@ def _classify_space(description: str) -> tuple[str, float]:
     elif medium_score > 0:
         return "medium_interior", 0.70
     else:
-        return "large_interior", 0.55   # default with low confidence
+        return "large_interior", 0.55  # default with low confidence
 
 
 def _estimate_depth(description: str) -> str:
