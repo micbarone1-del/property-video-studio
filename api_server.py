@@ -581,7 +581,7 @@ async def run_pipeline(
 
             ok = await asyncio.to_thread(
                 generate_video_single, img, duration, clip_out, caption, camera_hint,
-                LYRA_ENDPOINT, False, do_video_upscale
+            test_mode=False, do_video_upscale=do_video_upscale
             )
 
             model = "lyra-2"
