@@ -49,6 +49,7 @@ ELEVENLABS_COST_PER_CHAR = float(os.getenv("ELEVENLABS_COST_PER_CHAR", "0.0003")
 VPS_MONTHLY_EUR    = float(os.getenv("VPS_MONTHLY_COST_EUR",   "52.45"))
 MONTHLY_JOBS       = int(  os.getenv("MONTHLY_JOBS_ESTIMATE",  "20"))
 INFRA_COST_PER_JOB = VPS_MONTHLY_EUR / max(MONTHLY_JOBS, 1)
+UPSCALE_COST_PER_IMAGE = 0.030  # Real-ESRGAN image upscaling — per image
 
 # Frame mapping (mirrors video_generation.py)
 _DURATION_TO_FRAMES = {
