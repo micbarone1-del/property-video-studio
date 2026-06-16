@@ -40,13 +40,40 @@ _DURATION_TO_FRAMES = {
 # ── Space type detection ───────────────────────────────────────────────────────
 # Order matters — more specific keywords checked first
 
-_ELEVATED_KW  = ["balcony","terrace","loggia","rooftop","roof terrace","roof top"]
-_OUTDOOR_KW   = ["garden","pool","driveway","facade","entrance","courtyard",
-                  "exterior","outdoor","patio","backyard","front yard","street view"]
-_SMALLROOM_KW = ["bathroom","wc","toilet","ensuite","en-suite","cloakroom",
-                  "hallway","corridor","laundry","utility","closet","pantry","storage"]
-_BEDROOM_KW   = ["bedroom","master bedroom","guest room","guest bedroom",
-                  "master suite","kids room","nursery"]
+_ELEVATED_KW  = [
+    # English
+    "balcony","terrace","loggia","rooftop","roof terrace","roof top",
+    # Italian
+    "balcone","terrazza","terrazzo","lastrico","loggia","tetto",
+    "terrazzo sul tetto","roof garden",
+]
+_OUTDOOR_KW   = [
+    # English
+    "garden","pool","driveway","facade","entrance","courtyard",
+    "exterior","outdoor","patio","backyard","front yard","street view",
+    # Italian
+    "giardino","piscina","vialetto","facciata","cortile",
+    "esterno","esterni","patio","retro","fronte","vista strada",
+    "giardino posteriore","giardino anteriore","entrata esterna",
+]
+_SMALLROOM_KW = [
+    # English
+    "bathroom","wc","toilet","ensuite","en-suite","cloakroom",
+    "hallway","corridor","laundry","utility","closet","pantry","storage",
+    # Italian
+    "bagno","wc","toilette","bagno en suite","bagno privato",
+    "antibagno","corridoio","lavanderia","ripostiglio","dispensa",
+    "cabina armadio","sgabuzzino","disimpegno","ingresso",
+]
+_BEDROOM_KW   = [
+    # English
+    "bedroom","master bedroom","guest room","guest bedroom",
+    "master suite","kids room","nursery",
+    # Italian
+    "camera","camera da letto","camera matrimoniale","camera singola",
+    "camera doppia","camera degli ospiti","stanza da letto",
+    "cameretta","camera bambini","suite","suite padronale",
+]
 
 def _detect_space(hint: str) -> str:
     h = hint.lower()
@@ -54,7 +81,8 @@ def _detect_space(hint: str) -> str:
     if any(k in h for k in _OUTDOOR_KW):   return "outdoor"
     if any(k in h for k in _SMALLROOM_KW): return "small"
     if any(k in h for k in _BEDROOM_KW):   return "bedroom"
-    return "large"   # living room, kitchen, dining, open plan — default
+    return "large"   # default for: soggiorno, cucina, sala, salone, sala da pranzo,
+                     # living room, kitchen, dining, open plan — all get gentle arc push
 
 
 # ── AUTO presets — one per space type ─────────────────────────────────────────
