@@ -384,6 +384,22 @@ def download_job(job_id: str):
     return FileResponse(output_path, media_type="video/mp4", filename=filename)
 
 
+
+# — Scene clip preview endpoint ——————————————————————————————
+@app.get("/jobs/{job_id}/clips/{scene_idx}")
+def stream_scene_clip(job_id: str, scene_idx: int):
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+    clip_paths = job.get("video_clip_paths", [])
+    if scene_idx < 0 or scene_idx >= len(clip_paths):
+        raise HTTPException(status_code=404, detail="Clip index out of range")
+    clip_path = clip_paths[scene_idx]
+    if not clip_path or not Path(clip_path).exists():
+        raise HTTPException(status_code=404, detail="Clip file not found")
+    return FileResponse(clip_path, media_type="video/mp4")
+
+
 # ── QC approval gate ───────────────────────────────────────────────────────────
 
 @app.post("/jobs/{job_id}/approve")
@@ -415,13 +431,29 @@ async def approve_job(
     redo_scenes = data.get("redo_scenes", [])
 
     if redo_scenes:
-        # Mark job as needing rework for rejected scenes
-        JOBS[job_id]["status"]  = "queued"
-        JOBS[job_id]["message"] = f"Rework queued for {len(redo_scenes)} scene(s)"
+        # Generate a proper new rework job id
+        rework_id = f"{job_id}_rw{str(uuid.uuid4())[:4]}"
+        JOBS[rework_id] = {
+            "status":        "queued",
+            "progress":      0,
+            "message":       f"Rework queued for {len(redo_scenes)} scene(s)",
+            "parent_job_id": job_id,
+            "output_path":   None,
+            "created_at":    datetime.utcnow().isoformat(),
+            "property_name": job.get("property_name", ""),
+            "total_scenes":  job.get("total_scenes", 0),
+            "cost_actual":   None,
+        }
+        # Mark original job as pointing to the rework
+        JOBS[job_id]["status"]     = "queued"
+        JOBS[job_id]["message"]    = f"Rework queued for {len(redo_scenes)} scene(s)"
+        JOBS[job_id]["rework_job"] = rework_id
+        _save_job(job_id)
+        _save_job(rework_id)
         # Trigger rework for just the rejected scenes
         background_tasks.add_task(
             run_rework,
-            rework_id=job_id,
+            rework_id=rework_id,
             parent_job_id=job_id,
             cfg={
                 "scenes":          redo_scenes,
@@ -443,7 +475,8 @@ async def approve_job(
         )
 
     _save_job(job_id)
-    return {"job_id": job_id, "status": JOBS[job_id]["status"]}
+    rework_job_id = JOBS[job_id].get("rework_job")
+    return {"job_id": job_id, "status": JOBS[job_id]["status"], "rework_job_id": rework_job_id}
 
 
 # ── Rework endpoint ────────────────────────────────────────────────────────────
