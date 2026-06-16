@@ -42,18 +42,19 @@ def get_fal_credits() -> dict:
     Returns { "balance": float, "ok": bool, "error": str|None }
     ok=False means balance is below threshold or check failed.
     """
-    api_key = os.getenv("FAL_KEY", "")
+    api_key = os.getenv("FAL_KEY", "").strip()
     if not api_key:
         return {"balance": None, "ok": True, "error": "FAL_KEY not set"}
     try:
         resp = requests.get(
-            "https://api.fal.ai/billing/credits",
+            "https://api.fal.ai/v1/account/billing",
+            params={"expand": "credits"},
             headers={"Authorization": f"Key {api_key}"},
             timeout=10
         )
         resp.raise_for_status()
-        data     = resp.json()
-        balance  = float(data.get("balance", 0))
+        data    = resp.json()
+        balance = float(data.get("credits", {}).get("current_balance", 0))
         return {
             "balance":  round(balance, 2),
             "ok":       balance >= FAL_THRESHOLD,
@@ -70,19 +71,21 @@ def get_elevenlabs_credits() -> dict:
     """
     Returns { "characters_remaining": int, "ok": bool, "error": str|None }
     """
-    api_key = os.getenv("ELEVENLABS_API_KEY", "")
+    api_key = os.getenv("ELEVENLABS_API_KEY", "").strip()
     if not api_key:
         return {"characters_remaining": None, "ok": True, "error": "ELEVENLABS_API_KEY not set"}
     try:
         resp = requests.get(
-            "https://api.elevenlabs.io/v1/user/subscription",
+            "https://api.elevenlabs.io/v1/user",
             headers={"xi-api-key": api_key},
             timeout=10
         )
         resp.raise_for_status()
         data      = resp.json()
-        limit     = int(data.get("character_limit", 0))
-        used      = int(data.get("character_count", 0))
+        # ElevenLabs returns subscription info nested under user
+        sub       = data.get("subscription", {})
+        limit     = int(sub.get("character_limit", 0))
+        used      = int(sub.get("character_count", 0))
         remaining = max(0, limit - used)
         return {
             "characters_remaining": remaining,
