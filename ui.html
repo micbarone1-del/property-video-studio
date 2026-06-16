@@ -307,9 +307,9 @@
     <div class="card">
       <video id="video-preview" controls></video>
       <a class="btn-download" id="download-link" href="#">⬇ Download MP4</a>
-    <button class="btn-redo" id="rework-btn" onclick="requestRework()" style="margin-top:10px;display:block;width:100%;">&#8635; Rifare video</button>
       <div id="actual-cost" style="margin-top:16px"></div>
     </div>
+  <div id="scene-rework-panel" style="margin-top:16px"></div>
   </section>
 
 </main>
@@ -829,35 +829,176 @@ function renderSceneProgress(scenes) {
   }).join('');
 }
 
-async function requestRework() {
+
+
+// ── Per-scene rework ───────────────────────────────────────────────────────
+const CAMERA_HINTS = [
+  { value: 'auto',         label: 'Auto (rilevamento)' },
+  { value: 'gentle_arc',  label: 'Gentle Arc' },
+  { value: 'straight_push', label: 'Straight Push' },
+  { value: 'soft_orbit',  label: 'Soft Orbit' },
+  { value: 'minimal',     label: 'Minimal' },
+  { value: 'spiral',      label: 'Spiral' },
+  { value: 'dolly_zoom',  label: 'Dolly Zoom' },
+  { value: 'static',      label: 'Statico' },
+  { value: 'strong_orbit', label: 'Strong Orbit' },
+  { value: 'pullback_arc', label: 'Pullback Arc' },
+  { value: 'wide_reveal', label: 'Wide Reveal' },
+];
+
+let currentScenesConfig = [];
+
+function buildSceneReworkPanel(scenesConfig) {
+  currentScenesConfig = scenesConfig || [];
+  const panel = document.getElementById('scene-rework-panel');
+  if (!panel) return;
+  if (!currentScenesConfig.length) {
+    panel.innerHTML = '';
+    return;
+  }
+
+  const cameraOptions = CAMERA_HINTS.map(h =>
+    `<option value="${h.value}">${h.label}</option>`
+  ).join('');
+
+  let html = `<p class="sec-label" style="margin-bottom:8px">↺ Rifare scene</p>`;
+  currentScenesConfig.forEach((scene, idx) => {
+    const caption   = scene.caption   || '';
+    const camHint   = scene.camera_hint || 'auto';
+    const voiceover = (scene.voiceover || '').trim();
+    html += `
+    <div class="card" style="margin-bottom:10px;padding:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <strong>Scena ${idx + 1}</strong>
+        <span style="font-size:.8rem;opacity:.6">${camHint}</span>
+      </div>
+      ${caption ? `<div style="font-size:.85rem;margin-bottom:8px;opacity:.8">${caption}</div>` : ''}
+      <div style="display:flex;gap:16px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="redo-video-${idx}" checked
+            onchange="toggleCameraSelect(${idx})">
+          <span>Redo video</span>
+        </label>
+        ${voiceover ? `
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="redo-tts-${idx}">
+          <span>Redo TTS</span>
+        </label>` : ''}
+      </div>
+      <div id="camera-select-row-${idx}" style="margin-bottom:8px">
+        <label style="font-size:.85rem;display:block;margin-bottom:4px">Movimento camera:</label>
+        <select id="camera-hint-${idx}" class="form-control" style="width:100%;padding:6px;border-radius:6px;border:1px solid var(--border)">
+          ${CAMERA_HINTS.map(h =>
+            `<option value="${h.value}"${h.value === camHint ? ' selected' : ''}>${h.label}</option>`
+          ).join('')}
+        </select>
+      </div>
+      <button class="btn-redo" onclick="submitSceneRework(${idx})"
+        style="width:100%">↺ Rifare scena ${idx + 1}</button>
+    </div>`;
+  });
+
+  // Also add a "redo all selected" button if more than 1 scene
+  if (currentScenesConfig.length > 1) {
+    html += `
+    <button class="btn-primary" onclick="submitAllRework()"
+      style="width:100%;margin-top:4px">↺ Rifare tutte le scene selezionate</button>`;
+  }
+
+  panel.innerHTML = html;
+}
+
+function toggleCameraSelect(idx) {
+  const cb  = document.getElementById(`redo-video-${idx}`);
+  const row = document.getElementById(`camera-select-row-${idx}`);
+  if (row) row.style.display = cb && cb.checked ? 'block' : 'none';
+}
+
+async function submitSceneRework(idx) {
   if (!currentJobId) return;
-  const btn = document.getElementById('rework-btn');
-  if (!confirm('Confermi il rifacimento del video? Il costo stimato verra addebitato.')) return;
-  btn.disabled = true;
-  btn.textContent = 'Invio richiesta...';
+  const redoVideo = document.getElementById(`redo-video-${idx}`)?.checked || false;
+  const redoTts   = document.getElementById(`redo-tts-${idx}`)?.checked   || false;
+  const camHint   = document.getElementById(`camera-hint-${idx}`)?.value  || 'auto';
+  if (!redoVideo && !redoTts) {
+    alert('Seleziona almeno una opzione (video o TTS) per la scena ' + (idx + 1));
+    return;
+  }
+  await _sendRework([idx], redoVideo, redoTts, camHint);
+}
+
+async function submitAllRework() {
+  if (!currentJobId) return;
+  const scenes = [];
+  const updatedScenes = JSON.parse(JSON.stringify(currentScenesConfig));
+  let anyVideo = false, anyTts = false;
+  currentScenesConfig.forEach((_, idx) => {
+    const redoVideo = document.getElementById(`redo-video-${idx}`)?.checked || false;
+    const redoTts   = document.getElementById(`redo-tts-${idx}`)?.checked   || false;
+    if (redoVideo || redoTts) {
+      scenes.push(idx);
+      if (redoVideo) {
+        anyVideo = true;
+        updatedScenes[idx].camera_hint = document.getElementById(`camera-hint-${idx}`)?.value || updatedScenes[idx].camera_hint || 'auto';
+      }
+      if (redoTts) anyTts = true;
+    }
+  });
+  if (!scenes.length) { alert('Seleziona almeno una scena da rifare.'); return; }
+  // For multi-scene we need per-scene redo flags — send scene by scene
+  for (const idx of scenes) {
+    const redoVideo = document.getElementById(`redo-video-${idx}`)?.checked || false;
+    const redoTts   = document.getElementById(`redo-tts-${idx}`)?.checked   || false;
+    const camHint   = document.getElementById(`camera-hint-${idx}`)?.value  || 'auto';
+    await _sendRework([idx], redoVideo, redoTts, camHint);
+  }
+}
+
+async function _sendRework(sceneIndices, redoVideo, redoTts, camHint) {
   try {
+    // Build updated_scenes: copy current config, override camera_hint for redo-video scenes
+    const updatedScenes = JSON.parse(JSON.stringify(currentScenesConfig));
+    if (redoVideo) {
+      sceneIndices.forEach(idx => {
+        if (updatedScenes[idx]) updatedScenes[idx].camera_hint = camHint;
+      });
+    }
+    const cfg = {
+      scenes:         sceneIndices,
+      redo_video:     redoVideo,
+      redo_audio:     redoTts,
+      then_assemble:  true,
+      updated_scenes: updatedScenes,
+    };
     const fd = new FormData();
-    fd.append('rework_config', JSON.stringify({scenes: [], redo_video: true, redo_audio: false, then_assemble: true}));
-    const res = await fetch(API_BASE + '/jobs/' + currentJobId + '/rework', {method: 'POST', body: fd});
-    if (!res.ok) { const e = await res.json(); throw new Error(e.detail || 'Errore'); }
+    fd.append('rework_config', JSON.stringify(cfg));
+    const res  = await fetch(API_BASE + '/jobs/' + currentJobId + '/rework', { method: 'POST', body: fd });
     const data = await res.json();
+    if (!res.ok) { alert('Errore rework: ' + (data.detail || res.status)); return; }
     currentJobId = data.job_id;
-    alert('Rifacimento avviato! Il video si aggiornerà.');
-    btn.textContent = 'Rifacimento in corso...';
-  } catch(err) {
-    alert('Errore: ' + err.message);
-    btn.disabled = false;
-    btn.textContent = String.fromCharCode(8635) + ' Rifare video';
+    document.getElementById('scene-rework-panel').innerHTML =
+      '<div class="alert" style="background:var(--green-dim,#d4edda);padding:12px;border-radius:8px">↺ Rework avviato per scena ' + (sceneIndices.map(i=>i+1).join(', ')) + '…</div>';
+    startPolling(currentJobId);
+  } catch (e) {
+    alert('Errore: ' + e.message);
   }
 }
 
 function showResult(jobId, propName) {
-  const dlUrl = `${API_BASE}/jobs/${jobId}/download`;
-  document.getElementById('video-preview').src    = dlUrl;
-  document.getElementById('download-link').href   = dlUrl;
-  document.getElementById('download-link').download = `${propName.replace(/\s+/g,'_')}_video.mp4`;
   resultSec.style.display = 'block';
   resultSec.scrollIntoView({ behavior: 'smooth' });
+  const videoEl = document.getElementById('video-preview');
+  const dlLink  = document.getElementById('download-link');
+  if (videoEl) { videoEl.src = API_BASE + '/jobs/' + jobId + '/download'; videoEl.load(); }
+  if (dlLink)  { dlLink.href = API_BASE + '/jobs/' + jobId + '/download'; }
+  // Fetch job details to build per-scene rework panel
+  fetch(API_BASE + '/jobs/' + jobId)
+    .then(r => r.json())
+    .then(job => {
+      const scenes = job.scenes_config || [];
+      buildSceneReworkPanel(scenes);
+      if (job.cost_actual) showCostPanel(job.cost_actual, 'effettivo');
+    })
+    .catch(() => { buildSceneReworkPanel([]); });
 }
 
 function showCostPanel(costData, type) {
