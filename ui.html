@@ -550,59 +550,6 @@ function renderScenes() {
   });
 }
 
-    const card = document.createElement('div');
-    card.className  = 'scene-card';
-    card.dataset.index = i;
-    card.innerHTML = `
-      <div class="sc-head">
-        <img class="sc-thumb" src="${url}" />
-        <div>
-          <div class="sc-num">Scena ${i+1}</div>
-          <div class="sc-name">${file.name} ${badge}</div>
-        </div>
-        <button class="sc-remove" onclick="removeScene(${i})">✕</button>
-      </div>
-      <div class="sc-fields">
-        <div>
-          <label>Didascalia <span style="color:var(--muted)">(es: Soggiorno luminoso)</span></label>
-          <input type="text" class="sc-caption" placeholder="es: Soggiorno, Camera da letto, Balcone…"
-            oninput="onCaptionChange(${i}, this.value)" />
-        </div>
-        <div>
-          <label>Testo voiceover <span style="color:var(--muted)">(opzionale)</span></label>
-          <div class="vo-wrap">
-            <textarea class="sc-voiceover" placeholder="es: Benvenuti in questo splendido appartamento…"
-              oninput="onVoiceoverChange(${i}, this)"></textarea>
-            <span class="vo-counter" id="vo-counter-${i}"></span>
-          </div>
-          <div class="vo-hint" id="vo-hint-${i}"></div>
-        </div>
-        <div class="sc-row3">
-          <div>
-            <label>Movimento camera</label>
-            <select class="sc-camera">${camOpts}</select>
-          </div>
-          <div style="grid-column:span 2">
-            <label>Durata clip</label>
-            <div class="dur-row">
-              <span style="font-size:.75rem;color:var(--muted)">6s</span>
-              <input type="range" class="sc-duration" min="6" max="20" step="2" value="8"
-                oninput="onDurationChange(this)" />
-              <span style="font-size:.75rem;color:var(--muted)">20s</span>
-              <span class="dur-val">8s</span>
-            </div>
-          </div>
-        </div>
-      </div>`;
-    scenesCont.appendChild(card);
-
-    // Restore camera hint from AI analysis
-    if (ai && ai.recommended_camera) {
-      card.querySelector('.sc-camera').value = ai.recommended_camera;
-    }
-  });
-}
-
 function onCaptionChange(index, value) {
   // Re-trigger AI analysis if caption changes substantially
   updateCostEstimate();

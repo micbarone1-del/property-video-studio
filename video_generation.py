@@ -250,13 +250,14 @@ def _upload_bytes(data: bytes, filename: str = "image.jpg") -> str:
 def _generate_kling(image_url: str, prompt: str, duration: int) -> str | None:
     """Submits to Kling 2.5 Turbo Pro. Returns video URL or None."""
     try:
-        log.info(f"[VideoGen] Kling 2.5 Turbo Pro — {duration}s")
+        kling_dur = 5 if duration <= 7 else 10  # Kling only accepts 5 or 10
+        log.info(f"[VideoGen] Kling 2.5 Turbo Pro - {kling_dur}s (requested {duration}s)")
         result = fal_client.subscribe(
             KLING_ENDPOINT,
             arguments={
                 "image_url":      image_url,
                 "prompt":         prompt,
-                "duration":       f"{duration}",  # Kling takes string "5" or "10"
+                "duration":       f"{kling_dur}",  # Kling takes string "5" or "10"
                 "aspect_ratio":   "16:9",
                 "mode":           "pro",
             }
