@@ -254,6 +254,9 @@ async def create_job(
     do_video_upscale: bool = Form(True),
     transition_style: str = Form("fade"),
     enable_vision_qc: bool = Form(True),
+    model_tier: str = Form("standard"),       # eco / standard / premium
+    lighting: str = Form("bright_natural"),   # property-level lighting
+    intensity: str = Form("natural_pace"),    # property-level motion intensity
 ):
     # Rate limit check
     client_ip = request.client.host if request.client else "unknown"
@@ -283,7 +286,7 @@ async def create_job(
     job_id  = str(uuid.uuid4())[:8]
     job_dir = JOBS_DIR / job_id
     img_dir = job_dir / "images"
-    img_dir.mkdir(parents=True, exist_ok=True)
+    img_dir.mkdir(parents=True)
 
     saved_images = []
     for i, upload in enumerate(images):
@@ -329,11 +332,14 @@ async def create_job(
         "transition_style": transition_style,
         "enable_vision_qc": enable_vision_qc,
         "do_video_upscale": do_video_upscale,
+        "model_tier":       model_tier,
+        "lighting":         lighting,
+        "intensity":        intensity,
         "cost_estimate":    format_cost_display(cost_estimate),
         "cost_actual":      None,
         "reworks":          [],
         "qc_results":       [],
-        "awaiting_scenes":  [],   # scenes flagged/rejected waiting for approval
+        "awaiting_scenes":  [],
     }
     _save_job(job_id)
 
@@ -350,6 +356,9 @@ async def create_job(
         transition_style=transition_style,
         enable_vision_qc=enable_vision_qc,
         do_video_upscale=do_video_upscale,
+        model_tier=model_tier,
+        lighting=lighting,
+        intensity=intensity,
     )
 
     return {
@@ -384,22 +393,6 @@ def download_job(job_id: str):
     return FileResponse(output_path, media_type="video/mp4", filename=filename)
 
 
-
-# — Scene clip preview endpoint ——————————————————————————————
-@app.get("/jobs/{job_id}/clips/{scene_idx}")
-def stream_scene_clip(job_id: str, scene_idx: int):
-    if job_id not in JOBS:
-        raise HTTPException(status_code=404, detail="Job not found")
-    job = JOBS[job_id]
-    clip_paths = job.get("video_clip_paths", [])
-    if scene_idx < 0 or scene_idx >= len(clip_paths):
-        raise HTTPException(status_code=404, detail="Clip index out of range")
-    clip_path = clip_paths[scene_idx]
-    if not clip_path or not Path(clip_path).exists():
-        raise HTTPException(status_code=404, detail="Clip file not found")
-    return FileResponse(clip_path, media_type="video/mp4")
-
-
 # ── QC approval gate ───────────────────────────────────────────────────────────
 
 @app.post("/jobs/{job_id}/approve")
@@ -431,29 +424,13 @@ async def approve_job(
     redo_scenes = data.get("redo_scenes", [])
 
     if redo_scenes:
-        # Generate a proper new rework job id
-        rework_id = f"{job_id}_rw{str(uuid.uuid4())[:4]}"
-        JOBS[rework_id] = {
-            "status":        "queued",
-            "progress":      0,
-            "message":       f"Rework queued for {len(redo_scenes)} scene(s)",
-            "parent_job_id": job_id,
-            "output_path":   None,
-            "created_at":    datetime.utcnow().isoformat(),
-            "property_name": job.get("property_name", ""),
-            "total_scenes":  job.get("total_scenes", 0),
-            "cost_actual":   None,
-        }
-        # Mark original job as pointing to the rework
-        JOBS[job_id]["status"]     = "queued"
-        JOBS[job_id]["message"]    = f"Rework queued for {len(redo_scenes)} scene(s)"
-        JOBS[job_id]["rework_job"] = rework_id
-        _save_job(job_id)
-        _save_job(rework_id)
+        # Mark job as needing rework for rejected scenes
+        JOBS[job_id]["status"]  = "queued"
+        JOBS[job_id]["message"] = f"Rework queued for {len(redo_scenes)} scene(s)"
         # Trigger rework for just the rejected scenes
         background_tasks.add_task(
             run_rework,
-            rework_id=rework_id,
+            rework_id=job_id,
             parent_job_id=job_id,
             cfg={
                 "scenes":          redo_scenes,
@@ -475,8 +452,7 @@ async def approve_job(
         )
 
     _save_job(job_id)
-    rework_job_id = JOBS[job_id].get("rework_job")
-    return {"job_id": job_id, "status": JOBS[job_id]["status"], "rework_job_id": rework_job_id}
+    return {"job_id": job_id, "status": JOBS[job_id]["status"]}
 
 
 # ── Rework endpoint ────────────────────────────────────────────────────────────
@@ -529,6 +505,9 @@ async def run_pipeline(
     transition_style: str  = "fade",
     enable_vision_qc: bool = True,
     do_video_upscale: bool = True,
+    model_tier:       str  = "standard",
+    lighting:         str  = "bright_natural",
+    intensity:        str  = "natural_pace",
 ):
     def update(status, progress, message):
         JOBS[job_id].update({"status": status, "progress": progress, "message": message})
@@ -579,7 +558,7 @@ async def run_pipeline(
             if voiceover:
                 ok = await asyncio.to_thread(
                     generate_voice, voiceover, audio_out,
-                    voice_id=voice_id or os.getenv("DEFAULT_VOICE_ID")
+                    voice_id=voice_id or None
                 )
                 if ok:
                     # TTS QC
@@ -606,22 +585,25 @@ async def run_pipeline(
         rejected_scenes = []
 
         for i, (scene, img) in enumerate(zip(scenes_config, enhanced_paths)):
-            clip_out    = str(video_clips_dir / f"scene_{i:03d}.mp4")
-            duration    = int(scene.get("duration", 8))
-            caption     = scene.get("caption", "")
-            camera_hint = scene.get("camera_hint", "auto")
+            clip_out     = str(video_clips_dir / f"scene_{i:03d}.mp4")
+            duration     = int(scene.get("duration", 8))
+            caption      = scene.get("caption", "")
+            space_type   = scene.get("space_type",   "large")
+            pov_movement = scene.get("pov_movement", "walk_in_explore")
             update("running", int(35 + (i/n)*40), f"Generating video clip {i+1} of {n}…")
 
             ok = await asyncio.to_thread(
-                generate_video_single, img, duration, clip_out, caption, camera_hint,
-            test_mode=False, do_video_upscale=do_video_upscale
+                generate_video_single,
+                img, duration, clip_out,
+                space_type=space_type,
+                pov_movement=pov_movement,
+                lighting=lighting,
+                intensity=intensity,
+                model_tier=model_tier,
+                do_video_upscale=do_video_upscale,
             )
 
-            model = "lyra-2"
-            if ok and Path(clip_out).exists():
-                # Determine which model was used from logs (best effort)
-                # Check log output for ltx-fallback marker
-                model = "lyra-2"
+            model = model_tier
 
             models_used.append(model)
             video_clip_paths.append(clip_out if ok else None)
@@ -646,6 +628,8 @@ async def run_pipeline(
             scene_statuses.append({
                 "index":        i,
                 "caption":      caption,
+                "space_type":   space_type,
+                "pov_movement": pov_movement,
                 "video":        "ok" if ok else "failed",
                 "audio":        "ok" if audio_paths[i] else "skipped",
                 "qc_verdict":   video_verdict,
@@ -757,7 +741,7 @@ async def run_rework(rework_id: str, parent_job_id: str, cfg: dict):
             src = parent_dir / sub
             dst = rework_dir / sub
             if src.exists():
-                shutil.copytree(str(src), str(dst), dirs_exist_ok=True)
+                shutil.copytree(str(src), str(dst))
             else:
                 (rework_dir / sub).mkdir(exist_ok=True)
 

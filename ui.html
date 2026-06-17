@@ -134,7 +134,6 @@
   .qc-issues { font-size:.78rem; color:var(--muted); margin-top:4px; }
   .qc-actions { display:flex; gap:8px; margin-top:8px; }
   .btn-approve { background:var(--ok); color:#fff; border:none; border-radius:var(--radius); padding:5px 14px; font-size:.78rem; cursor:pointer; }
-    .btn-approve-anyway { background:var(--warn,#f59e0b); color:#fff; border:none; border-radius:var(--radius); padding:5px 14px; font-size:.78rem; cursor:pointer; }
   .btn-redo    { background:none; border:1px solid var(--danger); color:var(--danger); border-radius:var(--radius); padding:5px 14px; font-size:.78rem; cursor:pointer; }
   .btn-assemble { background:var(--green); color:#fff; border:none; border-radius:var(--radius); padding:11px 28px; font-size:.9rem; cursor:pointer; margin-top:14px; }
   .btn-assemble:disabled { opacity:.5; cursor:not-allowed; }
@@ -225,13 +224,21 @@
         <label class="toggle"><input type="checkbox" id="do-upscale" checked /><span class="tog-sl"></span></label>
         <span>AI image upscaling</span>
         <span style="margin-left:16px"></span>
-        <label class="toggle"><input type="checkbox" id="do-video-upscale" checked /><span class="tog-sl"></span></label>
-        <span>Video upscale to 1080p <span style="color:var(--muted);font-size:.75rem">(+~€0.10/clip)</span></span>
+        <label class="toggle"><input type="checkbox" id="do-video-upscale" /><span class="tog-sl"></span></label>
+        <span>Video upscale 1080p <span style="color:var(--muted);font-size:.75rem">(Eco tier only)</span></span>
         <span style="margin-left:16px"></span>
         <label class="toggle"><input type="checkbox" id="do-vision-qc" checked /><span class="tog-sl"></span></label>
         <span>Auto QC</span>
       </div>
       <div class="row2" style="margin-top:14px">
+        <div>
+          <label>Video quality tier</label>
+          <select id="model-tier" onchange="onTierChange(this.value)">
+            <option value="eco">Eco — Lyra 2.0 + Topaz upscale (~€0.12/clip)</option>
+            <option value="standard" selected>⭐ Standard — Kling 2.5 Turbo Pro (~€0.56/clip)</option>
+            <option value="premium">Premium — Veo 3.1 Fast (~€0.80/clip)</option>
+          </select>
+        </div>
         <div>
           <label>Transition between clips</label>
           <select id="transition-style">
@@ -240,6 +247,26 @@
             <option value="slide_left">Slide left</option>
             <option value="slide_right">Slide right</option>
             <option value="cut">Hard cut</option>
+          </select>
+        </div>
+      </div>
+      <div class="row2" style="margin-top:12px">
+        <div>
+          <label>Lighting condition <span style="color:var(--muted);font-size:.75rem">(applies to full video)</span></label>
+          <select id="lighting">
+            <option value="bright_natural" selected>Bright natural daylight</option>
+            <option value="golden_hour">Golden hour — warm afternoon</option>
+            <option value="overcast_soft">Overcast — soft diffused light</option>
+            <option value="evening_interior">Evening — interior lighting</option>
+            <option value="mixed_day">Mixed — daylight + interior</option>
+          </select>
+        </div>
+        <div>
+          <label>Motion intensity <span style="color:var(--muted);font-size:.75rem">(applies to full video)</span></label>
+          <select id="intensity">
+            <option value="very_slow">Very slow — appreciating every detail</option>
+            <option value="natural_pace" selected>Natural pace — comfortable walk</option>
+            <option value="energetic">Energetic — confident and purposeful</option>
           </select>
         </div>
       </div>
@@ -310,7 +337,6 @@
       <a class="btn-download" id="download-link" href="#">⬇ Download MP4</a>
       <div id="actual-cost" style="margin-top:16px"></div>
     </div>
-  <div id="scene-rework-panel" style="margin-top:16px"></div>
   </section>
 
 </main>
@@ -374,16 +400,16 @@ async function analyseImage(index) {
     const data = await res.json();
     sceneAnalysis[index] = data;
 
-    // Auto-fill camera and space type in scene card
+    // Auto-fill space type and POV movement in scene card
     const card = scenesCont.querySelector(`[data-index="${index}"]`);
     if (card) {
-      const camSel = card.querySelector('.sc-camera');
-      if (camSel && data.recommended_camera) {
-        camSel.value = data.recommended_camera;
-      }
+      const spaceSel = card.querySelector('.sc-space-type');
+      const moveSel  = card.querySelector('.sc-pov-movement');
+      if (spaceSel && data.v7_space_type)    spaceSel.value = data.v7_space_type;
+      if (moveSel  && data.suggested_movement) moveSel.value = data.suggested_movement;
     }
 
-    const label = spaceLabel(data.space_type) + (data.confidence < 0.7 ? ' ?' : '');
+    const label = spaceLabel(data.v7_space_type || data.space_type) + (data.confidence < 0.7 ? ' ?' : '');
     updateSceneBadge(index, 'ok', `🏠 ${label}`);
 
   } catch(e) {
@@ -394,12 +420,13 @@ async function analyseImage(index) {
 
 function spaceLabel(type) {
   const map = {
-    large_interior:  'Grande interno',
-    medium_interior: 'Interno medio',
-    bedroom:         'Camera',
-    small_interior:  'Piccolo interno',
-    ground_exterior: 'Esterno',
-    elevated:        'Balcone/Terrazza',
+    large: 'Grande interno', large_interior: 'Grande interno',
+    medium: 'Interno medio', medium_interior: 'Interno medio',
+    bedroom: 'Camera da letto',
+    small: 'Piccolo interno', small_interior: 'Piccolo interno',
+    corridor: 'Corridoio',
+    outdoor: 'Esterno', ground_exterior: 'Esterno',
+    elevated: 'Balcone/Terrazza',
   };
   return map[type] || type;
 }
@@ -414,20 +441,35 @@ function updateSceneBadge(index, cls, text) {
   badge.style.display = text ? '' : 'none';
 }
 
-// ── Camera movement options ───────────────────────────────────────────────────
-const CAMERA_OPTS = {
-  auto:          '⭐ Auto — adapts to room type (recommended)',
-  gentle_arc:    'Gentle arc push — most rooms',
-  straight_push: 'Straight dolly in — direct walk-in',
-  soft_orbit:    'Soft lateral sweep — gentle arc',
-  minimal:       'Minimal movement — balconies and tight spaces',
-  spiral:        'Spiral approach',
-  dolly_zoom:    'Dolly zoom — Hitchcock effect',
-  static:        'Static — near-motionless',
-  strong_orbit:  '⚠ Strong lateral sweep — may hallucinate edges',
-  pullback_arc:  '⚠ Pull back + arc — two-step, use with care',
-  wide_reveal:   '⚠ Wide reveal — outdoor/large rooms only',
+// ── v7 Structured dropdown options ────────────────────────────────────────────
+const SPACE_OPTS = {
+  large:    'Grande interno — soggiorno, open plan',
+  medium:   'Interno medio — cucina, sala da pranzo',
+  bedroom:  'Camera da letto',
+  small:    'Piccolo interno — bagno, ripostiglio',
+  corridor: 'Corridoio / disimpegno / ingresso',
+  outdoor:  'Esterno — giardino, piscina, facciata',
+  elevated: 'Balcone / terrazza / loggia',
 };
+
+const MOVEMENT_OPTS = {
+  walk_in_explore:    '⭐ Entra ed esplora — sguardo naturale (consigliato)',
+  walk_in_gentle:     'Entra dolcemente — passo lento e rispettoso',
+  walk_in_turn_left:  'Entra e gira a sinistra',
+  walk_in_turn_right: 'Entra e gira a destra',
+  walk_through:       'Attraversa il corridoio — avanza dritto',
+  stand_look_around:  'Fermo — ruota lo sguardo a 360°',
+  approach_reveal:    'Avvicinati — lo spazio si rivela avanzando',
+  walk_toward:        'Avvicinati alla proprietà — per esterni',
+  step_out_onto:      'Esci verso — per balconi e terrazze',
+};
+
+// Show/hide video upscale toggle based on tier
+function onTierChange(tier) {
+  const upscaleRow = document.getElementById('video-upscale-row');
+  if (upscaleRow) upscaleRow.style.display = tier === 'eco' ? '' : 'none';
+  updateCostEstimate();
+}
 
 // ── Scene renderer ────────────────────────────────────────────────────────────
 function renderScenes() {
@@ -438,16 +480,75 @@ function renderScenes() {
   }
   scenesCont.innerHTML = '';
   files.forEach((file, i) => {
-    const url    = URL.createObjectURL(file);
-    const ai     = sceneAnalysis[i];
-    const badge  = ai && !ai.analysing && !ai.error
-      ? `<span class="sc-ai-badge">🏠 ${spaceLabel(ai.space_type)}</span>`
+    const url = URL.createObjectURL(file);
+    const ai  = sceneAnalysis[i];
+    const badge = ai && !ai.analysing && !ai.error
+      ? `<span class="sc-ai-badge">🏠 ${spaceLabel(ai.v7_space_type || ai.space_type)}</span>`
       : ai && ai.analysing
-        ? `<span class="sc-ai-badge analysing">🔍 Analysing…</span>`
+        ? `<span class="sc-ai-badge analysing">🔍 Analisi…</span>`
         : `<span class="sc-ai-badge" style="display:none"></span>`;
 
-    const camOpts = Object.entries(CAMERA_OPTS)
+    const spaceOpts = Object.entries(SPACE_OPTS)
       .map(([v,l]) => `<option value="${v}">${l}</option>`).join('');
+    const moveOpts = Object.entries(MOVEMENT_OPTS)
+      .map(([v,l]) => `<option value="${v}">${l}</option>`).join('');
+
+    const card = document.createElement('div');
+    card.className = 'scene-card';
+    card.dataset.index = i;
+    card.innerHTML = `
+      <div class="sc-head">
+        <img class="sc-thumb" src="${url}" />
+        <div>
+          <div class="sc-num">Scena ${i+1}</div>
+          <div class="sc-name">${file.name} ${badge}</div>
+        </div>
+        <button class="sc-remove" onclick="removeScene(${i})">✕</button>
+      </div>
+      <div class="sc-fields">
+        <div>
+          <label>Didascalia <span style="color:var(--muted)">(es: Soggiorno luminoso)</span></label>
+          <input type="text" class="sc-caption" placeholder="es: Soggiorno, Camera da letto, Balcone…" />
+        </div>
+        <div>
+          <label>Testo voiceover <span style="color:var(--muted)">(opzionale)</span></label>
+          <div class="vo-wrap">
+            <textarea class="sc-voiceover" placeholder="es: Benvenuti in questo splendido appartamento…"
+              oninput="onVoiceoverChange(${i}, this)"></textarea>
+            <span class="vo-counter" id="vo-counter-${i}"></span>
+          </div>
+          <div class="vo-hint" id="vo-hint-${i}"></div>
+        </div>
+        <div class="sc-row3">
+          <div>
+            <label>Tipo di spazio</label>
+            <select class="sc-space-type">${spaceOpts}</select>
+          </div>
+          <div>
+            <label>Movimento POV</label>
+            <select class="sc-pov-movement">${moveOpts}</select>
+          </div>
+          <div>
+            <label>Durata clip</label>
+            <div class="dur-row">
+              <span style="font-size:.75rem;color:var(--muted)">6s</span>
+              <input type="range" class="sc-duration" min="6" max="20" step="2" value="8"
+                oninput="onDurationChange(this)" />
+              <span style="font-size:.75rem;color:var(--muted)">20s</span>
+              <span class="dur-val">8s</span>
+            </div>
+          </div>
+        </div>
+      </div>`;
+    scenesCont.appendChild(card);
+
+    // Restore AI suggestions
+    if (ai) {
+      if (ai.v7_space_type) card.querySelector('.sc-space-type').value = ai.v7_space_type;
+      if (ai.suggested_movement) card.querySelector('.sc-pov-movement').value = ai.suggested_movement;
+    }
+  });
+}
 
     const card = document.createElement('div');
     card.className  = 'scene-card';
@@ -564,10 +665,11 @@ function onVoiceoverChange(index, textarea) {
 // ── Build config from scene cards ─────────────────────────────────────────────
 function getScenesConfig() {
   return [...scenesCont.querySelectorAll('.scene-card')].map(card => ({
-    caption:     card.querySelector('.sc-caption').value.trim(),
-    voiceover:   card.querySelector('.sc-voiceover').value.trim(),
-    duration:    parseInt(card.querySelector('.sc-duration').value, 10),
-    camera_hint: card.querySelector('.sc-camera').value,
+    caption:      card.querySelector('.sc-caption').value.trim(),
+    voiceover:    card.querySelector('.sc-voiceover').value.trim(),
+    duration:     parseInt(card.querySelector('.sc-duration').value, 10),
+    space_type:   card.querySelector('.sc-space-type').value,
+    pov_movement: card.querySelector('.sc-pov-movement').value,
   }));
 }
 
@@ -578,44 +680,33 @@ async function updateCostEstimate() {
     return;
   }
   const config = getScenesConfig();
-  try {
-    const res = await fetch(`${API_BASE}/jobs/`, {
-      method: 'POST',
-      body: (() => {
-        // We only need the estimate — use a dummy call structure
-        // Actually call the estimate endpoint once we add it
-        // For now derive client-side
-        return null;
-      })()
-    });
-  } catch {}
 
   // Client-side cost estimate (mirrors cost_tracker.py logic)
+  const tier         = document.getElementById('model-tier').value;
   const upscale      = document.getElementById('do-upscale').checked;
-  const videoUpscale = document.getElementById('do-video-upscale').checked;
+  const videoUpscale = document.getElementById('do-video-upscale').checked && tier === 'eco';
   const visionQc     = document.getElementById('do-vision-qc').checked;
-  const LYRA_81      = 0.045;
-  const LYRA_161     = 0.085;
-  const LYRA_241     = 0.125;
+
+  // Cost per 8s clip by tier
+  const TIER_COST    = { eco: 0.04, standard: 0.56, premium: 0.80 };
+  const CLIP_COST    = TIER_COST[tier] || 0.56;
   const UPSCALE      = 0.030;
-  const VIDEO_UPSCALE_PER_SEC = 0.02;  // Topaz 720p→1080p tier
+  const VIDEO_UP_PER_SEC = 0.02;
   const EL_PER_CHAR  = 0.0003;
   const FLORENCE     = 0.0002;
   const INFRA        = 52.45 / 20;
 
-  const frameCost = d => d <= 8 ? LYRA_81 : d <= 15 ? LYRA_161 : LYRA_241;
   const n         = config.length;
-  const videoCost = config.reduce((s,sc) => s + frameCost(sc.duration), 0);
+  const videoCost = config.reduce((s,sc) => s + CLIP_COST, 0);
   const upCost    = upscale ? n * UPSCALE : 0;
-  // Video upscale cost: duration in seconds × rate
   const vidUpCost = videoUpscale
-    ? config.reduce((s,sc) => s + (sc.duration * VIDEO_UPSCALE_PER_SEC), 0)
-    : 0;
+    ? config.reduce((s,sc) => s + (sc.duration * VIDEO_UP_PER_SEC), 0) : 0;
   const chars     = config.reduce((s,sc) => s + sc.voiceover.length, 0);
   const ttsCost   = chars * EL_PER_CHAR;
   const visCost   = visionQc ? n * 2 * FLORENCE : 0;
   const total     = videoCost + upCost + vidUpCost + ttsCost + visCost + INFRA;
 
+  const tierLabel = { eco: 'Lyra 2.0', standard: 'Kling 2.5 Turbo Pro', premium: 'Veo 3.1 Fast' };
   const panel = document.getElementById('cost-panel');
   const lines = document.getElementById('cost-lines');
   panel.style.display = 'block';
@@ -623,9 +714,9 @@ async function updateCostEstimate() {
   document.getElementById('cost-total').textContent = `€${total.toFixed(2)}`;
 
   let html = '';
-  html += `<div class="cost-row"><span>Generazione video (${n} clip Lyra 2.0 720p)</span><span>€${videoCost.toFixed(3)}</span></div>`;
-  if (upCost > 0) html += `<div class="cost-row"><span>Upscaling immagini AI (${n} immagini)</span><span>€${upCost.toFixed(3)}</span></div>`;
-  if (vidUpCost > 0) html += `<div class="cost-row"><span>Upscaling video Topaz 1080p (${n} clip)</span><span>€${vidUpCost.toFixed(3)}</span></div>`;
+  html += `<div class="cost-row"><span>Generazione video (${n} clip — ${tierLabel[tier]})</span><span>€${videoCost.toFixed(3)}</span></div>`;
+  if (upCost > 0) html += `<div class="cost-row"><span>Upscaling immagini AI (${n})</span><span>€${upCost.toFixed(3)}</span></div>`;
+  if (vidUpCost > 0) html += `<div class="cost-row"><span>Topaz video upscale 1080p</span><span>€${vidUpCost.toFixed(3)}</span></div>`;
   if (ttsCost > 0) html += `<div class="cost-row"><span>Voiceover (${chars.toLocaleString()} caratteri)</span><span>€${ttsCost.toFixed(4)}</span></div>`;
   if (visCost > 0) html += `<div class="cost-row"><span>Vision QC (${n*2} analisi)</span><span>€${visCost.toFixed(4)}</span></div>`;
   html += `<div class="cost-row"><span>Quota infrastruttura</span><span>€${INFRA.toFixed(2)}</span></div>`;
@@ -655,6 +746,9 @@ genBtn.addEventListener('click', async () => {
   fd.append('do_video_upscale',  document.getElementById('do-video-upscale').checked);
   fd.append('transition_style',  document.getElementById('transition-style').value);
   fd.append('enable_vision_qc',  document.getElementById('do-vision-qc').checked);
+  fd.append('model_tier',        document.getElementById('model-tier').value);
+  fd.append('lighting',          document.getElementById('lighting').value);
+  fd.append('intensity',         document.getElementById('intensity').value);
 
   try {
     const res = await fetch(`${API_BASE}/jobs/`, { method: 'POST', body: fd });
@@ -739,11 +833,8 @@ function showQcReview(job) {
       .flatMap(q => q.issues || []).join('; ') || 'Verificare manualmente';
     const thumb   = files[idx] ? `<img class="qc-thumb" src="${URL.createObjectURL(files[idx])}" />` : '';
 
-  const clipUrl = `${API_BASE}/jobs/${currentJobId}/clips/${idx}`;
-  const videoPreview = `<video class="qc-clip-preview" src="${clipUrl}" controls style="width:100%;max-height:160px;border-radius:6px;margin-bottom:6px;background:#000;"></video>`;
     return `<div class="qc-scene" id="qc-scene-${idx}">
-      ${videoPreview}
-    ${thumb}
+      ${thumb}
       <div class="qc-info">
         <div class="qc-title">
           Scena ${idx+1} — ${scene.caption || '(senza didascalia)'}
@@ -751,7 +842,7 @@ function showQcReview(job) {
         </div>
         <div class="qc-issues">${issues}</div>
         <div class="qc-actions">
-          ${verdict === 'flag' ? `<button class="btn-approve" onclick="setQcDecision(${idx},'approve')">✓ Approva</button>` : verdict === 'reject' ? `<button class="btn-approve-anyway" onclick="setQcDecision(${idx},'approve')">⚠ Approva comunque</button>` : ''}
+          ${verdict === 'flag' ? `<button class="btn-approve" onclick="setQcDecision(${idx},'approve')">✓ Approva</button>` : ''}
           <button class="btn-redo" onclick="setQcDecision(${idx},'redo')">↺ Rifare</button>
         </div>
         <div id="qc-decision-${idx}" style="font-size:.74rem;color:var(--muted);margin-top:4px"></div>
@@ -759,7 +850,8 @@ function showQcReview(job) {
     </div>`;
   }).join('');
 
-  // Do NOT auto-mark rejected scenes — user must choose approve or redo explicitly
+  // Auto-mark rejected as needing redo
+  rejected.forEach(idx => setQcDecision(idx, 'redo'));
   updateAssembleBtn(allFlagged);
 }
 
@@ -802,14 +894,7 @@ async function submitApproval() {
     }
     qcSec.style.display   = 'none';
     progSec.style.display = 'block';
-    const resData = await res.json();
-    // If approval triggered a rework, track the new rework job
-    if (resData.rework_job_id) {
-      currentJobId = resData.rework_job_id;
-      updateProgress(10, 'Rework avviato…');
-    } else {
-      updateProgress(82, 'Assemblaggio video finale…');
-    }
+    updateProgress(82, 'Assemblaggio video finale…');
     startPolling(currentJobId);
   } catch(e) {
     showError(e.message);
@@ -839,176 +924,13 @@ function renderSceneProgress(scenes) {
   }).join('');
 }
 
-
-
-// ── Per-scene rework ───────────────────────────────────────────────────────
-const CAMERA_HINTS = [
-  { value: 'auto',         label: 'Auto (rilevamento)' },
-  { value: 'gentle_arc',  label: 'Gentle Arc' },
-  { value: 'straight_push', label: 'Straight Push' },
-  { value: 'soft_orbit',  label: 'Soft Orbit' },
-  { value: 'minimal',     label: 'Minimal' },
-  { value: 'spiral',      label: 'Spiral' },
-  { value: 'dolly_zoom',  label: 'Dolly Zoom' },
-  { value: 'static',      label: 'Statico' },
-  { value: 'strong_orbit', label: 'Strong Orbit' },
-  { value: 'pullback_arc', label: 'Pullback Arc' },
-  { value: 'wide_reveal', label: 'Wide Reveal' },
-];
-
-let currentScenesConfig = [];
-
-function buildSceneReworkPanel(scenesConfig) {
-  currentScenesConfig = scenesConfig || [];
-  const panel = document.getElementById('scene-rework-panel');
-  if (!panel) return;
-  if (!currentScenesConfig.length) {
-    panel.innerHTML = '';
-    return;
-  }
-
-  const cameraOptions = CAMERA_HINTS.map(h =>
-    `<option value="${h.value}">${h.label}</option>`
-  ).join('');
-
-  let html = `<p class="sec-label" style="margin-bottom:8px">↺ Rifare scene</p>`;
-  currentScenesConfig.forEach((scene, idx) => {
-    const caption   = scene.caption   || '';
-    const camHint   = scene.camera_hint || 'auto';
-    const voiceover = (scene.voiceover || '').trim();
-    html += `
-    <div class="card" style="margin-bottom:10px;padding:12px">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-        <strong>Scena ${idx + 1}</strong>
-        <span style="font-size:.8rem;opacity:.6">${camHint}</span>
-      </div>
-      ${caption ? `<div style="font-size:.85rem;margin-bottom:8px;opacity:.8">${caption}</div>` : ''}
-      <div style="display:flex;gap:16px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
-        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-          <input type="checkbox" id="redo-video-${idx}" checked
-            onchange="toggleCameraSelect(${idx})">
-          <span>Redo video</span>
-        </label>
-        ${voiceover ? `
-        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-          <input type="checkbox" id="redo-tts-${idx}">
-          <span>Redo TTS</span>
-        </label>` : ''}
-      </div>
-      <div id="camera-select-row-${idx}" style="margin-bottom:8px">
-        <label style="font-size:.85rem;display:block;margin-bottom:4px">Movimento camera:</label>
-        <select id="camera-hint-${idx}" class="form-control" style="width:100%;padding:6px;border-radius:6px;border:1px solid var(--border)">
-          ${CAMERA_HINTS.map(h =>
-            `<option value="${h.value}"${h.value === camHint ? ' selected' : ''}>${h.label}</option>`
-          ).join('')}
-        </select>
-      </div>
-      <button class="btn-redo" onclick="submitSceneRework(${idx})"
-        style="width:100%">↺ Rifare scena ${idx + 1}</button>
-    </div>`;
-  });
-
-  // Also add a "redo all selected" button if more than 1 scene
-  if (currentScenesConfig.length > 1) {
-    html += `
-    <button class="btn-primary" onclick="submitAllRework()"
-      style="width:100%;margin-top:4px">↺ Rifare tutte le scene selezionate</button>`;
-  }
-
-  panel.innerHTML = html;
-}
-
-function toggleCameraSelect(idx) {
-  const cb  = document.getElementById(`redo-video-${idx}`);
-  const row = document.getElementById(`camera-select-row-${idx}`);
-  if (row) row.style.display = cb && cb.checked ? 'block' : 'none';
-}
-
-async function submitSceneRework(idx) {
-  if (!currentJobId) return;
-  const redoVideo = document.getElementById(`redo-video-${idx}`)?.checked || false;
-  const redoTts   = document.getElementById(`redo-tts-${idx}`)?.checked   || false;
-  const camHint   = document.getElementById(`camera-hint-${idx}`)?.value  || 'auto';
-  if (!redoVideo && !redoTts) {
-    alert('Seleziona almeno una opzione (video o TTS) per la scena ' + (idx + 1));
-    return;
-  }
-  await _sendRework([idx], redoVideo, redoTts, camHint);
-}
-
-async function submitAllRework() {
-  if (!currentJobId) return;
-  const scenes = [];
-  const updatedScenes = JSON.parse(JSON.stringify(currentScenesConfig));
-  let anyVideo = false, anyTts = false;
-  currentScenesConfig.forEach((_, idx) => {
-    const redoVideo = document.getElementById(`redo-video-${idx}`)?.checked || false;
-    const redoTts   = document.getElementById(`redo-tts-${idx}`)?.checked   || false;
-    if (redoVideo || redoTts) {
-      scenes.push(idx);
-      if (redoVideo) {
-        anyVideo = true;
-        updatedScenes[idx].camera_hint = document.getElementById(`camera-hint-${idx}`)?.value || updatedScenes[idx].camera_hint || 'auto';
-      }
-      if (redoTts) anyTts = true;
-    }
-  });
-  if (!scenes.length) { alert('Seleziona almeno una scena da rifare.'); return; }
-  // For multi-scene we need per-scene redo flags — send scene by scene
-  for (const idx of scenes) {
-    const redoVideo = document.getElementById(`redo-video-${idx}`)?.checked || false;
-    const redoTts   = document.getElementById(`redo-tts-${idx}`)?.checked   || false;
-    const camHint   = document.getElementById(`camera-hint-${idx}`)?.value  || 'auto';
-    await _sendRework([idx], redoVideo, redoTts, camHint);
-  }
-}
-
-async function _sendRework(sceneIndices, redoVideo, redoTts, camHint) {
-  try {
-    // Build updated_scenes: copy current config, override camera_hint for redo-video scenes
-    const updatedScenes = JSON.parse(JSON.stringify(currentScenesConfig));
-    if (redoVideo) {
-      sceneIndices.forEach(idx => {
-        if (updatedScenes[idx]) updatedScenes[idx].camera_hint = camHint;
-      });
-    }
-    const cfg = {
-      scenes:         sceneIndices,
-      redo_video:     redoVideo,
-      redo_audio:     redoTts,
-      then_assemble:  true,
-      updated_scenes: updatedScenes,
-    };
-    const fd = new FormData();
-    fd.append('rework_config', JSON.stringify(cfg));
-    const res  = await fetch(API_BASE + '/jobs/' + currentJobId + '/rework', { method: 'POST', body: fd });
-    const data = await res.json();
-    if (!res.ok) { alert('Errore rework: ' + (data.detail || res.status)); return; }
-    currentJobId = data.job_id;
-    document.getElementById('scene-rework-panel').innerHTML =
-      '<div class="alert" style="background:var(--green-dim,#d4edda);padding:12px;border-radius:8px">↺ Rework avviato per scena ' + (sceneIndices.map(i=>i+1).join(', ')) + '…</div>';
-    startPolling(currentJobId);
-  } catch (e) {
-    alert('Errore: ' + e.message);
-  }
-}
-
 function showResult(jobId, propName) {
+  const dlUrl = `${API_BASE}/jobs/${jobId}/download`;
+  document.getElementById('video-preview').src    = dlUrl;
+  document.getElementById('download-link').href   = dlUrl;
+  document.getElementById('download-link').download = `${propName.replace(/\s+/g,'_')}_video.mp4`;
   resultSec.style.display = 'block';
   resultSec.scrollIntoView({ behavior: 'smooth' });
-  const videoEl = document.getElementById('video-preview');
-  const dlLink  = document.getElementById('download-link');
-  if (videoEl) { videoEl.src = API_BASE + '/jobs/' + jobId + '/download'; videoEl.load(); }
-  if (dlLink)  { dlLink.href = API_BASE + '/jobs/' + jobId + '/download'; }
-  // Fetch job details to build per-scene rework panel
-  fetch(API_BASE + '/jobs/' + jobId)
-    .then(r => r.json())
-    .then(job => {
-      const scenes = job.scenes_config || [];
-      buildSceneReworkPanel(scenes);
-      if (job.cost_actual) showCostPanel(job.cost_actual, 'effettivo');
-    })
-    .catch(() => { buildSceneReworkPanel([]); });
 }
 
 function showCostPanel(costData, type) {
@@ -1084,8 +1006,9 @@ document.getElementById('diag-modal').addEventListener('click', e => {
 });
 
 // ── Cost estimate on toggle changes ───────────────────────────────────────────
-['do-upscale','do-vision-qc','do-video-upscale'].forEach(id => {
-  document.getElementById(id).addEventListener('change', updateCostEstimate);
+['do-upscale','do-vision-qc','do-video-upscale','model-tier','lighting','intensity'].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener('change', updateCostEstimate);
 });
 </script>
 </body>
