@@ -37,8 +37,6 @@ except ImportError:
     log.warning("Pillow / numpy not installed. Lighting correction will be skipped.")
     _PIL_OK = False
 
-from dotenv import load_dotenv
-load_dotenv(override=True)
 try:
     import fal_client
     _FAL_OK = True
@@ -190,10 +188,10 @@ def upscale_image(input_path: str, output_path: str) -> str:
         result = fal_client.subscribe(
             UPSCALE_ENDPOINT,
             arguments={
-                "image_url": image_url,
+                "image_url":        image_url,
                 "upscaling_factor": UPSCALE_SCALE,
-                "overlapping_tiles": True,   # reduces tile seams
-                "checkpoint": "real-world",  # best for photos (vs. 'anime')
+                "overlapping_tiles": True,
+                "checkpoint":       "v2",   # v1 or v2 — v2 is best for real photos
             }
         )
 
