@@ -58,8 +58,8 @@ _SPACE_CAMERA = {
 }
 
 # ── People/anomaly detection keywords for QC ──────────────────────────────────
-_PEOPLE_KW    = ["person","people","man","woman","child","human","figure",
-                  "face","hand","arm","leg","body","silhouette","shadow of a person"]
+_PEOPLE_KW    = ["person","people","man","woman","child","human",
+              "face","silhouette","shadow of a person"]
 _STRUCTURAL_KW = ["door opening","window appeared","new room","additional room",
                    "different room","corridor appeared","staircase appeared",
                    "wall disappeared","ceiling collapsed","furniture moved"]
@@ -405,8 +405,10 @@ def analyse_output(
             issues.append("Video frame appears low quality or heavily degraded")
 
         # ── Determine verdict ──────────────────────────────────────────────
-        if people_detected or not space_matches:
+        if people_detected and not space_matches:
             verdict = "reject"    # must redo
+        elif people_detected:
+            verdict = "flag"  # people detected but space ok
         elif structural or quality_score < 0.3:
             verdict = "flag"      # human review required
         else:

@@ -134,6 +134,7 @@
   .qc-issues { font-size:.78rem; color:var(--muted); margin-top:4px; }
   .qc-actions { display:flex; gap:8px; margin-top:8px; }
   .btn-approve { background:var(--ok); color:#fff; border:none; border-radius:var(--radius); padding:5px 14px; font-size:.78rem; cursor:pointer; }
+    .btn-approve-anyway { background:var(--warn,#f59e0b); color:#fff; border:none; border-radius:var(--radius); padding:5px 14px; font-size:.78rem; cursor:pointer; }
   .btn-redo    { background:none; border:1px solid var(--danger); color:var(--danger); border-radius:var(--radius); padding:5px 14px; font-size:.78rem; cursor:pointer; }
   .btn-assemble { background:var(--green); color:#fff; border:none; border-radius:var(--radius); padding:11px 28px; font-size:.9rem; cursor:pointer; margin-top:14px; }
   .btn-assemble:disabled { opacity:.5; cursor:not-allowed; }
@@ -750,7 +751,7 @@ function showQcReview(job) {
         </div>
         <div class="qc-issues">${issues}</div>
         <div class="qc-actions">
-          ${verdict === 'flag' ? `<button class="btn-approve" onclick="setQcDecision(${idx},'approve')">✓ Approva</button>` : ''}
+          ${verdict === 'flag' ? `<button class="btn-approve" onclick="setQcDecision(${idx},'approve')">✓ Approva</button>` : verdict === 'reject' ? `<button class="btn-approve-anyway" onclick="setQcDecision(${idx},'approve')">⚠ Approva comunque</button>` : ''}
           <button class="btn-redo" onclick="setQcDecision(${idx},'redo')">↺ Rifare</button>
         </div>
         <div id="qc-decision-${idx}" style="font-size:.74rem;color:var(--muted);margin-top:4px"></div>
@@ -758,8 +759,7 @@ function showQcReview(job) {
     </div>`;
   }).join('');
 
-  // Auto-mark rejected as needing redo
-  rejected.forEach(idx => setQcDecision(idx, 'redo'));
+  // Do NOT auto-mark rejected scenes — user must choose approve or redo explicitly
   updateAssembleBtn(allFlagged);
 }
 
