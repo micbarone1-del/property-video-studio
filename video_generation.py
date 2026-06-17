@@ -250,11 +250,13 @@ def _upload_bytes(data: bytes, filename: str = "image.jpg") -> str:
 def _generate_kling(image_url: str, prompt: str, duration: int) -> str | None:
     """Submits to Kling 2.5 Turbo Pro. Returns video URL or None.
     Kling only accepts duration '5' or '10' — snap to nearest valid value.
+    Uses submit()+manual polling to avoid httpx default 5s timeout on queue polls.
     """
+    import time, httpx
     kling_dur = "5" if duration <= 7 else "10"
     try:
         log.info(f"[VideoGen] Kling 2.5 Turbo Pro — {kling_dur}s (requested {duration}s)")
-        result = fal_client.subscribe(
+        handle = fal_client.submit(
             KLING_ENDPOINT,
             arguments={
                 "image_url":    image_url,
@@ -264,7 +266,26 @@ def _generate_kling(image_url: str, prompt: str, duration: int) -> str | None:
                 "mode":         "pro",
             }
         )
-        return (result.get("video") or {}).get("url")
+        # Poll manually with generous per-request timeout (60s) — Kling takes 2-5 min
+        deadline = time.time() + 600  # 10-minute total timeout
+        poll_interval = 5
+        while time.time() < deadline:
+            try:
+                status = fal_client.status(KLING_ENDPOINT, handle.request_id, with_logs=False)
+            except (httpx.TimeoutException, httpx.ReadTimeout, httpx.ConnectTimeout, Exception) as poll_err:
+                log.warning(f"[VideoGen] Kling poll timeout (retrying): {poll_err}")
+                time.sleep(poll_interval)
+                continue
+            from fal_client.client import Completed, InProgress, Queued
+            if isinstance(status, Completed):
+                result = fal_client.result(KLING_ENDPOINT, handle.request_id)
+                return (result.get("video") or {}).get("url")
+            elif not isinstance(status, (InProgress, Queued)):
+                log.error(f"[VideoGen] Kling job unexpected status: {type(status).__name__}")
+                return None
+            time.sleep(poll_interval)
+        log.error(f"[VideoGen] Kling timed out after 10 minutes")
+        return None
     except Exception as e:
         log.error(f"[VideoGen] Kling failed: {e}")
         return None
