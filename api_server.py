@@ -741,7 +741,15 @@ async def run_rework(rework_id: str, parent_job_id: str, cfg: dict):
             src = parent_dir / sub
             dst = rework_dir / sub
             if src.exists():
-                shutil.copytree(str(src), str(dst), dirs_exist_ok=True)
+                if src.resolve() == dst.resolve():
+                    pass  # same directory — already in place, nothing to copy
+                else:
+                    dst.mkdir(exist_ok=True)
+                    for item in src.iterdir():
+                        s = item
+                        d = dst / item.name
+                        if not (d.exists() and s.stat().st_ino == d.stat().st_ino):
+                            shutil.copy2(str(s), str(d))
             else:
                 (rework_dir / sub).mkdir(exist_ok=True)
 
