@@ -37,16 +37,23 @@ log = logging.getLogger(__name__)
 FLORENCE_ENDPOINT = "fal-ai/florence-2-large/more-detailed-caption"
 
 # ── Space classification keywords (parsed from Florence description) ───────────
-_ELEVATED_KW  = ["balcony","terrace","loggia","rooftop","roof","outdoor seating",
-                  "railing","balustrade","parapet","open air","overlooking"]
-_OUTDOOR_KW   = ["garden","yard","pool","swimming","driveway","facade","courtyard",
-                  "exterior","patio","lawn","grass","trees","plants","outdoor",
-                  "street","pathway","entrance gate","letterbox"]
+# IMPORTANT: These must be specific enough to avoid false positives.
+# "railing", "open air", "overlooking" were triggering on interior rooms with windows.
+# "roof" was triggering on rooms with visible ceiling beams.
+# Only use keywords that are unambiguously elevated/exterior spaces.
+_ELEVATED_KW  = ["balcony","terrace","loggia","rooftop terrace","roof terrace",
+                  "balustrade","parapet","outdoor balcony","terrace floor",
+                  "balcony railing","step out onto","elevated outdoor"]
+_OUTDOOR_KW   = ["garden","yard","pool","swimming pool","driveway","building facade",
+                  "courtyard","exterior view","patio","lawn","grass area",
+                  "outdoor pathway","entrance gate","letterbox","street view",
+                  "outdoor space","outside the building"]
 _SMALLROOM_KW = ["bathroom","shower","bathtub","toilet","wc","sink","basin",
                   "hallway","corridor","laundry","utility room","closet","pantry",
-                  "narrow","compact","small room","ensuite","cloakroom"]
-_BEDROOM_KW   = ["bedroom","bed","mattress","pillows","headboard","wardrobe",
-                  "nightstand","bedside","duvet","bedroom furniture","sleeping"]
+                  "narrow room","compact room","small room","ensuite","cloakroom",
+                  "powder room","washroom"]
+_BEDROOM_KW   = ["bedroom","bed frame","mattress","pillows","headboard","wardrobe",
+                  "nightstand","bedside table","duvet","bedroom furniture","sleeping area"]
 
 # ── Camera recommendations by space type ──────────────────────────────────────
 _SPACE_CAMERA = {

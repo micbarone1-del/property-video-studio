@@ -234,9 +234,8 @@
         <div>
           <label>Video quality tier</label>
           <select id="model-tier" onchange="onTierChange(this.value)">
-            <option value="eco">Eco — Lyra 2.0 + Topaz upscale (~€0.12/clip)</option>
-            <option value="standard" selected>⭐ Standard — Kling 2.5 Turbo Pro (~€0.56/clip)</option>
-            <option value="premium">Premium — Veo 3.1 Fast (~€0.80/clip)</option>
+            <option value="eco">Eco — Lyra 2.0 + upscale (~€0.12/clip) · budget</option>
+            <option value="premium" selected>⭐ Professional — Veo 3.1 Fast (~€0.80/clip) · recommended</option>
           </select>
         </div>
         <div>
@@ -346,8 +345,12 @@ const API_BASE = '';
 let files        = [];
 let pollTimer    = null;
 let currentJobId = null;
-let sceneAnalysis = {};   // { fileIndex: { space_type, recommended_camera, ... } }
-let qcDecisions  = {};    // { sceneIndex: 'approve' | 'redo' }
+let sceneAnalysis = {};
+let qcDecisions  = {};
+// Persistent scene user data — survives renderScenes() calls
+let sceneUserData = {};  // { index: { caption, voiceover, duration, space_type, pov_movement } }
+let completedScenes = []; // scene statuses from last completed job
+let reworkOpen = {};  // { index: true/false } — which rework panels are open
 
 // ── DOM refs ───────────────────────────────────────────────────────────────────
 const dropZone   = document.getElementById('drop-zone');
@@ -471,8 +474,25 @@ function onTierChange(tier) {
   updateCostEstimate();
 }
 
-// ── Scene renderer ────────────────────────────────────────────────────────────
+// ── Save/restore scene user data across renders ────────────────────────────────
+function saveSceneData() {
+  [...scenesCont.querySelectorAll('.scene-card')].forEach(card => {
+    const i = parseInt(card.dataset.index);
+    sceneUserData[i] = {
+      caption:      card.querySelector('.sc-caption')?.value || '',
+      voiceover:    card.querySelector('.sc-voiceover')?.value || '',
+      duration:     card.querySelector('.sc-duration')?.value || '8',
+      space_type:   card.querySelector('.sc-space-type')?.value || 'large',
+      pov_movement: card.querySelector('.sc-pov-movement')?.value || 'walk_in_explore',
+      rework_open:  document.getElementById(`rw-panel-${i}`)?.classList.contains('open') || false,
+      rw_video:     card.querySelector('.rw-video')?.checked ?? true,
+      rw_audio:     card.querySelector('.rw-audio')?.checked ?? false,
+    };
+  });
+}
+
 function renderScenes() {
+  saveSceneData();
   genBtn.disabled = files.length === 0;
   if (!files.length) {
     scenesCont.innerHTML = '<div class="empty-state">Upload photos above to configure scenes</div>';
@@ -480,41 +500,67 @@ function renderScenes() {
   }
   scenesCont.innerHTML = '';
   files.forEach((file, i) => {
-    const url = URL.createObjectURL(file);
-    const ai  = sceneAnalysis[i];
+    const url      = URL.createObjectURL(file);
+    const ai       = sceneAnalysis[i];
+    const saved    = sceneUserData[i] || {};
+    const scStatus = completedScenes.find(s => s.index === i);
+
     const badge = ai && !ai.analysing && !ai.error
       ? `<span class="sc-ai-badge">🏠 ${spaceLabel(ai.v7_space_type || ai.space_type)}</span>`
       : ai && ai.analysing
         ? `<span class="sc-ai-badge analysing">🔍 Analisi…</span>`
         : `<span class="sc-ai-badge" style="display:none"></span>`;
 
+    // Status badge after job completion
+    const statusBadge = scStatus
+      ? scStatus.video === 'ok'
+        ? `<span class="sc-ai-badge ok" style="background:#edf7f1;color:var(--ok)">✓ completato</span>`
+        : `<span class="sc-ai-badge" style="background:#fdf0ef;color:var(--danger)">✗ fallito</span>`
+      : '';
+
     const spaceOpts = Object.entries(SPACE_OPTS)
-      .map(([v,l]) => `<option value="${v}">${l}</option>`).join('');
+      .map(([v,l]) => `<option value="${v}"${v===(saved.space_type||'large')?'selected':''}>${l}</option>`).join('');
     const moveOpts = Object.entries(MOVEMENT_OPTS)
-      .map(([v,l]) => `<option value="${v}">${l}</option>`).join('');
+      .map(([v,l]) => `<option value="${v}"${v===(saved.pov_movement||'walk_in_explore')?'selected':''}>${l}</option>`).join('');
+
+    // Rework panel — shown if job completed
+    const reworkPanel = scStatus ? `
+      <div class="rework-panel${saved.rework_open ? ' open' : ''}" id="rw-panel-${i}">
+        <label>Rifai Scena ${i+1}</label>
+        <div class="rework-checks">
+          <label><input type="checkbox" class="rw-video"${saved.rw_video !== false ? ' checked' : ''} /> Rigenera video</label>
+          <label><input type="checkbox" class="rw-audio"${saved.rw_audio ? ' checked' : ''} /> Rigenera voiceover</label>
+        </div>
+      </div>` : '';
+
+    const reworkBtn = scStatus
+      ? `<button class="btn-rework-toggle" onclick="toggleRework(${i})" id="rw-btn-${i}">↺ Rifai</button>`
+      : '';
 
     const card = document.createElement('div');
-    card.className = 'scene-card';
+    card.className = `scene-card${scStatus ? (scStatus.video==='ok' ? ' qc-pass' : ' qc-fail') : ''}`;
     card.dataset.index = i;
     card.innerHTML = `
       <div class="sc-head">
         <img class="sc-thumb" src="${url}" />
         <div>
           <div class="sc-num">Scena ${i+1}</div>
-          <div class="sc-name">${file.name} ${badge}</div>
+          <div class="sc-name">${file.name} ${badge} ${statusBadge}</div>
         </div>
+        ${reworkBtn}
         <button class="sc-remove" onclick="removeScene(${i})">✕</button>
       </div>
       <div class="sc-fields">
         <div>
-          <label>Didascalia <span style="color:var(--muted)">(es: Soggiorno luminoso)</span></label>
-          <input type="text" class="sc-caption" placeholder="es: Soggiorno, Camera da letto, Balcone…" />
+          <label>Didascalia</label>
+          <input type="text" class="sc-caption" value="${saved.caption||''}"
+            placeholder="es: Soggiorno, Camera da letto, Balcone…" />
         </div>
         <div>
           <label>Testo voiceover <span style="color:var(--muted)">(opzionale)</span></label>
           <div class="vo-wrap">
             <textarea class="sc-voiceover" placeholder="es: Benvenuti in questo splendido appartamento…"
-              oninput="onVoiceoverChange(${i}, this)"></textarea>
+              oninput="onVoiceoverChange(${i}, this)">${saved.voiceover||''}</textarea>
             <span class="vo-counter" id="vo-counter-${i}"></span>
           </div>
           <div class="vo-hint" id="vo-hint-${i}"></div>
@@ -532,18 +578,20 @@ function renderScenes() {
             <label>Durata clip</label>
             <div class="dur-row">
               <span style="font-size:.75rem;color:var(--muted)">6s</span>
-              <input type="range" class="sc-duration" min="6" max="20" step="2" value="8"
+              <input type="range" class="sc-duration" min="6" max="20" step="2"
+                value="${saved.duration||'8'}"
                 oninput="onDurationChange(this)" />
               <span style="font-size:.75rem;color:var(--muted)">20s</span>
-              <span class="dur-val">8s</span>
+              <span class="dur-val">${saved.duration||'8'}s</span>
             </div>
           </div>
         </div>
-      </div>`;
+      </div>
+      ${reworkPanel}`;
     scenesCont.appendChild(card);
 
-    // Restore AI suggestions
-    if (ai) {
+    // Restore AI suggestions only if no saved user data
+    if (ai && !saved.space_type) {
       if (ai.v7_space_type) card.querySelector('.sc-space-type').value = ai.v7_space_type;
       if (ai.suggested_movement) card.querySelector('.sc-pov-movement').value = ai.suggested_movement;
     }
@@ -551,7 +599,6 @@ function renderScenes() {
 }
 
 function onCaptionChange(index, value) {
-  // Re-trigger AI analysis if caption changes substantially
   updateCostEstimate();
 }
 
@@ -635,8 +682,8 @@ async function updateCostEstimate() {
   const visionQc     = document.getElementById('do-vision-qc').checked;
 
   // Cost per 8s clip by tier
-  const TIER_COST    = { eco: 0.04, standard: 0.56, premium: 0.80 };
-  const CLIP_COST    = TIER_COST[tier] || 0.56;
+  const TIER_COST    = { eco: 0.12, premium: 0.80 };
+  const CLIP_COST    = TIER_COST[tier] || 0.80;
   const UPSCALE      = 0.030;
   const VIDEO_UP_PER_SEC = 0.02;
   const EL_PER_CHAR  = 0.0003;
@@ -653,7 +700,7 @@ async function updateCostEstimate() {
   const visCost   = visionQc ? n * 2 * FLORENCE : 0;
   const total     = videoCost + upCost + vidUpCost + ttsCost + visCost + INFRA;
 
-  const tierLabel = { eco: 'Lyra 2.0', standard: 'Kling 2.5 Turbo Pro', premium: 'Veo 3.1 Fast' };
+  const tierLabel = { eco: 'Lyra 2.0 + Topaz', premium: 'Veo 3.1 Fast' };
   const panel = document.getElementById('cost-panel');
   const lines = document.getElementById('cost-lines');
   panel.style.display = 'block';
@@ -734,7 +781,7 @@ function startPolling(jobId) {
       if (job.status === 'done') {
         clearInterval(pollTimer);
         if (job.cost_actual) showCostPanel(job.cost_actual, 'effettivo');
-        showResult(jobId, job.property_name || 'Property');
+        showResult(jobId, job.property_name || 'Property', job.scenes || []);
         genBtn.disabled    = false;
         genBtn.textContent = 'Genera video';
 
@@ -871,7 +918,12 @@ function renderSceneProgress(scenes) {
   }).join('');
 }
 
-function showResult(jobId, propName) {
+function showResult(jobId, propName, scenes) {
+  // Store completed scene statuses so renderScenes can show redo buttons
+  if (scenes && scenes.length) {
+    completedScenes = scenes;
+    renderScenes();  // re-render with redo buttons visible
+  }
   const dlUrl = `${API_BASE}/jobs/${jobId}/download`;
   document.getElementById('video-preview').src    = dlUrl;
   document.getElementById('download-link').href   = dlUrl;

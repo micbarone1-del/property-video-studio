@@ -161,15 +161,15 @@ _VEO_SPACE_TOKENS = {
 }
 
 _VEO_MOVEMENT_TOKENS = {
-    "walk_in_explore":    "walking slowly into the space from the doorway, gaze naturally exploring the room, pausing briefly on key features",
-    "walk_in_gentle":     "walking softly into the room from the entrance, slow and respectful pace, gaze moving from the entrance toward the far wall",
-    "walk_in_turn_left":  "walking into the space then turning gently to the left, revealing the full left side of the room",
-    "walk_in_turn_right": "walking into the space then turning gently to the right, revealing the full right side of the room",
-    "walk_through":       "walking steadily forward through the space from one end to the other, gaze level and ahead",
-    "stand_look_around":  "standing still, slowly turning the head to take in the full panorama of the room",
-    "approach_reveal":    "approaching the space slowly, the full room gradually revealing as the viewpoint advances forward",
-    "walk_toward":        "walking purposefully toward the property, the full facade revealing as the viewpoint approaches",
-    "step_out_onto":      "stepping out through a doorway onto the outdoor space, pausing to take in the open view",
+    "walk_in_explore":    "slow push-in from the doorway, camera moves forward only within the visible frame, no rotation beyond frame edges, settles at centre",
+    "walk_in_gentle":     "very gentle push-in from the entrance, camera advances only within visible frame boundaries, minimal lateral drift, settles",
+    "walk_in_turn_left":  "push-in then very subtle pivot left — rotation limited to content visible in the original image, no content beyond left edge",
+    "walk_in_turn_right": "push-in then very subtle pivot right — rotation limited to content visible in the original image, no content beyond right edge",
+    "walk_through":       "slow steady push forward through the visible space, camera never moves beyond the far wall visible in the image, settles",
+    "stand_look_around":  "very slow partial pan left to right — strictly limited to the width of the original image, does not rotate beyond frame edges",
+    "approach_reveal":    "slow push-in advancing only within the visible frame, reveals space by moving closer to existing content, no new areas generated",
+    "walk_toward":        "slow push-in toward the building, camera advances only within the visible facade frame, no rotation, settles",
+    "step_out_onto":      "very slow partial pan across the outdoor space — strictly limited to the width visible in the original image, no rotation beyond edges",
 }
 
 _VEO_LIGHTING_TOKENS = {
@@ -189,7 +189,9 @@ _VEO_INTENSITY_TOKENS = {
 _VEO_RULES = (
     "No other people visible. No wind effects. "
     "All architectural elements remain exactly as in the source image. "
-    "Movement stays within the visible space boundaries. "
+    "Camera movement is strictly constrained within the boundaries of the original image — "
+    "do not generate or reveal any content that was not visible in the source photo. "
+    "No rotation beyond the edges of the original frame. "
     "No flickering, no morphing of walls or floors."
 )
 
@@ -230,7 +232,7 @@ def assemble_pov_prompt(
         return _LYRA_SCENE.format(lighting=light)
 
     elif model_tier == "premium":
-        # Veo — full POV narrative
+        # Veo — full POV narrative with strict frame constraints
         space    = _VEO_SPACE_TOKENS.get(space_type, _VEO_SPACE_TOKENS["large"])
         movement = _VEO_MOVEMENT_TOKENS.get(pov_movement, _VEO_MOVEMENT_TOKENS["walk_in_explore"])
         light    = _VEO_LIGHTING_TOKENS.get(lighting, _VEO_LIGHTING_TOKENS["bright_natural"])
@@ -242,7 +244,7 @@ def assemble_pov_prompt(
             f"Pace: {pace}. "
             f"{_VEO_RULES}"
         )
-        log.info(f"[VideoGen] Veo prompt: {prompt[:100]}...")
+        log.info(f"[VideoGen] Veo FULL prompt: {prompt}")
         return prompt
 
     else:
