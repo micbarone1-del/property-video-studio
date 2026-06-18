@@ -559,13 +559,16 @@ async def run_pipeline(
             result = await asyncio.to_thread(enhance_image, img_path, out, do_lighting, do_upscale)
             enhanced_paths.append(result)
 
-        # ── Stage 2: TTS audio + TTS QC ──────────────────────────────────
+        # ── Stage 2: TTS audio + TTS QC → sets actual clip duration ──────
         from voice_generation import generate_speech as generate_voice
         from vision_analysis  import analyse_tts
 
+        actual_durations = []   # per scene — set from audio or user slider
+
         for i, (scene, img) in enumerate(zip(scenes_config, enhanced_paths)):
-            voiceover = scene.get("voiceover", "").strip()
-            audio_out = str(audio_dir / f"scene_{i:03d}.mp3")
+            voiceover     = scene.get("voiceover", "").strip()
+            audio_out     = str(audio_dir / f"scene_{i:03d}.mp3")
+            user_duration = int(scene.get("duration", 10))
             update("running", int(20 + (i/n)*15), f"Generating audio {i+1} of {n}…")
 
             if voiceover:
@@ -574,21 +577,40 @@ async def run_pipeline(
                     voice_id=voice_id or None
                 )
                 if ok:
-                    # TTS QC
+                    # TTS QC — also measures actual duration
                     tts_qc = await asyncio.to_thread(analyse_tts, audio_out, voiceover)
                     log.info(f"[Job {job_id}] TTS QC scene {i}: {tts_qc['verdict']}")
+
                     if tts_qc["verdict"] == "reject":
                         log.warning(f"[Job {job_id}] TTS rejected scene {i}: {tts_qc['issues']}")
                         audio_paths.append(None)
+                        actual_durations.append(user_duration)
                     else:
                         audio_paths.append(audio_out)
+                        # Set clip duration = actual audio duration + 2s buffer
+                        # Snap to nearest valid duration, minimum 6s
+                        audio_secs   = tts_qc.get("duration_seconds", 0)
+                        if audio_secs > 0:
+                            buffered = audio_secs + 2.0
+                            # Snap to even number, min 6, max 20
+                            snapped  = max(6, min(20, int(round(buffered / 2) * 2)))
+                            log.info(
+                                f"[Job {job_id}] Scene {i}: audio={audio_secs:.1f}s "
+                                f"→ clip duration={snapped}s"
+                            )
+                            actual_durations.append(snapped)
+                        else:
+                            actual_durations.append(user_duration)
+
                     qc_results.append({"scene": i, "type": "tts", **tts_qc})
                 else:
                     audio_paths.append(None)
+                    actual_durations.append(user_duration)
                 audio_chars.append({"chars": len(voiceover)})
             else:
                 audio_paths.append(None)
                 audio_chars.append({"chars": 0})
+                actual_durations.append(user_duration)
 
         # ── Stage 3: Video generation + Vision QC ─────────────────────────
         from video_generation  import generate_video_single
@@ -599,11 +621,12 @@ async def run_pipeline(
 
         for i, (scene, img) in enumerate(zip(scenes_config, enhanced_paths)):
             clip_out     = str(video_clips_dir / f"scene_{i:03d}.mp4")
-            duration     = int(scene.get("duration", 8))
+            # Use actual audio duration if available, fall back to user setting
+            duration     = actual_durations[i] if i < len(actual_durations) else int(scene.get("duration", 10))
             caption      = scene.get("caption", "")
             space_type   = scene.get("space_type",   "large")
             pov_movement = scene.get("pov_movement", "walk_in_explore")
-            update("running", int(35 + (i/n)*40), f"Generating video clip {i+1} of {n}…")
+            update("running", int(35 + (i/n)*40), f"Generating video clip {i+1} of {n} ({duration}s)…")
 
             ok = await asyncio.to_thread(
                 generate_video_single,
@@ -639,13 +662,14 @@ async def run_pipeline(
                 video_verdict = "failed"
 
             scene_statuses.append({
-                "index":        i,
-                "caption":      caption,
-                "space_type":   space_type,
-                "pov_movement": pov_movement,
-                "video":        "ok" if ok else "failed",
-                "audio":        "ok" if audio_paths[i] else "skipped",
-                "qc_verdict":   video_verdict,
+                "index":           i,
+                "caption":         caption,
+                "space_type":      space_type,
+                "pov_movement":    pov_movement,
+                "duration_used":   duration,
+                "video":           "ok" if ok else "failed",
+                "audio":           "ok" if audio_paths[i] else "skipped",
+                "qc_verdict":      video_verdict,
             })
 
         JOBS[job_id]["scenes"]     = scene_statuses
@@ -680,7 +704,8 @@ async def run_pipeline(
         from cost_tracker import calculate_actual_cost, format_cost_display
         actual = calculate_actual_cost(
             scenes_config, models_used, audio_chars,
-            do_upscale=do_upscale, do_vision_qc=enable_vision_qc
+            do_upscale=do_upscale, do_vision_qc=enable_vision_qc,
+            model_tier=model_tier,
         )
         JOBS[job_id]["cost_actual"] = format_cost_display(actual)
         _save_job(job_id)

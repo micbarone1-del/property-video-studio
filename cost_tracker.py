@@ -37,8 +37,8 @@ LYRA_COST_241_FRAMES = 0.125   # ~15s clip
 LTX_COST_PER_CLIP = 0.020
 
 # Topaz video upscaling — per second of video
-TOPAZ_COST_PER_SEC = 0.02   # 720p → 1080p tier
-UPSCALE_COST_PER_IMAGE = 0.03  # Topaz image upscaling per image
+TOPAZ_COST_PER_SEC     = 0.02   # 720p → 1080p tier
+UPSCALE_COST_PER_IMAGE = 0.030  # fal-ai/aura-sr image upscale per image
 
 # Florence-2 vision analysis — per call
 FLORENCE_COST_PER_CALL = 0.0002
@@ -129,57 +129,49 @@ def calculate_actual_cost(
     audios_generated: list,
     do_upscale:       bool = True,
     do_vision_qc:     bool = True,
+    model_tier:       str  = "premium",
 ) -> dict:
-    """
-    Calculates the actual cost after generation completes.
-
-    Args:
-        scenes_generated: List of scene configs that were generated.
-        models_used:      List of model strings used per scene
-                          e.g. ["lyra-2", "lyra-2", "ltx-fallback"]
-        audios_generated: List of dicts with 'chars' key per scene
-                          e.g. [{"chars": 120}, {"chars": 0}, ...]
-        do_upscale:       Whether upscaling ran.
-        do_vision_qc:     Whether vision QC ran.
-
-    Returns actual cost breakdown dict in EUR.
-    """
+    """Calculates the actual cost after generation completes."""
     n = len(scenes_generated)
 
-    # Video — charged per actual model used
-    video_cost = 0.0
-    lyra_clips = 0
-    ltx_clips  = 0
+    # Video — tier-aware pricing
+    video_cost  = 0.0
+    veo_clips   = 0
+    lyra_clips  = 0
+    ltx_clips   = 0
+
     for i, scene in enumerate(scenes_generated):
-        model    = models_used[i] if i < len(models_used) else "lyra-2"
-        duration = int(scene.get("duration", 8))
-        if "ltx" in model:
+        model    = models_used[i] if i < len(models_used) else model_tier
+        duration = int(scene.get("duration", 10))
+
+        if "ltx" in str(model):
             video_cost += LTX_COST_PER_CLIP
             ltx_clips  += 1
-        else:
-            frames     = _DURATION_TO_FRAMES.get(duration, 81)
+        elif "lyra" in str(model) or model_tier == "eco":
+            frames      = _DURATION_TO_FRAMES.get(duration, 81)
             video_cost += _FRAME_COST.get(frames, LYRA_COST_81_FRAMES)
+            # Add Topaz upscale cost for eco tier
+            video_cost += duration * TOPAZ_COST_PER_SEC
             lyra_clips += 1
+        else:
+            # Veo or Kling — per-second billing
+            clip_rate   = TIER_COST_PER_CLIP.get(model_tier, TIER_COST_PER_CLIP["premium"])
+            video_cost += clip_rate
+            veo_clips  += 1
 
-    # Upscaling — only images that actually went through upscaling
     upscale_cost = (UPSCALE_COST_PER_IMAGE * n) if do_upscale else 0.0
-
-    # TTS — actual characters synthesised
-    total_chars = sum(a.get("chars", 0) for a in audios_generated)
-    tts_cost    = total_chars * ELEVENLABS_COST_PER_CHAR
-
-    # Vision — input + output per scene generated
+    total_chars  = sum(a.get("chars", 0) for a in audios_generated)
+    tts_cost     = total_chars * ELEVENLABS_COST_PER_CHAR
     vision_calls = (n * 2) if do_vision_qc else 0
     vision_cost  = vision_calls * FLORENCE_COST_PER_CALL
-
-    # Infrastructure
-    infra_cost = INFRA_COST_PER_JOB
-
+    infra_cost   = INFRA_COST_PER_JOB
     total = video_cost + upscale_cost + tts_cost + vision_cost + infra_cost
 
     return {
         "type":          "actual",
         "scenes":        n,
+        "model_tier":    model_tier,
+        "veo_clips":     veo_clips,
         "lyra_clips":    lyra_clips,
         "ltx_clips":     ltx_clips,
         "video_eur":     round(video_cost,   4),
