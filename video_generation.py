@@ -421,18 +421,22 @@ def _generate_kling(image_url: str, prompt: str, duration: int) -> str | None:
 # ── Veo 3.1 Fast generation ───────────────────────────────────────────────────
 
 def _generate_veo(image_url: str, prompt: str, duration: int) -> str | None:
-    """Submits to Veo 3.1 Fast. Returns video URL or None."""
+    """Submits to Veo 3.1 Fast at 1080p. Returns video URL or None.
+    1080p costs the same as 720p on fal.ai — always use 1080p.
+    """
     try:
-        log.info(f"[VideoGen] Veo 3.1 Fast — {duration}s")
+        log.info(f"[VideoGen] Veo 3.1 Fast — {duration}s at 1080p")
         result = fal_client.subscribe(
             VEO_ENDPOINT,
             arguments={
-                "image_url":     image_url,
-                "prompt":        prompt,
-                "duration_secs": duration,
-                "enhance_prompt": False,   # we control the prompt, no AI rewriting
-                "generate_audio": False,   # ElevenLabs handles audio separately
-                "fast_mode":     True,
+                "image_url":      image_url,
+                "prompt":         prompt,
+                "duration_secs":  duration,
+                "resolution":     "1080p",      # same price as 720p — always use 1080p
+                "aspect_ratio":   "16:9",
+                "enhance_prompt": False,         # we control the prompt, no AI rewriting
+                "generate_audio": False,         # ElevenLabs handles audio separately
+                "fast_mode":      True,
             }
         )
         return (result.get("video") or {}).get("url")
