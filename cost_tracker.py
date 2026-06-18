@@ -38,6 +38,7 @@ LTX_COST_PER_CLIP = 0.020
 
 # Topaz video upscaling — per second of video
 TOPAZ_COST_PER_SEC = 0.02   # 720p → 1080p tier
+UPSCALE_COST_PER_IMAGE = 0.03  # Topaz image upscaling per image
 
 # Florence-2 vision analysis — per call
 FLORENCE_COST_PER_CALL = 0.0002
