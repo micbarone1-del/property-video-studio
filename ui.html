@@ -467,8 +467,27 @@ const MOVEMENT_OPTS = {
   step_out_onto:      'Esci verso — per balconi e terrazze',
 };
 
-// Show/hide video upscale toggle based on tier
-function onTierChange(tier) {
+// Space type → default POV movement mapping (mirrors SPACE_DEFAULT_MOVEMENT in video_generation.py)
+const SPACE_DEFAULT_MOVEMENT_MAP = {
+  large:    'walk_in_explore',
+  medium:   'walk_in_explore',
+  bedroom:  'walk_in_gentle',
+  small:    'approach_reveal',
+  corridor: 'walk_through',
+  outdoor:  'walk_toward',
+  elevated: 'step_out_onto',
+};
+
+function onSpaceTypeChange(index, value) {
+  // Auto-update POV movement when user manually changes space type
+  const card = scenesCont.querySelector(`[data-index="${index}"]`);
+  if (!card) return;
+  const moveSel = card.querySelector('.sc-pov-movement');
+  if (moveSel) {
+    moveSel.value = SPACE_DEFAULT_MOVEMENT_MAP[value] || 'walk_in_explore';
+  }
+  updateCostEstimate();
+}
   const upscaleRow = document.getElementById('video-upscale-row');
   if (upscaleRow) upscaleRow.style.display = tier === 'eco' ? '' : 'none';
   updateCostEstimate();
@@ -522,6 +541,7 @@ function renderScenes() {
       .map(([v,l]) => `<option value="${v}"${v===(saved.space_type||'large')?'selected':''}>${l}</option>`).join('');
     const moveOpts = Object.entries(MOVEMENT_OPTS)
       .map(([v,l]) => `<option value="${v}"${v===(saved.pov_movement||'walk_in_explore')?'selected':''}>${l}</option>`).join('');
+    const spaceSelect = `<select class="sc-space-type" onchange="onSpaceTypeChange(${i}, this.value)">${spaceOpts}</select>`;
 
     // Rework panel — shown if job completed
     const reworkPanel = scStatus ? `
@@ -568,7 +588,7 @@ function renderScenes() {
         <div class="sc-row3">
           <div>
             <label>Tipo di spazio</label>
-            <select class="sc-space-type">${spaceOpts}</select>
+            ${spaceSelect}
           </div>
           <div>
             <label>Movimento POV</label>
@@ -608,8 +628,9 @@ function onDurationChange(input) {
 }
 
 // ── Voiceover word count + auto-duration ──────────────────────────────────────
-const CHARS_PER_SEC  = 14;
-const MAX_DURATION   = 20;
+const CHARS_PER_SEC   = 16;    // ElevenLabs speaks at ~16 chars/sec natural pace
+const TTS_BUFFER_SECS = 2;     // add 2s buffer so clip is always longer than audio
+const MAX_DURATION    = 20;
 const VALID_DURATIONS = [6, 8, 10, 12, 14, 16, 18, 20];
 
 function snapDuration(secs) {
@@ -619,7 +640,8 @@ function snapDuration(secs) {
 
 function onVoiceoverChange(index, textarea) {
   const chars    = textarea.value.trim().length;
-  const estSecs  = Math.ceil(chars / CHARS_PER_SEC);
+  const estSecs     = Math.ceil(chars / CHARS_PER_SEC);
+  const bufferedSecs = estSecs + TTS_BUFFER_SECS;
   const counter  = document.getElementById(`vo-counter-${index}`);
   const hint     = document.getElementById(`vo-hint-${index}`);
   const card     = scenesCont.querySelector(`[data-index="${index}"]`);
@@ -635,19 +657,18 @@ function onVoiceoverChange(index, textarea) {
     return;
   }
 
-  counter.textContent = `~${estSecs}s`;
+  counter.textContent = `~${estSecs}s (+2s buffer)`;
 
-  if (estSecs > MAX_DURATION) {
+  if (bufferedSecs > MAX_DURATION) {
     counter.className = 'vo-counter over';
     hint.textContent  = `⚠ Testo troppo lungo per una scena. Considera di dividerlo in due scene.`;
     hint.className    = 'vo-hint over';
   } else {
-    counter.className = estSecs > 16 ? 'vo-counter warn' : 'vo-counter';
+    counter.className = bufferedSecs > 16 ? 'vo-counter warn' : 'vo-counter';
     hint.textContent  = '';
     hint.className    = 'vo-hint';
-    // Auto-set duration slider
     if (slider && durVal) {
-      const snapped    = snapDuration(estSecs);
+      const snapped    = snapDuration(bufferedSecs);
       slider.value     = snapped;
       durVal.textContent = snapped + 's';
     }
@@ -722,6 +743,19 @@ genBtn.addEventListener('click', async () => {
   errorMsg.innerHTML = '';
   if (!files.length) return;
 
+  // Check if any rework panels are open — if so, route to rework endpoint
+  const reworkScenes = [];
+  [...scenesCont.querySelectorAll('.rework-panel.open')].forEach(panel => {
+    const i = parseInt(panel.id.replace('rw-panel-',''));
+    if (!isNaN(i)) reworkScenes.push(i);
+  });
+
+  if (reworkScenes.length > 0 && currentJobId) {
+    await submitRework(reworkScenes);
+    return;
+  }
+
+  // Full new job
   genBtn.disabled    = true;
   genBtn.textContent = 'Invio in corso…';
   resultSec.style.display  = 'none';
@@ -766,6 +800,54 @@ genBtn.addEventListener('click', async () => {
   }
 });
 
+// ── Rework submission ──────────────────────────────────────────────────────────
+async function submitRework(reworkScenes) {
+  genBtn.disabled    = true;
+  genBtn.textContent = 'Invio rework…';
+  progSec.style.display   = 'block';
+  resultSec.style.display = 'none';
+  qcSec.style.display     = 'none';
+  updateProgress(0, `Rework ${reworkScenes.length} scena/e selezionata/e…`);
+
+  const updatedScenes = getScenesConfig();
+
+  // Collect redo options per scene
+  const redoVideo = reworkScenes.some(idx => {
+    const card = scenesCont.querySelector(`[data-index="${idx}"]`);
+    return card?.querySelector('.rw-video')?.checked ?? true;
+  });
+  const redoAudio = reworkScenes.some(idx => {
+    const card = scenesCont.querySelector(`[data-index="${idx}"]`);
+    return card?.querySelector('.rw-audio')?.checked ?? false;
+  });
+
+  const cfg = {
+    scenes:         reworkScenes,
+    redo_video:     redoVideo,
+    redo_audio:     redoAudio,
+    updated_scenes: updatedScenes,
+  };
+
+  const fd = new FormData();
+  fd.append('rework_config', JSON.stringify(cfg));
+
+  try {
+    const res = await fetch(`${API_BASE}/jobs/${currentJobId}/rework`, { method:'POST', body:fd });
+    if (!res.ok) {
+      let detail = `Server error ${res.status}`;
+      try { const e = await res.json(); detail = e.detail || detail; } catch(_) {}
+      throw new Error(detail);
+    }
+    const { job_id } = await res.json();
+    genBtn.textContent = 'Rework in corso…';
+    startPolling(job_id);
+  } catch(e) {
+    showError(e.message);
+    genBtn.disabled    = false;
+    genBtn.textContent = 'Genera video';
+  }
+}
+
 // ── Polling ────────────────────────────────────────────────────────────────────
 function startPolling(jobId) {
   clearInterval(pollTimer);
@@ -782,18 +864,19 @@ function startPolling(jobId) {
         clearInterval(pollTimer);
         if (job.cost_actual) showCostPanel(job.cost_actual, 'effettivo');
         showResult(jobId, job.property_name || 'Property', job.scenes || []);
+        notifyJobComplete(job.property_name || 'Property', true);
         genBtn.disabled    = false;
         genBtn.textContent = 'Genera video';
-
       } else if (job.status === 'awaiting_approval') {
         clearInterval(pollTimer);
         showQcReview(job);
+        notifyJobComplete(job.property_name || 'Property — revisione QC richiesta', true);
         genBtn.disabled    = false;
         genBtn.textContent = 'Genera video';
-
       } else if (job.status === 'failed') {
         clearInterval(pollTimer);
         showError(job.message || 'Pipeline fallita. Controlla i log del server.');
+        notifyJobComplete(job.property_name || 'Property', false);
         genBtn.disabled    = false;
         genBtn.textContent = 'Genera video';
       }
@@ -827,6 +910,14 @@ function showQcReview(job) {
       .flatMap(q => q.issues || []).join('; ') || 'Verificare manualmente';
     const thumb   = files[idx] ? `<img class="qc-thumb" src="${URL.createObjectURL(files[idx])}" />` : '';
 
+    // Video preview — link to the generated clip
+    const clipUrl  = `${API_BASE}/jobs/${currentJobId}/clip/${idx}`;
+    const videoPreview = `
+      <details style="margin-top:8px">
+        <summary style="font-size:.76rem;color:var(--green);cursor:pointer">▶ Anteprima clip generata</summary>
+        <video src="${clipUrl}" controls style="width:100%;max-width:320px;margin-top:6px;border-radius:4px;border:1px solid var(--rule)"></video>
+      </details>`;
+
     return `<div class="qc-scene" id="qc-scene-${idx}">
       ${thumb}
       <div class="qc-info">
@@ -835,9 +926,10 @@ function showQcReview(job) {
           <span class="qc-verdict ${verdict}">${verdict === 'reject' ? '✗ Rifiutata' : '⚠ Segnalata'}</span>
         </div>
         <div class="qc-issues">${issues}</div>
+        ${videoPreview}
         <div class="qc-actions">
-          ${verdict === 'flag' ? `<button class="btn-approve" onclick="setQcDecision(${idx},'approve')">✓ Approva</button>` : ''}
-          <button class="btn-redo" onclick="setQcDecision(${idx},'redo')">↺ Rifare</button>
+          <button class="btn-approve" onclick="setQcDecision(${idx},'approve')">✓ Approva comunque</button>
+          <button class="btn-redo" onclick="setQcDecision(${idx},'redo')">↺ Rifai</button>
         </div>
         <div id="qc-decision-${idx}" style="font-size:.74rem;color:var(--muted);margin-top:4px"></div>
       </div>
@@ -954,7 +1046,29 @@ function showError(msg) {
   errorMsg.innerHTML = `<div class="alert alert-error">⚠ ${msg}</div>`;
 }
 
-// ── Credits ────────────────────────────────────────────────────────────────────
+// ── Browser notifications ─────────────────────────────────────────────────────
+function requestNotificationPermission() {
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
+}
+
+function notifyJobComplete(propName, success) {
+  if ('Notification' in window && Notification.permission === 'granted') {
+    new Notification(
+      success ? `✓ Video pronto — ${propName}` : `✗ Errore — ${propName}`,
+      {
+        body: success
+          ? 'Il tuo video è pronto per il download.'
+          : 'Si è verificato un errore. Controlla il pannello di stato.',
+        icon: '/favicon.ico',
+      }
+    );
+  }
+}
+
+// Request permission on page load
+requestNotificationPermission();
 async function checkCredits() {
   try {
     const res  = await fetch(`${API_BASE}/credits`);

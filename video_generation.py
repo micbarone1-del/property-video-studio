@@ -160,16 +160,78 @@ _VEO_SPACE_TOKENS = {
     "elevated": "Stepping out onto an elevated outdoor space",
 }
 
+# ── VEO-specific POV movement tokens — pace integrated ────────────────────────
+# CRITICAL LESSONS FROM TESTING:
+# - Push-forward on shallow rooms = 2D zoom. Use lateral or diagonal instead.
+# - Separate intensity token is unreliable — Veo interprets pace relative to movement type.
+# - Solution: embed pace directly in the movement token as a speed qualifier.
+# - All movements include explicit frame boundary constraint.
+
+# Movement tokens are now 3D dictionaries: [movement][intensity]
+# This gives Veo a single coherent instruction rather than two separate signals.
+
 _VEO_MOVEMENT_TOKENS = {
-    "walk_in_explore":    "slow push-in from the doorway, camera moves forward only within the visible frame, no rotation beyond frame edges, settles at centre",
-    "walk_in_gentle":     "very gentle push-in from the entrance, camera advances only within visible frame boundaries, minimal lateral drift, settles",
-    "walk_in_turn_left":  "push-in then very subtle pivot left — rotation limited to content visible in the original image, no content beyond left edge",
-    "walk_in_turn_right": "push-in then very subtle pivot right — rotation limited to content visible in the original image, no content beyond right edge",
-    "walk_through":       "slow steady push forward through the visible space, camera never moves beyond the far wall visible in the image, settles",
-    "stand_look_around":  "very slow partial pan left to right — strictly limited to the width of the original image, does not rotate beyond frame edges",
-    "approach_reveal":    "slow push-in advancing only within the visible frame, reveals space by moving closer to existing content, no new areas generated",
-    "walk_toward":        "slow push-in toward the building, camera advances only within the visible facade frame, no rotation, settles",
-    "step_out_onto":      "very slow partial pan across the outdoor space — strictly limited to the width visible in the original image, no rotation beyond edges",
+
+    # Large rooms — diagonal push creates parallax even without strong depth
+    "walk_in_explore": {
+        "very_slow":    "extremely slow diagonal push-in from the doorway drifting slightly right, revealing the room width gradually, camera stays within visible frame",
+        "natural_pace": "slow diagonal push-in from the doorway drifting slightly right, revealing the full room as the camera advances, stays within visible frame",
+        "energetic":    "confident diagonal push-in from the doorway angling slightly right, brisk reveal of the full room width, stays within visible frame",
+    },
+
+    # Bedrooms — lateral tracking always works regardless of depth
+    "walk_in_gentle": {
+        "very_slow":    "very slow lateral tracking shot moving left to right across the room, camera at eye level, strictly within the visible frame width, no push-forward",
+        "natural_pace": "slow lateral tracking shot moving left to right across the room, steady eye-level movement, strictly within visible frame width",
+        "energetic":    "smooth lateral tracking shot moving left to right across the room at a confident pace, eye level, within visible frame",
+    },
+
+    # Pivot reveals — for rooms with strong features on one side
+    "walk_in_turn_left": {
+        "very_slow":    "very slow pan from right to left — strictly limited to the content visible in the original image, no content beyond left edge",
+        "natural_pace": "slow pan from right to left across the room — limited to original image boundaries, no new content beyond edges",
+        "energetic":    "smooth pan from right to left across the room — contained within original image boundaries",
+    },
+    "walk_in_turn_right": {
+        "very_slow":    "very slow pan from left to right — strictly limited to content visible in original image, no content beyond right edge",
+        "natural_pace": "slow pan from left to right across the room — limited to original image boundaries",
+        "energetic":    "smooth pan from left to right — contained within original image boundaries",
+    },
+
+    # Corridors — forward movement is the only natural option
+    "walk_through": {
+        "very_slow":    "very slow steady push forward along the corridor, camera level, stops before reaching far wall, no lateral movement",
+        "natural_pace": "slow steady forward tracking along the corridor, eye level, stops before far wall",
+        "energetic":    "confident forward tracking along the corridor, purposeful pace, eye level",
+    },
+
+    # Small rooms — lateral works; avoid forward push
+    "approach_reveal": {
+        "very_slow":    "very slow lateral tracking shot parallel to the main wall, left to right, camera within the visible frame, no zoom, no forward push",
+        "natural_pace": "slow lateral tracking shot parallel to the main wall, steady left to right, within visible frame boundaries, no zoom",
+        "energetic":    "smooth lateral tracking shot parallel to the main wall, left to right at a gentle pace, within frame",
+    },
+
+    # Stand and look — 360-degree pan replaced with partial pan
+    "stand_look_around": {
+        "very_slow":    "extremely slow partial pan from left to right — maximum 90 degrees, strictly within the width of the original image, no rotation beyond frame edges",
+        "natural_pace": "slow partial pan left to right — limited to 90 degrees maximum, within original image boundaries",
+        "energetic":    "smooth partial pan left to right — 90 degrees maximum, contained within original frame",
+    },
+
+    # Exterior — approaching the building
+    "walk_toward": {
+        "very_slow":    "very slow push-in toward the building facade, camera level, stays within visible facade frame, no lateral drift",
+        "natural_pace": "slow push-in toward the building, steady approach, camera level, within visible frame",
+        "energetic":    "confident push-in toward the building, purposeful approach pace, camera level",
+    },
+
+    # Balcony/terrace — slow pan, never push outward
+    "step_out_onto": {
+        "very_slow":    "very slow partial pan across the outdoor space — maximum 60 degrees, strictly within the width visible in original image, no rotation beyond edges, no push outward",
+        "natural_pace": "slow partial pan across the outdoor space — maximum 60 degrees, within original image width, no outward push",
+        "energetic":    "smooth partial pan across the outdoor space — maximum 60 degrees, within original frame",
+    },
 }
 
 _VEO_LIGHTING_TOKENS = {
@@ -232,16 +294,19 @@ def assemble_pov_prompt(
         return _LYRA_SCENE.format(lighting=light)
 
     elif model_tier == "premium":
-        # Veo — full POV narrative with strict frame constraints
+        # Veo — pace integrated into movement token for consistency
         space    = _VEO_SPACE_TOKENS.get(space_type, _VEO_SPACE_TOKENS["large"])
-        movement = _VEO_MOVEMENT_TOKENS.get(pov_movement, _VEO_MOVEMENT_TOKENS["walk_in_explore"])
+        # Get movement with intensity baked in
+        movement_dict = _VEO_MOVEMENT_TOKENS.get(pov_movement, _VEO_MOVEMENT_TOKENS["walk_in_explore"])
+        if isinstance(movement_dict, dict):
+            movement = movement_dict.get(intensity, movement_dict.get("natural_pace", ""))
+        else:
+            movement = movement_dict  # backward compat
         light    = _VEO_LIGHTING_TOKENS.get(lighting, _VEO_LIGHTING_TOKENS["bright_natural"])
-        pace     = _VEO_INTENSITY_TOKENS.get(intensity, _VEO_INTENSITY_TOKENS["natural_pace"])
         prompt   = (
             f"First-person POV shot: {space}. "
             f"Camera: {movement}. "
             f"Lighting: {light}. "
-            f"Pace: {pace}. "
             f"{_VEO_RULES}"
         )
         log.info(f"[VideoGen] Veo FULL prompt: {prompt}")

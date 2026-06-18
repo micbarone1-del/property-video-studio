@@ -286,7 +286,7 @@ async def create_job(
     job_id  = str(uuid.uuid4())[:8]
     job_dir = JOBS_DIR / job_id
     img_dir = job_dir / "images"
-    img_dir.mkdir(parents=True, exist_ok=True)
+    img_dir.mkdir(parents=True)
 
     saved_images = []
     for i, upload in enumerate(images):
@@ -377,6 +377,17 @@ def get_job(job_id: str):
     job = JOBS[job_id].copy()
     job.pop("output_path", None)
     return job
+
+
+@app.get("/jobs/{job_id}/clip/{scene_index}")
+def get_clip(job_id: str, scene_index: int):
+    """Serves a generated clip for preview in the QC panel."""
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    clip_path = JOBS_DIR / job_id / "clips" / f"scene_{scene_index:03d}.mp4"
+    if not clip_path.exists():
+        raise HTTPException(status_code=404, detail="Clip not found")
+    return FileResponse(str(clip_path), media_type="video/mp4")
 
 
 @app.get("/jobs/{job_id}/download")
@@ -741,15 +752,7 @@ async def run_rework(rework_id: str, parent_job_id: str, cfg: dict):
             src = parent_dir / sub
             dst = rework_dir / sub
             if src.exists():
-                if src.resolve() == dst.resolve():
-                    pass  # same directory — already in place, nothing to copy
-                else:
-                    dst.mkdir(exist_ok=True)
-                    for item in src.iterdir():
-                        s = item
-                        d = dst / item.name
-                        if not (d.exists() and s.stat().st_ino == d.stat().st_ino):
-                            shutil.copy2(str(s), str(d))
+                shutil.copytree(str(src), str(dst))
             else:
                 (rework_dir / sub).mkdir(exist_ok=True)
 
