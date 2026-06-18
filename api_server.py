@@ -286,7 +286,7 @@ async def create_job(
     job_id  = str(uuid.uuid4())[:8]
     job_dir = JOBS_DIR / job_id
     img_dir = job_dir / "images"
-    img_dir.mkdir(parents=True)
+    img_dir.mkdir(parents=True, exist_ok=True)
 
     saved_images = []
     for i, upload in enumerate(images):
@@ -752,7 +752,14 @@ async def run_rework(rework_id: str, parent_job_id: str, cfg: dict):
             src = parent_dir / sub
             dst = rework_dir / sub
             if src.exists():
-                shutil.copytree(str(src), str(dst))
+                if src.resolve() == dst.resolve():
+                    pass  # same directory, skip copy
+                else:
+                    dst.mkdir(exist_ok=True)
+                    for item in src.iterdir():
+                        d = dst / item.name
+                        if not (d.exists() and item.stat().st_ino == d.stat().st_ino):
+                            shutil.copy2(str(item), str(d))
             else:
                 (rework_dir / sub).mkdir(exist_ok=True)
 
