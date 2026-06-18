@@ -489,6 +489,13 @@ function onSpaceTypeChange(index, value) {
   updateCostEstimate();
 }
 
+// Show/hide video upscale toggle based on tier
+function onTierChange(tier) {
+  const upscaleRow = document.getElementById('video-upscale-row');
+  if (upscaleRow) upscaleRow.style.display = tier === 'eco' ? '' : 'none';
+  updateCostEstimate();
+}
+
 // ── Save/restore scene user data across renders ────────────────────────────────
 function saveSceneData() {
   [...scenesCont.querySelectorAll('.scene-card')].forEach(card => {
