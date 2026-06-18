@@ -488,10 +488,6 @@ function onSpaceTypeChange(index, value) {
   }
   updateCostEstimate();
 }
-  const upscaleRow = document.getElementById('video-upscale-row');
-  if (upscaleRow) upscaleRow.style.display = tier === 'eco' ? '' : 'none';
-  updateCostEstimate();
-}
 
 // ── Save/restore scene user data across renders ────────────────────────────────
 function saveSceneData() {
