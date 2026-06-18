@@ -457,14 +457,15 @@ const SPACE_OPTS = {
 
 const MOVEMENT_OPTS = {
   walk_in_explore:    '⭐ Entra ed esplora — sguardo naturale (consigliato)',
-  walk_in_gentle:     'Entra dolcemente — passo lento e rispettoso',
+  walk_in_gentle:     'Entra dolcemente — tracking laterale',
   walk_in_turn_left:  'Entra e gira a sinistra',
   walk_in_turn_right: 'Entra e gira a destra',
   walk_through:       'Attraversa il corridoio — avanza dritto',
-  stand_look_around:  'Fermo — ruota lo sguardo a 360°',
-  approach_reveal:    'Avvicinati — lo spazio si rivela avanzando',
+  stand_look_around:  'Fermo — ruota lo sguardo (max 90°)',
+  subtle_rotate:      'Rotazione sottile — max 15° (piccoli ambienti)',
+  approach_reveal:    'Avvicinati — tracking laterale parallelo alla parete',
   walk_toward:        'Avvicinati alla proprietà — per esterni',
-  step_out_onto:      'Esci verso — per balconi e terrazze',
+  step_out_onto:      'Esci verso — per balconi e terrazze (max 60°)',
 };
 
 // Space type → default POV movement mapping (mirrors SPACE_DEFAULT_MOVEMENT in video_generation.py)
@@ -557,7 +558,7 @@ function renderScenes() {
       </div>` : '';
 
     const reworkBtn = scStatus
-      ? `<button class="btn-rework-toggle" onclick="toggleRework(${i})" id="rw-btn-${i}">↺ Rifai</button>`
+      ? `<button class="btn-rework-toggle" onclick="openReworkPanel(${i}, this)" id="rw-btn-${i}">↺ Rifai questa scena</button>`
       : '';
 
     const card = document.createElement('div');
@@ -623,6 +624,30 @@ function renderScenes() {
 
 function onCaptionChange(index, value) {
   updateCostEstimate();
+}
+
+function openReworkPanel(i, btn) {
+  saveSceneData();
+  sceneUserData[i] = sceneUserData[i] || {};
+  sceneUserData[i].rework_open = true;
+  const panel = document.getElementById(`rw-panel-${i}`);
+  if (panel) {
+    panel.classList.add('open');
+    panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+  if (btn) {
+    btn.textContent    = '✓ Aperto — premi Genera video';
+    btn.style.color    = 'var(--ok)';
+    btn.style.borderColor = 'var(--ok)';
+  }
+}
+
+function toggleRework(i) {
+  saveSceneData();
+  sceneUserData[i] = sceneUserData[i] || {};
+  sceneUserData[i].rework_open = !sceneUserData[i].rework_open;
+  const panel = document.getElementById(`rw-panel-${i}`);
+  if (panel) panel.classList.toggle('open');
 }
 
 function onDurationChange(input) {

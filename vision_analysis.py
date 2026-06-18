@@ -37,23 +37,35 @@ log = logging.getLogger(__name__)
 FLORENCE_ENDPOINT = "fal-ai/florence-2-large/more-detailed-caption"
 
 # ── Space classification keywords (parsed from Florence description) ───────────
-# IMPORTANT: These must be specific enough to avoid false positives.
-# "railing", "open air", "overlooking" were triggering on interior rooms with windows.
-# "roof" was triggering on rooms with visible ceiling beams.
-# Only use keywords that are unambiguously elevated/exterior spaces.
-_ELEVATED_KW  = ["balcony","terrace","loggia","rooftop terrace","roof terrace",
-                  "balustrade","parapet","outdoor balcony","terrace floor",
-                  "balcony railing","step out onto","elevated outdoor"]
-_OUTDOOR_KW   = ["garden","yard","pool","swimming pool","driveway","building facade",
-                  "courtyard","exterior view","patio","lawn","grass area",
-                  "outdoor pathway","entrance gate","letterbox","street view",
-                  "outdoor space","outside the building"]
+# IMPORTANT: Only use keywords that unambiguously mean the CAMERA IS ON
+# the elevated space — not just that a terrace/balcony is visible through a window.
+_ELEVATED_KW  = ["balcony floor","terrace floor","standing on balcony",
+                  "standing on terrace","balcony railing in foreground",
+                  "elevated outdoor","outdoor balcony","rooftop terrace",
+                  "stepping onto terrace","stepping onto balcony",
+                  "terrace with outdoor furniture","balcony with outdoor furniture"]
+
+# If ANY of these appear in the description alongside elevated keywords,
+# it's an interior with a view — not an elevated space.
+_INTERIOR_OVERRIDE_KW = ["sofa","armchair","dining table","coffee table","bookshelf",
+                          "wardrobe","bed","kitchen","living room","indoor","interior",
+                          "carpet","wooden floor inside","ceiling","chandelier","curtains"]
+
+_OUTDOOR_KW   = ["garden","yard","swimming pool","driveway","building facade",
+                  "courtyard","patio","lawn","grass","outdoor pathway",
+                  "entrance gate","street view","outdoor space","outside the building",
+                  "parking","front garden","back garden"]
 _SMALLROOM_KW = ["bathroom","shower","bathtub","toilet","wc","sink","basin",
                   "hallway","corridor","laundry","utility room","closet","pantry",
-                  "narrow room","compact room","small room","ensuite","cloakroom",
-                  "powder room","washroom"]
+                  "narrow room","compact room","ensuite","cloakroom","powder room"]
 _BEDROOM_KW   = ["bedroom","bed frame","mattress","pillows","headboard","wardrobe",
                   "nightstand","bedside table","duvet","bedroom furniture","sleeping area"]
+
+# Body part detection — used in QC separate from general description
+_BODY_PART_KW = ["human hand","person's hand","hand reaching","fingers visible",
+                  "arm visible","arm extended","human arm","body part","limb visible",
+                  "hand in frame","hands in frame","arm in frame","person visible",
+                  "human figure","silhouette of person"]
 
 # ── Camera recommendations by space type ──────────────────────────────────────
 _SPACE_CAMERA = {
@@ -108,18 +120,17 @@ def _upload_local_image(image_path: str) -> str:
 def _classify_space(description: str) -> tuple[str, float]:
     """
     Parses a Florence-2 description and returns (space_type, confidence).
-    space_type is one of: large_interior, medium_interior, bedroom,
-                          small_interior, ground_exterior, elevated
-    confidence is 0.0-1.0
     """
     d = description.lower()
 
-    # Check elevated first (most specific)
-    if any(k in d for k in _ELEVATED_KW):
+    # Check elevated ONLY if no interior furniture/elements are present
+    # This prevents windows with terrace views from triggering elevated
+    has_interior = any(k in d for k in _INTERIOR_OVERRIDE_KW)
+    if any(k in d for k in _ELEVATED_KW) and not has_interior:
         return "elevated", 0.85
 
     # Check outdoor
-    if any(k in d for k in _OUTDOOR_KW):
+    if any(k in d for k in _OUTDOOR_KW) and not has_interior:
         return "ground_exterior", 0.85
 
     # Check small rooms
@@ -131,10 +142,10 @@ def _classify_space(description: str) -> tuple[str, float]:
         return "bedroom", 0.90
 
     # Estimate interior size from description cues
-    size_cues_large  = ["spacious","open","large","expansive","wide","high ceiling",
-                         "open plan","generous","airy","grand","living room","salon"]
-    size_cues_medium = ["medium","modest","cosy","cozy","comfortable","dining",
-                         "kitchen","study","office","studio"]
+    size_cues_large  = ["spacious","open plan","large room","expansive","wide","high ceiling",
+                         "open-plan","generous","airy","grand","living room","salon","lounge"]
+    size_cues_medium = ["medium","modest","cosy","cozy","comfortable","dining room",
+                         "kitchen","study","office","studio","well-proportioned"]
 
     large_score  = sum(1 for k in size_cues_large  if k in d)
     medium_score = sum(1 for k in size_cues_medium if k in d)
@@ -144,7 +155,7 @@ def _classify_space(description: str) -> tuple[str, float]:
     elif medium_score > 0:
         return "medium_interior", 0.70
     else:
-        return "large_interior", 0.55   # default with low confidence
+        return "large_interior", 0.55   # default — interior with unknown size
 
 
 def _estimate_depth(description: str) -> str:
@@ -367,11 +378,15 @@ def analyse_output(
 
         frame_space, _ = _classify_space(frame_desc)
 
-        # ── Check 1: People detection ──────────────────────────────────────
+        # ── Check 1: People and body part detection ───────────────────────
+        # Check both general description AND targeted body part keywords
         people_detected = any(k in frame_desc.lower() for k in _PEOPLE_KW)
+        body_parts_detected = any(k in frame_desc.lower() for k in _BODY_PART_KW)
+        if body_parts_detected:
+            issues.append("Human body part detected in generated video (hands/arms/fingers)")
+            log.warning("[Vision QC] BODY PARTS detected in output frame")
         if people_detected:
             issues.append("Person or human element detected in generated video")
-            log.warning("[Vision QC] PEOPLE DETECTED in output frame")
 
         # ── Check 2: Space type matches ────────────────────────────────────
         # Allow some flexibility — interior types can vary
@@ -401,10 +416,12 @@ def analyse_output(
             issues.append("Video frame appears low quality or heavily degraded")
 
         # ── Determine verdict ──────────────────────────────────────────────
-        if people_detected or not space_matches:
-            verdict = "reject"    # must redo
+        if people_detected or body_parts_detected or not space_matches:
+            verdict = "reject"
         elif structural or quality_score < 0.3:
-            verdict = "flag"      # human review required
+            verdict = "flag"
+        elif issues:
+            verdict = "flag"
         else:
             verdict = "pass"
 

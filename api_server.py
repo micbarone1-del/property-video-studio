@@ -286,7 +286,7 @@ async def create_job(
     job_id  = str(uuid.uuid4())[:8]
     job_dir = JOBS_DIR / job_id
     img_dir = job_dir / "images"
-    img_dir.mkdir(parents=True, exist_ok=True)
+    img_dir.mkdir(parents=True)
 
     saved_images = []
     for i, upload in enumerate(images):
@@ -317,7 +317,9 @@ async def create_job(
     cost_estimate = estimate_job_cost(
         scenes_config,
         do_upscale=upscale_images,
+        do_video_upscale=do_video_upscale,
         do_vision_qc=enable_vision_qc,
+        model_tier=model_tier,
     )
 
     JOBS[job_id] = {
@@ -740,68 +742,109 @@ async def run_assembly(job_id: str, job_dir: Path):
 async def run_rework(rework_id: str, parent_job_id: str, cfg: dict):
     def update(status, progress, message):
         JOBS[rework_id].update({"status": status, "progress": progress, "message": message})
+        _save_job(rework_id)
         log.info(f"[Rework {rework_id}] {progress}% — {message}")
 
     try:
+        if parent_job_id not in JOBS:
+            raise ValueError(f"Parent job {parent_job_id} not found")
+
         parent     = JOBS[parent_job_id]
         parent_dir = JOBS_DIR / parent_job_id
         rework_dir = JOBS_DIR / rework_id
         rework_dir.mkdir(exist_ok=True)
 
+        # Copy existing clips/audio/enhanced from parent job
+        # Use dirs_exist_ok=True to avoid FileExistsError on retry
         for sub in ["enhanced", "audio", "clips"]:
             src = parent_dir / sub
             dst = rework_dir / sub
-            if src.exists():
-                if src.resolve() == dst.resolve():
-                    pass  # same directory, skip copy
-                else:
-                    dst.mkdir(exist_ok=True)
-                    for item in src.iterdir():
-                        d = dst / item.name
-                        if not (d.exists() and item.stat().st_ino == d.stat().st_ino):
-                            shutil.copy2(str(item), str(d))
-            else:
+            if src.exists() and not dst.exists():
+                shutil.copytree(str(src), str(dst), dirs_exist_ok=True)
+            elif not dst.exists():
                 (rework_dir / sub).mkdir(exist_ok=True)
 
         scenes_to_redo = cfg.get("scenes", [])
         redo_video     = cfg.get("redo_video", True)
         redo_audio     = cfg.get("redo_audio", False)
         updated_scenes = cfg.get("updated_scenes", [])
-        then_assemble  = cfg.get("then_assemble", False)
-        n              = len(scenes_to_redo)
+        n              = max(len(scenes_to_redo), 1)
 
-        update("running", 5, f"Reworking {n} scene(s)…")
+        # Get model settings from parent job
+        model_tier  = parent.get("model_tier",  "premium")
+        lighting    = parent.get("lighting",    "bright_natural")
+        intensity   = parent.get("intensity",   "natural_pace")
+
+        update("running", 5, f"Rework di {len(scenes_to_redo)} scena/e…")
 
         from voice_generation import generate_speech as generate_voice
         from video_generation import generate_video_single
 
+        scene_statuses = list(parent.get("scenes", []))  # start with parent scene statuses
+
         for idx, scene_index in enumerate(scenes_to_redo):
             scene = updated_scenes[scene_index] if scene_index < len(updated_scenes) else {}
 
+            # Redo audio
             if redo_audio and scene.get("voiceover", "").strip():
                 audio_out = str(rework_dir / "audio" / f"scene_{scene_index:03d}.mp3")
-                update("running", int(10 + (idx/n)*30), f"Regenerating audio scene {scene_index+1}…")
+                update("running", int(10 + (idx/n)*30), f"Rigenero audio scena {scene_index+1}…")
                 await asyncio.to_thread(
                     generate_voice, scene["voiceover"], audio_out,
                     voice_id=os.getenv("DEFAULT_VOICE_ID") or None
                 )
 
+            # Redo video
             if redo_video:
+                # Find best available source image
                 enhanced_img = str(rework_dir / "enhanced" / f"scene_{scene_index:03d}_enhanced.jpg")
                 if not Path(enhanced_img).exists():
-                    enhanced_img = str(parent_dir / "images" / f"scene_{scene_index:03d}.jpg")
-                clip_out    = str(rework_dir / "clips" / f"scene_{scene_index:03d}.mp4")
-                duration    = int(scene.get("duration", 8))
-                caption     = scene.get("caption", "")
-                camera_hint = scene.get("camera_hint", "auto")
-                update("running", int(40 + (idx/n)*40), f"Regenerating clip scene {scene_index+1}…")
-                await asyncio.to_thread(
-                    generate_video_single, enhanced_img, duration, clip_out, caption, camera_hint
+                    enhanced_img = str(parent_dir / "enhanced" / f"scene_{scene_index:03d}_enhanced.jpg")
+                if not Path(enhanced_img).exists():
+                    # Try any image extension
+                    for ext in [".jpg", ".jpeg", ".png", ".webp"]:
+                        candidate = parent_dir / "images" / f"scene_{scene_index:03d}{ext}"
+                        if candidate.exists():
+                            enhanced_img = str(candidate)
+                            break
+
+                if not Path(enhanced_img).exists():
+                    log.error(f"[Rework] No source image found for scene {scene_index}")
+                    update("running", int(40 + (idx/n)*40), f"Scena {scene_index+1}: immagine non trovata, saltata")
+                    continue
+
+                clip_out     = str(rework_dir / "clips" / f"scene_{scene_index:03d}.mp4")
+                duration     = int(scene.get("duration", 8))
+                space_type   = scene.get("space_type",   "large")
+                pov_movement = scene.get("pov_movement", "walk_in_explore")
+
+                update("running", int(40 + (idx/n)*40), f"Rigenero clip scena {scene_index+1}…")
+                ok = await asyncio.to_thread(
+                    generate_video_single,
+                    enhanced_img, duration, clip_out,
+                    space_type=space_type,
+                    pov_movement=pov_movement,
+                    lighting=lighting,
+                    intensity=intensity,
+                    model_tier=model_tier,
                 )
 
-        update("running", 85, "Reassembling final video…")
+                # Update scene status in rework job
+                for s in scene_statuses:
+                    if s.get("index") == scene_index:
+                        s["video"] = "ok" if ok else "failed"
+                        break
+
+        JOBS[rework_id]["scenes"] = scene_statuses
+        _save_job(rework_id)
+
+        update("running", 85, "Riassemblaggio video finale…")
         output_path = str(rework_dir / f"{parent['property_name'].replace(' ','_')}_rework.mp4")
         clip_paths  = sorted((rework_dir / "clips").glob("scene_*.mp4"))
+
+        if not clip_paths:
+            raise RuntimeError("Nessuna clip trovata per l'assemblaggio")
+
         audio_paths = []
         for cp in clip_paths:
             ap = rework_dir / "audio" / cp.name.replace(".mp4", ".mp3")
@@ -819,13 +862,15 @@ async def run_rework(rework_id: str, parent_job_id: str, cfg: dict):
         )
 
         if not ok:
-            raise RuntimeError("Rework assembly failed")
+            raise RuntimeError("Assemblaggio rework fallito")
 
         JOBS[rework_id]["output_path"] = output_path
-        update("done", 100, "Rework video ready for download")
-        _save_job(rework_id)
+        update("done", 100, "Rework video pronto per il download")
 
     except Exception as e:
         log.error(f"[Rework {rework_id}] Failed: {e}", exc_info=True)
-        JOBS[rework_id].update({"status": "failed", "message": f"Error: {str(e)}"})
+        JOBS[rework_id].update({
+            "status":  "failed",
+            "message": f"Errore rework: {str(e)[:200]}"
+        })
         _save_job(rework_id)

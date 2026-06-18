@@ -232,6 +232,14 @@ _VEO_MOVEMENT_TOKENS = {
         "natural_pace": "slow partial pan across the outdoor space — maximum 60 degrees, within original image width, no outward push",
         "energetic":    "smooth partial pan across the outdoor space — maximum 60 degrees, within original frame",
     },
+
+    # Subtle rotate — maximum 15 degrees, works in any space including small rooms
+    # Use when walk_in_turn fails in shallow spaces
+    "subtle_rotate": {
+        "very_slow":    "extremely subtle rotation of maximum 15 degrees from centre, camera otherwise completely stationary, no zoom, no forward movement",
+        "natural_pace": "very subtle rotation of maximum 15 degrees from centre, camera stationary, no zoom, no push",
+        "energetic":    "subtle 15-degree rotation from centre, camera fixed position, no zoom",
+    },
 }
 
 _VEO_LIGHTING_TOKENS = {
@@ -249,7 +257,8 @@ _VEO_INTENSITY_TOKENS = {
 }
 
 _VEO_RULES = (
-    "No other people visible. No wind effects. "
+    "No people, no human hands, arms, legs, fingers, or body parts visible in any frame. "
+    "No wind effects on any surface. "
     "All architectural elements remain exactly as in the source image. "
     "Camera movement is strictly constrained within the boundaries of the original image — "
     "do not generate or reveal any content that was not visible in the source photo. "
@@ -295,6 +304,19 @@ def assemble_pov_prompt(
 
     elif model_tier == "premium":
         # Veo — pace integrated into movement token for consistency
+
+        # Small room remapping: pivot movements don't work in shallow spaces
+        # Remap to lateral tracking which works regardless of depth
+        _SMALL_ROOM_REMAPS = {
+            "walk_in_turn_left":  "approach_reveal",
+            "walk_in_turn_right": "approach_reveal",
+            "walk_in_explore":    "approach_reveal",
+            "walk_in_gentle":     "approach_reveal",
+        }
+        if space_type in ("small", "corridor") and pov_movement in _SMALL_ROOM_REMAPS:
+            original_movement = pov_movement
+            pov_movement = _SMALL_ROOM_REMAPS[pov_movement]
+            log.info(f"[VideoGen] Small room remap: {original_movement} → {pov_movement}")
         space    = _VEO_SPACE_TOKENS.get(space_type, _VEO_SPACE_TOKENS["large"])
         # Get movement with intensity baked in
         movement_dict = _VEO_MOVEMENT_TOKENS.get(pov_movement, _VEO_MOVEMENT_TOKENS["walk_in_explore"])

@@ -49,7 +49,6 @@ ELEVENLABS_COST_PER_CHAR = float(os.getenv("ELEVENLABS_COST_PER_CHAR", "0.0003")
 VPS_MONTHLY_EUR    = float(os.getenv("VPS_MONTHLY_COST_EUR",   "52.45"))
 MONTHLY_JOBS       = int(  os.getenv("MONTHLY_JOBS_ESTIMATE",  "20"))
 INFRA_COST_PER_JOB = VPS_MONTHLY_EUR / max(MONTHLY_JOBS, 1)
-UPSCALE_COST_PER_IMAGE = 0.030  # Real-ESRGAN image upscaling — per image
 
 # Frame mapping (mirrors video_generation.py)
 _DURATION_TO_FRAMES = {
@@ -67,22 +66,33 @@ _FRAME_COST = {
 
 # ── Cost estimation (before generation) ───────────────────────────────────────
 
+# Per-clip cost by model tier (8s clip)
+TIER_COST_PER_CLIP = {
+    "eco":      LYRA_COST_81_FRAMES + (8 * TOPAZ_COST_PER_SEC),  # Lyra + Topaz
+    "standard": 0.56,   # Kling 2.5 Turbo Pro (kept for backward compat)
+    "premium":  0.80,   # Veo 3.1 Fast
+}
+
+
 def estimate_job_cost(
     scenes:           list,
     do_upscale:       bool = True,
     do_video_upscale: bool = True,
     do_vision_qc:     bool = True,
+    model_tier:       str  = "premium",
 ) -> dict:
     """Estimates the total cost of a job before generation starts."""
     n = len(scenes)
 
-    video_cost         = 0.0
+    # Video generation cost — tier-aware
+    clip_rate = TIER_COST_PER_CLIP.get(model_tier, TIER_COST_PER_CLIP["premium"])
+    video_cost = n * clip_rate
+
+    # Topaz upscale only applies to eco tier
     video_upscale_cost = 0.0
-    for scene in scenes:
-        duration = int(scene.get("duration", 8))
-        frames   = _DURATION_TO_FRAMES.get(duration, 81)
-        video_cost += _FRAME_COST.get(frames, LYRA_COST_81_FRAMES)
-        if do_video_upscale:
+    if model_tier == "eco" and do_video_upscale:
+        for scene in scenes:
+            duration = int(scene.get("duration", 8))
             video_upscale_cost += duration * TOPAZ_COST_PER_SEC
 
     upscale_cost = (UPSCALE_COST_PER_IMAGE * n) if do_upscale else 0.0
@@ -96,6 +106,7 @@ def estimate_job_cost(
     return {
         "type":               "estimate",
         "scenes":             n,
+        "model_tier":         model_tier,
         "video_eur":          round(video_cost,          4),
         "upscale_eur":        round(upscale_cost,        4),
         "video_upscale_eur":  round(video_upscale_cost,  4),
