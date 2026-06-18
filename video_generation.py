@@ -105,6 +105,7 @@ SPACE_DEFAULT_MOVEMENT = {
 CROP_REVEAL_MOVEMENTS = {
     "walk_in_explore", "walk_in_gentle", "walk_in_turn_left",
     "walk_in_turn_right", "approach_reveal", "walk_toward",
+    "stand_look_around", "subtle_rotate",
 }
 
 
@@ -188,14 +189,14 @@ _VEO_MOVEMENT_TOKENS = {
 
     # Pivot reveals — for rooms with strong features on one side
     "walk_in_turn_left": {
-        "very_slow":    "very slow pan from right to left — strictly limited to the content visible in the original image, no content beyond left edge",
-        "natural_pace": "slow pan from right to left across the room — limited to original image boundaries, no new content beyond edges",
-        "energetic":    "smooth pan from right to left across the room — contained within original image boundaries",
+        "very_slow":    "very slow pan strictly from right to left — maximum 30 degrees total rotation, camera must not move beyond the leftmost edge of the original image, no new content generated",
+        "natural_pace": "slow pan from right to left — maximum 30 degrees total, strictly within original image left boundary, no content beyond original frame",
+        "energetic":    "smooth pan from right to left — maximum 30 degrees, contained strictly within original image boundaries",
     },
     "walk_in_turn_right": {
-        "very_slow":    "very slow pan from left to right — strictly limited to content visible in original image, no content beyond right edge",
-        "natural_pace": "slow pan from left to right across the room — limited to original image boundaries",
-        "energetic":    "smooth pan from left to right — contained within original image boundaries",
+        "very_slow":    "very slow pan strictly from left to right — maximum 30 degrees total rotation, camera must not move beyond the rightmost edge of the original image, no new content generated",
+        "natural_pace": "slow pan from left to right — maximum 30 degrees total, strictly within original image right boundary, no content beyond original frame",
+        "energetic":    "smooth pan from left to right — maximum 30 degrees, contained strictly within original image boundaries",
     },
 
     # Corridors — forward movement is the only natural option
@@ -212,11 +213,11 @@ _VEO_MOVEMENT_TOKENS = {
         "energetic":    "smooth lateral tracking shot parallel to the main wall, left to right at a gentle pace, within frame",
     },
 
-    # Stand and look — 360-degree pan replaced with partial pan
+    # Stand and look — hard cap at 30 degrees to prevent hallucination
     "stand_look_around": {
-        "very_slow":    "extremely slow partial pan from left to right — maximum 90 degrees, strictly within the width of the original image, no rotation beyond frame edges",
-        "natural_pace": "slow partial pan left to right — limited to 90 degrees maximum, within original image boundaries",
-        "energetic":    "smooth partial pan left to right — 90 degrees maximum, contained within original frame",
+        "very_slow":    "extremely slow partial pan — maximum 30 degrees total, camera starts and ends within the original image frame, strictly no rotation beyond original image edges, no new rooms or areas generated",
+        "natural_pace": "slow partial pan — maximum 30 degrees total, strictly within original image boundaries, camera never reveals content outside the source photo",
+        "energetic":    "smooth partial pan — maximum 30 degrees, strictly within original image boundaries, no new content beyond frame edges",
     },
 
     # Exterior — approaching the building
@@ -262,7 +263,9 @@ _VEO_RULES = (
     "All architectural elements remain exactly as in the source image. "
     "Camera movement is strictly constrained within the boundaries of the original image — "
     "do not generate or reveal any content that was not visible in the source photo. "
-    "No rotation beyond the edges of the original frame. "
+    "Maximum rotation angle is 30 degrees in any direction. "
+    "No rotation beyond the edges of the original frame under any circumstances. "
+    "No new rooms, doors, windows, or spaces may be revealed that were not in the source photo. "
     "No flickering, no morphing of walls or floors."
 )
 
@@ -615,8 +618,12 @@ def generate_video_single(
         log.info(f"[VideoGen] Prompt: {final_prompt[:120]}...")
 
         # ── Crop-and-reveal pre-processing ────────────────────────────────
-        if pov_movement in CROP_REVEAL_MOVEMENTS:
-            image_data = _crop_for_reveal(image_path, crop_pct=0.85)
+        # Tighter crop for rotation movements — gives model less room to hallucinate
+        _ROTATION_MOVEMENTS = {"walk_in_turn_left","walk_in_turn_right","stand_look_around"}
+        if pov_movement in _ROTATION_MOVEMENTS:
+            image_data = _crop_for_reveal(image_path, crop_pct=0.75)  # tighter for rotation
+        elif pov_movement in CROP_REVEAL_MOVEMENTS:
+            image_data = _crop_for_reveal(image_path, crop_pct=0.85)  # standard for walk-in
         else:
             with open(image_path, "rb") as f:
                 image_data = f.read()
