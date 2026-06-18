@@ -95,7 +95,7 @@ SPACE_DEFAULT_MOVEMENT = {
     "large":    "walk_in_explore",
     "medium":   "walk_in_explore",
     "bedroom":  "walk_in_gentle",
-    "small":    "approach_reveal",
+    "small":    "approach_reveal",   # lateral tracking in Kling, approach in Veo
     "corridor": "walk_through",
     "outdoor":  "walk_toward",
     "elevated": "step_out_onto",
@@ -109,10 +109,48 @@ CROP_REVEAL_MOVEMENTS = {
 
 
 # ── Structured POV token dictionaries ─────────────────────────────────────────
-# Zero free text. All prompts assembled from these tokens only.
+# CRITICAL: Kling and Veo need completely different prompt languages.
+# Kling image-to-video: MOTION ONLY — short, specific, no scene description.
+#   Format: {camera_type} {direction} {endpoint}. {constraint}.
+#   Max 3-4 elements. Never redescribe what's in the image.
+# Veo image-to-video: Full narrative POV description works well.
+# Lyra: Frozen-scene description — it's a zoom model not a motion model.
 
-# Space intro tokens
-_SPACE_TOKENS = {
+
+# ── KLING-specific motion tokens ───────────────────────────────────────────────
+# These replace the verbose POV narrative for Kling.
+# Each token is: camera type + direction + endpoint + stability note.
+
+_KLING_MOTION = {
+    # Large interior movements
+    "walk_in_explore":    "Slow tracking push-in from the doorway toward the far wall, then settles. Camera level, no shake.",
+    "walk_in_gentle":     "Gentle slow push-in, camera drifts slightly right to reveal the room, settles at centre. Level horizon.",
+    "walk_in_turn_left":  "Push-in from entrance, camera pivots slowly left to reveal the room width, settles. Level.",
+    "walk_in_turn_right": "Push-in from entrance, camera pivots slowly right to reveal the room width, settles. Level.",
+    "walk_through":       "Slow tracking shot moving steadily forward through the space, camera level, settles at far end.",
+    "stand_look_around":  "Slow pan left to right across the full room, camera stationary, settles back to centre.",
+    # Small room / constrained space movements
+    "approach_reveal":    "Slow lateral tracking shot moving left to right parallel to the main wall, reveals the full space. Camera level, no zoom.",
+    # Exterior movements
+    "walk_toward":        "Slow push-in toward the building facade, camera rises slightly, settles. Level horizon throughout.",
+    "step_out_onto":      "Slow pan across the outdoor space left to right, camera stationary, settles. No zoom.",
+}
+
+# Kling intensity modifier (appended to motion token)
+_KLING_INTENSITY = {
+    "very_slow":    "Very slow speed.",
+    "natural_pace": "Moderate slow speed.",
+    "energetic":    "Confident smooth speed.",
+}
+
+# Kling anti-hallucination (minimal — Kling reads short prompts better)
+_KLING_RULES = "No people. Camera stays within the visible scene. No new elements added."
+
+
+# ── VEO-specific POV narrative tokens ─────────────────────────────────────────
+# Veo follows longer narrative prompts accurately.
+
+_VEO_SPACE_TOKENS = {
     "large":    "Stepping into a bright spacious living area",
     "medium":   "Entering a well-proportioned room",
     "bedroom":  "Walking gently into a private bedroom",
@@ -122,81 +160,99 @@ _SPACE_TOKENS = {
     "elevated": "Stepping out onto an elevated outdoor space",
 }
 
-# POV movement tokens
-_MOVEMENT_TOKENS = {
-    "walk_in_explore":    "walking slowly into the space from the doorway, gaze naturally exploring the room, pausing briefly on key features, revealing the full room as the viewpoint advances inward",
-    "walk_in_gentle":     "walking softly into the room from the entrance, slow and respectful pace, gaze moving naturally from the entrance toward the far wall",
-    "walk_in_turn_left":  "walking into the space then turning gently to the left, revealing the full left side of the room as the viewpoint pivots",
-    "walk_in_turn_right": "walking into the space then turning gently to the right, revealing the full right side of the room as the viewpoint pivots",
+_VEO_MOVEMENT_TOKENS = {
+    "walk_in_explore":    "walking slowly into the space from the doorway, gaze naturally exploring the room, pausing briefly on key features",
+    "walk_in_gentle":     "walking softly into the room from the entrance, slow and respectful pace, gaze moving from the entrance toward the far wall",
+    "walk_in_turn_left":  "walking into the space then turning gently to the left, revealing the full left side of the room",
+    "walk_in_turn_right": "walking into the space then turning gently to the right, revealing the full right side of the room",
     "walk_through":       "walking steadily forward through the space from one end to the other, gaze level and ahead",
-    "stand_look_around":  "standing still at the centre of the space, slowly turning the head to take in the full panorama of the room",
-    "approach_reveal":    "approaching the space slowly from just outside, the full room gradually revealing itself as the viewpoint moves forward through the entrance",
-    "walk_toward":        "walking purposefully toward the property from the exterior, the full facade revealing as the viewpoint approaches",
-    "step_out_onto":      "stepping out through a doorway onto the outdoor space, pausing to take in the open view ahead",
+    "stand_look_around":  "standing still, slowly turning the head to take in the full panorama of the room",
+    "approach_reveal":    "approaching the space slowly, the full room gradually revealing as the viewpoint advances forward",
+    "walk_toward":        "walking purposefully toward the property, the full facade revealing as the viewpoint approaches",
+    "step_out_onto":      "stepping out through a doorway onto the outdoor space, pausing to take in the open view",
 }
 
-# Lighting tokens (property-level)
-_LIGHTING_TOKENS = {
-    "bright_natural":  "bright natural daylight, consistent and even throughout, no flickering",
-    "golden_hour":     "warm late-afternoon golden light, soft shadows, consistent throughout",
-    "overcast_soft":   "soft diffused overcast light, even and flattering, no harsh shadows",
-    "evening_interior":"warm interior lighting, lamps and overhead lights active, evening atmosphere",
-    "mixed_day":       "natural light from windows contrasting with warm interior ambient light",
+_VEO_LIGHTING_TOKENS = {
+    "bright_natural":   "bright natural daylight, consistent and even, no flickering",
+    "golden_hour":      "warm late-afternoon golden light, soft shadows, consistent",
+    "overcast_soft":    "soft diffused overcast light, even and flattering",
+    "evening_interior": "warm interior lighting, lamps and overhead lights on, evening atmosphere",
+    "mixed_day":        "natural window light contrasting with warm interior ambient light",
 }
 
-# Motion intensity tokens (property-level)
-_INTENSITY_TOKENS = {
-    "very_slow":    "all movement is extremely slow and deliberate, as if appreciating every detail",
-    "natural_pace": "movement at a natural comfortable walking pace",
-    "energetic":    "movement is confident and purposeful, the pace of someone excited about the space",
+_VEO_INTENSITY_TOKENS = {
+    "very_slow":    "extremely slow and deliberate, appreciating every detail",
+    "natural_pace": "natural comfortable walking pace",
+    "energetic":    "confident and purposeful, excited about the space",
 }
 
-# Anti-hallucination base rules (appended to all prompts)
-_ANTI_HALLUCINATION = (
-    "No other people visible in any frame. "
-    "No wind effects on any surface. "
-    "All architectural elements, furniture, and surfaces remain exactly as in the source image. "
-    "Movement stays strictly within the boundaries of the visible space. "
-    "Do not generate content beyond the original frame boundaries. "
+_VEO_RULES = (
+    "No other people visible. No wind effects. "
+    "All architectural elements remain exactly as in the source image. "
+    "Movement stays within the visible space boundaries. "
     "No flickering, no morphing of walls or floors."
 )
 
-# Per-model prompt wrappers
-# Kling and Veo respond to different prompt styles
-_KLING_WRAPPER = "POV video: {space}. {movement}. {lighting}. {intensity}. {rules}"
-_VEO_WRAPPER   = "First-person POV shot: {space}. Camera: {movement}. Lighting: {lighting}. Pace: {intensity}. {rules}"
-_LYRA_WRAPPER  = "A high-end real estate interior. The scene is a completely frozen tableau — every surface and element is perfectly still. {lighting}. {rules}"
+# Lyra frozen-scene prompt (lighting only — Lyra controls camera via parameters)
+_LYRA_SCENE = (
+    "A high-end real estate interior. "
+    "The scene is a completely frozen tableau — every surface, fixture, and element "
+    "is perfectly still and motionless. {lighting}. "
+    "No people, no wind, no movement of any kind. "
+    "Cinema-grade HDR colour grading, 4K texture clarity."
+)
+
+_LYRA_LIGHTING = {
+    "bright_natural":   "Bright natural daylight, fixed and consistent",
+    "golden_hour":      "Warm golden-hour light, fixed, soft shadows",
+    "overcast_soft":    "Soft diffused overcast light, even illumination",
+    "evening_interior": "Warm interior lighting, stable and realistic",
+    "mixed_day":        "Natural window light with warm interior ambient",
+}
 
 
 def assemble_pov_prompt(
-    space_type:    str,
-    pov_movement:  str,
-    lighting:      str,
-    intensity:     str,
-    model_tier:    str,
+    space_type:   str,
+    pov_movement: str,
+    lighting:     str,
+    intensity:    str,
+    model_tier:   str,
 ) -> str:
     """
-    Assembles a structured POV prompt from token dictionaries.
-    No free text — every component comes from a controlled vocabulary.
+    Assembles a model-specific prompt from structured token dictionaries.
+    Kling: short precise motion-only instructions (3-4 elements max)
+    Veo:   full POV narrative (follows longer prompts accurately)
+    Lyra:  frozen-scene description (camera controlled via API parameters)
     """
-    space    = _SPACE_TOKENS.get(space_type, _SPACE_TOKENS["large"])
-    movement = _MOVEMENT_TOKENS.get(pov_movement, _MOVEMENT_TOKENS["walk_in_explore"])
-    light    = _LIGHTING_TOKENS.get(lighting, _LIGHTING_TOKENS["bright_natural"])
-    pace     = _INTENSITY_TOKENS.get(intensity, _INTENSITY_TOKENS["natural_pace"])
-    rules    = _ANTI_HALLUCINATION
+    if model_tier == "eco":
+        # Lyra — frozen scene, camera via parameters
+        light = _LYRA_LIGHTING.get(lighting, _LYRA_LIGHTING["bright_natural"])
+        return _LYRA_SCENE.format(lighting=light)
 
-    if model_tier == "premium":
-        return _VEO_WRAPPER.format(
-            space=space, movement=movement,
-            lighting=light, intensity=pace, rules=rules
+    elif model_tier == "premium":
+        # Veo — full POV narrative
+        space    = _VEO_SPACE_TOKENS.get(space_type, _VEO_SPACE_TOKENS["large"])
+        movement = _VEO_MOVEMENT_TOKENS.get(pov_movement, _VEO_MOVEMENT_TOKENS["walk_in_explore"])
+        light    = _VEO_LIGHTING_TOKENS.get(lighting, _VEO_LIGHTING_TOKENS["bright_natural"])
+        pace     = _VEO_INTENSITY_TOKENS.get(intensity, _VEO_INTENSITY_TOKENS["natural_pace"])
+        prompt   = (
+            f"First-person POV shot: {space}. "
+            f"Camera: {movement}. "
+            f"Lighting: {light}. "
+            f"Pace: {pace}. "
+            f"{_VEO_RULES}"
         )
-    elif model_tier == "eco":
-        return _LYRA_WRAPPER.format(lighting=light, rules=rules)
-    else:  # standard (Kling)
-        return _KLING_WRAPPER.format(
-            space=space, movement=movement,
-            lighting=light, intensity=pace, rules=rules
-        )
+        log.info(f"[VideoGen] Veo prompt: {prompt[:100]}...")
+        return prompt
+
+    else:
+        # Kling — short precise motion instructions ONLY
+        # Do NOT describe the scene — Kling sees the image directly
+        motion    = _KLING_MOTION.get(pov_movement, _KLING_MOTION["walk_in_explore"])
+        pace      = _KLING_INTENSITY.get(intensity, _KLING_INTENSITY["natural_pace"])
+        prompt    = f"{motion} {pace} {_KLING_RULES}"
+        log.info(f"[VideoGen] Kling prompt: {prompt}")
+        return prompt
 
 
 # ── Crop-and-reveal pre-processing ────────────────────────────────────────────
@@ -250,13 +306,11 @@ def _upload_bytes(data: bytes, filename: str = "image.jpg") -> str:
 def _generate_kling(image_url: str, prompt: str, duration: int) -> str | None:
     """Submits to Kling 2.5 Turbo Pro. Returns video URL or None.
     Kling only accepts duration '5' or '10' — snap to nearest valid value.
-    Uses submit()+manual polling to avoid httpx default 5s timeout on queue polls.
     """
-    import time, httpx
     kling_dur = "5" if duration <= 7 else "10"
     try:
         log.info(f"[VideoGen] Kling 2.5 Turbo Pro — {kling_dur}s (requested {duration}s)")
-        handle = fal_client.submit(
+        result = fal_client.subscribe(
             KLING_ENDPOINT,
             arguments={
                 "image_url":    image_url,
@@ -266,26 +320,7 @@ def _generate_kling(image_url: str, prompt: str, duration: int) -> str | None:
                 "mode":         "pro",
             }
         )
-        # Poll manually with generous per-request timeout (60s) — Kling takes 2-5 min
-        deadline = time.time() + 600  # 10-minute total timeout
-        poll_interval = 5
-        while time.time() < deadline:
-            try:
-                status = fal_client.status(KLING_ENDPOINT, handle.request_id, with_logs=False)
-            except (httpx.TimeoutException, httpx.ReadTimeout, httpx.ConnectTimeout, Exception) as poll_err:
-                log.warning(f"[VideoGen] Kling poll timeout (retrying): {poll_err}")
-                time.sleep(poll_interval)
-                continue
-            from fal_client.client import Completed, InProgress, Queued
-            if isinstance(status, Completed):
-                result = fal_client.result(KLING_ENDPOINT, handle.request_id)
-                return (result.get("video") or {}).get("url")
-            elif not isinstance(status, (InProgress, Queued)):
-                log.error(f"[VideoGen] Kling job unexpected status: {type(status).__name__}")
-                return None
-            time.sleep(poll_interval)
-        log.error(f"[VideoGen] Kling timed out after 10 minutes")
-        return None
+        return (result.get("video") or {}).get("url")
     except Exception as e:
         log.error(f"[VideoGen] Kling failed: {e}")
         return None
