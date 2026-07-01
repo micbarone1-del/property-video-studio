@@ -86,7 +86,8 @@ _STRUCTURAL_KW = ["door opening","window appeared","new room","additional room",
                    "door swinging","door ajar","door opened","opening door",
                    "new doorway","new window","previously unseen",
                    "open door","doorway visible","door frame","through the door",
-                   "another room","room behind","hallway beyond","space beyond"]
+                   "another room","room behind","hallway beyond","space beyond",
+                   "room beyond","area beyond","space through","leading to another"]
 
 
 # ── Florence-2 helper ──────────────────────────────────────────────────────────
