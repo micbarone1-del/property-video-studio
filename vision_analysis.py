@@ -82,7 +82,11 @@ _PEOPLE_KW    = ["person","people","man","woman","child","human","figure",
                   "face","hand","arm","leg","body","silhouette","shadow of a person"]
 _STRUCTURAL_KW = ["door opening","window appeared","new room","additional room",
                    "different room","corridor appeared","staircase appeared",
-                   "wall disappeared","ceiling collapsed","furniture moved"]
+                   "wall disappeared","ceiling collapsed","furniture moved",
+                   "door swinging","door ajar","door opened","opening door",
+                   "new doorway","new window","previously unseen",
+                   "open door","doorway visible","door frame","through the door",
+                   "another room","room behind","hallway beyond","space beyond"]
 
 
 # ── Florence-2 helper ──────────────────────────────────────────────────────────
@@ -240,7 +244,7 @@ def analyse_input(image_path: str) -> dict:
             "large":    "walk_in_explore",
             "medium":   "walk_in_explore",
             "bedroom":  "walk_in_gentle",
-            "small":    "approach_reveal",
+            "small":    "subtle_rotate",    # approach_reveal produces 2D zoom in shallow spaces
             "corridor": "walk_through",
             "outdoor":  "walk_toward",
             "elevated": "step_out_onto",
@@ -363,8 +367,21 @@ def analyse_output(
             default["verdict"] = "flag"
             return default
 
+        # ── Describe first AND last frame ─────────────────────────────────
         frame_url  = _upload_local_image(first_frame)
         frame_desc = _describe_image(frame_url) if frame_url else ""
+
+        # Also check last frame for hallucinations that appear mid-clip
+        last_frame  = _extract_video_frame(video_path, "last")
+        last_desc   = ""
+        if last_frame:
+            last_url  = _upload_local_image(last_frame)
+            last_desc = _describe_image(last_url) if last_url else ""
+            try: os.remove(last_frame)
+            except: pass
+
+        # Combine descriptions for structural checks
+        combined_desc = (frame_desc + " " + last_desc).lower()
 
         # Clean up temp frame
         try: os.remove(first_frame)
@@ -379,14 +396,14 @@ def analyse_output(
         frame_space, _ = _classify_space(frame_desc)
 
         # ── Check 1: People and body part detection ───────────────────────
-        # Check both general description AND targeted body part keywords
-        people_detected = any(k in frame_desc.lower() for k in _PEOPLE_KW)
-        body_parts_detected = any(k in frame_desc.lower() for k in _BODY_PART_KW)
+        people_detected     = any(k in combined_desc for k in _PEOPLE_KW)
+        body_parts_detected = any(k in combined_desc for k in _BODY_PART_KW)
         if body_parts_detected:
             issues.append("Human body part detected in generated video (hands/arms/fingers)")
-            log.warning("[Vision QC] BODY PARTS detected in output frame")
+            log.warning("[Vision QC] BODY PARTS detected")
         if people_detected:
             issues.append("Person or human element detected in generated video")
+            log.warning("[Vision QC] PEOPLE DETECTED")
 
         # ── Check 2: Space type matches ────────────────────────────────────
         # Allow some flexibility — interior types can vary
@@ -403,10 +420,10 @@ def analyse_output(
             issues.append(f"Space type mismatch: input is exterior, output appears to be interior")
             log.warning(f"[Vision QC] SPACE MISMATCH: {orig_space} → {frame_space}")
 
-        # ── Check 3: Structural hallucinations ────────────────────────────
-        structural = any(k in frame_desc.lower() for k in _STRUCTURAL_KW)
+        # ── Check 3: Structural hallucinations (first AND last frame) ────
+        structural = any(k in combined_desc for k in _STRUCTURAL_KW)
         if structural:
-            issues.append("Possible structural hallucination detected")
+            issues.append("Possible structural hallucination detected (door opening or new element)")
             log.warning("[Vision QC] STRUCTURAL hallucination suspected")
 
         # ── Check 4: Basic quality score ──────────────────────────────────

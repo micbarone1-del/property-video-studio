@@ -344,13 +344,13 @@
 const API_BASE = '';
 let files        = [];
 let pollTimer    = null;
-let currentJobId = null;
+let currentJobId  = null;   // always the ORIGINAL job ID for rework purposes
+let activeJobId   = null;   // the currently polling job (may be a rework)
 let sceneAnalysis = {};
 let qcDecisions  = {};
-// Persistent scene user data — survives renderScenes() calls
-let sceneUserData = {};  // { index: { caption, voiceover, duration, space_type, pov_movement } }
-let completedScenes = []; // scene statuses from last completed job
-let reworkOpen = {};  // { index: true/false } — which rework panels are open
+let sceneUserData = {};
+let completedScenes = [];
+let reworkOpen = {};
 
 // ── DOM refs ───────────────────────────────────────────────────────────────────
 const dropZone   = document.getElementById('drop-zone');
@@ -463,7 +463,7 @@ const MOVEMENT_OPTS = {
   walk_through:       'Attraversa il corridoio — avanza dritto',
   stand_look_around:  'Fermo — ruota lo sguardo (max 90°)',
   subtle_rotate:      'Rotazione sottile — max 15° (piccoli ambienti)',
-  approach_reveal:    'Avvicinati — tracking laterale parallelo alla parete',
+  approach_reveal:    'Avvicinati laterale — tracking parallelo alla parete (non per piccoli ambienti)',
   walk_toward:        'Avvicinati alla proprietà — per esterni',
   step_out_onto:      'Esci verso — per balconi e terrazze (max 60°)',
 };
@@ -779,11 +779,19 @@ genBtn.addEventListener('click', async () => {
   });
 
   if (reworkScenes.length > 0 && currentJobId) {
+    // Reset rework_open for all submitted scenes before routing
+    reworkScenes.forEach(i => {
+      if (sceneUserData[i]) sceneUserData[i].rework_open = false;
+    });
     await submitRework(reworkScenes);
     return;
   }
 
-  // Full new job
+  // Full new job — reset all rework state
+  Object.keys(sceneUserData).forEach(i => {
+    if (sceneUserData[i]) sceneUserData[i].rework_open = false;
+  });
+  completedScenes = [];
   genBtn.disabled    = true;
   genBtn.textContent = 'Invio in corso…';
   resultSec.style.display  = 'none';
@@ -814,12 +822,10 @@ genBtn.addEventListener('click', async () => {
       throw new Error(detail);
     }
     const data = await res.json();
-    currentJobId       = data.job_id;
+    currentJobId = data.job_id;   // original job — used for all reworks
+    activeJobId  = data.job_id;
     genBtn.textContent = 'In elaborazione…';
-
-    // Show actual cost estimate from server if available
     if (data.cost_estimate) showCostPanel(data.cost_estimate, 'stima');
-
     startPolling(data.job_id);
   } catch(e) {
     showError(e.message);
@@ -839,7 +845,6 @@ async function submitRework(reworkScenes) {
 
   const updatedScenes = getScenesConfig();
 
-  // Collect redo options per scene
   const redoVideo = reworkScenes.some(idx => {
     const card = scenesCont.querySelector(`[data-index="${idx}"]`);
     return card?.querySelector('.rw-video')?.checked ?? true;
@@ -859,15 +864,26 @@ async function submitRework(reworkScenes) {
   const fd = new FormData();
   fd.append('rework_config', JSON.stringify(cfg));
 
+  // Always rework against the ORIGINAL job, not a previous rework
+  const targetJobId = currentJobId;
+  log(`Rework: targeting job ${targetJobId}, scenes ${reworkScenes}`);
+
   try {
-    const res = await fetch(`${API_BASE}/jobs/${currentJobId}/rework`, { method:'POST', body:fd });
+    const res = await fetch(`${API_BASE}/jobs/${targetJobId}/rework`, { method:'POST', body:fd });
     if (!res.ok) {
       let detail = `Server error ${res.status}`;
       try { const e = await res.json(); detail = e.detail || detail; } catch(_) {}
       throw new Error(detail);
     }
     const { job_id } = await res.json();
+    activeJobId = job_id;  // track rework job for polling — currentJobId stays as original
     genBtn.textContent = 'Rework in corso…';
+
+    // Close all rework panels after submission
+    reworkScenes.forEach(idx => {
+      if (sceneUserData[idx]) sceneUserData[idx].rework_open = false;
+    });
+
     startPolling(job_id);
   } catch(e) {
     showError(e.message);
@@ -875,6 +891,8 @@ async function submitRework(reworkScenes) {
     genBtn.textContent = 'Genera video';
   }
 }
+
+function log(msg) { console.log(`[PVS] ${msg}`); }
 
 // ── Polling ────────────────────────────────────────────────────────────────────
 function startPolling(jobId) {
@@ -890,7 +908,6 @@ function startPolling(jobId) {
 
       if (job.status === 'done') {
         clearInterval(pollTimer);
-        if (job.cost_actual) showCostPanel(job.cost_actual, 'effettivo');
         showResult(jobId, job.property_name || 'Property', job.scenes || []);
         notifyJobComplete(job.property_name || 'Property', true);
         genBtn.disabled    = false;
@@ -1039,15 +1056,16 @@ function renderSceneProgress(scenes) {
 }
 
 function showResult(jobId, propName, scenes) {
-  // Store completed scene statuses so renderScenes can show redo buttons
   if (scenes && scenes.length) {
     completedScenes = scenes;
-    renderScenes();  // re-render with redo buttons visible
+    renderScenes();
   }
   const dlUrl = `${API_BASE}/jobs/${jobId}/download`;
   document.getElementById('video-preview').src    = dlUrl;
   document.getElementById('download-link').href   = dlUrl;
   document.getElementById('download-link').download = `${propName.replace(/\s+/g,'_')}_video.mp4`;
+  // Clear the actual cost panel — estimate shown upfront is sufficient
+  document.getElementById('actual-cost').innerHTML = '';
   resultSec.style.display = 'block';
   resultSec.scrollIntoView({ behavior: 'smooth' });
 }
@@ -1055,19 +1073,14 @@ function showResult(jobId, propName, scenes) {
 function showCostPanel(costData, type) {
   const panel = document.getElementById('cost-panel');
   const lines = document.getElementById('cost-lines');
+  if (!panel || !costData) return;
   panel.style.display = 'block';
-  document.getElementById('cost-type').textContent = `(${type})`;
+  // Always show as estimate — we don't pull actual billing from APIs
+  document.getElementById('cost-type').textContent = '(stima)';
   document.getElementById('cost-total').textContent = costData.total || '—';
   lines.innerHTML = (costData.lines || [])
     .map(l => `<div class="cost-row"><span>${l.label}</span><span>${l.value}</span></div>`)
     .join('');
-  if (type === 'effettivo') {
-    document.getElementById('actual-cost').innerHTML =
-      `<div class="cost-title" style="color:var(--green);font-size:.75rem;letter-spacing:.06em;text-transform:uppercase">Costo effettivo</div>` +
-      (costData.lines || []).map(l =>
-        `<div class="cost-row">${l.label}: ${l.value}</div>`).join('') +
-      `<div class="cost-total" style="margin-top:6px"><span>Totale</span><span>${costData.total}</span></div>`;
-  }
 }
 
 function showError(msg) {

@@ -95,7 +95,7 @@ SPACE_DEFAULT_MOVEMENT = {
     "large":    "walk_in_explore",
     "medium":   "walk_in_explore",
     "bedroom":  "walk_in_gentle",
-    "small":    "approach_reveal",   # lateral tracking in Kling, approach in Veo
+    "small":    "subtle_rotate",    # approach_reveal produces 2D zoom in shallow spaces
     "corridor": "walk_through",
     "outdoor":  "walk_toward",
     "elevated": "step_out_onto",
@@ -261,6 +261,7 @@ _VEO_RULES = (
     "No people, no human hands, arms, legs, fingers, or body parts visible in any frame. "
     "No wind effects on any surface. "
     "All architectural elements remain exactly as in the source image. "
+    "No doors opening, no new doorways appearing, no doors moving in any way. "
     "Camera movement is strictly constrained within the boundaries of the original image — "
     "do not generate or reveal any content that was not visible in the source photo. "
     "Maximum rotation angle is 30 degrees in any direction. "
@@ -309,12 +310,15 @@ def assemble_pov_prompt(
         # Veo — pace integrated into movement token for consistency
 
         # Small room remapping: pivot movements don't work in shallow spaces
-        # Remap to lateral tracking which works regardless of depth
+        # Small/corridor room remapping:
+        # Push-forward and pivot movements produce 2D zoom or hallucinate doors.
+        # subtle_rotate is the only reliably 3D movement for shallow rooms.
         _SMALL_ROOM_REMAPS = {
-            "walk_in_turn_left":  "approach_reveal",
-            "walk_in_turn_right": "approach_reveal",
-            "walk_in_explore":    "approach_reveal",
-            "walk_in_gentle":     "approach_reveal",
+            "walk_in_explore":    "subtle_rotate",   # push-forward = zoom + hallucinated doors
+            "walk_in_gentle":     "subtle_rotate",   # lateral zoom in shallow spaces
+            "walk_in_turn_left":  "subtle_rotate",   # pivot needs depth
+            "walk_in_turn_right": "subtle_rotate",   # pivot needs depth
+            "approach_reveal":    "subtle_rotate",   # lateral zoom → rotation
         }
         if space_type in ("small", "corridor") and pov_movement in _SMALL_ROOM_REMAPS:
             original_movement = pov_movement
