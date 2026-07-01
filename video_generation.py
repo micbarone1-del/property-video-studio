@@ -172,63 +172,59 @@ _VEO_SPACE_TOKENS = {
 # This gives Veo a single coherent instruction rather than two separate signals.
 
 _VEO_MOVEMENT_TOKENS = {
-    # KEY PRINCIPLE: All movements described as zoom-out reveals from a tight centre crop.
-    # The model starts on a cropped subset of the original image.
-    # Revealing = zooming out toward original image edges.
-    # This physically prevents hallucination: there is nothing to invent beyond the crop.
-
+    # CRITICAL: Veo receives FULL original image.
+    # Parallax = foreground moves faster than background = genuine 3D depth.
     "walk_in_explore": {
-        "very_slow":    "the frame begins on a tight centre crop and extremely slowly zooms out, revealing the full room — ceiling, walls, floor — strictly within original image boundaries, no content beyond source photo edges",
-        "natural_pace": "the frame begins on a tight centre crop and slowly zooms out to reveal the full room, strictly within the original image — no content beyond source photo",
-        "energetic":    "the frame starts on a tight centre crop and smoothly zooms out revealing the complete room, contained within original image boundaries",
+        "very_slow":    "very slow 3D dolly shot moving through the room — foreground furniture moves faster than background walls, creating natural depth parallax. Camera strictly within original photo boundaries. No doors, no new rooms",
+        "natural_pace": "slow 3D dolly shot through the room with natural parallax — nearer objects move faster than distant walls. Constrained to what is visible in the source photo",
+        "energetic":    "3D dolly shot through the room with clear foreground-background parallax. Within original photo boundaries",
     },
     "walk_in_gentle": {
-        "very_slow":    "the frame begins on a tight centre crop and very slowly zooms out revealing the full bedroom space, strictly within original image boundaries",
-        "natural_pace": "the frame starts on a tight centre crop and gently zooms out revealing the bedroom, strictly within original image boundaries",
-        "energetic":    "the frame begins on a tight crop and smoothly reveals the bedroom by zooming out, within original photo boundaries",
+        "very_slow":    "very slow lateral 3D dolly across the bedroom — foreground furniture moves faster than back wall, creating genuine depth parallax. Strictly within original photo frame",
+        "natural_pace": "slow lateral 3D dolly across the bedroom with natural parallax — nearer furniture faster than distant walls. Within original photo",
+        "energetic":    "lateral 3D dolly across the bedroom with foreground-background parallax. Within original photo",
     },
     "walk_in_turn_left": {
-        "very_slow":    "the frame begins on a centre-right crop and extremely slowly zooms out toward the left — maximum 30 degrees, strictly within original image left edge, no new content generated",
-        "natural_pace": "the frame starts on a centre-right crop and slowly zooms out leftward — maximum 30 degrees, within original image left boundary",
-        "energetic":    "the frame begins on a centre-right crop and zooms out leftward — maximum 30 degrees, within original photo boundaries",
+        "very_slow":    "very slow 3D pan left with depth parallax — foreground objects arc faster than background. Maximum 30 degrees. Within left boundary of original photo",
+        "natural_pace": "slow 3D pan left with natural parallax depth. Maximum 30 degrees. Within original photo left boundary",
+        "energetic":    "3D pan left with parallax. Maximum 30 degrees. Within original photo",
     },
     "walk_in_turn_right": {
-        "very_slow":    "the frame begins on a centre-left crop and extremely slowly zooms out toward the right — maximum 30 degrees, strictly within original image right edge, no new content generated",
-        "natural_pace": "the frame starts on a centre-left crop and slowly zooms out rightward — maximum 30 degrees, within original image right boundary",
-        "energetic":    "the frame begins on a centre-left crop and zooms out rightward — maximum 30 degrees, within original photo boundaries",
+        "very_slow":    "very slow 3D pan right with depth parallax — foreground objects arc faster than background. Maximum 30 degrees. Within right boundary of original photo",
+        "natural_pace": "slow 3D pan right with natural parallax depth. Maximum 30 degrees. Within original photo right boundary",
+        "energetic":    "3D pan right with parallax. Maximum 30 degrees. Within original photo",
     },
     "walk_through": {
-        "very_slow":    "the frame begins on a tight centre crop of the corridor and very slowly zooms out forward, revealing the full length within the original image boundaries",
-        "natural_pace": "the frame starts on a tight crop and slowly zooms out revealing the corridor, staying within original image boundaries",
-        "energetic":    "the frame begins on a centre crop and steadily zooms out along the corridor, within original photo boundaries",
+        "very_slow":    "very slow 3D forward dolly along corridor — walls and ceiling spread outward in perspective as camera advances, strong depth parallax. Within original photo",
+        "natural_pace": "slow 3D forward dolly along corridor with perspective parallax — walls spreading outward. Within original photo",
+        "energetic":    "3D forward dolly along corridor with perspective depth. Within original photo",
     },
     "approach_reveal": {
-        "very_slow":    "the frame begins on a tight centre crop and very slowly zooms out, revealing the space from the centre outward — strictly within original image boundaries, no content beyond source photo edges",
-        "natural_pace": "the frame starts on a tight crop and slowly zooms out revealing the space, within original image boundaries",
-        "energetic":    "the frame begins on a crop and smoothly zooms out to reveal the space, within original photo boundaries",
+        "very_slow":    "very slow subtle 3D lateral movement — maximum 15 degrees, foreground slightly faster than background, minimal parallax. Strictly within original photo",
+        "natural_pace": "slow subtle 3D lateral movement with minimal parallax. Maximum 15 degrees. Within original photo",
+        "energetic":    "subtle 3D lateral movement with parallax. Maximum 15 degrees. Within original photo",
     },
     "stand_look_around": {
-        "very_slow":    "the frame begins on a tight centre crop and extremely slowly zooms out — maximum 30 degrees of reveal, no rotation, strictly within the width of the original image, no new rooms or areas",
-        "natural_pace": "the frame starts on a tight crop and slowly zooms out — maximum 30 degrees, no rotation, within original image width",
-        "energetic":    "the frame begins on a crop and gently zooms out — maximum 30 degrees, no rotation, within original boundaries",
+        "very_slow":    "very slow 3D pan with depth parallax — maximum 30 degrees, foreground objects arc faster than background. Within width of original photo",
+        "natural_pace": "slow 3D pan with parallax depth — maximum 30 degrees. Within original photo width",
+        "energetic":    "3D pan with parallax — maximum 30 degrees. Within original photo",
     },
     "subtle_rotate": {
-        "very_slow":    "the frame begins on a tight centre crop and imperceptibly slowly zooms out — maximum 15 degrees of reveal, no rotation whatsoever, strictly within original image",
-        "natural_pace": "the frame starts on a tight crop and very subtly zooms out — maximum 15 degrees, no rotation, within original image boundaries",
-        "energetic":    "the frame begins on a tight crop and subtly zooms out — maximum 15 degrees, no rotation, within original photo",
+        "very_slow":    "almost static shot with imperceptible 3D micro-parallax — maximum 15 degrees, barely perceptible foreground-background depth shift. Within original photo",
+        "natural_pace": "very subtle 3D micro-parallax — maximum 15 degrees. Within original photo",
+        "energetic":    "subtle 3D micro-parallax — maximum 15 degrees. Within original photo",
     },
     "walk_toward": {
-        "very_slow":    "the frame begins on a tight centre crop of the building and very slowly zooms out to reveal the full facade, strictly within the original image — no content beyond photo edges",
-        "natural_pace": "the frame starts on a centre crop and slowly reveals the full exterior by zooming out, within original image boundaries",
-        "energetic":    "the frame begins on a crop and steadily zooms out revealing the building exterior, within original photo boundaries",
+        "very_slow":    "very slow 3D forward dolly toward building — foreground ground moves faster than building facade, depth parallax. Within original photo",
+        "natural_pace": "slow 3D forward dolly toward building with perspective parallax. Within original photo",
+        "energetic":    "3D forward dolly toward building with parallax. Within original photo",
     },
     "step_out_onto": {
-        "very_slow":    "the frame begins on a tight centre crop of the outdoor space and very slowly zooms out — maximum 60 degrees of reveal, strictly within the width of the original image, no content beyond photo edges",
-        "natural_pace": "the frame starts on a tight crop and slowly reveals the outdoor space by zooming out — maximum 60 degrees, within original image width",
-        "energetic":    "the frame begins on a crop and smoothly reveals the outdoor space — maximum 60 degrees, within original boundaries",
+        "very_slow":    "very slow 3D pan across outdoor space with depth parallax — maximum 60 degrees, foreground faster than distant view. Within original photo width",
+        "natural_pace": "slow 3D pan across outdoor space with parallax — maximum 60 degrees. Within original photo",
+        "energetic":    "3D pan across outdoor space with parallax — maximum 60 degrees. Within original photo",
     },
 }
-
 _VEO_LIGHTING_TOKENS = {
     "bright_natural":   "bright natural daylight, consistent and even, no flickering",
     "golden_hour":      "warm late-afternoon golden light, soft shadows, consistent",

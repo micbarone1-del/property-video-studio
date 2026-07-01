@@ -382,14 +382,41 @@ def get_job(job_id: str):
 
 
 @app.get("/jobs/{job_id}/clip/{scene_index}")
-def get_clip(job_id: str, scene_index: int):
+async def get_clip(job_id: str, scene_index: int, request: Request):
     """Serves a generated clip for preview in the QC panel."""
     if job_id not in JOBS:
         raise HTTPException(status_code=404, detail="Job not found")
     clip_path = JOBS_DIR / job_id / "clips" / f"scene_{scene_index:03d}.mp4"
     if not clip_path.exists():
         raise HTTPException(status_code=404, detail="Clip not found")
-    return FileResponse(str(clip_path), media_type="video/mp4")
+    file_size = clip_path.stat().st_size
+    range_header = request.headers.get("range")
+    if range_header:
+        from fastapi.responses import StreamingResponse
+        import re as _re
+        match = _re.match(r"bytes=(\d+)-(\d*)", range_header)
+        if match:
+            start = int(match.group(1))
+            end   = int(match.group(2)) if match.group(2) else file_size - 1
+            end   = min(end, file_size - 1)
+            chunk = end - start + 1
+            def _iter(path, s, c):
+                with open(path, "rb") as f:
+                    f.seek(s)
+                    rem = c
+                    while rem > 0:
+                        data = f.read(min(65536, rem))
+                        if not data: break
+                        rem -= len(data)
+                        yield data
+            return StreamingResponse(_iter(str(clip_path), start, chunk), status_code=206,
+                media_type="video/mp4",
+                headers={"Content-Range": f"bytes {start}-{end}/{file_size}",
+                         "Accept-Ranges": "bytes", "Content-Length": str(chunk),
+                         "Cache-Control": "public, max-age=3600"})
+    return FileResponse(str(clip_path), media_type="video/mp4",
+        headers={"Cache-Control": "public, max-age=3600",
+                 "Accept-Ranges": "bytes", "Content-Length": str(file_size)})
 
 
 @app.get("/jobs/{job_id}/download")

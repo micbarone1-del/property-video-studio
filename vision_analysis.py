@@ -135,8 +135,9 @@ def _classify_space(description: str) -> tuple[str, float]:
         return "elevated", 0.85
 
     # Check outdoor
-    if any(k in d for k in _OUTDOOR_KW) and not has_interior:
-        return "ground_exterior", 0.85
+    outdoor_score = sum(1 for k in _OUTDOOR_KW if k in d)
+    if outdoor_score >= 1:
+        return "ground_exterior", min(0.70 + outdoor_score * 0.05, 0.95)
 
     # Check small rooms
     if any(k in d for k in _SMALLROOM_KW):
