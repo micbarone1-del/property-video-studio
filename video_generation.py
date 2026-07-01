@@ -172,74 +172,60 @@ _VEO_SPACE_TOKENS = {
 # This gives Veo a single coherent instruction rather than two separate signals.
 
 _VEO_MOVEMENT_TOKENS = {
+    # KEY PRINCIPLE: All movements described as zoom-out reveals from a tight centre crop.
+    # The model starts on a cropped subset of the original image.
+    # Revealing = zooming out toward original image edges.
+    # This physically prevents hallucination: there is nothing to invent beyond the crop.
 
-    # Large rooms — diagonal push creates parallax even without strong depth
     "walk_in_explore": {
-        "very_slow":    "extremely slow diagonal push-in from the doorway drifting slightly right, revealing the room width gradually, camera stays within visible frame",
-        "natural_pace": "slow diagonal push-in from the doorway drifting slightly right, revealing the full room as the camera advances, stays within visible frame",
-        "energetic":    "confident diagonal push-in from the doorway angling slightly right, brisk reveal of the full room width, stays within visible frame",
+        "very_slow":    "the frame begins on a tight centre crop and extremely slowly zooms out, revealing the full room — ceiling, walls, floor — strictly within original image boundaries, no content beyond source photo edges",
+        "natural_pace": "the frame begins on a tight centre crop and slowly zooms out to reveal the full room, strictly within the original image — no content beyond source photo",
+        "energetic":    "the frame starts on a tight centre crop and smoothly zooms out revealing the complete room, contained within original image boundaries",
     },
-
-    # Bedrooms — lateral tracking always works regardless of depth
     "walk_in_gentle": {
-        "very_slow":    "very slow lateral tracking shot moving left to right across the room, camera at eye level, strictly within the visible frame width, no push-forward",
-        "natural_pace": "slow lateral tracking shot moving left to right across the room, steady eye-level movement, strictly within visible frame width",
-        "energetic":    "smooth lateral tracking shot moving left to right across the room at a confident pace, eye level, within visible frame",
+        "very_slow":    "the frame begins on a tight centre crop and very slowly zooms out revealing the full bedroom space, strictly within original image boundaries",
+        "natural_pace": "the frame starts on a tight centre crop and gently zooms out revealing the bedroom, strictly within original image boundaries",
+        "energetic":    "the frame begins on a tight crop and smoothly reveals the bedroom by zooming out, within original photo boundaries",
     },
-
-    # Pivot reveals — for rooms with strong features on one side
     "walk_in_turn_left": {
-        "very_slow":    "very slow pan strictly from right to left — maximum 30 degrees total rotation, camera must not move beyond the leftmost edge of the original image, no new content generated",
-        "natural_pace": "slow pan from right to left — maximum 30 degrees total, strictly within original image left boundary, no content beyond original frame",
-        "energetic":    "smooth pan from right to left — maximum 30 degrees, contained strictly within original image boundaries",
+        "very_slow":    "the frame begins on a centre-right crop and extremely slowly zooms out toward the left — maximum 30 degrees, strictly within original image left edge, no new content generated",
+        "natural_pace": "the frame starts on a centre-right crop and slowly zooms out leftward — maximum 30 degrees, within original image left boundary",
+        "energetic":    "the frame begins on a centre-right crop and zooms out leftward — maximum 30 degrees, within original photo boundaries",
     },
     "walk_in_turn_right": {
-        "very_slow":    "very slow pan strictly from left to right — maximum 30 degrees total rotation, camera must not move beyond the rightmost edge of the original image, no new content generated",
-        "natural_pace": "slow pan from left to right — maximum 30 degrees total, strictly within original image right boundary, no content beyond original frame",
-        "energetic":    "smooth pan from left to right — maximum 30 degrees, contained strictly within original image boundaries",
+        "very_slow":    "the frame begins on a centre-left crop and extremely slowly zooms out toward the right — maximum 30 degrees, strictly within original image right edge, no new content generated",
+        "natural_pace": "the frame starts on a centre-left crop and slowly zooms out rightward — maximum 30 degrees, within original image right boundary",
+        "energetic":    "the frame begins on a centre-left crop and zooms out rightward — maximum 30 degrees, within original photo boundaries",
     },
-
-    # Corridors — forward movement is the only natural option
     "walk_through": {
-        "very_slow":    "very slow steady push forward along the corridor, camera level, stops before reaching far wall, no lateral movement",
-        "natural_pace": "slow steady forward tracking along the corridor, eye level, stops before far wall",
-        "energetic":    "confident forward tracking along the corridor, purposeful pace, eye level",
+        "very_slow":    "the frame begins on a tight centre crop of the corridor and very slowly zooms out forward, revealing the full length within the original image boundaries",
+        "natural_pace": "the frame starts on a tight crop and slowly zooms out revealing the corridor, staying within original image boundaries",
+        "energetic":    "the frame begins on a centre crop and steadily zooms out along the corridor, within original photo boundaries",
     },
-
-    # Small rooms — lateral works; avoid forward push
     "approach_reveal": {
-        "very_slow":    "very slow lateral tracking shot parallel to the main wall, left to right, camera within the visible frame, no zoom, no forward push",
-        "natural_pace": "slow lateral tracking shot parallel to the main wall, steady left to right, within visible frame boundaries, no zoom",
-        "energetic":    "smooth lateral tracking shot parallel to the main wall, left to right at a gentle pace, within frame",
+        "very_slow":    "the frame begins on a tight centre crop and very slowly zooms out, revealing the space from the centre outward — strictly within original image boundaries, no content beyond source photo edges",
+        "natural_pace": "the frame starts on a tight crop and slowly zooms out revealing the space, within original image boundaries",
+        "energetic":    "the frame begins on a crop and smoothly zooms out to reveal the space, within original photo boundaries",
     },
-
-    # Stand and look — hard cap at 30 degrees to prevent hallucination
     "stand_look_around": {
-        "very_slow":    "extremely slow partial pan — maximum 30 degrees total, camera starts and ends within the original image frame, strictly no rotation beyond original image edges, no new rooms or areas generated",
-        "natural_pace": "slow partial pan — maximum 30 degrees total, strictly within original image boundaries, camera never reveals content outside the source photo",
-        "energetic":    "smooth partial pan — maximum 30 degrees, strictly within original image boundaries, no new content beyond frame edges",
+        "very_slow":    "the frame begins on a tight centre crop and extremely slowly zooms out — maximum 30 degrees of reveal, no rotation, strictly within the width of the original image, no new rooms or areas",
+        "natural_pace": "the frame starts on a tight crop and slowly zooms out — maximum 30 degrees, no rotation, within original image width",
+        "energetic":    "the frame begins on a crop and gently zooms out — maximum 30 degrees, no rotation, within original boundaries",
     },
-
-    # Exterior — approaching the building
-    "walk_toward": {
-        "very_slow":    "very slow push-in toward the building facade, camera level, stays within visible facade frame, no lateral drift",
-        "natural_pace": "slow push-in toward the building, steady approach, camera level, within visible frame",
-        "energetic":    "confident push-in toward the building, purposeful approach pace, camera level",
-    },
-
-    # Balcony/terrace — slow pan, never push outward
-    "step_out_onto": {
-        "very_slow":    "very slow partial pan across the outdoor space — maximum 60 degrees, strictly within the width visible in original image, no rotation beyond edges, no push outward",
-        "natural_pace": "slow partial pan across the outdoor space — maximum 60 degrees, within original image width, no outward push",
-        "energetic":    "smooth partial pan across the outdoor space — maximum 60 degrees, within original frame",
-    },
-
-    # Subtle rotate — maximum 15 degrees, works in any space including small rooms
-    # Use when walk_in_turn fails in shallow spaces
     "subtle_rotate": {
-        "very_slow":    "extremely subtle rotation of maximum 15 degrees from centre, camera otherwise completely stationary, no zoom, no forward movement",
-        "natural_pace": "very subtle rotation of maximum 15 degrees from centre, camera stationary, no zoom, no push",
-        "energetic":    "subtle 15-degree rotation from centre, camera fixed position, no zoom",
+        "very_slow":    "the frame begins on a tight centre crop and imperceptibly slowly zooms out — maximum 15 degrees of reveal, no rotation whatsoever, strictly within original image",
+        "natural_pace": "the frame starts on a tight crop and very subtly zooms out — maximum 15 degrees, no rotation, within original image boundaries",
+        "energetic":    "the frame begins on a tight crop and subtly zooms out — maximum 15 degrees, no rotation, within original photo",
+    },
+    "walk_toward": {
+        "very_slow":    "the frame begins on a tight centre crop of the building and very slowly zooms out to reveal the full facade, strictly within the original image — no content beyond photo edges",
+        "natural_pace": "the frame starts on a centre crop and slowly reveals the full exterior by zooming out, within original image boundaries",
+        "energetic":    "the frame begins on a crop and steadily zooms out revealing the building exterior, within original photo boundaries",
+    },
+    "step_out_onto": {
+        "very_slow":    "the frame begins on a tight centre crop of the outdoor space and very slowly zooms out — maximum 60 degrees of reveal, strictly within the width of the original image, no content beyond photo edges",
+        "natural_pace": "the frame starts on a tight crop and slowly reveals the outdoor space by zooming out — maximum 60 degrees, within original image width",
+        "energetic":    "the frame begins on a crop and smoothly reveals the outdoor space — maximum 60 degrees, within original boundaries",
     },
 }
 
@@ -260,14 +246,14 @@ _VEO_INTENSITY_TOKENS = {
 _VEO_RULES = (
     "No people, no human hands, arms, legs, fingers, or body parts visible in any frame. "
     "No wind effects on any surface. "
-    "All architectural elements remain exactly as in the source image. "
     "No doors opening, no new doorways appearing, no doors moving in any way. "
-    "Camera movement is strictly constrained within the boundaries of the original image — "
-    "do not generate or reveal any content that was not visible in the source photo. "
-    "Maximum rotation angle is 30 degrees in any direction. "
-    "No rotation beyond the edges of the original frame under any circumstances. "
-    "No new rooms, doors, windows, or spaces may be revealed that were not in the source photo. "
-    "No flickering, no morphing of walls or floors."
+    "All architectural elements remain exactly as in the source image. "
+    "The video is a zoom-out reveal from a tight centre crop of the source photo — "
+    "it can only reveal content that already exists in the original image. "
+    "Absolutely no content may be generated or revealed beyond the boundaries of the source photo. "
+    "Maximum reveal angle is 30 degrees in any direction from centre. "
+    "No new rooms, doors, windows, corridors, or spaces that were not visible in the source photo. "
+    "No flickering, no morphing of walls, floors, or ceilings."
 )
 
 # Lyra frozen-scene prompt (lighting only — Lyra controls camera via parameters)
@@ -626,12 +612,33 @@ def generate_video_single(
         log.info(f"[VideoGen] Prompt: {final_prompt[:120]}...")
 
         # ── Crop-and-reveal pre-processing ────────────────────────────────
-        # Tighter crop for rotation movements — gives model less room to hallucinate
-        _ROTATION_MOVEMENTS = {"walk_in_turn_left","walk_in_turn_right","stand_look_around"}
-        if pov_movement in _ROTATION_MOVEMENTS:
-            image_data = _crop_for_reveal(image_path, crop_pct=0.75)  # tighter for rotation
+        # KEY PRINCIPLE: Veo starts from a tight centre crop.
+        # To reveal anything beyond the crop, it must zoom OUT — not move laterally.
+        # Since we only have the original image pixels, zoom-out stays within the frame.
+        # Tighter crop = less hallucination risk.
+        #
+        # Crop percentages (% of original image kept):
+        #   Rotation/pivot: 55% — tightest, maximum hallucination risk
+        #   Walk-in/push:   65% — standard for push movements
+        #   Static/outdoor: 75% — less movement needed
+        #   Eco/Lyra:       85% — Lyra controls camera via params not content
+
+        _ROTATION_MOVEMENTS = {
+            "walk_in_turn_left","walk_in_turn_right",
+            "stand_look_around","subtle_rotate"
+        }
+        _STATIC_MOVEMENTS = {"step_out_onto","static","walk_toward"}
+
+        if model_tier == "premium":
+            # ALL Veo movements get cropped — no exceptions
+            if pov_movement in _ROTATION_MOVEMENTS:
+                image_data = _crop_for_reveal(image_path, crop_pct=0.55)
+            elif pov_movement in _STATIC_MOVEMENTS:
+                image_data = _crop_for_reveal(image_path, crop_pct=0.75)
+            else:
+                image_data = _crop_for_reveal(image_path, crop_pct=0.65)
         elif pov_movement in CROP_REVEAL_MOVEMENTS:
-            image_data = _crop_for_reveal(image_path, crop_pct=0.85)  # standard for walk-in
+            image_data = _crop_for_reveal(image_path, crop_pct=0.85)
         else:
             with open(image_path, "rb") as f:
                 image_data = f.read()
