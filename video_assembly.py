@@ -465,9 +465,9 @@ def assemble_property_video(scenes_config, video_clip_paths, audio_paths, image_
                     if ac.duration > clip.duration:
                         # Trim audio to clip duration — never loop the video
                         ac = ac.subclipped(0, clip.duration)
-                    elif ac.duration < clip.duration:
-                        # Trim clip to audio duration for tight sync
-                        clip = clip.subclipped(0, ac.duration)
+                    # Never trim the clip to match audio duration.
+                    # Audio plays for its duration, clip runs full length.
+                    # timeline_cursor always advances by clip.duration.
                     audio_segments.append((ac, timeline_cursor))
 
             if clip.size != (TARGET_W, TARGET_H):
