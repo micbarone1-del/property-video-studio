@@ -383,40 +383,67 @@ def get_job(job_id: str):
 
 @app.get("/jobs/{job_id}/clip/{scene_index}")
 async def get_clip(job_id: str, scene_index: int, request: Request):
-    """Serves a generated clip for preview in the QC panel."""
+    """Serves a generated clip with range request support for fast browser preview.
+    Range requests allow the browser to start playing immediately without downloading the full file.
+    """
     if job_id not in JOBS:
         raise HTTPException(status_code=404, detail="Job not found")
     clip_path = JOBS_DIR / job_id / "clips" / f"scene_{scene_index:03d}.mp4"
     if not clip_path.exists():
+        for job_dir in JOBS_DIR.glob(f"{job_id}*"):
+            candidate = job_dir / "clips" / f"scene_{scene_index:03d}.mp4"
+            if candidate.exists():
+                clip_path = candidate
+                break
+    if not clip_path.exists():
         raise HTTPException(status_code=404, detail="Clip not found")
+
     file_size = clip_path.stat().st_size
     range_header = request.headers.get("range")
+
     if range_header:
+        # Parse range header e.g. "bytes=0-1023"
         from fastapi.responses import StreamingResponse
-        import re as _re
-        match = _re.match(r"bytes=(\d+)-(\d*)", range_header)
+        import re
+        match = re.match(r"bytes=(\d+)-(\d*)", range_header)
         if match:
             start = int(match.group(1))
             end   = int(match.group(2)) if match.group(2) else file_size - 1
             end   = min(end, file_size - 1)
-            chunk = end - start + 1
-            def _iter(path, s, c):
+            chunk_size = end - start + 1
+
+            def iter_file(path, start, chunk):
                 with open(path, "rb") as f:
-                    f.seek(s)
-                    rem = c
-                    while rem > 0:
-                        data = f.read(min(65536, rem))
-                        if not data: break
-                        rem -= len(data)
+                    f.seek(start)
+                    remaining = chunk
+                    while remaining > 0:
+                        data = f.read(min(65536, remaining))
+                        if not data:
+                            break
+                        remaining -= len(data)
                         yield data
-            return StreamingResponse(_iter(str(clip_path), start, chunk), status_code=206,
+
+            return StreamingResponse(
+                iter_file(str(clip_path), start, chunk_size),
+                status_code=206,
                 media_type="video/mp4",
-                headers={"Content-Range": f"bytes {start}-{end}/{file_size}",
-                         "Accept-Ranges": "bytes", "Content-Length": str(chunk),
-                         "Cache-Control": "public, max-age=3600"})
-    return FileResponse(str(clip_path), media_type="video/mp4",
-        headers={"Cache-Control": "public, max-age=3600",
-                 "Accept-Ranges": "bytes", "Content-Length": str(file_size)})
+                headers={
+                    "Content-Range":  f"bytes {start}-{end}/{file_size}",
+                    "Accept-Ranges":  "bytes",
+                    "Content-Length": str(chunk_size),
+                    "Cache-Control":  "public, max-age=3600",
+                }
+            )
+
+    return FileResponse(
+        str(clip_path),
+        media_type="video/mp4",
+        headers={
+            "Cache-Control":  "public, max-age=3600",
+            "Accept-Ranges":  "bytes",
+            "Content-Length": str(file_size),
+        }
+    )
 
 
 @app.get("/jobs/{job_id}/download")
@@ -527,8 +554,7 @@ async def rework_job(
         "cost_actual":   None,
     }
 
-    background_tasks.add_task(run_rework, rework_id=rework_id, parent_job_id=job_id, cfg=cfg,
-                              do_video_upscale=JOBS[job_id].get("do_video_upscale", True))
+    background_tasks.add_task(run_rework, rework_id=rework_id, parent_job_id=job_id, cfg=cfg)
     return {"job_id": rework_id, "status": "queued", "parent_job_id": job_id}
 
 
@@ -621,7 +647,7 @@ async def run_pipeline(
                         if audio_secs > 0:
                             buffered = audio_secs + 2.0
                             # Snap to even number, min 6, max 20
-                            snapped  = max(4, min(20, int(((buffered + 1.99) // 2) * 2)))  # snap UP to next even
+                            snapped  = max(6, min(20, int(round(buffered / 2) * 2)))
                             log.info(
                                 f"[Job {job_id}] Scene {i}: audio={audio_secs:.1f}s "
                                 f"→ clip duration={snapped}s"
@@ -792,7 +818,7 @@ async def run_assembly(job_id: str, job_dir: Path):
 
 # ── Rework runner ──────────────────────────────────────────────────────────────
 
-async def run_rework(rework_id: str, parent_job_id: str, cfg: dict, do_video_upscale: bool = True):
+async def run_rework(rework_id: str, parent_job_id: str, cfg: dict):
     def update(status, progress, message):
         JOBS[rework_id].update({"status": status, "progress": progress, "message": message})
         _save_job(rework_id)
@@ -866,26 +892,12 @@ async def run_rework(rework_id: str, parent_job_id: str, cfg: dict, do_video_ups
                     update("running", int(40 + (idx/n)*40), f"Scena {scene_index+1}: immagine non trovata, saltata")
                     continue
 
-                clip_out      = str(rework_dir / "clips" / f"scene_{scene_index:03d}.mp4")
-                user_duration = int(scene.get("duration", 10))
-                audio_file    = rework_dir / "audio" / f"scene_{scene_index:03d}.mp3"
-                if audio_file.exists():
-                    try:
-                        from pydub import AudioSegment
-                        seg      = AudioSegment.from_file(str(audio_file))
-                        secs     = len(seg) / 1000.0
-                        buffered = secs + 2.0
-                        duration = max(4, min(20, int(((buffered + 1.99) // 2) * 2)))
-                        log.info(f"[Rework] Scene {scene_index}: audio={secs:.1f}s → clip={duration}s")
-                    except Exception as e:
-                        log.warning(f"[Rework] Audio read failed: {e}")
-                        duration = user_duration
-                else:
-                    duration = user_duration
+                clip_out     = str(rework_dir / "clips" / f"scene_{scene_index:03d}.mp4")
+                duration     = int(scene.get("duration", 8))
                 space_type   = scene.get("space_type",   "large")
                 pov_movement = scene.get("pov_movement", "walk_in_explore")
 
-                update("running", int(40 + (idx/n)*40), f"Rigenero clip scena {scene_index+1} ({duration}s)…")
+                update("running", int(40 + (idx/n)*40), f"Rigenero clip scena {scene_index+1}…")
                 ok = await asyncio.to_thread(
                     generate_video_single,
                     enhanced_img, duration, clip_out,
@@ -894,7 +906,6 @@ async def run_rework(rework_id: str, parent_job_id: str, cfg: dict, do_video_ups
                     lighting=lighting,
                     intensity=intensity,
                     model_tier=model_tier,
-                    do_video_upscale=do_video_upscale,
                 )
 
                 # Update scene status in rework job
@@ -908,7 +919,22 @@ async def run_rework(rework_id: str, parent_job_id: str, cfg: dict, do_video_ups
 
         update("running", 85, "Riassemblaggio video finale…")
         output_path = str(rework_dir / f"{parent['property_name'].replace(' ','_')}_rework.mp4")
-        clip_paths  = sorted((rework_dir / "clips").glob("scene_*.mp4"))
+
+        # When redo_video=False, clips were not regenerated — copy from parent job
+        if not redo_video:
+            src_clips = parent_dir / "clips"
+            dst_clips = rework_dir / "clips"
+            dst_clips.mkdir(exist_ok=True)
+            if src_clips.exists():
+                for clip_file in src_clips.glob("scene_*.mp4"):
+                    dst = dst_clips / clip_file.name
+                    if not dst.exists():
+                        shutil.copy2(str(clip_file), str(dst))
+                log.info(f"[Rework] Copied {len(list(src_clips.glob('scene_*.mp4')))} clips from parent job")
+            else:
+                log.error(f"[Rework] No clips directory in parent job {parent_job_id}")
+
+        clip_paths = sorted((rework_dir / "clips").glob("scene_*.mp4"))
 
         if not clip_paths:
             raise RuntimeError("Nessuna clip trovata per l'assemblaggio")
