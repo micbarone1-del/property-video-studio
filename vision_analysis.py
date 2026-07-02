@@ -54,7 +54,7 @@ _INTERIOR_OVERRIDE_KW = ["sofa","armchair","dining table","coffee table","booksh
 _OUTDOOR_KW   = ["garden","yard","swimming pool","driveway","building facade",
                   "courtyard","patio","lawn","grass","outdoor pathway",
                   "entrance gate","street view","outdoor space","outside the building",
-                  "parking","front garden","back garden"]
+                  "parking","front garden","back garden","exterior","facade","outdoor","outside","building exterior","property exterior"]
 _SMALLROOM_KW = ["bathroom","shower","bathtub","toilet","wc","sink","basin",
                   "hallway","corridor","laundry","utility room","closet","pantry",
                   "narrow room","compact room","ensuite","cloakroom","powder room"]
@@ -87,7 +87,8 @@ _STRUCTURAL_KW = ["door opening","window appeared","new room","additional room",
                    "new doorway","new window","previously unseen",
                    "open door","doorway visible","door frame","through the door",
                    "another room","room behind","hallway beyond","space beyond",
-                   "room beyond","area beyond","space through","leading to another"]
+                   "room beyond","area beyond","space through","leading to another",
+                "wardrobe door","cabinet door","moving door","sliding wardrobe","wardrobe opening"]
 
 
 # ── Florence-2 helper ──────────────────────────────────────────────────────────
@@ -316,6 +317,7 @@ def _extract_video_frame(video_path: str, position: str = "first") -> str | None
 def analyse_output(
     video_path:         str,
     original_image_path: str,
+    known_space_type:   str = "",
 ) -> dict:
     """
     Compares generated video frames against the original photo for QC.
@@ -424,7 +426,13 @@ def analyse_output(
 
         # ── Check 3: Structural hallucinations (first AND last frame) ────
         structural = any(k in combined_desc for k in _STRUCTURAL_KW)
-        if structural:
+        # Skip wardrobe/cabinet door false positives when space is known interior
+        _INTERIOR_SPACES = {"bedroom","bathroom","kitchen","living_room","dining_room",
+                            "large_interior","small_interior","small_room","laundry"}
+        _WARDROBE_KW = {"wardrobe door","cabinet door","moving door","sliding wardrobe"}
+        wardrobe_fp = (known_space_type in _INTERIOR_SPACES and
+                       any(k in combined_desc for k in _WARDROBE_KW))
+        if structural and not wardrobe_fp:
             issues.append("Possible structural hallucination detected (door opening or new element)")
             log.warning("[Vision QC] STRUCTURAL hallucination suspected")
 

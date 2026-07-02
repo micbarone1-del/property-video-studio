@@ -455,6 +455,9 @@ def assemble_property_video(scenes_config, video_clip_paths, audio_paths, image_
                     dur = ac.duration if ac else 5.0
                     clip = ImageClip(str(image_path)).with_duration(dur)
                     if ac:
+                        # Trim audio to video clip duration — prevents bleed into next scene
+                        if ac.duration > clip.duration:
+                            ac = ac.subclipped(0, clip.duration)
                         audio_segments.append((ac, timeline_cursor))
                 else:
                     continue

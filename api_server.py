@@ -677,7 +677,7 @@ async def run_pipeline(
             if ok and enable_vision_qc and Path(clip_out).exists():
                 update("running", int(35 + (i/n)*40), f"QC check on clip {i+1} of {n}…")
                 original_img = image_paths[i]
-                vid_qc = await asyncio.to_thread(analyse_output, clip_out, original_img)
+                vid_qc = await asyncio.to_thread(analyse_output, clip_out, original_img, space_type)
                 video_verdict = vid_qc["verdict"]
                 log.info(f"[Job {job_id}] Video QC scene {i}: {video_verdict}")
                 qc_results.append({"scene": i, "type": "video", **vid_qc})
