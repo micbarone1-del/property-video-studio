@@ -514,8 +514,6 @@ function saveSceneData() {
       space_type:   card.querySelector('.sc-space-type')?.value || 'large',
       pov_movement: card.querySelector('.sc-pov-movement')?.value || 'walk_in_explore',
       rework_open:  document.getElementById(`rw-panel-${i}`)?.classList.contains('open') || false,
-      rw_video:     card.querySelector('.rw-video')?.checked ?? true,
-      rw_audio:     card.querySelector('.rw-audio')?.checked ?? false,
     };
   });
 }
