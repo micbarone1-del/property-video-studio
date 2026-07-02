@@ -1056,6 +1056,11 @@ function renderSceneProgress(scenes) {
 }
 
 function showResult(jobId, propName, scenes) {
+  // CRITICAL: Reset ALL rework panel open states before re-rendering.
+  // Without this, stale rework_open=true causes next "Genera video" to redo everything.
+  Object.keys(sceneUserData).forEach(i => {
+    if (sceneUserData[i]) sceneUserData[i].rework_open = false;
+  });
   if (scenes && scenes.length) {
     completedScenes = scenes;
     renderScenes();

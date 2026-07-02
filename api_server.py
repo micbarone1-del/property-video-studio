@@ -527,7 +527,8 @@ async def rework_job(
         "cost_actual":   None,
     }
 
-    background_tasks.add_task(run_rework, rework_id=rework_id, parent_job_id=job_id, cfg=cfg)
+    background_tasks.add_task(run_rework, rework_id=rework_id, parent_job_id=job_id, cfg=cfg,
+                              do_video_upscale=JOBS[job_id].get("do_video_upscale", True))
     return {"job_id": rework_id, "status": "queued", "parent_job_id": job_id}
 
 
@@ -791,7 +792,7 @@ async def run_assembly(job_id: str, job_dir: Path):
 
 # ── Rework runner ──────────────────────────────────────────────────────────────
 
-async def run_rework(rework_id: str, parent_job_id: str, cfg: dict):
+async def run_rework(rework_id: str, parent_job_id: str, cfg: dict, do_video_upscale: bool = True):
     def update(status, progress, message):
         JOBS[rework_id].update({"status": status, "progress": progress, "message": message})
         _save_job(rework_id)
@@ -865,12 +866,26 @@ async def run_rework(rework_id: str, parent_job_id: str, cfg: dict):
                     update("running", int(40 + (idx/n)*40), f"Scena {scene_index+1}: immagine non trovata, saltata")
                     continue
 
-                clip_out     = str(rework_dir / "clips" / f"scene_{scene_index:03d}.mp4")
-                duration     = int(scene.get("duration", 8))
+                clip_out      = str(rework_dir / "clips" / f"scene_{scene_index:03d}.mp4")
+                user_duration = int(scene.get("duration", 10))
+                audio_file    = rework_dir / "audio" / f"scene_{scene_index:03d}.mp3"
+                if audio_file.exists():
+                    try:
+                        from pydub import AudioSegment
+                        seg      = AudioSegment.from_file(str(audio_file))
+                        secs     = len(seg) / 1000.0
+                        buffered = secs + 2.0
+                        duration = max(4, min(20, int(((buffered + 1.99) // 2) * 2)))
+                        log.info(f"[Rework] Scene {scene_index}: audio={secs:.1f}s → clip={duration}s")
+                    except Exception as e:
+                        log.warning(f"[Rework] Audio read failed: {e}")
+                        duration = user_duration
+                else:
+                    duration = user_duration
                 space_type   = scene.get("space_type",   "large")
                 pov_movement = scene.get("pov_movement", "walk_in_explore")
 
-                update("running", int(40 + (idx/n)*40), f"Rigenero clip scena {scene_index+1}…")
+                update("running", int(40 + (idx/n)*40), f"Rigenero clip scena {scene_index+1} ({duration}s)…")
                 ok = await asyncio.to_thread(
                     generate_video_single,
                     enhanced_img, duration, clip_out,
@@ -879,6 +894,7 @@ async def run_rework(rework_id: str, parent_job_id: str, cfg: dict):
                     lighting=lighting,
                     intensity=intensity,
                     model_tier=model_tier,
+                    do_video_upscale=do_video_upscale,
                 )
 
                 # Update scene status in rework job
