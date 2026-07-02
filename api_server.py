@@ -554,7 +554,8 @@ async def rework_job(
         "cost_actual":   None,
     }
 
-    background_tasks.add_task(run_rework, rework_id=rework_id, parent_job_id=job_id, cfg=cfg)
+    background_tasks.add_task(run_rework, rework_id=rework_id, parent_job_id=job_id, cfg=cfg,
+                              do_video_upscale=JOBS[job_id].get("do_video_upscale", True))
     return {"job_id": rework_id, "status": "queued", "parent_job_id": job_id}
 
 
@@ -818,7 +819,7 @@ async def run_assembly(job_id: str, job_dir: Path):
 
 # ── Rework runner ──────────────────────────────────────────────────────────────
 
-async def run_rework(rework_id: str, parent_job_id: str, cfg: dict):
+async def run_rework(rework_id: str, parent_job_id: str, cfg: dict, do_video_upscale: bool = True):
     def update(status, progress, message):
         JOBS[rework_id].update({"status": status, "progress": progress, "message": message})
         _save_job(rework_id)
