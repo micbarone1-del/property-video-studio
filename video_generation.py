@@ -95,9 +95,9 @@ SPACE_DEFAULT_MOVEMENT = {
     "large":    "walk_in_explore",
     "medium":   "walk_in_explore",
     "bedroom":  "walk_in_gentle",
-    "small":    "subtle_rotate",    # approach_reveal produces 2D zoom in shallow spaces
+    "small":    "subtle_rotate",
     "corridor": "walk_through",
-    "outdoor":  "reveal_pullback",
+    "outdoor":  "reveal_pullback",   # starts on facade detail, reveals full exterior
     "elevated": "step_out_onto",
 }
 
@@ -106,7 +106,6 @@ CROP_REVEAL_MOVEMENTS = {
     "walk_in_explore", "walk_in_gentle", "walk_in_turn_left",
     "walk_in_turn_right", "approach_reveal", "walk_toward",
     "stand_look_around", "subtle_rotate",
-    "reveal_pullback",
 }
 
 
@@ -173,64 +172,83 @@ _VEO_SPACE_TOKENS = {
 # This gives Veo a single coherent instruction rather than two separate signals.
 
 _VEO_MOVEMENT_TOKENS = {
-    # CRITICAL: Veo receives FULL original image.
-    # Parallax = foreground moves faster than background = genuine 3D depth.
+    # CRITICAL: Veo receives the FULL original image.
+    # For genuine 3D movement, prompts must describe PARALLAX explicitly —
+    # foreground objects moving faster than background objects.
+    # "Drift" and "float" cause 2D image animation. "Parallax" forces 3D depth.
+    # All movements constrained to original image boundaries.
+
+    # Large rooms — slow dolly with parallax
     "walk_in_explore": {
-        "very_slow":    "very slow 3D dolly shot moving through the room — foreground furniture moves faster than background walls, creating natural depth parallax. Camera strictly within original photo boundaries. No doors, no new rooms",
-        "natural_pace": "slow 3D dolly shot through the room with natural parallax — nearer objects move faster than distant walls. Constrained to what is visible in the source photo",
-        "energetic":    "3D dolly shot through the room with clear foreground-background parallax. Within original photo boundaries",
+        "very_slow":    "very slow 3D dolly shot moving through the room — foreground furniture moves faster than the background walls, creating natural depth parallax. Camera stays strictly within the space visible in the original photo. No doors, no new rooms",
+        "natural_pace": "slow 3D dolly shot through the room with natural parallax — nearer objects move faster than distant walls. Camera movement constrained entirely to what is visible in the source photo",
+        "energetic":    "3D dolly shot through the room with clear foreground-background parallax. Movement stays within the original photo boundaries",
     },
+    # Bedrooms — lateral dolly with parallax
     "walk_in_gentle": {
-        "very_slow":    "very slow lateral 3D dolly across the bedroom — foreground furniture moves faster than back wall, creating genuine depth parallax. Strictly within original photo frame",
-        "natural_pace": "slow lateral 3D dolly across the bedroom with natural parallax — nearer furniture faster than distant walls. Within original photo",
-        "energetic":    "lateral 3D dolly across the bedroom with foreground-background parallax. Within original photo",
+        "very_slow":    "very slow lateral 3D dolly shot across the bedroom — foreground elements like the bed move faster than the back wall, creating genuine depth parallax. Strictly within the original photo frame",
+        "natural_pace": "slow lateral 3D dolly across the bedroom with natural parallax depth — nearer furniture moves faster than distant walls. Within original photo boundaries",
+        "energetic":    "lateral 3D dolly across the bedroom with foreground-background parallax. Within original photo frame",
     },
+    # Pivot left
     "walk_in_turn_left": {
-        "very_slow":    "very slow 3D pan left with depth parallax — foreground objects arc faster than background. Maximum 30 degrees. Within left boundary of original photo",
+        "very_slow":    "very slow 3D pan to the left with depth parallax — foreground objects arc faster than the background. Maximum 30 degrees. Strictly within the left boundary of the original photo",
         "natural_pace": "slow 3D pan left with natural parallax depth. Maximum 30 degrees. Within original photo left boundary",
-        "energetic":    "3D pan left with parallax. Maximum 30 degrees. Within original photo",
+        "energetic":    "3D pan left with parallax. Maximum 30 degrees. Within original photo boundaries",
     },
+    # Pivot right
     "walk_in_turn_right": {
-        "very_slow":    "very slow 3D pan right with depth parallax — foreground objects arc faster than background. Maximum 30 degrees. Within right boundary of original photo",
+        "very_slow":    "very slow 3D pan to the right with depth parallax — foreground objects arc faster than the background. Maximum 30 degrees. Strictly within the right boundary of the original photo",
         "natural_pace": "slow 3D pan right with natural parallax depth. Maximum 30 degrees. Within original photo right boundary",
-        "energetic":    "3D pan right with parallax. Maximum 30 degrees. Within original photo",
+        "energetic":    "3D pan right with parallax. Maximum 30 degrees. Within original photo boundaries",
     },
+    # Corridor — forward dolly with strong parallax
     "walk_through": {
-        "very_slow":    "very slow 3D forward dolly along corridor — walls and ceiling spread outward in perspective as camera advances, strong depth parallax. Within original photo",
-        "natural_pace": "slow 3D forward dolly along corridor with perspective parallax — walls spreading outward. Within original photo",
-        "energetic":    "3D forward dolly along corridor with perspective depth. Within original photo",
+        "very_slow":    "very slow 3D forward dolly along the corridor — walls and ceiling move outward in perspective as the camera advances, strong depth parallax. Constrained to what is visible in the original photo",
+        "natural_pace": "slow 3D forward dolly along the corridor with perspective parallax — walls spreading outward. Within original photo boundaries",
+        "energetic":    "3D forward dolly along the corridor with perspective depth. Within original photo",
     },
+    # Small rooms — subtle 3D parallax rotation
     "approach_reveal": {
-        "very_slow":    "very slow subtle 3D lateral movement — maximum 15 degrees, foreground slightly faster than background, minimal parallax. Strictly within original photo",
+        "very_slow":    "very slow subtle 3D lateral movement — maximum 15 degrees, foreground slightly faster than background creating minimal parallax. Strictly within original photo frame",
         "natural_pace": "slow subtle 3D lateral movement with minimal parallax. Maximum 15 degrees. Within original photo",
         "energetic":    "subtle 3D lateral movement with parallax. Maximum 15 degrees. Within original photo",
     },
+    # Partial pan
     "stand_look_around": {
-        "very_slow":    "very slow 3D pan with depth parallax — maximum 30 degrees, foreground objects arc faster than background. Within width of original photo",
+        "very_slow":    "very slow 3D pan with depth parallax — maximum 30 degrees total, foreground objects arc faster than background. Camera strictly within the width of the original photo",
         "natural_pace": "slow 3D pan with parallax depth — maximum 30 degrees. Within original photo width",
         "energetic":    "3D pan with parallax — maximum 30 degrees. Within original photo",
     },
+    # Small rooms — almost static with micro-parallax
     "subtle_rotate": {
-        "very_slow":    "almost static shot with imperceptible 3D micro-parallax — maximum 15 degrees, barely perceptible foreground-background depth shift. Within original photo",
-        "natural_pace": "very subtle 3D micro-parallax — maximum 15 degrees. Within original photo",
+        "very_slow":    "almost completely static shot with imperceptibly subtle 3D micro-parallax — maximum 15 degrees, barely perceptible foreground-background depth shift. Strictly within original photo",
+        "natural_pace": "very subtle 3D micro-parallax movement — maximum 15 degrees. Within original photo boundaries",
         "energetic":    "subtle 3D micro-parallax — maximum 15 degrees. Within original photo",
     },
+    # Exterior approach
     "walk_toward": {
-        "very_slow":    "very slow 3D forward dolly toward building — foreground ground moves faster than building facade, depth parallax. Within original photo",
-        "natural_pace": "slow 3D forward dolly toward building with perspective parallax. Within original photo",
-        "energetic":    "3D forward dolly toward building with parallax. Within original photo",
+        "very_slow":    "very slow 3D forward dolly approaching the building — foreground ground moves faster than the building facade, creating depth parallax. Within what is visible in the original photo",
+        "natural_pace": "slow 3D forward dolly toward the building with natural perspective parallax. Within original photo boundaries",
+        "energetic":    "3D forward dolly toward the building with parallax depth. Within original photo",
     },
+    # Balcony/terrace
     "step_out_onto": {
-        "very_slow":    "very slow 3D pan across outdoor space with depth parallax — maximum 60 degrees, foreground faster than distant view. Within original photo width",
-        "natural_pace": "slow 3D pan across outdoor space with parallax — maximum 60 degrees. Within original photo",
-        "energetic":    "3D pan across outdoor space with parallax — maximum 60 degrees. Within original photo",
+        "very_slow":    "very slow 3D pan across the outdoor space with depth parallax — maximum 60 degrees, foreground railing or plants move faster than distant view. Within original photo width",
+        "natural_pace": "slow 3D pan across the outdoor space with parallax depth — maximum 60 degrees. Within original photo boundaries",
+        "energetic":    "3D pan across the outdoor space with parallax — maximum 60 degrees. Within original photo",
     },
+    # Reveal pullback — slow approach with strong parallax, foreground detail leads
+    # NOTE: True pull-back reveal from crop is not reliable in Veo — hallucination risk.
+    # Instead: slow dolly approach with strong foreground-background parallax.
+    # Best for: facade, exterior, feature rooms with strong foreground element.
     "reveal_pullback": {
-        "very_slow":    "very slow camera pullback revealing the property exterior — camera retreats while subject grows in frame, depth parallax as foreground passes. Within original photo",
-        "natural_pace": "slow pullback revealing the full property exterior with parallax depth. Within original photo",
-        "energetic":    "pullback reveal of property exterior with parallax. Within original photo",
+        "very_slow":    "very slow 3D dolly approaching with strong depth parallax — foreground architectural detail moves significantly faster than the background building, creating powerful depth sensation. Camera stays within original photo boundaries",
+        "natural_pace": "slow 3D dolly with strong foreground-background parallax — near elements arc faster than distant ones, revealing spatial depth. Within original photo boundaries",
+        "energetic":    "3D dolly with strong parallax depth — foreground faster than background, confident reveal of the space. Within original photo",
     },
 }
+
 _VEO_LIGHTING_TOKENS = {
     "bright_natural":   "bright natural daylight, consistent and even, no flickering",
     "golden_hour":      "warm late-afternoon golden light, soft shadows, consistent",
@@ -248,14 +266,16 @@ _VEO_INTENSITY_TOKENS = {
 _VEO_RULES = (
     "No people, no human hands, arms, legs, fingers, or body parts visible in any frame. "
     "No wind effects on any surface. "
-    "No doors opening, no new doorways appearing, no doors moving in any way. "
-    "All architectural elements remain exactly as in the source image. "
-    "The video is a zoom-out reveal from a tight centre crop of the source photo — "
-    "it can only reveal content that already exists in the original image. "
-    "Absolutely no content may be generated or revealed beyond the boundaries of the source photo. "
-    "Maximum reveal angle is 30 degrees in any direction from centre. "
-    "No new rooms, doors, windows, corridors, or spaces that were not visible in the source photo. "
-    "No flickering, no morphing of walls, floors, or ceilings."
+    "No doors opening or closing — no room doors, wardrobe doors, cabinet doors, "
+    "cupboard doors, or any hinged surface may move or open in any frame. "
+    "Do not pass through any doorway or approach any door. "
+    "No drawers opening. No furniture moving in any way. "
+    "All architectural elements, furniture, and surfaces remain exactly as in the source image. "
+    "The camera moves only within the boundaries of what is visible in the source photo — "
+    "do not generate or reveal any content that was not visible in the original image. "
+    "Maximum camera movement is 30 degrees in any direction. "
+    "No new rooms, corridors, spaces, or architectural elements not present in the source photo. "
+    "No flickering, no morphing of walls, floors, ceilings, or furniture."
 )
 
 # Lyra frozen-scene prompt (lighting only — Lyra controls camera via parameters)
@@ -321,7 +341,7 @@ def assemble_pov_prompt(
             movement = movement_dict  # backward compat
         light    = _VEO_LIGHTING_TOKENS.get(lighting, _VEO_LIGHTING_TOKENS["bright_natural"])
         prompt   = (
-            f"{space}. "
+            f"First-person POV shot: {space}. "
             f"Camera: {movement}. "
             f"Lighting: {light}. "
             f"{_VEO_RULES}"
@@ -613,67 +633,33 @@ def generate_video_single(
         )
         log.info(f"[VideoGen] Prompt: {final_prompt[:120]}...")
 
-        # ── Crop-and-reveal pre-processing ────────────────────────────────
-        # KEY PRINCIPLE: Veo starts from a tight centre crop.
-        # To reveal anything beyond the crop, it must zoom OUT — not move laterally.
-        # Since we only have the original image pixels, zoom-out stays within the frame.
-        # Tighter crop = less hallucination risk.
+        # ── Image preparation ──────────────────────────────────────────────
+        # CRITICAL LESSON: Do NOT crop images sent to Veo.
+        # When Veo receives a cropped image, it invents content outside the crop
+        # because it has no knowledge of what was there in the original photo.
+        # The full image must be sent so Veo knows exactly what exists in every
+        # part of the scene. Hallucination prevention comes from prompt constraints,
+        # not from hiding parts of the image from the model.
         #
-        # Crop percentages (% of original image kept):
-        #   Rotation/pivot: 55% — tightest, maximum hallucination risk
-        #   Walk-in/push:   65% — standard for push movements
-        #   Static/outdoor: 75% — less movement needed
-        #   Eco/Lyra:       85% — Lyra controls camera via params not content
+        # Lyra is different — it uses parametric camera control, so the image
+        # content is less critical. We still crop Lyra to guide its zoom direction.
 
-        _ROTATION_MOVEMENTS = {
-            "walk_in_turn_left","walk_in_turn_right",
-            "stand_look_around","subtle_rotate"
-        }
-        _STATIC_MOVEMENTS = {"step_out_onto","static","walk_toward"}
-
-        if model_tier == "premium":
-            # ALL Veo movements get cropped — no exceptions
-            if pov_movement in _ROTATION_MOVEMENTS:
-                image_data = _crop_for_reveal(image_path, crop_pct=0.55)
-            elif pov_movement in _STATIC_MOVEMENTS:
-                image_data = _crop_for_reveal(image_path, crop_pct=0.75)
-            else:
-                image_data = _crop_for_reveal(image_path, crop_pct=0.65)
-        elif pov_movement in CROP_REVEAL_MOVEMENTS:
+        if model_tier == "eco" and pov_movement in CROP_REVEAL_MOVEMENTS:
+            # Lyra only — crop guides zoom direction
             image_data = _crop_for_reveal(image_path, crop_pct=0.85)
         else:
+            # Veo and all others — always send full image
             with open(image_path, "rb") as f:
                 image_data = f.read()
 
-        # Upload (cropped or full) image
+        log.info(f"[VideoGen] Image: {'cropped 85%' if model_tier=='eco' else 'full'} → uploading")
         image_url = _upload_bytes(image_data)
 
         # ── Route to correct model ─────────────────────────────────────────
         video_url = None
         used_model = None
 
-        if model_tier == "premium_veo":
-            # Veo 3.1 Standard — fast_mode=False for best quality
-            try:
-                import fal_client as _fc
-                _res = _fc.subscribe(
-                    VEO_ENDPOINT,
-                    arguments={
-                        "image_url": image_url, "prompt": final_prompt,
-                        "duration_secs": duration, "resolution": "1080p",
-                        "aspect_ratio": "16:9", "enhance_prompt": False,
-                        "generate_audio": False, "fast_mode": False,
-                    }
-                )
-                video_url  = (_res.get("video") or {}).get("url")
-                used_model = "veo-3.1-standard"
-                if not video_url:
-                    raise ValueError("No URL from Veo Standard")
-            except Exception as _e:
-                log.warning(f"[VideoGen] Veo Standard failed: {_e} — falling back to Veo Fast")
-                video_url  = _generate_veo(image_url, final_prompt, duration)
-                used_model = "veo-3.1-fast-fallback"
-        elif model_tier == "premium":
+        if model_tier == "premium":
             video_url  = _generate_veo(image_url, final_prompt, duration)
             used_model = "veo-3.1-fast"
             if not video_url:
