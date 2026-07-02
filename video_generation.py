@@ -656,29 +656,45 @@ def generate_video_single(
         image_url = _upload_bytes(image_data)
 
         # ── Route to correct model ─────────────────────────────────────────
-        video_url = None
+        video_url  = None
         used_model = None
 
-        if model_tier == "premium":
+        if model_tier == "premium_veo":
+            # Veo 3.1 Standard — fast_mode=False, better quality, no circular wipe
+            try:
+                result = fal_client.subscribe(
+                    VEO_ENDPOINT,
+                    arguments={
+                        "image_url": image_url, "prompt": final_prompt,
+                        "duration_secs": duration, "resolution": "1080p",
+                        "aspect_ratio": "16:9", "enhance_prompt": False,
+                        "generate_audio": False, "fast_mode": False,
+                    }
+                )
+                video_url  = (result.get("video") or {}).get("url")
+                used_model = "veo-3.1-standard"
+                if not video_url:
+                    raise ValueError("No URL from Veo Standard")
+            except Exception as e:
+                log.warning(f"[VideoGen] Veo Standard failed: {e} — falling back to Veo Fast")
+                video_url  = _generate_veo(image_url, final_prompt, duration)
+                used_model = "veo-3.1-fast-fallback"
+
+        elif model_tier == "premium":
+            # Veo 3.1 Fast
             video_url  = _generate_veo(image_url, final_prompt, duration)
             used_model = "veo-3.1-fast"
-            if not video_url:
-                log.warning("[VideoGen] Veo failed — falling back to Kling")
-                video_url  = _generate_kling(image_url, final_prompt, duration)
-                used_model = "kling-2.5-turbo-fallback"
 
         elif model_tier == "eco":
-            raw_path = output_path.replace(".mp4", "_720p.mp4")
+            # Lyra 2.0 + Topaz upscale
+            raw_path  = output_path.replace(".mp4", "_720p.mp4")
             video_url = _generate_lyra(image_url, final_prompt, duration, space_type, pov_movement)
             used_model = "lyra-2-eco"
 
-        else:  # standard (Kling)
-            video_url  = _generate_kling(image_url, final_prompt, duration)
-            used_model = "kling-2.5-turbo"
-            if not video_url:
-                log.warning("[VideoGen] Kling failed — falling back to Veo")
-                video_url  = _generate_veo(image_url, final_prompt, duration)
-                used_model = "veo-3.1-fallback"
+        else:
+            # standard — Veo 3.1 Fast (Kling removed from UI)
+            video_url  = _generate_veo(image_url, final_prompt, duration)
+            used_model = "veo-3.1-fast"
 
         # ── LTX emergency fallback ─────────────────────────────────────────
         if not video_url:
