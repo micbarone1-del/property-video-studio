@@ -620,7 +620,7 @@ async def run_pipeline(
                         if audio_secs > 0:
                             buffered = audio_secs + 2.0
                             # Snap to even number, min 6, max 20
-                            snapped  = max(6, min(20, int(round(buffered / 2) * 2)))
+                            snapped  = max(4, min(20, int(((buffered + 1.99) // 2) * 2)))  # snap UP to next even
                             log.info(
                                 f"[Job {job_id}] Scene {i}: audio={audio_secs:.1f}s "
                                 f"→ clip duration={snapped}s"

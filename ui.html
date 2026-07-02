@@ -731,7 +731,7 @@ async function updateCostEstimate() {
   const visionQc     = document.getElementById('do-vision-qc').checked;
 
   // Cost per 8s clip by tier
-  const TIER_COST    = { eco: 0.12, premium: 0.80 };
+  const TIER_COST    = { eco: 0.12, premium: 0.80, premium_veo: 1.60 };
   const CLIP_COST    = TIER_COST[tier] || 0.80;
   const UPSCALE      = 0.030;
   const VIDEO_UP_PER_SEC = 0.02;
@@ -749,7 +749,7 @@ async function updateCostEstimate() {
   const visCost   = visionQc ? n * 2 * FLORENCE : 0;
   const total     = videoCost + upCost + vidUpCost + ttsCost + visCost + INFRA;
 
-  const tierLabel = { eco: 'Lyra 2.0 + Topaz', premium: 'Veo 3.1 Fast' };
+  const tierLabel = { eco: 'Lyra 2.0 + Topaz', premium: 'Veo 3.1 Fast', premium_veo: 'Veo 3.1 Standard' };
   const panel = document.getElementById('cost-panel');
   const lines = document.getElementById('cost-lines');
   panel.style.display = 'block';

@@ -315,7 +315,7 @@ def assemble_pov_prompt(
             movement = movement_dict  # backward compat
         light    = _VEO_LIGHTING_TOKENS.get(lighting, _VEO_LIGHTING_TOKENS["bright_natural"])
         prompt   = (
-            f"First-person POV shot: {space}. "
+            f"{space}. "
             f"Camera: {movement}. "
             f"Lighting: {light}. "
             f"{_VEO_RULES}"
@@ -646,7 +646,28 @@ def generate_video_single(
         video_url = None
         used_model = None
 
-        if model_tier == "premium":
+        if model_tier == "premium_veo":
+            # Veo 3.1 Standard — fast_mode=False for best quality
+            try:
+                import fal_client as _fc
+                _res = _fc.subscribe(
+                    VEO_ENDPOINT,
+                    arguments={
+                        "image_url": image_url, "prompt": final_prompt,
+                        "duration_secs": duration, "resolution": "1080p",
+                        "aspect_ratio": "16:9", "enhance_prompt": False,
+                        "generate_audio": False, "fast_mode": False,
+                    }
+                )
+                video_url  = (_res.get("video") or {}).get("url")
+                used_model = "veo-3.1-standard"
+                if not video_url:
+                    raise ValueError("No URL from Veo Standard")
+            except Exception as _e:
+                log.warning(f"[VideoGen] Veo Standard failed: {_e} — falling back to Veo Fast")
+                video_url  = _generate_veo(image_url, final_prompt, duration)
+                used_model = "veo-3.1-fast-fallback"
+        elif model_tier == "premium":
             video_url  = _generate_veo(image_url, final_prompt, duration)
             used_model = "veo-3.1-fast"
             if not video_url:
