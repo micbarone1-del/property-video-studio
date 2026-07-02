@@ -336,6 +336,10 @@
       <video id="video-preview" controls></video>
       <a class="btn-download" id="download-link" href="#">⬇ Download MP4</a>
       <div id="actual-cost" style="margin-top:16px"></div>
+      <div style="margin-top:16px;display:flex;gap:10px;flex-wrap:wrap">
+        <button class="btn-primary" style="font-size:.8rem;padding:8px 16px;background:var(--muted)"
+          onclick="bulkRework()">↺ Rigenera tutte le scene</button>
+      </div>
     </div>
   </section>
 
@@ -552,10 +556,8 @@ function renderScenes() {
     // Rework panel — shown if job completed
     const reworkPanel = scStatus ? `
       <div class="rework-panel${saved.rework_open ? ' open' : ''}" id="rw-panel-${i}">
-        <label>Rifai Scena ${i+1}</label>
-        <div class="rework-checks">
-          <label><input type="checkbox" class="rw-video"${saved.rw_video === true ? ' checked' : ''} /> Rigenera video</label>
-          <label><input type="checkbox" class="rw-audio"${saved.rw_audio === true ? ' checked' : ''} /> Rigenera voiceover</label>
+        <div style="font-size:.78rem;color:var(--muted);padding:8px 0 4px">
+          Questa scena verrà rigenerata: prima il voiceover, poi il video alla durata corretta.
         </div>
       </div>` : '';
 
@@ -626,6 +628,28 @@ function renderScenes() {
 
 function onCaptionChange(index, value) {
   updateCostEstimate();
+}
+
+function bulkRework() {
+  if (!completedScenes.length) {
+    showError('Nessuna scena completata. Genera prima un video.');
+    return;
+  }
+  completedScenes.forEach(s => {
+    const i = s.index;
+    sceneUserData[i] = sceneUserData[i] || {};
+    sceneUserData[i].rework_open = true;
+    const panel = document.getElementById(`rw-panel-${i}`);
+    if (panel) panel.classList.add('open');
+    const btn = document.getElementById(`rw-btn-${i}`);
+    if (btn) {
+      btn.textContent       = '✓ Aperto — premi Genera video';
+      btn.style.color       = 'var(--ok)';
+      btn.style.borderColor = 'var(--ok)';
+    }
+  });
+  scenesCont.scrollIntoView({ behavior: 'smooth' });
+  showError(`↑ ${completedScenes.length} scena/e aperte — premi Genera video per rigenerare`);
 }
 
 function openReworkPanel(i, btn) {
@@ -848,35 +872,15 @@ async function submitRework(reworkScenes) {
 
   const updatedScenes = getScenesConfig();
 
-  // Read checkbox state from rework panels
-  // Default redo_video=false, redo_audio=false — only redo what user explicitly checked
-  const redoVideo = reworkScenes.some(idx => {
-    const card = scenesCont.querySelector(`[data-index="${idx}"]`);
-    const cb   = card?.querySelector('.rw-video');
-    return cb ? cb.checked : false;  // default FALSE — don't redo video unless explicitly checked
-  });
-  const redoAudio = reworkScenes.some(idx => {
-    const card = scenesCont.querySelector(`[data-index="${idx}"]`);
-    const cb   = card?.querySelector('.rw-audio');
-    return cb ? cb.checked : false;  // default FALSE — don't redo audio unless explicitly checked
-  });
-
-  // Safety check — at least one of video or audio must be selected
-  if (!redoVideo && !redoAudio) {
-    showError('Seleziona almeno un\'opzione: Rigenera video o Rigenera voiceover');
-    genBtn.disabled    = false;
-    genBtn.textContent = 'Genera video';
-    return;
-  }
-
+  // Always redo both audio and video — video is generated AFTER audio to get correct duration
   const cfg = {
     scenes:         reworkScenes,
-    redo_video:     redoVideo,
-    redo_audio:     redoAudio,
+    redo_video:     true,
+    redo_audio:     true,
     updated_scenes: updatedScenes,
   };
 
-  console.log(`Rework: targeting job ${currentJobId}, scenes ${reworkScenes}, redo_video=${redoVideo}, redo_audio=${redoAudio}`);
+  console.log(`Rework: job ${currentJobId}, scenes ${reworkScenes}`);
 
   const fd = new FormData();
   fd.append('rework_config', JSON.stringify(cfg));
