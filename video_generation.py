@@ -238,14 +238,14 @@ _VEO_MOVEMENT_TOKENS = {
         "natural_pace": "slow 3D pan across the outdoor space with parallax depth — maximum 60 degrees. Within original photo boundaries",
         "energetic":    "3D pan across the outdoor space with parallax — maximum 60 degrees. Within original photo",
     },
-    # Reveal pullback — slow approach with strong parallax, foreground detail leads
-    # NOTE: True pull-back reveal from crop is not reliable in Veo — hallucination risk.
-    # Instead: slow dolly approach with strong foreground-background parallax.
-    # Best for: facade, exterior, feature rooms with strong foreground element.
+    # Reveal pullback — reverse dolly from property outward
+    # Camera starts close to the building/subject and moves backward,
+    # foreground elements rushing past as the full scene opens up.
+    # No cropping needed — describe the motion, Veo handles the 3D.
     "reveal_pullback": {
-        "very_slow":    "very slow 3D dolly approaching with strong depth parallax — foreground architectural detail moves significantly faster than the background building, creating powerful depth sensation. Camera stays within original photo boundaries",
-        "natural_pace": "slow 3D dolly with strong foreground-background parallax — near elements arc faster than distant ones, revealing spatial depth. Within original photo boundaries",
-        "energetic":    "3D dolly with strong parallax depth — foreground faster than background, confident reveal of the space. Within original photo",
+        "very_slow":    "reverse dolly shot — camera begins close to the property and very slowly moves backward away from it, foreground elements sliding past the frame edges as the full scene gradually reveals. Natural depth parallax throughout",
+        "natural_pace": "reverse dolly shot — camera starts near the building and pulls back smoothly, foreground rushing past as the complete property and surroundings come into view. Steady backward movement with natural parallax",
+        "energetic":    "confident reverse dolly — camera pulls back from the property with purpose, foreground sweeping past as the full exterior scene reveals itself. Strong depth parallax",
     },
 }
 
