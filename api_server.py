@@ -26,14 +26,24 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from collections import defaultdict
 
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException, BackgroundTasks, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, BackgroundTasks, Request, Header
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
+
+# ── Access key auth ────────────────────────────────────────────────────────────
+UI_ACCESS_KEY = os.getenv("UI_ACCESS_KEY", "").strip()
+
+def _check_access(request: Request) -> bool:
+    """Returns True if request is authorised. Always True if no key configured."""
+    if not UI_ACCESS_KEY:
+        return True  # no key set — open access (backward compat)
+    key = request.headers.get("X-Access-Key", "").strip()
+    return key == UI_ACCESS_KEY
 
 BASE_DIR = Path(__file__).parent
 JOBS_DIR = BASE_DIR / "jobs"
@@ -107,6 +117,21 @@ _load_jobs_from_disk()
 # ── App ────────────────────────────────────────────────────────────────────────
 app = FastAPI(title="Real Estate Video Generator", version="3.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """Protect all non-static endpoints with access key when UI_ACCESS_KEY is set."""
+    # Always allow: root UI page, static assets
+    if request.url.path in ("/", "") or request.url.path.startswith("/static"):
+        return await call_next(request)
+    # Check key for all API endpoints
+    if not _check_access(request):
+        return Response(
+            content='{"detail":"Unauthorized — invalid access key"}',
+            status_code=403,
+            media_type="application/json"
+        )
+    return await call_next(request)
 
 if (BASE_DIR / "ui.html").exists():
     @app.get("/", response_class=FileResponse)

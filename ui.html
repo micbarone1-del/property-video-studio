@@ -47,7 +47,19 @@
   .alert-ok     { background:#edf7f1; border:1px solid #b7dfca; color:var(--ok); }
   .empty-state  { text-align:center; padding:28px; color:var(--muted); font-size:.83rem; }
 
-  /* Credit banner */
+  /* Login screen */
+  #login-screen { display:none; position:fixed; inset:0; background:var(--green); z-index:1000; align-items:center; justify-content:center; flex-direction:column; gap:24px; }
+  #login-screen.visible { display:flex; }
+  .login-box { background:#fff; border-radius:12px; padding:40px; width:360px; max-width:90vw; text-align:center; box-shadow:0 20px 60px rgba(0,0,0,.3); }
+  .login-logo { font-family:var(--serif); font-size:1.6rem; color:var(--green); margin-bottom:6px; }
+  .login-sub { font-size:.75rem; color:var(--muted); letter-spacing:.1em; text-transform:uppercase; margin-bottom:28px; }
+  .login-input { width:100%; padding:12px 14px; border:2px solid var(--rule); border-radius:var(--radius); font-size:1rem; font-family:var(--sans); text-align:center; letter-spacing:.15em; transition:border-color .2s; margin-bottom:14px; }
+  .login-input:focus { outline:none; border-color:var(--accent); }
+  .login-btn { width:100%; background:var(--green); color:#fff; border:none; border-radius:var(--radius); padding:13px; font-size:.95rem; font-family:var(--sans); cursor:pointer; font-weight:600; transition:background .15s; }
+  .login-btn:hover { background:#2e4535; }
+  .login-error { color:var(--danger); font-size:.82rem; margin-top:8px; min-height:20px; }
+
+
   #credit-banner { display:none; margin-bottom:20px; border:1px solid #f5c6c2; border-radius:var(--radius); overflow:hidden; }
   .cb-head { background:#c0392b; color:#fff; padding:8px 14px; font-size:.8rem; font-weight:600; }
   .cb-body { background:#fdf0ef; padding:11px 14px; display:flex; flex-direction:column; gap:7px; }
@@ -176,6 +188,19 @@
 </style>
 </head>
 <body>
+
+<!-- Login screen -->
+<div id="login-screen" class="visible">
+  <div class="login-box">
+    <div class="login-logo">Property Video Studio</div>
+    <div class="login-sub">Real Estate · AI Video Generator</div>
+    <input type="password" class="login-input" id="login-key" placeholder="Chiave di accesso"
+      autocomplete="current-password"
+      onkeydown="if(event.key==='Enter')submitLogin()" />
+    <button class="login-btn" onclick="submitLogin()">Accedi</button>
+    <div class="login-error" id="login-error"></div>
+  </div>
+</div>
 
 <header>
   <h1>Property Video Studio</h1>
@@ -347,6 +372,76 @@
 
 <script>
 const API_BASE = '';
+
+// ── Login ──────────────────────────────────────────────────────────────────────
+const SESSION_KEY = 'pvs_access';
+
+async function checkLogin() {
+  const stored = sessionStorage.getItem(SESSION_KEY);
+  if (stored) {
+    // Verify key still valid with server
+    try {
+      const res = await fetch(`${API_BASE}/health`, {
+        headers: { 'X-Access-Key': stored }
+      });
+      if (res.ok) {
+        showApp();
+        return;
+      }
+    } catch {}
+  }
+  document.getElementById('login-screen').classList.add('visible');
+}
+
+async function submitLogin() {
+  const key = document.getElementById('login-key').value.trim();
+  const err = document.getElementById('login-error');
+  if (!key) { err.textContent = 'Inserisci la chiave di accesso'; return; }
+
+  try {
+    const res = await fetch(`${API_BASE}/health`, {
+      headers: { 'X-Access-Key': key }
+    });
+    if (res.status === 403) {
+      err.textContent = 'Chiave non valida';
+      document.getElementById('login-key').value = '';
+      return;
+    }
+    if (!res.ok) {
+      err.textContent = 'Errore di connessione. Riprova.';
+      return;
+    }
+    sessionStorage.setItem(SESSION_KEY, key);
+    showApp();
+  } catch(e) {
+    err.textContent = 'Impossibile raggiungere il server.';
+  }
+}
+
+function showApp() {
+  document.getElementById('login-screen').classList.remove('visible');
+}
+
+// Check login on load
+checkLogin();
+
+// ── Auth fetch helper — adds access key to all requests ───────────────────────
+function authHeaders(extra = {}) {
+  const key = sessionStorage.getItem(SESSION_KEY) || '';
+  return key ? { 'X-Access-Key': key, ...extra } : extra;
+}
+
+async function authFetch(url, options = {}) {
+  options.headers = { ...authHeaders(), ...(options.headers || {}) };
+  const res = await fetch(url, options);
+  if (res.status === 403) {
+    // Key expired or invalid — show login again
+    sessionStorage.removeItem(SESSION_KEY);
+    document.getElementById('login-screen').classList.add('visible');
+    throw new Error('Sessione scaduta. Accedi di nuovo.');
+  }
+  return res;
+}
 let files        = [];
 let pollTimer    = null;
 let currentJobId  = null;   // always the ORIGINAL job ID for rework purposes
@@ -403,7 +498,7 @@ async function analyseImage(index) {
   fd.append('image', file);
 
   try {
-    const res = await fetch(`${API_BASE}/analyse-image`, { method: 'POST', body: fd });
+    const res = await authFetch(`${API_BASE}/analyse-image`, { method: 'POST', body: fd });
     if (!res.ok) throw new Error('Analysis failed');
     const data = await res.json();
     sceneAnalysis[index] = data;
@@ -840,7 +935,7 @@ genBtn.addEventListener('click', async () => {
   fd.append('intensity',         document.getElementById('intensity').value);
 
   try {
-    const res = await fetch(`${API_BASE}/jobs/`, { method: 'POST', body: fd });
+    const res = await authFetch(`${API_BASE}/jobs/`, { method: 'POST', body: fd });
     if (!res.ok) {
       let detail = `Server error ${res.status}`;
       try { const e = await res.json(); detail = e.detail || detail; } catch(_) {}
@@ -886,7 +981,7 @@ async function submitRework(reworkScenes) {
   const targetJobId = currentJobId;
 
   try {
-    const res = await fetch(`${API_BASE}/jobs/${targetJobId}/rework`, { method:'POST', body:fd });
+    const res = await authFetch(`${API_BASE}/jobs/${targetJobId}/rework`, { method:'POST', body:fd });
     if (!res.ok) {
       let detail = `Server error ${res.status}`;
       try { const e = await res.json(); detail = e.detail || detail; } catch(_) {}
@@ -916,7 +1011,7 @@ function startPolling(jobId) {
   clearInterval(pollTimer);
   pollTimer = setInterval(async () => {
     try {
-      const res = await fetch(`${API_BASE}/jobs/${jobId}`);
+      const res = await authFetch(`${API_BASE}/jobs/${jobId}`);
       if (!res.ok) return;
       const job = await res.json();
 
@@ -1034,7 +1129,7 @@ async function submitApproval() {
   }));
 
   try {
-    const res = await fetch(`${API_BASE}/jobs/${currentJobId}/approve`, { method: 'POST', body: fd });
+    const res = await authFetch(`${API_BASE}/jobs/${currentJobId}/approve`, { method: 'POST', body: fd });
     if (!res.ok) {
       let detail = `Server error ${res.status}`;
       try { const e = await res.json(); detail = e.detail || detail; } catch(_) {}
@@ -1133,7 +1228,7 @@ function notifyJobComplete(propName, success) {
 requestNotificationPermission();
 async function checkCredits() {
   try {
-    const res  = await fetch(`${API_BASE}/credits`);
+    const res  = await authFetch(`${API_BASE}/credits`);
     if (!res.ok) return;
     const data = await res.json();
     const dot    = document.getElementById('credit-dot');
@@ -1159,7 +1254,7 @@ async function openDiagnostics() {
   document.getElementById('diag-modal').classList.add('open');
   document.getElementById('diag-content').innerHTML = '<div class="diag-loading">Caricamento…</div>';
   try {
-    const res  = await fetch(`${API_BASE}/diagnostics`);
+    const res  = await authFetch(`${API_BASE}/diagnostics`);
     const data = await res.json();
     document.getElementById('diag-content').innerHTML = `
       <div class="diag-row"><span>Ora server</span><span>${data.server_time?.slice(0,19).replace('T',' ')}</span></div>
