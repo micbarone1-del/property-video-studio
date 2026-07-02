@@ -249,7 +249,7 @@ def analyse_input(image_path: str) -> dict:
             "bedroom":  "walk_in_gentle",
             "small":    "subtle_rotate",    # approach_reveal produces 2D zoom in shallow spaces
             "corridor": "walk_through",
-            "outdoor":  "walk_toward",
+            "outdoor":  "reveal_pullback",
             "elevated": "step_out_onto",
         }
         # Also detect corridor from description

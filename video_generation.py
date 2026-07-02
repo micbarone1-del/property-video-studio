@@ -97,7 +97,7 @@ SPACE_DEFAULT_MOVEMENT = {
     "bedroom":  "walk_in_gentle",
     "small":    "subtle_rotate",    # approach_reveal produces 2D zoom in shallow spaces
     "corridor": "walk_through",
-    "outdoor":  "walk_toward",
+    "outdoor":  "reveal_pullback",
     "elevated": "step_out_onto",
 }
 
@@ -106,6 +106,7 @@ CROP_REVEAL_MOVEMENTS = {
     "walk_in_explore", "walk_in_gentle", "walk_in_turn_left",
     "walk_in_turn_right", "approach_reveal", "walk_toward",
     "stand_look_around", "subtle_rotate",
+    "reveal_pullback",
 }
 
 
@@ -223,6 +224,11 @@ _VEO_MOVEMENT_TOKENS = {
         "very_slow":    "very slow 3D pan across outdoor space with depth parallax — maximum 60 degrees, foreground faster than distant view. Within original photo width",
         "natural_pace": "slow 3D pan across outdoor space with parallax — maximum 60 degrees. Within original photo",
         "energetic":    "3D pan across outdoor space with parallax — maximum 60 degrees. Within original photo",
+    },
+    "reveal_pullback": {
+        "very_slow":    "very slow camera pullback revealing the property exterior — camera retreats while subject grows in frame, depth parallax as foreground passes. Within original photo",
+        "natural_pace": "slow pullback revealing the full property exterior with parallax depth. Within original photo",
+        "energetic":    "pullback reveal of property exterior with parallax. Within original photo",
     },
 }
 _VEO_LIGHTING_TOKENS = {
