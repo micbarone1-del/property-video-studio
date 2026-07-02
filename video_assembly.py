@@ -455,9 +455,6 @@ def assemble_property_video(scenes_config, video_clip_paths, audio_paths, image_
                     dur = ac.duration if ac else 5.0
                     clip = ImageClip(str(image_path)).with_duration(dur)
                     if ac:
-                        # Trim audio to video clip duration — prevents bleed into next scene
-                        if ac.duration > clip.duration:
-                            ac = ac.subclipped(0, clip.duration)
                         audio_segments.append((ac, timeline_cursor))
                 else:
                     continue
@@ -523,19 +520,6 @@ def assemble_property_video(scenes_config, video_clip_paths, audio_paths, image_
             final = concatenate_videoclips(clips, method="compose")
 
         # Attach all TTS audio tracks positioned correctly on the final timeline
-        # CRITICAL: audio start times must account for transition overlap (fade/slide reduces
-        # clip start by td seconds). Recalculate using the same offsets as the transition loop.
-        if audio_segments and transition_style not in ("cut",) and len(clips) > 1:
-            recalc_starts = []
-            t = 0.0
-            for idx, (ac, _) in enumerate(audio_segments):
-                recalc_starts.append((ac, t))
-                if idx < len(clips) - 1:
-                    t += clips[idx].duration - 0.5  # 0.5 = TRANSITION_DURATION overlap
-                else:
-                    t += clips[idx].duration
-            audio_segments = recalc_starts
-
         if audio_segments:
             positioned = [ac.with_start(t) for ac, t in audio_segments]
             combined_audio = CompositeAudioClip(positioned) if len(positioned) > 1 else positioned[0]
