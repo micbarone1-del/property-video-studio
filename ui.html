@@ -466,6 +466,7 @@ const MOVEMENT_OPTS = {
   subtle_rotate:      'Rotazione sottile — max 15° (piccoli ambienti)',
   approach_reveal:    'Avvicinati laterale — tracking parallelo alla parete (non per piccoli ambienti)',
   walk_toward:        'Avvicinati alla proprietà — per esterni',
+  reveal_pullback:    '⭐ Rivelazione — parte da un dettaglio e rivela il quadro completo (esterno/facciata)',
   step_out_onto:      'Esci verso — per balconi e terrazze (max 60°)',
 };
 
@@ -476,7 +477,7 @@ const SPACE_DEFAULT_MOVEMENT_MAP = {
   bedroom:  'walk_in_gentle',
   small:    'approach_reveal',
   corridor: 'walk_through',
-  outdoor:  'walk_toward',
+  outdoor:  'reveal_pullback',
   elevated: 'step_out_onto',
 };
 
@@ -553,8 +554,8 @@ function renderScenes() {
       <div class="rework-panel${saved.rework_open ? ' open' : ''}" id="rw-panel-${i}">
         <label>Rifai Scena ${i+1}</label>
         <div class="rework-checks">
-          <label><input type="checkbox" class="rw-video"${saved.rw_video !== false ? ' checked' : ''} /> Rigenera video</label>
-          <label><input type="checkbox" class="rw-audio"${saved.rw_audio ? ' checked' : ''} /> Rigenera voiceover</label>
+          <label><input type="checkbox" class="rw-video"${saved.rw_video === true ? ' checked' : ''} /> Rigenera video</label>
+          <label><input type="checkbox" class="rw-audio"${saved.rw_audio === true ? ' checked' : ''} /> Rigenera voiceover</label>
         </div>
       </div>` : '';
 
@@ -602,8 +603,8 @@ function renderScenes() {
           <div>
             <label>Durata clip</label>
             <div class="dur-row">
-              <span style="font-size:.75rem;color:var(--muted)">6s</span>
-              <input type="range" class="sc-duration" min="6" max="20" step="2"
+              <span style="font-size:.75rem;color:var(--muted)">4s</span>
+              <input type="range" class="sc-duration" min="4" max="20" step="2"
                 value="${saved.duration||'8'}"
                 oninput="onDurationChange(this)" />
               <span style="font-size:.75rem;color:var(--muted)">20s</span>
@@ -657,10 +658,11 @@ function onDurationChange(input) {
 }
 
 // ── Voiceover word count + auto-duration ──────────────────────────────────────
-const CHARS_PER_SEC   = 16;    // ElevenLabs speaks at ~16 chars/sec natural pace
-const TTS_BUFFER_SECS = 2;     // add 2s buffer so clip is always longer than audio
+const CHARS_PER_SEC   = 16;
+const TTS_BUFFER_SECS = 2;
 const MAX_DURATION    = 20;
-const VALID_DURATIONS = [6, 8, 10, 12, 14, 16, 18, 20];
+const MIN_DURATION    = 4;
+const VALID_DURATIONS = [4, 6, 8, 10, 12, 14, 16, 18, 20];
 
 function snapDuration(secs) {
   for (const v of VALID_DURATIONS) if (v >= secs) return v;
@@ -846,14 +848,26 @@ async function submitRework(reworkScenes) {
 
   const updatedScenes = getScenesConfig();
 
+  // Read checkbox state from rework panels
+  // Default redo_video=false, redo_audio=false — only redo what user explicitly checked
   const redoVideo = reworkScenes.some(idx => {
     const card = scenesCont.querySelector(`[data-index="${idx}"]`);
-    return card?.querySelector('.rw-video')?.checked ?? true;
+    const cb   = card?.querySelector('.rw-video');
+    return cb ? cb.checked : false;  // default FALSE — don't redo video unless explicitly checked
   });
   const redoAudio = reworkScenes.some(idx => {
     const card = scenesCont.querySelector(`[data-index="${idx}"]`);
-    return card?.querySelector('.rw-audio')?.checked ?? false;
+    const cb   = card?.querySelector('.rw-audio');
+    return cb ? cb.checked : false;  // default FALSE — don't redo audio unless explicitly checked
   });
+
+  // Safety check — at least one of video or audio must be selected
+  if (!redoVideo && !redoAudio) {
+    showError('Seleziona almeno un\'opzione: Rigenera video o Rigenera voiceover');
+    genBtn.disabled    = false;
+    genBtn.textContent = 'Genera video';
+    return;
+  }
 
   const cfg = {
     scenes:         reworkScenes,
@@ -862,12 +876,12 @@ async function submitRework(reworkScenes) {
     updated_scenes: updatedScenes,
   };
 
+  console.log(`Rework: targeting job ${currentJobId}, scenes ${reworkScenes}, redo_video=${redoVideo}, redo_audio=${redoAudio}`);
+
   const fd = new FormData();
   fd.append('rework_config', JSON.stringify(cfg));
 
-  // Always rework against the ORIGINAL job, not a previous rework
   const targetJobId = currentJobId;
-  log(`Rework: targeting job ${targetJobId}, scenes ${reworkScenes}`);
 
   try {
     const res = await fetch(`${API_BASE}/jobs/${targetJobId}/rework`, { method:'POST', body:fd });
@@ -1070,7 +1084,6 @@ function showResult(jobId, propName, scenes) {
   document.getElementById('video-preview').src    = dlUrl;
   document.getElementById('download-link').href   = dlUrl;
   document.getElementById('download-link').download = `${propName.replace(/\s+/g,'_')}_video.mp4`;
-  // Clear the actual cost panel — estimate shown upfront is sufficient
   document.getElementById('actual-cost').innerHTML = '';
   resultSec.style.display = 'block';
   resultSec.scrollIntoView({ behavior: 'smooth' });
