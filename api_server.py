@@ -757,7 +757,7 @@ async def run_pipeline(
                         if audio_secs > 0:
                             buffered = audio_secs + 2.0
                             # Snap to even number, min 6, max 20
-                            snapped  = max(6, min(20, int(round(buffered / 2) * 2)))
+                            snapped  = max(4, min(8, int(((buffered + 1.99) // 2) * 2)))  # Veo caps at 8s — snap UP within 4/6/8 only
                             log.info(
                                 f"[Job {job_id}] Scene {i}: audio={audio_secs:.1f}s "
                                 f"→ clip duration={snapped}s"
@@ -1013,7 +1013,7 @@ async def run_rework(rework_id: str, parent_job_id: str, cfg: dict, do_video_ups
                         seg = _AudioSegment.from_file(audio_out)
                         audio_secs = len(seg) / 1000.0
                         buffered   = audio_secs + 2.0
-                        actual_duration = max(4, min(20, int(((buffered + 1.99) // 2) * 2)))
+                        actual_duration = max(4, min(8, int(((buffered + 1.99) // 2) * 2)))  # Veo caps at 8s
                         log.info(f"[Rework] Scene {scene_index}: audio={audio_secs:.1f}s → clip={actual_duration}s")
                     except Exception as e:
                         log.warning(f"[Rework] Could not measure audio: {e}")
