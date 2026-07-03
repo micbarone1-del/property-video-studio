@@ -476,6 +476,9 @@ def assemble_property_video(scenes_config, video_clip_paths, audio_paths, image_
             scene_caption = str(scene.get("caption", "")).strip() if scene else ""
             if scene_caption:
                 clip = _burn_caption(clip, scene_caption)
+            # Add 1s tail on last scene — prevents audio cutting at final frame
+            if i == len(clips) - 1:
+                clip = clip.with_duration(clip.duration + 1.0)
             timeline_cursor += clip.duration
             clips.append(clip)
         if not clips:
