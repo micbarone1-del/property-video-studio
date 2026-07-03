@@ -432,18 +432,33 @@ def _generate_kling(image_url: str, prompt: str, duration: int) -> str | None:
 
 # ── Veo 3.1 Fast generation ───────────────────────────────────────────────────
 
+def _snap_veo_duration(duration: int) -> str:
+    """Veo 3.1 only accepts duration as a string: '4s', '6s', or '8s'.
+    Snap to the nearest valid value, rounding UP so audio always fits.
+    """
+    if duration <= 4:
+        return "4s"
+    elif duration <= 6:
+        return "6s"
+    else:
+        return "8s"
+
+
 def _generate_veo(image_url: str, prompt: str, duration: int) -> str | None:
     """Submits to Veo 3.1 Fast at 1080p. Returns video URL or None.
     1080p costs the same as 720p on fal.ai — always use 1080p.
+    CRITICAL: Veo's duration parameter is called "duration" (not "duration_secs")
+    and must be a string like "8s", not an integer. Only 4s/6s/8s are valid.
     """
+    veo_dur = _snap_veo_duration(duration)
     try:
-        log.info(f"[VideoGen] Veo 3.1 Fast — {duration}s at 1080p")
+        log.info(f"[VideoGen] Veo 3.1 Fast — {veo_dur} (requested {duration}s) at 1080p")
         result = fal_client.subscribe(
             VEO_ENDPOINT,
             arguments={
                 "image_url":      image_url,
                 "prompt":         prompt,
-                "duration_secs":  duration,
+                "duration":       veo_dur,          # correct param name + string format
                 "resolution":     "1080p",      # same price as 720p — always use 1080p
                 "aspect_ratio":   "16:9",
                 "enhance_prompt": False,         # we control the prompt, no AI rewriting
@@ -661,12 +676,14 @@ def generate_video_single(
 
         if model_tier == "premium_veo":
             # Veo 3.1 Standard — fast_mode=False, better quality, no circular wipe
+            veo_dur = _snap_veo_duration(duration)
             try:
+                log.info(f"[VideoGen] Veo 3.1 Standard — {veo_dur} (requested {duration}s)")
                 result = fal_client.subscribe(
                     VEO_ENDPOINT,
                     arguments={
                         "image_url": image_url, "prompt": final_prompt,
-                        "duration_secs": duration, "resolution": "1080p",
+                        "duration": veo_dur, "resolution": "1080p",
                         "aspect_ratio": "16:9", "enhance_prompt": False,
                         "generate_audio": False, "fast_mode": False,
                     }
