@@ -529,6 +529,22 @@ async def get_clip(job_id: str, scene_index: int, request: Request):
     )
 
 
+@app.post("/jobs/{job_id}/stop")
+def stop_job(job_id: str):
+    """Marks a job as cancelled. The pipeline checks this flag between scenes
+    and stops before starting the next one — already-generated clips are kept.
+    Cannot interrupt a Veo API call already in progress for the current scene.
+    """
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    JOBS[job_id]["cancel_requested"] = True
+    _save_job(job_id)
+    return {
+        "job_id": job_id,
+        "message": "Cancellazione richiesta — si fermerà dopo la scena corrente."
+    }
+
+
 @app.get("/jobs/{job_id}/download")
 def download_job(job_id: str):
     if job_id not in JOBS:
@@ -768,6 +784,12 @@ async def run_pipeline(
         rejected_scenes = []
 
         for i, (scene, img) in enumerate(zip(scenes_config, enhanced_paths)):
+            # Check for cancellation request between scenes
+            if JOBS.get(job_id, {}).get("cancel_requested"):
+                log.info(f"[Job {job_id}] Cancellation requested — stopping before scene {i+1}")
+                update("failed", int(35 + (i/n)*40), f"Fermato dall'utente dopo {i} scene")
+                return
+
             clip_out     = str(video_clips_dir / f"scene_{i:03d}.mp4")
             # Use actual audio duration if available, fall back to user setting
             duration     = actual_durations[i] if i < len(actual_durations) else int(scene.get("duration", 10))
@@ -964,6 +986,12 @@ async def run_rework(rework_id: str, parent_job_id: str, cfg: dict, do_video_ups
         scene_statuses = list(parent.get("scenes", []))
 
         for idx, scene_index in enumerate(scenes_to_redo):
+            # Check for cancellation request between scenes
+            if JOBS.get(rework_id, {}).get("cancel_requested"):
+                log.info(f"[Rework {rework_id}] Cancellation requested — stopping")
+                update("failed", int(10 + (idx/n)*80), f"Fermato dall'utente dopo {idx} scene")
+                return
+
             scene = updated_scenes[scene_index] if scene_index < len(updated_scenes) else {}
             voiceover    = scene.get("voiceover", "").strip()
             space_type   = scene.get("space_type",   "large")

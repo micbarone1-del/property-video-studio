@@ -394,6 +394,10 @@
       </div>
       <div class="prog-wrap"><div class="prog-fill" id="prog-bar"></div></div>
       <div id="scene-progress"></div>
+      <button id="stop-job-btn" onclick="stopCurrentJob()"
+        style="margin-top:12px;background:none;border:1px solid var(--danger);color:var(--danger);border-radius:var(--radius);padding:7px 16px;font-size:.78rem;cursor:pointer">
+        ⏹ Ferma questo job
+      </button>
     </div>
   </section>
 
@@ -430,6 +434,24 @@ const API_BASE = '';
 
 // ── Video library ──────────────────────────────────────────────────────────────
 let libraryOpen = false;
+
+async function stopCurrentJob() {
+  const jobToStop = activeJobId || currentJobId;
+  if (!jobToStop) return;
+  if (!confirm(`Fermare il job ${jobToStop}? I clip già generati verranno mantenuti, quelli in corso verranno persi.`)) return;
+
+  try {
+    const res = await authFetch(`/jobs/${jobToStop}/stop`, { method: 'POST' });
+    const data = await res.json();
+    clearInterval(pollTimer);
+    showError(`Job ${jobToStop} fermato. ${data.message || ''}`);
+    progSec.style.display = 'none';
+    genBtn.disabled    = false;
+    genBtn.textContent = 'Genera video';
+  } catch(e) {
+    showError(`Errore nel fermare il job: ${e.message}`);
+  }
+}
 
 async function toggleLibrary() {
   libraryOpen = !libraryOpen;
@@ -1281,6 +1303,16 @@ genBtn.addEventListener('click', async () => {
     const i = parseInt(panel.id.replace('rw-panel-',''));
     if (!isNaN(i)) reworkScenes.push(i);
   });
+
+  // If a job is loaded (currentJobId set) and new scenes were added beyond
+  // the original completed count, auto-include them as scenes to generate —
+  // no need to manually open a rework panel for a scene that never existed.
+  if (currentJobId && completedScenes.length > 0) {
+    const originalCount = completedScenes.length;
+    for (let i = originalCount; i < files.length; i++) {
+      if (!reworkScenes.includes(i)) reworkScenes.push(i);
+    }
+  }
 
   if (reworkScenes.length > 0 && currentJobId) {
     // Reset rework_open for all submitted scenes before routing
