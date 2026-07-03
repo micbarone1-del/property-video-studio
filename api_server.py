@@ -121,10 +121,13 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     """Protect all non-static endpoints with access key when UI_ACCESS_KEY is set."""
-    # Always allow: root UI page, static assets
-    if request.url.path in ("/", "", "/health") or request.url.path.startswith("/static"):
+    path = request.url.path
+    # Always allow: root UI, health check, static assets, clip previews
+    # Clip previews need to be exempt because browsers can't send headers for <video src>
+    if (path in ("/", "", "/health")
+            or path.startswith("/static")
+            or "/clip/" in path):
         return await call_next(request)
-    # Check key for all API endpoints
     if not _check_access(request):
         return Response(
             content='{"detail":"Unauthorized — invalid access key"}',

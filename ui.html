@@ -396,17 +396,13 @@ const API_BASE = '';
 const SESSION_KEY = 'pvs_access';
 
 async function checkLogin() {
-  const stored = sessionStorage.getItem(SESSION_KEY);
+  const stored = localStorage.getItem(SESSION_KEY);
   if (stored) {
-    // Verify key still valid with server
     try {
       const res = await fetch(`${API_BASE}/health`, {
         headers: { 'X-Access-Key': stored }
       });
-      if (res.ok) {
-        showApp();
-        return;
-      }
+      if (res.ok) { showApp(); return; }
     } catch {}
   }
   document.getElementById('login-screen').classList.add('visible');
@@ -416,7 +412,6 @@ async function submitLogin() {
   const key = document.getElementById('login-key').value.trim();
   const err = document.getElementById('login-error');
   if (!key) { err.textContent = 'Inserisci la chiave di accesso'; return; }
-
   try {
     const res = await fetch(`${API_BASE}/health`, {
       headers: { 'X-Access-Key': key }
@@ -426,11 +421,8 @@ async function submitLogin() {
       document.getElementById('login-key').value = '';
       return;
     }
-    if (!res.ok) {
-      err.textContent = 'Errore di connessione. Riprova.';
-      return;
-    }
-    sessionStorage.setItem(SESSION_KEY, key);
+    if (!res.ok) { err.textContent = 'Errore di connessione. Riprova.'; return; }
+    localStorage.setItem(SESSION_KEY, key);
     showApp();
   } catch(e) {
     err.textContent = 'Impossibile raggiungere il server.';
@@ -441,12 +433,11 @@ function showApp() {
   document.getElementById('login-screen').classList.remove('visible');
 }
 
-// Check login on load
 checkLogin();
 
 // ── Auth fetch helper — adds access key to all requests ───────────────────────
 function authHeaders(extra = {}) {
-  const key = sessionStorage.getItem(SESSION_KEY) || '';
+  const key = localStorage.getItem(SESSION_KEY) || '';
   return key ? { 'X-Access-Key': key, ...extra } : extra;
 }
 
@@ -454,8 +445,7 @@ async function authFetch(url, options = {}) {
   options.headers = { ...authHeaders(), ...(options.headers || {}) };
   const res = await fetch(url, options);
   if (res.status === 403) {
-    // Key expired or invalid — show login again
-    sessionStorage.removeItem(SESSION_KEY);
+    localStorage.removeItem(SESSION_KEY);
     document.getElementById('login-screen').classList.add('visible');
     throw new Error('Sessione scaduta. Accedi di nuovo.');
   }
