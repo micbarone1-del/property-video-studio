@@ -454,38 +454,77 @@ async function loadLibrary() {
       return;
     }
 
-    list.innerHTML = jobs.map(j => {
+    // Group jobs by base property (original job_id, stripping _rw suffix)
+    const groups = {};
+    jobs.forEach(j => {
+      const baseId = j.job_id.split('_rw')[0];
+      if (!groups[baseId]) groups[baseId] = [];
+      groups[baseId].push(j);
+    });
+
+    // For each group, sort by created_at descending — newest first
+    const groupList = Object.entries(groups).map(([baseId, versions]) => {
+      versions.sort((a,b) => (b.created_at || '').localeCompare(a.created_at || ''));
+      return { baseId, versions, latest: versions[0] };
+    });
+    groupList.sort((a,b) => (b.latest.created_at || '').localeCompare(a.latest.created_at || ''));
+
+    const statusMap = {
+      done:               { icon: '✓', cls: 'lib-done',    label: 'Completato' },
+      failed:             { icon: '✗', cls: 'lib-failed',  label: 'Fallito' },
+      running:            { icon: '⏳', cls: 'lib-running', label: 'In corso' },
+      awaiting_approval:  { icon: '⚠', cls: 'lib-review',  label: 'Revisione QC' },
+      queued:             { icon: '○', cls: 'lib-queued',  label: 'In coda' },
+    };
+
+    list.innerHTML = groupList.map(g => {
+      const j       = g.latest;
       const date    = j.created_at ? new Date(j.created_at).toLocaleDateString('it-IT', {day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}) : '';
       const tier    = {eco:'Eco',premium:'Veo Fast',premium_veo:'Veo Std'}[j.model_tier] || j.model_tier;
       const scenes  = j.total_scenes ? `${j.total_scenes} scene` : '';
-      const statusMap = {
-        done:               { icon: '✓', cls: 'lib-done',    label: 'Completato' },
-        failed:             { icon: '✗', cls: 'lib-failed',  label: 'Fallito' },
-        running:            { icon: '⏳', cls: 'lib-running', label: 'In corso' },
-        awaiting_approval:  { icon: '⚠', cls: 'lib-review',  label: 'Revisione QC' },
-        queued:             { icon: '○', cls: 'lib-queued',  label: 'In coda' },
-      };
-      const st = statusMap[j.status] || { icon: '?', cls: 'lib-queued', label: j.status };
-      const status = st.icon;
-      const cls    = st.cls;
-      const reworkLabel = j.is_rework ? ' <span style="font-size:.68rem;color:var(--muted)">[rework]</span>' : '';
+      const st      = statusMap[j.status] || { icon: '?', cls: 'lib-queued', label: j.status };
+      const versionLabel = g.versions.length > 1 ? ` · v${g.versions.length} (più recente)` : '';
 
       const dlBtn   = j.has_video
         ? `<a class="lib-btn lib-primary" href="/jobs/${j.job_id}/download" download>⬇</a>`
         : '';
       const loadBtn = `<button class="lib-btn" onclick="loadJobIntoUI('${j.job_id}')">Apri</button>`;
+      const histBtn = g.versions.length > 1
+        ? `<button class="lib-btn" onclick="toggleHistory('${g.baseId}')" id="hist-btn-${g.baseId}">🕐 ${g.versions.length}</button>`
+        : '';
 
-      return `<div class="lib-job ${cls}">
+      const historyRows = g.versions.slice(1).map(v => {
+        const vdate = v.created_at ? new Date(v.created_at).toLocaleDateString('it-IT', {day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '';
+        const vst   = statusMap[v.status] || { icon: '?', label: v.status };
+        return `<div class="lib-job" style="margin-left:20px;opacity:.75;padding:8px 14px">
+          <div class="lib-info">
+            <div class="lib-name" style="font-size:.78rem">${vst.icon} ${vdate}</div>
+            <div class="lib-meta">${v.job_id}</div>
+          </div>
+          <div class="lib-actions">
+            ${v.has_video ? `<a class="lib-btn" href="/jobs/${v.job_id}/download" download>⬇</a>` : ''}
+            <button class="lib-btn" onclick="loadJobIntoUI('${v.job_id}')">Apri questa versione</button>
+          </div>
+        </div>`;
+      }).join('');
+
+      return `<div class="lib-job ${st.cls}">
         <div class="lib-info">
-          <div class="lib-name">${status} ${j.property_name}${reworkLabel}</div>
+          <div class="lib-name">${st.icon} ${j.property_name}${versionLabel}</div>
           <div class="lib-meta">${date} · ${tier} · ${scenes} · ${j.job_id}</div>
         </div>
-        <div class="lib-actions">${dlBtn}${loadBtn}</div>
-      </div>`;
+        <div class="lib-actions">${dlBtn}${histBtn}${loadBtn}</div>
+      </div>
+      <div id="hist-${g.baseId}" style="display:none;flex-direction:column;gap:6px;margin-top:4px">${historyRows}</div>`;
     }).join('');
   } catch(e) {
     list.innerHTML = `<div class="lib-empty">Errore caricamento: ${e.message}</div>`;
   }
+}
+
+function toggleHistory(baseId) {
+  const hist = document.getElementById(`hist-${baseId}`);
+  if (hist) hist.style.display = hist.style.display === 'none' ? 'flex' : 'none';
 }
 
 async function loadJobIntoUI(jobId) {
@@ -502,73 +541,118 @@ async function loadJobIntoUI(jobId) {
     }
 
     const baseJobId = jobId.split('_rw')[0];
-    currentJobId = baseJobId;
 
-    // Rework jobs don't store their own scenes_config — fall back to parent job
-    let scenesConfig = job.scenes_config || [];
-    if (!scenesConfig.length && baseJobId !== jobId) {
-      try {
-        const parentRes = await authFetch(`/jobs/${baseJobId}`);
-        if (parentRes.ok) {
-          const parentJob = await parentRes.json();
-          scenesConfig = parentJob.scenes_config || [];
-        }
-      } catch(e) {
-        console.warn('Could not load parent job scenes_config:', e);
-      }
-    }
+    // Show read-only preview: final video + scene thumbnails with QC status
+    showJobPreview(jobId, baseJobId, job);
 
-    if (scenesConfig.length > 0) {
-      files = [];
-      Object.keys(sceneAnalysis).forEach(k => delete sceneAnalysis[k]);
-      Object.keys(sceneUserData).forEach(k => delete sceneUserData[k]);
-
-      for (let i = 0; i < scenesConfig.length; i++) {
-        const scene = scenesConfig[i];
-        try {
-          // Images live under the base (parent) job directory
-          const imgRes = await authFetch(`/jobs/${baseJobId}/image/${i}`);
-          if (imgRes.ok) {
-            const blob = await imgRes.blob();
-            files.push(new File([blob], `scene_${i}.jpg`, { type: blob.type || 'image/jpeg' }));
-          } else {
-            files.push(new File([], `scene_${i}.jpg`, { type: 'image/jpeg' }));
-          }
-        } catch(e) {
-          files.push(new File([], `scene_${i}.jpg`, { type: 'image/jpeg' }));
-        }
-
-        sceneUserData[i] = {
-          caption:      scene.caption || '',
-          voiceover:    scene.voiceover || '',
-          duration:     String(scene.duration || 8),
-          space_type:   scene.space_type || 'large',
-          pov_movement: scene.pov_movement || 'walk_in_explore',
-        };
-      }
-
-      renderScenes();
-    }
-
-    if (job.status === 'done' && job.output_path) {
-      completedScenes = job.scenes || [];
-      showResult(jobId, job.property_name || 'Property', job.scenes || []);
-    }
-
-    if (job.status === 'running') {
-      progSec.style.display = 'block';
-      updateProgress(job.progress, job.message);
-      startPolling(jobId);
-    }
-
-    libraryOpen = false;
-    document.getElementById('library-list').classList.remove('open');
-    document.getElementById('scenes-container').scrollIntoView({behavior:'smooth'});
-
-    showError(`Job ${jobId} caricato — ${scenesConfig.length} scene ricostruite. Aggiungi nuove scene o usa ↺ Rifai per rigenerare`);
   } catch(e) {
     console.error('loadJobIntoUI error:', e);
     showError(`Errore caricamento job ${jobId}: ${e.message}`);
+  }
+}
+
+function showJobPreview(jobId, baseJobId, job) {
+  libraryOpen = false;
+  document.getElementById('library-list').classList.remove('open');
+
+  const scenesConfig = job.scenes_config || [];
+  const sceneStatuses = job.scenes || [];
+
+  const thumbsHtml = scenesConfig.map((scene, i) => {
+    const status = sceneStatuses.find(s => s.index === i);
+    const qc = status?.qc_verdict || 'unknown';
+    const qcColor = qc === 'pass' ? 'var(--ok)' : qc === 'reject' ? 'var(--danger)' : qc === 'flag' ? 'var(--warn)' : 'var(--muted)';
+    const qcLabel = qc === 'pass' ? '✓ OK' : qc === 'reject' ? '✗ Scartata' : qc === 'flag' ? '⚠ Da rivedere' : '?';
+    return `
+      <div style="background:var(--card);border:1px solid var(--rule);border-radius:var(--radius);overflow:hidden">
+        <video src="/jobs/${baseJobId}/clip/${i}" controls style="width:100%;height:110px;object-fit:cover;background:#000"></video>
+        <div style="padding:8px 10px">
+          <div style="font-size:.76rem;font-weight:600">Scena ${i+1}</div>
+          <div style="font-size:.7rem;color:${qcColor};margin-top:2px">${qcLabel}</div>
+          <div style="font-size:.68rem;color:var(--muted);margin-top:2px">${scene.caption || '(senza titolo)'}</div>
+        </div>
+      </div>`;
+  }).join('');
+
+  const previewHtml = `
+    <section id="job-preview-section">
+      <p class="sec-label">Anteprima — ${job.property_name || 'Property'} <span style="color:var(--muted);font-weight:normal">(${jobId})</span></p>
+      <div class="card">
+        <video id="preview-video" controls style="width:100%;border-radius:var(--radius);background:#000"
+          src="/jobs/${jobId}/download"></video>
+        <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap">
+          <a class="btn-download" href="/jobs/${jobId}/download" download>⬇ Scarica MP4</a>
+          <button class="btn-primary" style="background:var(--green)" onclick="editJob('${jobId}','${baseJobId}')">✎ Usa come base per modifiche</button>
+          <button class="btn-primary" style="background:var(--muted)" onclick="closeJobPreview()">Chiudi anteprima</button>
+        </div>
+      </div>
+      <p class="sec-label" style="margin-top:20px">Scene (${scenesConfig.length})</p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px">
+        ${thumbsHtml}
+      </div>
+    </section>`;
+
+  let container = document.getElementById('job-preview-container');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'job-preview-container';
+    document.getElementById('library-section').insertAdjacentElement('afterend', container);
+  }
+  container.innerHTML = previewHtml;
+  container.scrollIntoView({behavior:'smooth'});
+}
+
+function closeJobPreview() {
+  const container = document.getElementById('job-preview-container');
+  if (container) container.innerHTML = '';
+}
+
+async function editJob(jobId, baseJobId) {
+  // Explicit action: load this job's exact scene list into the editable form
+  try {
+    const res = await authFetch(`/jobs/${jobId}`);
+    const job = await res.json();
+    const scenesConfig = job.scenes_config || [];
+
+    if (!scenesConfig.length) {
+      showError('Nessuna configurazione scene trovata per questo job');
+      return;
+    }
+
+    currentJobId = baseJobId;
+    files = [];
+    Object.keys(sceneAnalysis).forEach(k => delete sceneAnalysis[k]);
+    Object.keys(sceneUserData).forEach(k => delete sceneUserData[k]);
+
+    for (let i = 0; i < scenesConfig.length; i++) {
+      const scene = scenesConfig[i];
+      try {
+        const imgRes = await authFetch(`/jobs/${baseJobId}/image/${i}`);
+        if (imgRes.ok) {
+          const blob = await imgRes.blob();
+          files.push(new File([blob], `scene_${i}.jpg`, { type: blob.type || 'image/jpeg' }));
+        } else {
+          files.push(new File([], `scene_${i}.jpg`, { type: 'image/jpeg' }));
+        }
+      } catch(e) {
+        files.push(new File([], `scene_${i}.jpg`, { type: 'image/jpeg' }));
+      }
+      sceneUserData[i] = {
+        caption:      scene.caption || '',
+        voiceover:    scene.voiceover || '',
+        duration:     String(scene.duration || 8),
+        space_type:   scene.space_type || 'large',
+        pov_movement: scene.pov_movement || 'walk_in_explore',
+      };
+    }
+
+    completedScenes = job.scenes || [];
+    renderScenes();
+    closeJobPreview();
+    document.getElementById('scenes-container').scrollIntoView({behavior:'smooth'});
+    showError(`${scenesConfig.length} scene caricate da ${jobId} — modifica, aggiungi scene o usa ↺ Rifai`);
+  } catch(e) {
+    showError(`Errore: ${e.message}`);
   }
 }
 

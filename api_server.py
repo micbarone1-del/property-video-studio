@@ -126,7 +126,9 @@ async def auth_middleware(request: Request, call_next):
     # Clip previews need to be exempt because browsers can't send headers for <video src>
     if (path in ("/", "", "/health")
             or path.startswith("/static")
-            or "/clip/" in path):
+            or "/clip/" in path
+            or path.endswith("/download")
+            or "/image/" in path):
         return await call_next(request)
     if not _check_access(request):
         return Response(
@@ -931,6 +933,13 @@ async def run_rework(rework_id: str, parent_job_id: str, cfg: dict, do_video_ups
         intensity   = parent.get("intensity",   "natural_pace")
 
         update("running", 5, f"Rework di {len(scenes_to_redo)} scena/e…")
+
+        # Save the COMPLETE scene list for this job — not just the reworked ones.
+        # This ensures opening this job later shows exactly what was produced,
+        # with no ambiguity about which scenes came from where.
+        JOBS[rework_id]["scenes_config"] = updated_scenes
+        JOBS[rework_id]["total_scenes"]  = len(updated_scenes)
+        _save_job(rework_id)
 
         from voice_generation import generate_speech as generate_voice
         from video_generation import generate_video_single
