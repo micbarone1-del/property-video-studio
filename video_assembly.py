@@ -534,6 +534,9 @@ def assemble_property_video(scenes_config, video_clip_paths, audio_paths, image_
             fps=FPS,
             codec="libx264",
             audio_codec="aac",
+            bitrate="4000k",       # ~4 Mbps — excellent quality, ~5x smaller than uncontrolled default
+            audio_bitrate="128k",
+            preset="medium",
             threads=2,
             logger=None,
         )
