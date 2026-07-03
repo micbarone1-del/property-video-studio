@@ -437,19 +437,21 @@ def get_job(job_id: str):
 
 @app.get("/jobs/{job_id}/image/{scene_index}")
 def get_scene_image(job_id: str, scene_index: int):
-    """Serves the source/enhanced image for a scene — used to rebuild scene cards
-    when loading a past job from the library.
+    """Serves the source image for a scene — used to rebuild scene cards
+    when loading a past job from the library. Must return the ORIGINAL
+    uploaded image, not the enhanced/upscaled version — the enhanced
+    version is 30-50MB after aura-sr upscaling and would exceed the
+    20MB upload limit when re-submitted as a fresh generation.
     """
     if job_id not in JOBS:
         raise HTTPException(status_code=404, detail="Job not found")
     job_dir = JOBS_DIR / job_id
 
-    # Try enhanced image first, then original upload
-    candidates = [
-        job_dir / "enhanced" / f"scene_{scene_index:03d}_enhanced.jpg",
-    ]
+    # Original upload FIRST — enhanced version only as last-resort fallback
+    candidates = []
     for ext in [".jpg", ".jpeg", ".png", ".webp"]:
         candidates.append(job_dir / "images" / f"scene_{scene_index:03d}{ext}")
+    candidates.append(job_dir / "enhanced" / f"scene_{scene_index:03d}_enhanced.jpg")
 
     for path in candidates:
         if path.exists():
