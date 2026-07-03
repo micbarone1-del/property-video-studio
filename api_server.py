@@ -565,7 +565,17 @@ async def approve_job(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid approval JSON: {e}")
 
-    redo_scenes = data.get("redo_scenes", [])
+    redo_scenes     = data.get("redo_scenes", [])
+    approved_scenes = data.get("approved_scenes", [])
+
+    # Update qc_verdict for manually approved scenes so the library
+    # preview reflects the accurate final status, not the stale AI verdict
+    if approved_scenes:
+        scenes = JOBS[job_id].get("scenes", [])
+        for s in scenes:
+            if s.get("index") in approved_scenes:
+                s["qc_verdict"] = "approved"  # was reject/flag, now human-approved
+        JOBS[job_id]["scenes"] = scenes
 
     if redo_scenes:
         # Mark job as needing rework for rejected scenes

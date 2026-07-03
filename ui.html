@@ -561,8 +561,8 @@ function showJobPreview(jobId, baseJobId, job) {
   const thumbsHtml = scenesConfig.map((scene, i) => {
     const status = sceneStatuses.find(s => s.index === i);
     const qc = status?.qc_verdict || 'unknown';
-    const qcColor = qc === 'pass' ? 'var(--ok)' : qc === 'reject' ? 'var(--danger)' : qc === 'flag' ? 'var(--warn)' : 'var(--muted)';
-    const qcLabel = qc === 'pass' ? '✓ OK' : qc === 'reject' ? '✗ Scartata' : qc === 'flag' ? '⚠ Da rivedere' : '?';
+    const qcColor = qc === 'pass' ? 'var(--ok)' : qc === 'approved' ? 'var(--ok)' : qc === 'reject' ? 'var(--danger)' : qc === 'flag' ? 'var(--warn)' : 'var(--muted)';
+    const qcLabel = qc === 'pass' ? '✓ OK' : qc === 'approved' ? '✓ Approvata manualmente' : qc === 'reject' ? '✗ Scartata' : qc === 'flag' ? '⚠ Da rivedere' : '?';
     return `
       <div style="background:var(--card);border:1px solid var(--rule);border-radius:var(--radius);overflow:hidden">
         <video src="/jobs/${baseJobId}/clip/${i}" controls style="width:100%;height:110px;object-fit:cover;background:#000"></video>
