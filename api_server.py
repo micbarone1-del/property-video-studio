@@ -455,7 +455,11 @@ def get_scene_image(job_id: str, scene_index: int):
 
     for path in candidates:
         if path.exists():
-            return FileResponse(str(path), media_type="image/jpeg")
+            return FileResponse(
+                str(path),
+                media_type="image/jpeg",
+                headers={"Cache-Control": "no-store, no-cache, must-revalidate"}
+            )
 
     raise HTTPException(status_code=404, detail="Image not found")
 

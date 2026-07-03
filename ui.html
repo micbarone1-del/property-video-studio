@@ -627,7 +627,7 @@ async function editJob(jobId, baseJobId) {
     for (let i = 0; i < scenesConfig.length; i++) {
       const scene = scenesConfig[i];
       try {
-        const imgRes = await authFetch(`/jobs/${baseJobId}/image/${i}`);
+        const imgRes = await authFetch(`/jobs/${baseJobId}/image/${i}?_t=${Date.now()}`, { cache: 'no-store' });
         if (imgRes.ok) {
           const blob = await imgRes.blob();
           files.push(new File([blob], `scene_${i}.jpg`, { type: blob.type || 'image/jpeg' }));
