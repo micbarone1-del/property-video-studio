@@ -434,7 +434,7 @@ async function loadLibrary() {
   const list = document.getElementById('library-list');
   list.innerHTML = '<div class="lib-empty">Caricamento…</div>';
   try {
-    const res  = await fetch('/jobs/');
+    const res  = await authFetch('/jobs/');
     const data = await res.json();
     const jobs = data.jobs || [];
 
@@ -474,7 +474,7 @@ async function loadLibrary() {
 async function loadJobIntoUI(jobId) {
   // Load a past job so user can add scenes or rework
   try {
-    const res = await fetch(`/jobs/${jobId}`);
+    const res = await authFetch(`/jobs/${jobId}`);
     const job = await res.json();
     if (!job) return;
 
@@ -508,7 +508,7 @@ async function loadJobIntoUI(jobId) {
 }
 
 // Auto-refresh library count on load
-fetch('/jobs/').then(r => r.json()).then(d => {
+authFetch('/jobs/').then(r => r.json()).then(d => {
   const count = d.total || 0;
   if (count > 0) document.getElementById('lib-count').textContent = count;
 }).catch(() => {});
