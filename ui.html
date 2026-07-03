@@ -169,6 +169,19 @@
   .sp-dot.failed  { background:var(--danger); }
   .sp-dot.flag    { background:var(--warn); }
 
+  /* Drag and drop scene reorder */
+  .scene-card { cursor:default; transition:opacity .2s, transform .15s; }
+  .scene-card.dragging { opacity:.4; transform:scale(.98); }
+  .scene-card.drag-over-top { border-top:3px solid var(--accent); }
+  .scene-card.drag-over-bottom { border-bottom:3px solid var(--accent); }
+  .sc-drag-handle { cursor:grab; padding:4px 8px; color:var(--muted); font-size:1rem; user-select:none; }
+  .sc-drag-handle:active { cursor:grabbing; }
+  .sc-drag-handle:hover { color:var(--accent); }
+
+  /* Add scene button */
+  .btn-add-scene { display:flex; align-items:center; gap:8px; background:none; border:2px dashed var(--rule); border-radius:var(--radius); padding:12px 20px; color:var(--muted); font-size:.83rem; cursor:pointer; width:100%; justify-content:center; margin-top:10px; transition:border-color .2s, color .2s; }
+  .btn-add-scene:hover { border-color:var(--accent); color:var(--accent); }
+
   /* Result */
   #result-section { display:none; }
   #video-preview  { width:100%; border-radius:var(--radius); border:1px solid var(--rule); background:#000; }
@@ -321,6 +334,12 @@
     <div id="scenes-container">
       <div class="empty-state">Upload photos above to configure scenes</div>
     </div>
+    <input type="file" id="add-scene-input" accept="image/*" multiple style="display:none"
+      onchange="addMoreScenes(this)" />
+    <button class="btn-add-scene" id="add-scene-btn" style="display:none"
+      onclick="document.getElementById('add-scene-input').click()">
+      + Aggiungi scena
+    </button>
   </section>
 
   <!-- ④ Generate -->
@@ -478,6 +497,100 @@ function addFiles(newFiles) {
   updateCostEstimate();
 }
 
+// ── Drag and drop scene reorder ────────────────────────────────────────────────
+let dragSrcIndex = null;
+
+function onDragStart(event, index) {
+  dragSrcIndex = index;
+  event.dataTransfer.effectAllowed = 'move';
+  setTimeout(() => {
+    const card = scenesCont.querySelector(`[data-index="${index}"]`);
+    if (card) card.classList.add('dragging');
+  }, 0);
+}
+
+function onDragEnd(event) {
+  document.querySelectorAll('.scene-card').forEach(c => {
+    c.classList.remove('dragging','drag-over-top','drag-over-bottom');
+  });
+  dragSrcIndex = null;
+}
+
+function onDragOver(event, index) {
+  event.preventDefault();
+  event.dataTransfer.dropEffect = 'move';
+  const card = scenesCont.querySelector(`[data-index="${index}"]`);
+  if (!card || index === dragSrcIndex) return;
+  document.querySelectorAll('.scene-card').forEach(c =>
+    c.classList.remove('drag-over-top','drag-over-bottom')
+  );
+  const rect = card.getBoundingClientRect();
+  const mid  = rect.top + rect.height / 2;
+  card.classList.add(event.clientY < mid ? 'drag-over-top' : 'drag-over-bottom');
+}
+
+function onDragLeave(event) {
+  event.currentTarget?.classList?.remove('drag-over-top','drag-over-bottom');
+}
+
+function onDrop(event, targetIndex) {
+  event.preventDefault();
+  if (dragSrcIndex === null || dragSrcIndex === targetIndex) return;
+
+  const card = scenesCont.querySelector(`[data-index="${targetIndex}"]`);
+  const rect  = card?.getBoundingClientRect();
+  const mid   = rect ? rect.top + rect.height / 2 : 0;
+  const insertBefore = event.clientY < mid;
+
+  // Save current state before reorder
+  saveSceneData();
+
+  // Reorder files array
+  const movedFile    = files.splice(dragSrcIndex, 1)[0];
+  const movedAnalysis = sceneAnalysis[dragSrcIndex];
+  const movedData    = sceneUserData[dragSrcIndex];
+
+  // Adjust target index after splice
+  let ti = targetIndex > dragSrcIndex ? targetIndex - 1 : targetIndex;
+  if (!insertBefore) ti += 1;
+
+  files.splice(ti, 0, movedFile);
+
+  // Rebuild sceneAnalysis and sceneUserData with new indices
+  const newAnalysis  = {};
+  const newUserData  = {};
+  files.forEach((_, newIdx) => {
+    const oldIdx = newIdx === ti ? dragSrcIndex
+      : newIdx < ti ? (newIdx < dragSrcIndex ? newIdx : newIdx + 1)
+      : (newIdx <= dragSrcIndex ? newIdx - 1 : newIdx);
+    if (sceneAnalysis[oldIdx])  newAnalysis[newIdx]  = sceneAnalysis[oldIdx];
+    if (sceneUserData[oldIdx])  newUserData[newIdx]  = sceneUserData[oldIdx];
+  });
+  // Place moved item
+  newAnalysis[ti]  = movedAnalysis;
+  newUserData[ti]  = movedData;
+
+  Object.keys(sceneAnalysis).forEach(k => delete sceneAnalysis[k]);
+  Object.keys(sceneUserData).forEach(k => delete sceneUserData[k]);
+  Object.assign(sceneAnalysis, newAnalysis);
+  Object.assign(sceneUserData, newUserData);
+
+  renderScenes();
+  updateCostEstimate();
+}
+
+// ── Add new scenes after upload ────────────────────────────────────────────────
+function addMoreScenes(input) {
+  const newFiles = [...input.files].filter(f => f.type.startsWith('image/'));
+  if (!newFiles.length) return;
+  const start = files.length;
+  files = [...files, ...newFiles];
+  renderScenes();
+  newFiles.forEach((_, idx) => analyseImage(start + idx));
+  updateCostEstimate();
+  input.value = '';
+}
+
 function removeScene(i) {
   files.splice(i, 1);
   delete sceneAnalysis[i];
@@ -616,6 +729,10 @@ function saveSceneData() {
 function renderScenes() {
   saveSceneData();
   genBtn.disabled = files.length === 0;
+  // Show/hide add scene button
+  const addBtn = document.getElementById('add-scene-btn');
+  if (addBtn) addBtn.style.display = files.length > 0 ? 'flex' : 'none';
+
   if (!files.length) {
     scenesCont.innerHTML = '<div class="empty-state">Upload photos above to configure scenes</div>';
     return;
@@ -661,8 +778,15 @@ function renderScenes() {
     const card = document.createElement('div');
     card.className = `scene-card${scStatus ? (scStatus.video==='ok' ? ' qc-pass' : ' qc-fail') : ''}`;
     card.dataset.index = i;
+    card.setAttribute('ondragover', `onDragOver(event,${i})`);
+    card.setAttribute('ondrop', `onDrop(event,${i})`);
+    card.setAttribute('ondragleave', 'onDragLeave(event)');
     card.innerHTML = `
       <div class="sc-head">
+        <span class="sc-drag-handle" draggable="true"
+          ondragstart="onDragStart(event,${i})"
+          ondragend="onDragEnd(event)"
+          title="Trascina per riordinare">⠿</span>
         <img class="sc-thumb" src="${url}" />
         <div>
           <div class="sc-num">Scena ${i+1}</div>

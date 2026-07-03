@@ -122,7 +122,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 async def auth_middleware(request: Request, call_next):
     """Protect all non-static endpoints with access key when UI_ACCESS_KEY is set."""
     # Always allow: root UI page, static assets
-    if request.url.path in ("/", "", "/health") or request.url.path.startswith("/static"):
+    if request.url.path in ("/", "") or request.url.path.startswith("/static"):
         return await call_next(request)
     # Check key for all API endpoints
     if not _check_access(request):
