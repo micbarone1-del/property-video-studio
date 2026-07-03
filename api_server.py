@@ -546,7 +546,7 @@ def stop_job(job_id: str):
 
 
 @app.get("/jobs/{job_id}/download")
-def download_job(job_id: str):
+async def download_job(job_id: str, request: Request):
     if job_id not in JOBS:
         raise HTTPException(status_code=404, detail="Job not found")
     job = JOBS[job_id]
@@ -556,7 +556,49 @@ def download_job(job_id: str):
     if not output_path or not Path(output_path).exists():
         raise HTTPException(status_code=500, detail="Output file missing")
     filename = f"{job.get('property_name','property').replace(' ','_')}_video.mp4"
-    return FileResponse(output_path, media_type="video/mp4", filename=filename)
+
+    file_size = Path(output_path).stat().st_size
+    range_header = request.headers.get("range")
+
+    if range_header:
+        import re as _re
+        from fastapi.responses import StreamingResponse
+        match = _re.match(r"bytes=(\d+)-(\d*)", range_header)
+        if match:
+            start = int(match.group(1))
+            end   = int(match.group(2)) if match.group(2) else file_size - 1
+            end   = min(end, file_size - 1)
+            chunk_size = end - start + 1
+
+            def _iter(path, s, c):
+                with open(path, "rb") as f:
+                    f.seek(s)
+                    remaining = c
+                    while remaining > 0:
+                        data = f.read(min(65536, remaining))
+                        if not data:
+                            break
+                        remaining -= len(data)
+                        yield data
+
+            return StreamingResponse(
+                _iter(output_path, start, chunk_size),
+                status_code=206,
+                media_type="video/mp4",
+                headers={
+                    "Content-Range":  f"bytes {start}-{end}/{file_size}",
+                    "Accept-Ranges":  "bytes",
+                    "Content-Length": str(chunk_size),
+                    "Content-Disposition": f'attachment; filename="{filename}"',
+                }
+            )
+
+    return FileResponse(
+        output_path,
+        media_type="video/mp4",
+        filename=filename,
+        headers={"Accept-Ranges": "bytes", "Content-Length": str(file_size)}
+    )
 
 
 # ── QC approval gate ───────────────────────────────────────────────────────────
@@ -757,7 +799,7 @@ async def run_pipeline(
                         if audio_secs > 0:
                             buffered = audio_secs + 2.0
                             # Snap to even number, min 6, max 20
-                            snapped  = max(4, min(8, int(((buffered + 1.99) // 2) * 2)))  # Veo caps at 8s — snap UP within 4/6/8 only
+                            snapped  = max(6, min(20, int(round(buffered / 2) * 2)))
                             log.info(
                                 f"[Job {job_id}] Scene {i}: audio={audio_secs:.1f}s "
                                 f"→ clip duration={snapped}s"
@@ -1013,7 +1055,7 @@ async def run_rework(rework_id: str, parent_job_id: str, cfg: dict, do_video_ups
                         seg = _AudioSegment.from_file(audio_out)
                         audio_secs = len(seg) / 1000.0
                         buffered   = audio_secs + 2.0
-                        actual_duration = max(4, min(8, int(((buffered + 1.99) // 2) * 2)))  # Veo caps at 8s
+                        actual_duration = max(4, min(20, int(((buffered + 1.99) // 2) * 2)))
                         log.info(f"[Rework] Scene {scene_index}: audio={audio_secs:.1f}s → clip={actual_duration}s")
                     except Exception as e:
                         log.warning(f"[Rework] Could not measure audio: {e}")
