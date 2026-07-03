@@ -400,6 +400,30 @@ async def create_job(
 
 # ── Job status & download ──────────────────────────────────────────────────────
 
+@app.get("/jobs/")
+def list_jobs():
+    """Returns all jobs sorted by creation date, newest first."""
+    jobs = []
+    for job_id, job in JOBS.items():
+        # Skip rework child jobs — show only parent jobs and completed reworks
+        is_rework = "_rw" in job_id
+        jobs.append({
+            "job_id":       job_id,
+            "is_rework":    is_rework,
+            "parent_job_id": job.get("parent_job_id"),
+            "property_name": job.get("property_name", "Property"),
+            "status":       job.get("status", "unknown"),
+            "progress":     job.get("progress", 0),
+            "total_scenes": job.get("total_scenes", 0),
+            "model_tier":   job.get("model_tier", "premium"),
+            "created_at":   job.get("created_at", ""),
+            "cost_estimate": job.get("cost_estimate"),
+            "has_video":    bool(job.get("output_path") and Path(job["output_path"]).exists()),
+        })
+    jobs.sort(key=lambda j: j["created_at"], reverse=True)
+    return {"jobs": jobs, "total": len(jobs)}
+
+
 @app.get("/jobs/{job_id}")
 def get_job(job_id: str):
     if job_id not in JOBS:

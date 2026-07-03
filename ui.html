@@ -182,6 +182,24 @@
   .btn-add-scene { display:flex; align-items:center; gap:8px; background:none; border:2px dashed var(--rule); border-radius:var(--radius); padding:12px 20px; color:var(--muted); font-size:.83rem; cursor:pointer; width:100%; justify-content:center; margin-top:10px; transition:border-color .2s, color .2s; }
   .btn-add-scene:hover { border-color:var(--accent); color:var(--accent); }
 
+  /* Video library */
+  .lib-toggle { background:none; border:1px solid var(--rule); border-radius:var(--radius); padding:7px 16px; font-size:.8rem; color:var(--muted); cursor:pointer; display:flex; align-items:center; gap:8px; width:100%; }
+  .lib-toggle:hover { border-color:var(--accent); color:var(--accent); }
+  #library-list { margin-top:12px; display:none; flex-direction:column; gap:8px; }
+  #library-list.open { display:flex; }
+  .lib-job { background:var(--card); border:1px solid var(--rule); border-radius:var(--radius); padding:12px 16px; display:flex; align-items:center; gap:14px; transition:border-color .15s; }
+  .lib-job.lib-done { border-left:3px solid var(--ok); }
+  .lib-job.lib-failed { border-left:3px solid var(--danger); opacity:.6; }
+  .lib-job.lib-running { border-left:3px solid var(--accent); }
+  .lib-info { flex:1; min-width:0; }
+  .lib-name { font-weight:600; font-size:.85rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .lib-meta { font-size:.73rem; color:var(--muted); margin-top:2px; }
+  .lib-actions { display:flex; gap:6px; flex-shrink:0; }
+  .lib-btn { font-size:.73rem; padding:4px 10px; border-radius:var(--radius); border:1px solid var(--rule); background:none; cursor:pointer; white-space:nowrap; }
+  .lib-btn:hover { border-color:var(--accent); color:var(--accent); }
+  .lib-btn.lib-primary { background:var(--green); color:#fff; border-color:var(--green); }
+  .lib-empty { text-align:center; padding:16px; color:var(--muted); font-size:.83rem; }
+
   /* Result */
   #result-section { display:none; }
   #video-preview  { width:100%; border-radius:var(--radius); border:1px solid var(--rule); background:#000; }
@@ -234,6 +252,16 @@
 </div>
 
 <main>
+
+  <!-- Video library -->
+  <section id="library-section" style="margin-bottom:20px">
+    <button class="lib-toggle" onclick="toggleLibrary()">
+      <span>📂</span>
+      <span>Cronologia video</span>
+      <span id="lib-count" style="margin-left:auto;font-size:.7rem;background:var(--rule);padding:2px 7px;border-radius:10px"></span>
+    </button>
+    <div id="library-list"></div>
+  </section>
 
   <!-- Credit banner -->
   <div id="credit-banner">
@@ -391,6 +419,99 @@
 
 <script>
 const API_BASE = '';
+
+// ── Video library ──────────────────────────────────────────────────────────────
+let libraryOpen = false;
+
+async function toggleLibrary() {
+  libraryOpen = !libraryOpen;
+  const list = document.getElementById('library-list');
+  list.classList.toggle('open', libraryOpen);
+  if (libraryOpen) await loadLibrary();
+}
+
+async function loadLibrary() {
+  const list = document.getElementById('library-list');
+  list.innerHTML = '<div class="lib-empty">Caricamento…</div>';
+  try {
+    const res  = await fetch('/jobs/');
+    const data = await res.json();
+    const jobs = data.jobs || [];
+
+    document.getElementById('lib-count').textContent = jobs.length;
+
+    if (!jobs.length) {
+      list.innerHTML = '<div class="lib-empty">Nessun video generato ancora.</div>';
+      return;
+    }
+
+    list.innerHTML = jobs.map(j => {
+      const date    = j.created_at ? new Date(j.created_at).toLocaleDateString('it-IT', {day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}) : '';
+      const tier    = {eco:'Eco',premium:'Veo Fast',premium_veo:'Veo Std'}[j.model_tier] || j.model_tier;
+      const scenes  = j.total_scenes ? `${j.total_scenes} scene` : '';
+      const status  = j.status === 'done' ? '✓' : j.status === 'failed' ? '✗' : j.status === 'running' ? '⏳' : '…';
+      const cls     = j.status === 'done' ? 'lib-done' : j.status === 'failed' ? 'lib-failed' : 'lib-running';
+      const reworkLabel = j.is_rework ? ' <span style="font-size:.68rem;color:var(--muted)">[rework]</span>' : '';
+
+      const dlBtn   = j.has_video
+        ? `<a class="lib-btn lib-primary" href="/jobs/${j.job_id}/download" download>⬇</a>`
+        : '';
+      const loadBtn = `<button class="lib-btn" onclick="loadJobIntoUI('${j.job_id}')">Apri</button>`;
+
+      return `<div class="lib-job ${cls}">
+        <div class="lib-info">
+          <div class="lib-name">${status} ${j.property_name}${reworkLabel}</div>
+          <div class="lib-meta">${date} · ${tier} · ${scenes} · ${j.job_id}</div>
+        </div>
+        <div class="lib-actions">${dlBtn}${loadBtn}</div>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    list.innerHTML = `<div class="lib-empty">Errore caricamento: ${e.message}</div>`;
+  }
+}
+
+async function loadJobIntoUI(jobId) {
+  // Load a past job so user can add scenes or rework
+  try {
+    const res = await fetch(`/jobs/${jobId}`);
+    const job = await res.json();
+    if (!job) return;
+
+    // Set job as current
+    currentJobId = jobId.split('_rw')[0];  // always use original job as parent
+
+    // Show result section if done
+    if (job.status === 'done' && job.has_video !== false) {
+      completedScenes = job.scenes || [];
+      showResult(jobId, job.property_name || 'Property', job.scenes || []);
+    }
+
+    // Show progress if running
+    if (job.status === 'running') {
+      progSec.style.display = 'block';
+      updateProgress(job.progress, job.message);
+      startPolling(jobId);
+    }
+
+    // Close library
+    libraryOpen = false;
+    document.getElementById('library-list').classList.remove('open');
+
+    // Scroll to result
+    document.getElementById('result-section').scrollIntoView({behavior:'smooth'});
+
+    showError(`Job ${jobId} caricato — aggiungi scene o usa ↺ Rifai per rigenerare`);
+  } catch(e) {
+    showError(`Errore caricamento job: ${e.message}`);
+  }
+}
+
+// Auto-refresh library count on load
+fetch('/jobs/').then(r => r.json()).then(d => {
+  const count = d.total || 0;
+  if (count > 0) document.getElementById('lib-count').textContent = count;
+}).catch(() => {});
 
 // ── Login ──────────────────────────────────────────────────────────────────────
 const SESSION_KEY = 'pvs_access';
