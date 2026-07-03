@@ -472,36 +472,67 @@ async function loadLibrary() {
 }
 
 async function loadJobIntoUI(jobId) {
-  // Load a past job so user can add scenes or rework
   try {
     const res = await authFetch(`/jobs/${jobId}`);
     const job = await res.json();
     if (!job) return;
 
-    // Set job as current
-    currentJobId = jobId.split('_rw')[0];  // always use original job as parent
+    const baseJobId = jobId.split('_rw')[0];
+    currentJobId = baseJobId;
 
-    // Show result section if done
-    if (job.status === 'done' && job.has_video !== false) {
+    // Reconstruct scene cards from job's saved scenes_config + images
+    const scenesConfig = job.scenes_config || [];
+    if (scenesConfig.length > 0) {
+      // Fetch each enhanced/original image as a File so the UI can display and reuse it
+      files = [];
+      Object.keys(sceneAnalysis).forEach(k => delete sceneAnalysis[k]);
+      Object.keys(sceneUserData).forEach(k => delete sceneUserData[k]);
+
+      for (let i = 0; i < scenesConfig.length; i++) {
+        const scene = scenesConfig[i];
+        try {
+          // Try to fetch the source image for this scene as a blob
+          const imgRes = await authFetch(`/jobs/${baseJobId}/image/${i}`);
+          if (imgRes.ok) {
+            const blob = await imgRes.blob();
+            const file = new File([blob], `scene_${i}.jpg`, { type: blob.type || 'image/jpeg' });
+            files.push(file);
+          } else {
+            // Fallback: create a placeholder file reference
+            files.push(new File([], `scene_${i}.jpg`, { type: 'image/jpeg' }));
+          }
+        } catch(e) {
+          files.push(new File([], `scene_${i}.jpg`, { type: 'image/jpeg' }));
+        }
+
+        sceneUserData[i] = {
+          caption:      scene.caption || '',
+          voiceover:    scene.voiceover || '',
+          duration:     String(scene.duration || 8),
+          space_type:   scene.space_type || 'large',
+          pov_movement: scene.pov_movement || 'walk_in_explore',
+        };
+      }
+
+      renderScenes();
+    }
+
+    if (job.status === 'done' && job.output_path) {
       completedScenes = job.scenes || [];
       showResult(jobId, job.property_name || 'Property', job.scenes || []);
     }
 
-    // Show progress if running
     if (job.status === 'running') {
       progSec.style.display = 'block';
       updateProgress(job.progress, job.message);
       startPolling(jobId);
     }
 
-    // Close library
     libraryOpen = false;
     document.getElementById('library-list').classList.remove('open');
+    document.getElementById('scenes-container').scrollIntoView({behavior:'smooth'});
 
-    // Scroll to result
-    document.getElementById('result-section').scrollIntoView({behavior:'smooth'});
-
-    showError(`Job ${jobId} caricato — aggiungi scene o usa ↺ Rifai per rigenerare`);
+    showError(`Job ${jobId} caricato — ${scenesConfig.length} scene ricostruite. Aggiungi nuove scene o usa ↺ Rifai per rigenerare`);
   } catch(e) {
     showError(`Errore caricamento job: ${e.message}`);
   }
