@@ -191,6 +191,8 @@
   .lib-job.lib-done { border-left:3px solid var(--ok); }
   .lib-job.lib-failed { border-left:3px solid var(--danger); opacity:.6; }
   .lib-job.lib-running { border-left:3px solid var(--accent); }
+  .lib-job.lib-review { border-left:3px solid var(--warn); }
+  .lib-job.lib-queued { border-left:3px solid var(--rule); opacity:.7; }
   .lib-info { flex:1; min-width:0; }
   .lib-name { font-weight:600; font-size:.85rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .lib-meta { font-size:.73rem; color:var(--muted); margin-top:2px; }
@@ -261,6 +263,12 @@
       <span id="lib-count" style="margin-left:auto;font-size:.7rem;background:var(--rule);padding:2px 7px;border-radius:10px"></span>
     </button>
     <div id="library-list"></div>
+    <div id="library-legend" style="display:none;font-size:.7rem;color:var(--muted);margin-top:8px;display:flex;gap:14px;flex-wrap:wrap">
+      <span>✓ <span style="color:var(--ok)">Completato</span></span>
+      <span>⏳ <span style="color:var(--accent)">In corso</span></span>
+      <span>⚠ <span style="color:var(--warn)">Revisione QC richiesta</span></span>
+      <span>✗ <span style="color:var(--danger)">Fallito</span></span>
+    </div>
   </section>
 
   <!-- Credit banner -->
@@ -427,6 +435,7 @@ async function toggleLibrary() {
   libraryOpen = !libraryOpen;
   const list = document.getElementById('library-list');
   list.classList.toggle('open', libraryOpen);
+  document.getElementById('library-legend').style.display = libraryOpen ? 'flex' : 'none';
   if (libraryOpen) await loadLibrary();
 }
 
@@ -449,8 +458,16 @@ async function loadLibrary() {
       const date    = j.created_at ? new Date(j.created_at).toLocaleDateString('it-IT', {day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}) : '';
       const tier    = {eco:'Eco',premium:'Veo Fast',premium_veo:'Veo Std'}[j.model_tier] || j.model_tier;
       const scenes  = j.total_scenes ? `${j.total_scenes} scene` : '';
-      const status  = j.status === 'done' ? '✓' : j.status === 'failed' ? '✗' : j.status === 'running' ? '⏳' : '…';
-      const cls     = j.status === 'done' ? 'lib-done' : j.status === 'failed' ? 'lib-failed' : 'lib-running';
+      const statusMap = {
+        done:               { icon: '✓', cls: 'lib-done',    label: 'Completato' },
+        failed:             { icon: '✗', cls: 'lib-failed',  label: 'Fallito' },
+        running:            { icon: '⏳', cls: 'lib-running', label: 'In corso' },
+        awaiting_approval:  { icon: '⚠', cls: 'lib-review',  label: 'Revisione QC' },
+        queued:             { icon: '○', cls: 'lib-queued',  label: 'In coda' },
+      };
+      const st = statusMap[j.status] || { icon: '?', cls: 'lib-queued', label: j.status };
+      const status = st.icon;
+      const cls    = st.cls;
       const reworkLabel = j.is_rework ? ' <span style="font-size:.68rem;color:var(--muted)">[rework]</span>' : '';
 
       const dlBtn   = j.has_video
@@ -474,16 +491,34 @@ async function loadLibrary() {
 async function loadJobIntoUI(jobId) {
   try {
     const res = await authFetch(`/jobs/${jobId}`);
+    if (!res.ok) {
+      showError(`Errore caricamento job ${jobId}: HTTP ${res.status}`);
+      return;
+    }
     const job = await res.json();
-    if (!job) return;
+    if (!job) {
+      showError(`Job ${jobId} non trovato`);
+      return;
+    }
 
     const baseJobId = jobId.split('_rw')[0];
     currentJobId = baseJobId;
 
-    // Reconstruct scene cards from job's saved scenes_config + images
-    const scenesConfig = job.scenes_config || [];
+    // Rework jobs don't store their own scenes_config — fall back to parent job
+    let scenesConfig = job.scenes_config || [];
+    if (!scenesConfig.length && baseJobId !== jobId) {
+      try {
+        const parentRes = await authFetch(`/jobs/${baseJobId}`);
+        if (parentRes.ok) {
+          const parentJob = await parentRes.json();
+          scenesConfig = parentJob.scenes_config || [];
+        }
+      } catch(e) {
+        console.warn('Could not load parent job scenes_config:', e);
+      }
+    }
+
     if (scenesConfig.length > 0) {
-      // Fetch each enhanced/original image as a File so the UI can display and reuse it
       files = [];
       Object.keys(sceneAnalysis).forEach(k => delete sceneAnalysis[k]);
       Object.keys(sceneUserData).forEach(k => delete sceneUserData[k]);
@@ -491,14 +526,12 @@ async function loadJobIntoUI(jobId) {
       for (let i = 0; i < scenesConfig.length; i++) {
         const scene = scenesConfig[i];
         try {
-          // Try to fetch the source image for this scene as a blob
+          // Images live under the base (parent) job directory
           const imgRes = await authFetch(`/jobs/${baseJobId}/image/${i}`);
           if (imgRes.ok) {
             const blob = await imgRes.blob();
-            const file = new File([blob], `scene_${i}.jpg`, { type: blob.type || 'image/jpeg' });
-            files.push(file);
+            files.push(new File([blob], `scene_${i}.jpg`, { type: blob.type || 'image/jpeg' }));
           } else {
-            // Fallback: create a placeholder file reference
             files.push(new File([], `scene_${i}.jpg`, { type: 'image/jpeg' }));
           }
         } catch(e) {
@@ -534,7 +567,8 @@ async function loadJobIntoUI(jobId) {
 
     showError(`Job ${jobId} caricato — ${scenesConfig.length} scene ricostruite. Aggiungi nuove scene o usa ↺ Rifai per rigenerare`);
   } catch(e) {
-    showError(`Errore caricamento job: ${e.message}`);
+    console.error('loadJobIntoUI error:', e);
+    showError(`Errore caricamento job ${jobId}: ${e.message}`);
   }
 }
 
