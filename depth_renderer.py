@@ -125,21 +125,21 @@ def _build_camera_offsets(movement: str, intensity: str, n_frames: int) -> list[
     max_dx, max_dy, max_dz = 0.0, 0.0, 0.0
 
     if movement in ("walk_in_explore", "walk_in_gentle", "approach_reveal", "walk_toward"):
-        max_dz = 0.12 * pace_scale   # gentle push forward
+        max_dz = 0.25 * pace_scale   # gentle push forward
     elif movement in ("walk_in_turn_left",):
-        max_dx = -0.10 * pace_scale
+        max_dx = -0.22 * pace_scale
     elif movement in ("walk_in_turn_right",):
-        max_dx = 0.10 * pace_scale
+        max_dx = 0.22 * pace_scale
     elif movement in ("stand_look_around",):
-        max_dx = 0.08 * pace_scale
+        max_dx = 0.18 * pace_scale
     elif movement in ("subtle_rotate",):
-        max_dx = 0.04 * pace_scale   # very small — safe for tight spaces
+        max_dx = 0.12 * pace_scale   # increased from 0.04 — was imperceptible
     elif movement in ("walk_through",):
-        max_dz = 0.15 * pace_scale
+        max_dz = 0.30 * pace_scale
     elif movement in ("step_out_onto",):
-        max_dx = 0.08 * pace_scale
+        max_dx = 0.18 * pace_scale
     else:
-        max_dz = 0.08 * pace_scale   # safe default
+        max_dz = 0.18 * pace_scale   # safe default
 
     offsets = [(max_dx * e, max_dy * e, max_dz * e) for e in eased]
     return offsets
@@ -161,19 +161,22 @@ def _reproject_frame(image: np.ndarray, depth: np.ndarray, dx: float, dy: float,
     # dz (push) scales toward the centre — near objects grow faster than far ones
     parallax_strength = depth  # 0..1, near=1
 
-    shift_x = dx * w * 0.15 * parallax_strength
-    shift_y = dy * h * 0.15 * parallax_strength
+    shift_x = dx * w * 0.25 * parallax_strength
+    shift_y = dy * h * 0.25 * parallax_strength
 
     # Push/pull: near pixels move outward from centre faster (dolly zoom effect)
     cx, cy = w / 2.0, h / 2.0
-    zoom_factor = 1.0 + dz * 0.20 * parallax_strength
-    src_x = cx + (xx - cx) / np.clip(zoom_factor, 0.5, 2.0) - shift_x
-    src_y = cy + (yy - cy) / np.clip(zoom_factor, 0.5, 2.0) - shift_y
+    zoom_factor = 1.0 + dz * 0.35 * parallax_strength
+    src_x = cx + (xx - cx) / np.clip(zoom_factor, 0.4, 2.5) - shift_x
+    src_y = cy + (yy - cy) / np.clip(zoom_factor, 0.4, 2.5) - shift_y
 
     map_x = src_x.astype(np.float32)
     map_y = src_y.astype(np.float32)
 
-    warped = cv2.remap(image, map_x, map_y, interpolation=cv2.INTER_LINEAR,
+    # INTER_LANCZOS4 preserves sharpness far better than INTER_LINEAR for
+    # this kind of resampling — critical since every frame goes through
+    # this remap, and linear interpolation compounds visible softness
+    warped = cv2.remap(image, map_x, map_y, interpolation=cv2.INTER_LANCZOS4,
                         borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
 
     # Hole mask: pixels that sampled from outside the original frame
@@ -250,8 +253,32 @@ def render_depth_video(
             log.error(f"[DepthRender] Could not read image: {image_path}")
             return False
 
+        src_h, src_w = image.shape[:2]
+        log.info(f"[DepthRender] Source resolution: {src_w}x{src_h}")
+
+        # CRITICAL: if source is lower resolution than our 1080p target,
+        # a naive resize looks visibly softer than Veo's output — Veo's
+        # generative process effectively invents plausible fine detail
+        # when upscaling, a simple stretch cannot. Use the same AI
+        # upscaler (aura-sr) already used elsewhere in the pipeline so
+        # depth-rendered scenes match Veo's sharpness in the final video.
+        if src_w < TARGET_W or src_h < TARGET_H:
+            try:
+                from image_enhance import enhance_image
+                upscaled_path = image_path.rsplit(".", 1)[0] + "_depth_upscaled.jpg"
+                log.info(f"[DepthRender] Source below target resolution — running AI upscale")
+                enhance_image(image_path, upscaled_path, do_lighting=False, do_upscale=True)
+                if os.path.exists(upscaled_path):
+                    upscaled = cv2.imread(upscaled_path)
+                    if upscaled is not None:
+                        image = upscaled
+                        os.remove(upscaled_path)
+            except Exception as e:
+                log.warning(f"[DepthRender] AI upscale unavailable, falling back to resize: {e}")
+
         # Resize to target output resolution up front — matches Veo output
-        # resolution so scenes look uniform in the final assembly
+        # resolution so scenes look uniform in the final assembly.
+        # LANCZOS4 preserves sharpness far better than default interpolation.
         image = cv2.resize(image, (TARGET_W, TARGET_H), interpolation=cv2.INTER_LANCZOS4)
 
         depth = estimate_depth(image_path)
@@ -259,8 +286,9 @@ def render_depth_video(
             log.warning("[DepthRender] Depth estimation failed — cannot render")
             return False
         depth = cv2.resize(depth, (TARGET_W, TARGET_H), interpolation=cv2.INTER_LINEAR)
-        # Smooth depth map slightly — raw depth edges can create harsh warp artifacts
-        depth = cv2.GaussianBlur(depth, (9, 9), 0)
+        # Lighter smoothing — heavy blur was softening the effective warp
+        # precision at depth edges, contributing to overall image softness
+        depth = cv2.GaussianBlur(depth, (5, 5), 0)
 
         n_frames = duration * fps
         offsets = _build_camera_offsets(movement, intensity, n_frames)
@@ -275,7 +303,7 @@ def render_depth_video(
 
             frame_dx = dx - prev_dx
             frame_dy = dy - prev_dy
-            blurred = _apply_motion_blur(filled, frame_dx, frame_dy, strength=1.5)
+            blurred = _apply_motion_blur(filled, frame_dx, frame_dy, strength=0.8)
             prev_dx, prev_dy = dx, dy
 
             cv2.imwrite(os.path.join(tmp_frames_dir, f"frame_{i:04d}.jpg"), blurred,
