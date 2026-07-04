@@ -1117,13 +1117,31 @@ async def run_rework(rework_id: str, parent_job_id: str, cfg: dict, do_video_ups
                 do_video_upscale=do_video_upscale,
             )
 
-            # Update scene status
+            # Update scene status — append new entry if this scene index
+            # doesn't exist yet (e.g. a newly added scene beyond the original count)
+            found = False
             for s in scene_statuses:
                 if s.get("index") == scene_index:
-                    s["video"] = "ok" if ok_video else "failed"
-                    s["audio"] = "ok" if voiceover else "skipped"
+                    s["video"]      = "ok" if ok_video else "failed"
+                    s["audio"]      = "ok" if voiceover else "skipped"
+                    s["space_type"]   = space_type
+                    s["pov_movement"] = pov_movement
+                    s["qc_verdict"]   = s.get("qc_verdict", "pass")
+                    found = True
                     break
+            if not found:
+                scene_statuses.append({
+                    "index":        scene_index,
+                    "caption":      scene.get("caption", ""),
+                    "space_type":   space_type,
+                    "pov_movement": pov_movement,
+                    "duration_used": actual_duration,
+                    "video":        "ok" if ok_video else "failed",
+                    "audio":        "ok" if voiceover else "skipped",
+                    "qc_verdict":   "pass",
+                })
 
+        scene_statuses.sort(key=lambda s: s.get("index", 0))
         JOBS[rework_id]["scenes"] = scene_statuses
         _save_job(rework_id)
 
