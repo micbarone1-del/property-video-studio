@@ -31,6 +31,9 @@ import os
 import logging
 import numpy as np
 import cv2
+from dotenv import load_dotenv
+
+load_dotenv()  # ensures FAL_KEY is available whether run standalone or imported
 
 log = logging.getLogger(__name__)
 
