@@ -1062,7 +1062,7 @@ async def run_reassemble_only(job_id: str):
 # Do not build new features on this. Use the endpoints above instead.
 # ══════════════════════════════════════════════════════════════════════════════
 
-
+@app.post("/jobs/{job_id}/rework")
 async def rework_job(
     job_id: str,
     background_tasks: BackgroundTasks,
