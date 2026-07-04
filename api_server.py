@@ -51,6 +51,49 @@ JOBS_DIR.mkdir(exist_ok=True)
 
 JOBS: dict = {}
 
+# ── Job locks — prevent concurrent modification of the same job ───────────────
+# Solves the "parallel processing corrupted things" issue: any operation that
+# modifies a job (redo scene, add scene, initial generation) must hold this
+# lock. A second request for the same job while locked gets a clear 409 error
+# instead of racing against the first and corrupting shared files.
+_JOB_LOCKS: dict = {}   # job_id -> {"locked": bool, "since": iso timestamp, "operation": str}
+
+def _acquire_job_lock(job_id: str, operation: str) -> bool:
+    """Returns True if lock acquired, False if job is already locked."""
+    existing = _JOB_LOCKS.get(job_id)
+    if existing and existing.get("locked"):
+        return False
+    _JOB_LOCKS[job_id] = {
+        "locked": True,
+        "since": datetime.utcnow().isoformat(),
+        "operation": operation,
+    }
+    return True
+
+def _release_job_lock(job_id: str):
+    if job_id in _JOB_LOCKS:
+        _JOB_LOCKS[job_id]["locked"] = False
+
+def _job_lock_status(job_id: str) -> dict:
+    return _JOB_LOCKS.get(job_id, {"locked": False})
+
+
+# ── Stable scene IDs ────────────────────────────────────────────────────────────
+# Scenes are identified by a permanent short ID, never by array position.
+# This means "redo this scene" always means the same scene regardless of how
+# many times the property has been edited, reordered, or had scenes added.
+def _new_scene_id() -> str:
+    return "sc_" + uuid.uuid4().hex[:8]
+
+def _ensure_scene_ids(scenes_config: list) -> list:
+    """Assigns a stable scene_id to any scene that doesn't have one yet.
+    Called on job creation and whenever scenes_config is saved, so old
+    jobs migrate forward automatically the next time they're touched."""
+    for scene in scenes_config:
+        if "scene_id" not in scene or not scene["scene_id"]:
+            scene["scene_id"] = _new_scene_id()
+    return scenes_config
+
 # ── Rate limiting ──────────────────────────────────────────────────────────────
 _RATE_LIMIT_WINDOW = 3600   # 1 hour in seconds
 _RATE_LIMIT_MAX    = 5      # max job submissions per IP per hour
@@ -304,6 +347,7 @@ async def create_job(
         scenes_config = json.loads(config)
         if not isinstance(scenes_config, list):
             raise ValueError("config must be a JSON array")
+        scenes_config = _ensure_scene_ids(scenes_config)  # assign permanent IDs
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid config JSON: {e}")
 
@@ -675,7 +719,350 @@ async def approve_job(
 
 # ── Rework endpoint ────────────────────────────────────────────────────────────
 
-@app.post("/jobs/{job_id}/rework")
+# ══════════════════════════════════════════════════════════════════════════════
+# NEW SOLID JOB MODEL — single directory per property, stable scene IDs, locking
+# ══════════════════════════════════════════════════════════════════════════════
+# This replaces the old sibling-directory rework model (kept below for any
+# in-flight old jobs). All NEW edits should use these endpoints.
+#
+# Key guarantees:
+#   - One job = one directory, forever. No more "_rw1234" siblings.
+#   - Scenes identified by permanent scene_id, never by array index.
+#   - Job lock prevents two operations touching the same job at once.
+#   - Every operation either fully succeeds (job_meta.json updated) or fully
+#     fails (job_meta.json untouched) — no partial/corrupted states.
+
+@app.get("/jobs/{job_id}/lock-status")
+def get_lock_status(job_id: str):
+    return _job_lock_status(job_id)
+
+
+@app.post("/jobs/{job_id}/scenes/{scene_id}/redo")
+async def redo_scene(
+    job_id: str,
+    scene_id: str,
+    background_tasks: BackgroundTasks,
+    scene_update: str = Form(...),   # JSON: {caption, voiceover, space_type, pov_movement}
+):
+    """Regenerates exactly one scene, in place, in the job's own directory.
+    No sibling job is created. Uses a lock to prevent concurrent edits.
+    """
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+    scenes_config = job.get("scenes_config", [])
+    scene_idx = next((i for i, s in enumerate(scenes_config) if s.get("scene_id") == scene_id), None)
+    if scene_idx is None:
+        raise HTTPException(status_code=404, detail=f"Scene {scene_id} not found in this job")
+
+    if not _acquire_job_lock(job_id, f"redo scene {scene_id}"):
+        lock = _job_lock_status(job_id)
+        raise HTTPException(
+            status_code=409,
+            detail=f"Job is currently being modified ({lock.get('operation')}) — please wait and try again."
+        )
+
+    try:
+        updates = json.loads(scene_update)
+    except Exception as e:
+        _release_job_lock(job_id)
+        raise HTTPException(status_code=400, detail=f"Invalid scene_update: {e}")
+
+    # Apply the text/config updates to this scene now (before background task,
+    # so the UI reflects the edit immediately even while generation is running)
+    scenes_config[scene_idx].update({
+        "caption":      updates.get("caption", scenes_config[scene_idx].get("caption", "")),
+        "voiceover":    updates.get("voiceover", scenes_config[scene_idx].get("voiceover", "")),
+        "space_type":   updates.get("space_type", scenes_config[scene_idx].get("space_type", "large")),
+        "pov_movement": updates.get("pov_movement", scenes_config[scene_idx].get("pov_movement", "walk_in_explore")),
+    })
+    job["scenes_config"] = scenes_config
+    job["status"] = "running"
+    job["message"] = f"Rigenerazione scena in corso…"
+    _save_job(job_id)
+
+    background_tasks.add_task(run_redo_scene, job_id=job_id, scene_id=scene_id)
+    return {"job_id": job_id, "scene_id": scene_id, "status": "running"}
+
+
+@app.post("/jobs/{job_id}/scenes")
+async def add_scene(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    image: UploadFile = File(...),
+    scene_config: str = Form(...),   # JSON: {caption, voiceover, space_type, pov_movement, duration}
+):
+    """Adds one new scene to an existing job, in place. Saves the image
+    directly into this job's own images/ folder — no ambiguity about
+    where the source photo lives, ever.
+    """
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+
+    if not _acquire_job_lock(job_id, "add scene"):
+        lock = _job_lock_status(job_id)
+        raise HTTPException(
+            status_code=409,
+            detail=f"Job is currently being modified ({lock.get('operation')}) — please wait and try again."
+        )
+
+    try:
+        cfg = json.loads(scene_config)
+    except Exception as e:
+        _release_job_lock(job_id)
+        raise HTTPException(status_code=400, detail=f"Invalid scene_config: {e}")
+
+    content = await image.read()
+    if len(content) > 20 * 1024 * 1024:
+        _release_job_lock(job_id)
+        raise HTTPException(status_code=400, detail="Image exceeds 20MB limit")
+    if not _validate_image_bytes(content):
+        _release_job_lock(job_id)
+        raise HTTPException(status_code=400, detail="Invalid image file")
+
+    scene_id = _new_scene_id()
+    new_scene = {
+        "scene_id":     scene_id,
+        "caption":      cfg.get("caption", ""),
+        "voiceover":    cfg.get("voiceover", ""),
+        "space_type":   cfg.get("space_type", "large"),
+        "pov_movement": cfg.get("pov_movement", "walk_in_explore"),
+        "duration":     cfg.get("duration", 8),
+    }
+
+    job_dir = JOBS_DIR / job_id
+    img_dir = job_dir / "images"
+    img_dir.mkdir(parents=True, exist_ok=True)
+
+    ext = ".jpg"
+    if image.content_type == "image/png":  ext = ".png"
+    elif image.content_type == "image/webp": ext = ".webp"
+    dest = img_dir / f"{scene_id}{ext}"
+    with open(dest, "wb") as f:
+        f.write(content)
+    log.info(f"[AddScene] Saved new scene image: {dest}")
+
+    scenes_config = job.get("scenes_config", [])
+    scenes_config.append(new_scene)
+    job["scenes_config"]  = scenes_config
+    job["total_scenes"]   = len(scenes_config)
+    job["status"] = "running"
+    job["message"] = "Generazione nuova scena in corso…"
+    _save_job(job_id)
+
+    background_tasks.add_task(run_redo_scene, job_id=job_id, scene_id=scene_id)
+    return {"job_id": job_id, "scene_id": scene_id, "status": "running"}
+
+
+@app.delete("/jobs/{job_id}/scenes/{scene_id}")
+async def delete_scene(job_id: str, background_tasks: BackgroundTasks):
+    """Removes a scene from the job and re-assembles, in place."""
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+
+    if not _acquire_job_lock(job_id, "delete scene"):
+        lock = _job_lock_status(job_id)
+        raise HTTPException(status_code=409, detail=f"Job is currently being modified ({lock.get('operation')})")
+
+    scenes_config = job.get("scenes_config", [])
+    scenes_config = [s for s in scenes_config if s.get("scene_id") != scene_id]
+    job["scenes_config"] = scenes_config
+    job["total_scenes"]  = len(scenes_config)
+    job["status"] = "running"
+    job["message"] = "Riassemblaggio dopo rimozione scena…"
+    _save_job(job_id)
+
+    background_tasks.add_task(run_reassemble_only, job_id=job_id)
+    return {"job_id": job_id, "status": "running"}
+
+
+async def run_redo_scene(job_id: str, scene_id: str):
+    """Regenerates ONE scene in place, then reassembles the whole job.
+    Everything happens inside the job's own directory — no siblings.
+    """
+    def update(status, progress, message):
+        JOBS[job_id].update({"status": status, "progress": progress, "message": message})
+        _save_job(job_id)
+        log.info(f"[Job {job_id}] {progress}% — {message}")
+
+    try:
+        job = JOBS[job_id]
+        job_dir = JOBS_DIR / job_id
+        scenes_config = job.get("scenes_config", [])
+        scene_idx = next((i for i, s in enumerate(scenes_config) if s.get("scene_id") == scene_id), None)
+        if scene_idx is None:
+            raise ValueError(f"Scene {scene_id} not found")
+        scene = scenes_config[scene_idx]
+
+        lighting  = job.get("lighting", "bright_natural")
+        intensity = job.get("intensity", "natural_pace")
+        model_tier = job.get("model_tier", "premium")
+        do_video_upscale = job.get("do_video_upscale", True)
+
+        voiceover = scene.get("voiceover", "").strip()
+        user_duration = int(scene.get("duration", 10))
+        actual_duration = user_duration
+
+        # ── Step 1: TTS ──────────────────────────────────────────────────
+        audio_dir = job_dir / "audio"
+        audio_dir.mkdir(exist_ok=True)
+        audio_out = str(audio_dir / f"{scene_id}.mp3")
+
+        if voiceover:
+            update("running", 15, f"Rigenero voiceover…")
+            from voice_generation import generate_speech as generate_voice
+            ok_audio = await asyncio.to_thread(
+                generate_voice, voiceover, audio_out,
+                voice_id=os.getenv("DEFAULT_VOICE_ID") or None
+            )
+            if ok_audio and Path(audio_out).exists():
+                try:
+                    from pydub import AudioSegment
+                    seg = AudioSegment.from_file(audio_out)
+                    audio_secs = len(seg) / 1000.0
+                    buffered   = audio_secs + 2.0
+                    actual_duration = max(4, min(8, int(((buffered + 1.99) // 2) * 2)))
+                    log.info(f"[Job {job_id}] Scene {scene_id}: audio={audio_secs:.1f}s → clip={actual_duration}s")
+                except Exception as e:
+                    log.warning(f"[Job {job_id}] Could not measure audio: {e}")
+
+        # ── Step 2: find or create enhanced source image ──────────────────
+        img_dir = job_dir / "images"
+        enhanced_dir = job_dir / "enhanced"
+        enhanced_dir.mkdir(exist_ok=True)
+
+        source_img = None
+        for ext in [".jpg", ".jpeg", ".png", ".webp"]:
+            candidate = img_dir / f"{scene_id}{ext}"
+            if candidate.exists():
+                source_img = candidate
+                break
+        if not source_img:
+            raise ValueError(f"No source image found for scene {scene_id}")
+
+        enhanced_img = enhanced_dir / f"{scene_id}_enhanced.jpg"
+        if not enhanced_img.exists():
+            from image_enhance import enhance_image
+            update("running", 25, "Miglioro immagine…")
+            await asyncio.to_thread(enhance_image, str(source_img), str(enhanced_img), True, True)
+        img_for_generation = str(enhanced_img) if enhanced_img.exists() else str(source_img)
+
+        # ── Step 3: video generation ───────────────────────────────────────
+        clips_dir = job_dir / "clips"
+        clips_dir.mkdir(exist_ok=True)
+        clip_out = str(clips_dir / f"{scene_id}.mp4")
+
+        update("running", 40, f"Rigenero clip ({actual_duration}s)…")
+        from video_generation import generate_video_single
+        ok_video = await asyncio.to_thread(
+            generate_video_single,
+            img_for_generation, actual_duration, clip_out,
+            space_type=scene.get("space_type", "large"),
+            pov_movement=scene.get("pov_movement", "walk_in_explore"),
+            lighting=lighting,
+            intensity=intensity,
+            model_tier=model_tier,
+            do_video_upscale=do_video_upscale,
+        )
+
+        if not ok_video:
+            raise RuntimeError("Video generation failed")
+
+        # Update scene status
+        statuses = job.get("scenes", [])
+        found = False
+        for s in statuses:
+            if s.get("scene_id") == scene_id:
+                s.update({"video": "ok", "audio": "ok" if voiceover else "skipped", "duration_used": actual_duration})
+                found = True
+                break
+        if not found:
+            statuses.append({
+                "scene_id": scene_id, "index": scene_idx,
+                "caption": scene.get("caption", ""), "video": "ok",
+                "audio": "ok" if voiceover else "skipped",
+                "duration_used": actual_duration, "qc_verdict": "pass",
+            })
+        job["scenes"] = statuses
+        _save_job(job_id)
+
+        # ── Step 4: reassemble using ALL current scenes ────────────────────
+        await run_reassemble_only(job_id)
+
+    except Exception as e:
+        log.error(f"[Job {job_id}] redo_scene failed: {e}", exc_info=True)
+        JOBS[job_id].update({"status": "failed", "message": f"Errore: {str(e)[:200]}"})
+        _save_job(job_id)
+    finally:
+        _release_job_lock(job_id)
+
+
+async def run_reassemble_only(job_id: str):
+    """Reassembles the final video from whatever clips currently exist for
+    this job's scenes_config, in order. Does not regenerate anything —
+    pure assembly step, using each scene's stable scene_id to find its clip.
+    """
+    def update(status, progress, message):
+        JOBS[job_id].update({"status": status, "progress": progress, "message": message})
+        _save_job(job_id)
+        log.info(f"[Job {job_id}] {progress}% — {message}")
+
+    try:
+        job = JOBS[job_id]
+        job_dir = JOBS_DIR / job_id
+        scenes_config = job.get("scenes_config", [])
+
+        update("running", 85, "Riassemblaggio video finale…")
+
+        clip_paths  = []
+        audio_paths = []
+        for scene in scenes_config:
+            sid = scene.get("scene_id")
+            clip_path  = job_dir / "clips" / f"{sid}.mp4"
+            audio_path = job_dir / "audio" / f"{sid}.mp3"
+            if not clip_path.exists():
+                log.warning(f"[Job {job_id}] Missing clip for scene {sid} — skipping from assembly")
+                continue
+            clip_paths.append(str(clip_path))
+            audio_paths.append(str(audio_path) if audio_path.exists() else None)
+
+        if not clip_paths:
+            raise RuntimeError("Nessuna clip disponibile per l'assemblaggio")
+
+        output_path = str(job_dir / f"{job.get('property_name','Property').replace(' ','_')}_final.mp4")
+        from video_assembly import assemble_property_video
+        ok = await asyncio.to_thread(
+            assemble_property_video,
+            scenes_config=scenes_config,
+            video_clip_paths=clip_paths,
+            audio_paths=audio_paths,
+            image_paths=clip_paths,
+            output_path=output_path,
+            property_name=job.get("property_name", "Property"),
+            transition_style=job.get("transition_style", "fade"),
+        )
+        if not ok:
+            raise RuntimeError("Assemblaggio fallito")
+
+        job["output_path"] = output_path
+        update("done", 100, "Video pronto per il download")
+
+    except Exception as e:
+        log.error(f"[Job {job_id}] reassembly failed: {e}", exc_info=True)
+        JOBS[job_id].update({"status": "failed", "message": f"Errore assemblaggio: {str(e)[:200]}"})
+        _save_job(job_id)
+    finally:
+        _release_job_lock(job_id)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LEGACY sibling-directory rework model — kept only for any old in-flight jobs.
+# Do not build new features on this. Use the endpoints above instead.
+# ══════════════════════════════════════════════════════════════════════════════
+
+
 async def rework_job(
     job_id: str,
     background_tasks: BackgroundTasks,

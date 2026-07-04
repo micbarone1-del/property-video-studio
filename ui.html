@@ -667,6 +667,7 @@ async function editJob(jobId, baseJobId) {
         duration:     String(scene.duration || 8),
         space_type:   scene.space_type || 'large',
         pov_movement: scene.pov_movement || 'walk_in_explore',
+        scene_id:     scene.scene_id || null,  // enables new solid redo path
       };
     }
 
@@ -1058,8 +1059,11 @@ function renderScenes() {
         </div>
       </div>` : '';
 
+    const sceneIdForThis = saved.scene_id || null;
     const reworkBtn = scStatus
-      ? `<button class="btn-rework-toggle" onclick="openReworkPanel(${i}, this)" id="rw-btn-${i}">↺ Rifai questa scena</button>`
+      ? (sceneIdForThis
+          ? `<button class="btn-rework-toggle" onclick="redoSceneNew(${i}, '${sceneIdForThis}')" id="rw-btn-${i}">↺ Rifai questa scena</button>`
+          : `<button class="btn-rework-toggle" onclick="openReworkPanel(${i}, this)" id="rw-btn-${i}">↺ Rifai questa scena (legacy)</button>`)
       : '';
 
     const card = document.createElement('div');
@@ -1154,6 +1158,84 @@ function bulkRework() {
   });
   scenesCont.scrollIntoView({ behavior: 'smooth' });
   showError(`↑ ${completedScenes.length} scena/e aperte — premi Genera video per rigenerare`);
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// NEW SOLID REWORK MODEL — scene_id based, single job directory, no siblings
+// ══════════════════════════════════════════════════════════════════════════════
+
+async function redoSceneNew(cardIndex, sceneId) {
+  const card = scenesCont.querySelector(`[data-index="${cardIndex}"]`);
+  if (!card) return;
+
+  const btn = document.getElementById(`rw-btn-${cardIndex}`);
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Invio…'; }
+
+  const sceneUpdate = {
+    caption:      card.querySelector('.sc-caption')?.value.trim() || '',
+    voiceover:    card.querySelector('.sc-voiceover')?.value.trim() || '',
+    space_type:   card.querySelector('.sc-space-type')?.value || 'large',
+    pov_movement: card.querySelector('.sc-pov-movement')?.value || 'walk_in_explore',
+  };
+
+  const fd = new FormData();
+  fd.append('scene_update', JSON.stringify(sceneUpdate));
+
+  try {
+    const res = await authFetch(`${API_BASE}/jobs/${currentJobId}/scenes/${sceneId}/redo`, {
+      method: 'POST', body: fd
+    });
+    if (res.status === 409) {
+      const e = await res.json();
+      showError(`⚠ ${e.detail}`);
+      if (btn) { btn.disabled = false; btn.textContent = '↺ Rifai questa scena'; }
+      return;
+    }
+    if (!res.ok) {
+      let detail = `Server error ${res.status}`;
+      try { const e = await res.json(); detail = e.detail || detail; } catch(_) {}
+      throw new Error(detail);
+    }
+    activeJobId = currentJobId;  // same job, no sibling — poll the same ID
+    progSec.style.display   = 'block';
+    resultSec.style.display = 'none';
+    updateProgress(5, 'Rigenerazione scena in corso…');
+    startPolling(currentJobId);
+  } catch(e) {
+    showError(e.message);
+    if (btn) { btn.disabled = false; btn.textContent = '↺ Rifai questa scena'; }
+  }
+}
+
+async function addSceneNewSolid(file, sceneConfig) {
+  if (!currentJobId) {
+    showError('Nessun job caricato — apri prima un video dalla libreria');
+    return;
+  }
+  const fd = new FormData();
+  fd.append('image', file);
+  fd.append('scene_config', JSON.stringify(sceneConfig));
+
+  updateProgress(5, 'Caricamento nuova scena…');
+  progSec.style.display = 'block';
+
+  try {
+    const res = await authFetch(`${API_BASE}/jobs/${currentJobId}/scenes`, { method: 'POST', body: fd });
+    if (res.status === 409) {
+      const e = await res.json();
+      showError(`⚠ ${e.detail}`);
+      return;
+    }
+    if (!res.ok) {
+      let detail = `Server error ${res.status}`;
+      try { const e = await res.json(); detail = e.detail || detail; } catch(_) {}
+      throw new Error(detail);
+    }
+    activeJobId = currentJobId;
+    startPolling(currentJobId);
+  } catch(e) {
+    showError(e.message);
+  }
 }
 
 function openReworkPanel(i, btn) {
