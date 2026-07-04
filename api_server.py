@@ -680,6 +680,8 @@ async def rework_job(
     job_id: str,
     background_tasks: BackgroundTasks,
     rework_config: str = Form(...),
+    new_images: list[UploadFile] = File(default=[]),
+    new_image_indices: list[str] = Form(default=[]),
 ):
     if job_id not in JOBS:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -692,7 +694,31 @@ async def rework_job(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid rework_config: {e}")
 
+    # Save any newly uploaded scene images (scenes added via "+ Aggiungi scena"
+    # that don't exist yet in the original job's images/ directory)
+    job_dir  = JOBS_DIR / job_id
+    img_dir  = job_dir / "images"
+    img_dir.mkdir(parents=True, exist_ok=True)
+
+    for upload, idx_str in zip(new_images, new_image_indices):
+        try:
+            idx = int(idx_str)
+            content = await upload.read()
+            if not _validate_image_bytes(content):
+                log.warning(f"[Rework] New image for scene {idx} failed validation, skipping")
+                continue
+            ext = ".jpg"
+            if upload.content_type == "image/png":  ext = ".png"
+            elif upload.content_type == "image/webp": ext = ".webp"
+            dest = img_dir / f"scene_{idx:03d}{ext}"
+            with open(dest, "wb") as f:
+                f.write(content)
+            log.info(f"[Rework] Saved new scene image: {dest}")
+        except Exception as e:
+            log.error(f"[Rework] Failed to save new image for index {idx_str}: {e}")
+
     rework_id = f"{job_id}_rw{str(uuid.uuid4())[:4]}"
+    updated_scene_count = len(cfg.get("updated_scenes", [])) or original["total_scenes"]
     JOBS[rework_id] = {
         "status":        "queued",
         "progress":      0,
@@ -701,7 +727,7 @@ async def rework_job(
         "output_path":   None,
         "created_at":    datetime.utcnow().isoformat(),
         "property_name": original["property_name"],
-        "total_scenes":  original["total_scenes"],
+        "total_scenes":  updated_scene_count,
         "cost_actual":   None,
     }
 

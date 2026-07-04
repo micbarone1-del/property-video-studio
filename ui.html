@@ -1394,6 +1394,17 @@ async function submitRework(reworkScenes) {
   const fd = new FormData();
   fd.append('rework_config', JSON.stringify(cfg));
 
+  // CRITICAL: new scenes (beyond the original completed count) have their
+  // photo only in browser memory — it was never uploaded to the server.
+  // Attach those files now so the server can save and use them.
+  const originalCount = completedScenes.length;
+  reworkScenes.forEach(idx => {
+    if (idx >= originalCount && files[idx] && files[idx].size > 0) {
+      fd.append('new_images', files[idx], `scene_${idx}.jpg`);
+      fd.append('new_image_indices', String(idx));
+    }
+  });
+
   const targetJobId = currentJobId;
 
   try {
