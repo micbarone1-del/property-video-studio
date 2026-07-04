@@ -417,6 +417,7 @@
   <section id="result-section">
     <p class="sec-label">Your video is ready</p>
     <div class="card">
+      <div id="job-id-display" style="font-size:.78rem;color:var(--muted);margin-bottom:10px;padding:8px 12px;background:var(--paper);border-radius:var(--radius);font-family:monospace"></div>
       <video id="video-preview" controls></video>
       <a class="btn-download" id="download-link" href="#">⬇ Download MP4</a>
       <div id="actual-cost" style="margin-top:16px"></div>
@@ -643,6 +644,7 @@ async function editJob(jobId, baseJobId) {
 
     currentJobId = baseJobId;
     files = [];
+    newlyAddedSceneIndices.clear();  // fresh job context — no new scenes yet
     Object.keys(sceneAnalysis).forEach(k => delete sceneAnalysis[k]);
     Object.keys(sceneUserData).forEach(k => delete sceneUserData[k]);
 
@@ -751,6 +753,7 @@ let sceneAnalysis = {};
 let qcDecisions  = {};
 let sceneUserData = {};
 let completedScenes = [];
+let newlyAddedSceneIndices = new Set(); // explicit tracking — never infer "new" from array length
 let reworkOpen = {};
 
 // ── DOM refs ───────────────────────────────────────────────────────────────────
@@ -867,6 +870,8 @@ function addMoreScenes(input) {
   if (!newFiles.length) return;
   const start = files.length;
   files = [...files, ...newFiles];
+  // Explicitly mark these indices as genuinely new — do NOT infer from length elsewhere
+  newFiles.forEach((_, idx) => newlyAddedSceneIndices.add(start + idx));
   renderScenes();
   newFiles.forEach((_, idx) => analyseImage(start + idx));
   updateCostEstimate();
@@ -1304,14 +1309,12 @@ genBtn.addEventListener('click', async () => {
     if (!isNaN(i)) reworkScenes.push(i);
   });
 
-  // If a job is loaded (currentJobId set) and new scenes were added beyond
-  // the original completed count, auto-include them as scenes to generate —
-  // no need to manually open a rework panel for a scene that never existed.
-  if (currentJobId && completedScenes.length > 0) {
-    const originalCount = completedScenes.length;
-    for (let i = originalCount; i < files.length; i++) {
-      if (!reworkScenes.includes(i)) reworkScenes.push(i);
-    }
+  // Auto-include genuinely new scenes (explicitly tracked via newlyAddedSceneIndices)
+  // — never inferred from completedScenes.length, which can be stale/incorrect
+  if (currentJobId) {
+    newlyAddedSceneIndices.forEach(i => {
+      if (i < files.length && !reworkScenes.includes(i)) reworkScenes.push(i);
+    });
   }
 
   if (reworkScenes.length > 0 && currentJobId) {
@@ -1394,12 +1397,11 @@ async function submitRework(reworkScenes) {
   const fd = new FormData();
   fd.append('rework_config', JSON.stringify(cfg));
 
-  // CRITICAL: new scenes (beyond the original completed count) have their
-  // photo only in browser memory — it was never uploaded to the server.
-  // Attach those files now so the server can save and use them.
-  const originalCount = completedScenes.length;
+  // CRITICAL: genuinely new scenes have their photo only in browser memory —
+  // it was never uploaded to the server. Attach those files now.
+  // Uses explicit newlyAddedSceneIndices tracking, not length inference.
   reworkScenes.forEach(idx => {
-    if (idx >= originalCount && files[idx] && files[idx].size > 0) {
+    if (newlyAddedSceneIndices.has(idx) && files[idx] && files[idx].size > 0) {
       fd.append('new_images', files[idx], `scene_${idx}.jpg`);
       fd.append('new_image_indices', String(idx));
     }
@@ -1416,6 +1418,8 @@ async function submitRework(reworkScenes) {
     }
     const { job_id } = await res.json();
     activeJobId = job_id;  // track rework job for polling — currentJobId stays as original
+    // Clear new-scene tracking for submitted indices — they're processed now
+    reworkScenes.forEach(idx => newlyAddedSceneIndices.delete(idx));
     genBtn.textContent = 'Rework in corso…';
 
     // Close all rework panels after submission
@@ -1607,8 +1611,11 @@ function showResult(jobId, propName, scenes) {
   const dlUrl = `${API_BASE}/jobs/${jobId}/download`;
   document.getElementById('video-preview').src    = dlUrl;
   document.getElementById('download-link').href   = dlUrl;
-  document.getElementById('download-link').download = `${propName.replace(/\s+/g,'_')}_video.mp4`;
+  document.getElementById('download-link').download = `${propName.replace(/\s+/g,'_')}_${jobId}.mp4`;
   document.getElementById('actual-cost').innerHTML = '';
+  const scenesCount = scenes && scenes.length ? scenes.length : (completedScenes.length || '?');
+  document.getElementById('job-id-display').innerHTML =
+    `📁 <strong>${propName}</strong> — ID: <code>${jobId}</code> — ${scenesCount} scene`;
   resultSec.style.display = 'block';
   resultSec.scrollIntoView({ behavior: 'smooth' });
 }
