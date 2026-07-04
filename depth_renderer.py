@@ -37,7 +37,7 @@ load_dotenv()  # ensures FAL_KEY is available whether run standalone or imported
 
 log = logging.getLogger(__name__)
 
-DEPTH_ENDPOINT = "fal-ai/depth-anything-v2"
+DEPTH_ENDPOINT = "fal-ai/image-preprocessors/depth-anything/v2"
 
 TARGET_W, TARGET_H = 1920, 1080
 FPS = 24
@@ -58,9 +58,13 @@ def estimate_depth(image_path: str) -> np.ndarray | None:
             DEPTH_ENDPOINT,
             arguments={"image_url": image_url}
         )
-        depth_url = (result.get("image") or {}).get("url")
+        depth_url = None
+        if isinstance(result.get("image"), dict):
+            depth_url = result["image"].get("url")
+        if not depth_url and isinstance(result.get("images"), list) and result["images"]:
+            depth_url = result["images"][0].get("url")
         if not depth_url:
-            log.error(f"[Depth] No depth map URL in result: {result}")
+            log.error(f"[Depth] No depth map URL found in result keys: {list(result.keys())} — full result: {result}")
             return None
 
         import requests
