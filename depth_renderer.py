@@ -157,9 +157,18 @@ def _reproject_frame(image: np.ndarray, depth: np.ndarray, dx: float, dy: float,
     h, w = depth.shape
     yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
 
-    # Parallax: shift amount inversely related to distance (near depth = 1 = shifts most)
-    # dz (push) scales toward the centre — near objects grow faster than far ones
-    parallax_strength = depth  # 0..1, near=1
+    # CRITICAL FIX: normalise depth per-image to full 0..1 range.
+    # Raw depth values vary wildly between photos — a shallow bathroom might
+    # have mean depth 0.17, meaning parallax_strength stays tiny everywhere
+    # and movement becomes imperceptible even with strong dx/dy/dz inputs.
+    # Stretching to the image's own min-max range ensures the nearest point
+    # in THIS photo always gets full parallax strength, regardless of the
+    # depth model's absolute output scale for that particular scene.
+    d_min, d_max = depth.min(), depth.max()
+    if d_max - d_min > 1e-6:
+        parallax_strength = (depth - d_min) / (d_max - d_min)
+    else:
+        parallax_strength = depth  # flat scene, fall back to raw values
 
     shift_x = dx * w * 0.25 * parallax_strength
     shift_y = dy * h * 0.25 * parallax_strength
@@ -286,9 +295,14 @@ def render_depth_video(
             log.warning("[DepthRender] Depth estimation failed — cannot render")
             return False
         depth = cv2.resize(depth, (TARGET_W, TARGET_H), interpolation=cv2.INTER_LINEAR)
-        # Lighter smoothing — heavy blur was softening the effective warp
-        # precision at depth edges, contributing to overall image softness
-        depth = cv2.GaussianBlur(depth, (5, 5), 0)
+        # Bilateral filter smooths noise within flat regions (walls, floors)
+        # while PRESERVING sharp depth edges (door frames, furniture edges) —
+        # this reduces warping artifacts at object boundaries far better than
+        # Gaussian blur, which softens edges uniformly and causes the visible
+        # "bending" of straight lines near depth discontinuities like doors.
+        depth_u8 = (depth * 255).astype(np.uint8)
+        depth_u8 = cv2.bilateralFilter(depth_u8, d=9, sigmaColor=40, sigmaSpace=40)
+        depth = depth_u8.astype(np.float32) / 255.0
 
         n_frames = duration * fps
         offsets = _build_camera_offsets(movement, intensity, n_frames)
