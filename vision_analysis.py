@@ -45,23 +45,30 @@ _ELEVATED_KW  = ["balcony floor","terrace floor","standing on balcony",
                   "stepping onto terrace","stepping onto balcony",
                   "terrace with outdoor furniture","balcony with outdoor furniture"]
 
-# If ANY of these appear in the description alongside elevated keywords,
-# it's an interior with a view — not an elevated space.
-_INTERIOR_OVERRIDE_KW = ["sofa","armchair","dining table","coffee table","bookshelf",
-                          "wardrobe","bed","kitchen","living room","indoor","interior",
-                          "carpet","wooden floor inside","ceiling","chandelier","curtains"]
+# Interior override — only used to prevent ELEVATED false positives
+_ELEVATED_INTERIOR_OVERRIDE = ["sofa","armchair","dining table","coffee table",
+                                "bookshelf","wardrobe","bed frame","kitchen counter",
+                                "living room furniture","indoor flooring","carpet",
+                                "chandelier","indoor ceiling light","parquet floor"]
 
-_OUTDOOR_KW   = ["garden","yard","swimming pool","driveway","building facade",
+# Strong outdoor indicators — specific enough to not match interior descriptions
+_OUTDOOR_KW   = ["garden","swimming pool","driveway","building facade",
                   "courtyard","patio","lawn","grass","outdoor pathway",
                   "entrance gate","street view","outdoor space","outside the building",
-                  "parking","front garden","back garden","exterior","facade","outdoor","outside","building exterior","property exterior"]
+                  "parking area","front garden","back garden","exterior wall",
+                  "outdoor area","gravel path","exterior of","building exterior",
+                  "house exterior","property exterior","outdoor terrace",
+                  "exterior view","outdoor ground","sunlight on ground",
+                  "sky above","open sky","outdoor furniture on ground",
+                  "stone path","brick path","exterior facade"]
+
 _SMALLROOM_KW = ["bathroom","shower","bathtub","toilet","wc","sink","basin",
                   "hallway","corridor","laundry","utility room","closet","pantry",
                   "narrow room","compact room","ensuite","cloakroom","powder room"]
 _BEDROOM_KW   = ["bedroom","bed frame","mattress","pillows","headboard","wardrobe",
                   "nightstand","bedside table","duvet","bedroom furniture","sleeping area"]
 
-# Body part detection — used in QC separate from general description
+# Body part detection
 _BODY_PART_KW = ["human hand","person's hand","hand reaching","fingers visible",
                   "arm visible","arm extended","human arm","body part","limb visible",
                   "hand in frame","hands in frame","arm in frame","person visible",
@@ -78,8 +85,16 @@ _SPACE_CAMERA = {
 }
 
 # ── People/anomaly detection keywords for QC ──────────────────────────────────
-_PEOPLE_KW    = ["person","people","man","woman","child","human","figure",
-                  "face","hand","arm","leg","body","silhouette","shadow of a person"]
+# People detection — must be SPECIFIC phrases, not single generic words.
+# Previous version used bare words like "figure", "face", "body", "arm", "leg" —
+# these match constantly inside ordinary vocabulary: "furniture", "surface",
+# "armchair", "table leg", "configuration" — causing false positives on every
+# scene with furniture, which is every scene. Only unambiguous multi-word
+# phrases that specifically indicate an actual human presence are used here.
+_PEOPLE_KW    = ["a person","a man","a woman","a child","human figure",
+                  "silhouette of a person","shadow of a person","person standing",
+                  "person walking","person visible","people visible",
+                  "human presence","a human"]
 _STRUCTURAL_KW = ["door opening","window appeared","new room","additional room",
                    "different room","corridor appeared","staircase appeared",
                    "wall disappeared","ceiling collapsed","furniture moved",
@@ -88,7 +103,9 @@ _STRUCTURAL_KW = ["door opening","window appeared","new room","additional room",
                    "open door","doorway visible","door frame","through the door",
                    "another room","room behind","hallway beyond","space beyond",
                    "room beyond","area beyond","space through","leading to another",
-                "wardrobe door","cabinet door","moving door","sliding wardrobe","wardrobe opening"]
+                   "wardrobe door","cabinet door","cupboard door","sliding door",
+                   "moving door","door handle","door knob","hinged","drawer open",
+                   "furniture opening","cabinet opening"]
 
 
 # ── Florence-2 helper ──────────────────────────────────────────────────────────
@@ -129,13 +146,14 @@ def _classify_space(description: str) -> tuple[str, float]:
     """
     d = description.lower()
 
-    # Check elevated ONLY if no interior furniture/elements are present
-    # This prevents windows with terrace views from triggering elevated
-    has_interior = any(k in d for k in _INTERIOR_OVERRIDE_KW)
-    if any(k in d for k in _ELEVATED_KW) and not has_interior:
+    # Check elevated — only blocked if strong interior furniture present
+    # (prevents window-view-of-terrace from being classified as elevated)
+    has_interior_furniture = any(k in d for k in _ELEVATED_INTERIOR_OVERRIDE)
+    if any(k in d for k in _ELEVATED_KW) and not has_interior_furniture:
         return "elevated", 0.85
 
-    # Check outdoor
+    # Check outdoor — NOT blocked by interior override
+    # A garden photo may have windows with interior visible; it's still outdoor
     outdoor_score = sum(1 for k in _OUTDOOR_KW if k in d)
     if outdoor_score >= 1:
         return "ground_exterior", min(0.70 + outdoor_score * 0.05, 0.95)
@@ -162,7 +180,7 @@ def _classify_space(description: str) -> tuple[str, float]:
     elif medium_score > 0:
         return "medium_interior", 0.70
     else:
-        return "large_interior", 0.55   # default — interior with unknown size
+        return "large_interior", 0.55
 
 
 def _estimate_depth(description: str) -> str:
@@ -247,7 +265,7 @@ def analyse_input(image_path: str) -> dict:
             "large":    "walk_in_explore",
             "medium":   "walk_in_explore",
             "bedroom":  "walk_in_gentle",
-            "small":    "subtle_rotate",    # approach_reveal produces 2D zoom in shallow spaces
+            "small":    "subtle_rotate",
             "corridor": "walk_through",
             "outdoor":  "reveal_pullback",
             "elevated": "step_out_onto",
@@ -315,9 +333,9 @@ def _extract_video_frame(video_path: str, position: str = "first") -> str | None
 
 
 def analyse_output(
-    video_path:         str,
+    video_path:          str,
     original_image_path: str,
-    known_space_type:   str = "",
+    known_space_type:    str = None,  # pass scene space_type from job config if known
 ) -> dict:
     """
     Compares generated video frames against the original photo for QC.
@@ -362,7 +380,19 @@ def analyse_output(
         # ── Describe original photo ────────────────────────────────────────
         orig_url  = _upload_local_image(original_image_path)
         orig_desc = _describe_image(orig_url) if orig_url else ""
-        orig_space, _ = _classify_space(orig_desc) if orig_desc else ("unknown", 0)
+
+        # Use known space type from job config if available — more reliable than re-classifying
+        if known_space_type:
+            _type_map = {
+                "large": "large_interior", "medium": "medium_interior",
+                "bedroom": "bedroom", "small": "small_interior",
+                "corridor": "small_interior", "outdoor": "ground_exterior",
+                "elevated": "elevated",
+            }
+            orig_space = _type_map.get(known_space_type, "large_interior")
+            log.info(f"[Vision QC] Using known space type: {known_space_type} → {orig_space}")
+        else:
+            orig_space, _ = _classify_space(orig_desc) if orig_desc else ("unknown", 0)
 
         # ── Extract and describe first frame of video ──────────────────────
         first_frame = _extract_video_frame(video_path, "first")
@@ -400,8 +430,23 @@ def analyse_output(
         frame_space, _ = _classify_space(frame_desc)
 
         # ── Check 1: People and body part detection ───────────────────────
-        people_detected     = any(k in combined_desc for k in _PEOPLE_KW)
-        body_parts_detected = any(k in combined_desc for k in _BODY_PART_KW)
+        # Guard against negated phrasing — Florence-2 sometimes explicitly
+        # states "no people are visible" as reassurance, which would
+        # otherwise match "people visible" as a false positive.
+        def _has_unnegated_match(text: str, keywords: list) -> bool:
+            for kw in keywords:
+                idx = text.find(kw)
+                if idx == -1:
+                    continue
+                # Check the ~15 characters before the match for a negation word
+                window = text[max(0, idx-15):idx]
+                if any(neg in window for neg in ["no ", "not ", "without ", "zero "]):
+                    continue  # negated — not a real detection
+                return True
+            return False
+
+        people_detected     = _has_unnegated_match(combined_desc, _PEOPLE_KW)
+        body_parts_detected = _has_unnegated_match(combined_desc, _BODY_PART_KW)
         if body_parts_detected:
             issues.append("Human body part detected in generated video (hands/arms/fingers)")
             log.warning("[Vision QC] BODY PARTS detected")
@@ -410,29 +455,34 @@ def analyse_output(
             log.warning("[Vision QC] PEOPLE DETECTED")
 
         # ── Check 2: Space type matches ────────────────────────────────────
-        # Allow some flexibility — interior types can vary
+        # Only flag CLEAR mismatches — interior vs exterior.
+        # Do NOT flag bedroom vs living room, small vs large etc.
+        # Florence-2 descriptions are imprecise — only reject obvious wrong space type.
         interior_types = {"large_interior","medium_interior","bedroom","small_interior"}
         exterior_types = {"ground_exterior","elevated"}
 
         space_matches = True
         if orig_space in interior_types and frame_space in exterior_types:
-            space_matches = False
-            issues.append(f"Space type mismatch: input is {orig_space}, output appears to be {frame_space}")
-            log.warning(f"[Vision QC] SPACE MISMATCH: {orig_space} → {frame_space}")
+            # Check if description has strong outdoor signals before flagging
+            strong_outdoor = any(k in frame_desc.lower() for k in
+                ["garden","pool","sky","outdoor","outside","facade","street",
+                 "trees","grass","driveway","parking"])
+            if strong_outdoor:
+                space_matches = False
+                issues.append(f"Space mismatch: input is interior, output appears outdoor")
+                log.warning(f"[Vision QC] SPACE MISMATCH interior→exterior")
         elif orig_space in exterior_types and frame_space in interior_types:
-            space_matches = False
-            issues.append(f"Space type mismatch: input is exterior, output appears to be interior")
-            log.warning(f"[Vision QC] SPACE MISMATCH: {orig_space} → {frame_space}")
+            # Check if description has strong interior signals
+            strong_interior = any(k in frame_desc.lower() for k in
+                ["ceiling","furniture","sofa","floor","wall","room","interior"])
+            if strong_interior:
+                space_matches = False
+                issues.append(f"Space mismatch: input is exterior, output appears interior")
+                log.warning(f"[Vision QC] SPACE MISMATCH exterior→interior")
 
         # ── Check 3: Structural hallucinations (first AND last frame) ────
         structural = any(k in combined_desc for k in _STRUCTURAL_KW)
-        # Skip wardrobe/cabinet door false positives when space is known interior
-        _INTERIOR_SPACES = {"bedroom","bathroom","kitchen","living_room","dining_room",
-                            "large_interior","small_interior","small_room","laundry"}
-        _WARDROBE_KW = {"wardrobe door","cabinet door","moving door","sliding wardrobe"}
-        wardrobe_fp = (known_space_type in _INTERIOR_SPACES and
-                       any(k in combined_desc for k in _WARDROBE_KW))
-        if structural and not wardrobe_fp:
+        if structural:
             issues.append("Possible structural hallucination detected (door opening or new element)")
             log.warning("[Vision QC] STRUCTURAL hallucination suspected")
 
