@@ -1560,7 +1560,20 @@ async def run_rework(rework_id: str, parent_job_id: str, cfg: dict, do_video_ups
                     log.info(f"[Rework] Scene {scene_idx}: reusing clip from {job_dir.name}")
                     break
 
-        clip_paths = sorted((rework_dir / "clips").glob("scene_*.mp4"))
+        # CRITICAL FIX: only ever consider scene_NNN.mp4 files where NNN is
+        # strictly within this job's actual scene count. An unrestricted
+        # glob here would pick up ANY file matching the naming pattern —
+        # including stray test/debug files that happen to sit in this
+        # directory — regardless of whether they're legitimate scenes.
+        # This was the root cause of test artifacts appearing as extra
+        # scenes in client-facing videos.
+        clip_paths = []
+        for scene_idx in range(n_scenes):
+            candidate = dst_clips / f"scene_{scene_idx:03d}.mp4"
+            if candidate.exists():
+                clip_paths.append(candidate)
+            else:
+                log.warning(f"[Rework] Scene {scene_idx} has no clip — will be missing from assembly")
 
         if not clip_paths:
             raise RuntimeError("Nessuna clip trovata per l'assemblaggio")
