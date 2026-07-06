@@ -1173,7 +1173,7 @@ async def run_pipeline(
         # ── Stage 1: Image enhancement ────────────────────────────────────
         from image_enhance import enhance_image
         for i, img_path in enumerate(image_paths):
-            update("running", int(5 + (i/n)*15), f"Enhancing image {i+1} of {n}…")
+            update("running", int(5 + (i/n)*15), f"Enhancing image {i} of {n-1} (scene_{i:03d})…")
             out    = str(enhanced_dir / f"scene_{i:03d}_enhanced.jpg")
             result = await asyncio.to_thread(enhance_image, img_path, out, do_lighting, do_upscale)
             enhanced_paths.append(result)
@@ -1188,7 +1188,7 @@ async def run_pipeline(
             voiceover     = scene.get("voiceover", "").strip()
             audio_out     = str(audio_dir / f"scene_{i:03d}.mp3")
             user_duration = int(scene.get("duration", 10))
-            update("running", int(20 + (i/n)*15), f"Generating audio {i+1} of {n}…")
+            update("running", int(20 + (i/n)*15), f"Generating audio {i} of {n-1} (scene_{i:03d})…")
 
             if voiceover:
                 ok = await asyncio.to_thread(
@@ -1251,7 +1251,7 @@ async def run_pipeline(
             caption      = scene.get("caption", "")
             space_type   = scene.get("space_type",   "large")
             pov_movement = scene.get("pov_movement", "walk_in_explore")
-            update("running", int(35 + (i/n)*40), f"Generating video clip {i+1} of {n} ({duration}s)…")
+            update("running", int(35 + (i/n)*40), f"Generating video clip {i} of {n-1} (scene_{i:03d}, {duration}s)…")
 
             ok = await asyncio.to_thread(
                 generate_video_single,
@@ -1272,7 +1272,7 @@ async def run_pipeline(
             # Vision QC
             video_verdict = "pass"
             if ok and enable_vision_qc and Path(clip_out).exists():
-                update("running", int(35 + (i/n)*40), f"QC check on clip {i+1} of {n}…")
+                update("running", int(35 + (i/n)*40), f"QC check on clip {i} of {n-1} (scene_{i:03d})…")
                 original_img = image_paths[i]
                 vid_qc = await asyncio.to_thread(analyse_output, clip_out, original_img, space_type)
                 video_verdict = vid_qc["verdict"]
@@ -1458,7 +1458,7 @@ async def run_rework(rework_id: str, parent_job_id: str, cfg: dict, do_video_ups
             actual_duration = user_duration  # fallback
 
             if voiceover:
-                update("running", int(10 + (idx/n)*20), f"Rigenero audio scena {scene_index+1}…")
+                update("running", int(10 + (idx/n)*20), f"Rigenero audio scena {scene_index} (scene_{scene_index:03d})…")
                 ok_audio = await asyncio.to_thread(
                     generate_voice, voiceover, audio_out,
                     voice_id=os.getenv("DEFAULT_VOICE_ID") or None
@@ -1489,10 +1489,10 @@ async def run_rework(rework_id: str, parent_job_id: str, cfg: dict, do_video_ups
 
             if not Path(enhanced_img).exists():
                 log.error(f"[Rework] No source image for scene {scene_index}")
-                update("running", int(30 + (idx/n)*50), f"Scena {scene_index+1}: immagine non trovata")
+                update("running", int(30 + (idx/n)*50), f"Scena {scene_index} (scene_{scene_index:03d}): immagine non trovata")
                 continue
 
-            update("running", int(30 + (idx/n)*50), f"Rigenero clip scena {scene_index+1} ({actual_duration}s)…")
+            update("running", int(30 + (idx/n)*50), f"Rigenero clip scena {scene_index} (scene_{scene_index:03d}, {actual_duration}s)…")
             ok_video = await asyncio.to_thread(
                 generate_video_single,
                 enhanced_img, actual_duration, clip_out,

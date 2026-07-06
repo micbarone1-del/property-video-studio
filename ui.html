@@ -590,7 +590,7 @@ function showJobPreview(jobId, baseJobId, job) {
       <div style="background:var(--card);border:1px solid var(--rule);border-radius:var(--radius);overflow:hidden">
         <video src="/jobs/${baseJobId}/clip/${i}" controls style="width:100%;height:110px;object-fit:cover;background:#000"></video>
         <div style="padding:8px 10px">
-          <div style="font-size:.76rem;font-weight:600">Scena ${i+1}</div>
+          <div style="font-size:.76rem;font-weight:600">Scena ${i} <span style="color:var(--muted);font-weight:normal">(scene_${String(i).padStart(3,'0')})</span></div>
           <div style="font-size:.7rem;color:${qcColor};margin-top:2px">${qcLabel}</div>
           <div style="font-size:.68rem;color:var(--muted);margin-top:2px">${scene.caption || '(senza titolo)'}</div>
         </div>
@@ -1080,7 +1080,7 @@ function renderScenes() {
           title="Trascina per riordinare">⠿</span>
         <img class="sc-thumb" src="${url}" />
         <div>
-          <div class="sc-num">Scena ${i+1}</div>
+          <div class="sc-num">Scena ${i} <span style="opacity:.6">(scene_${String(i).padStart(3,'0')})</span></div>
           <div class="sc-name">${file.name} ${badge} ${statusBadge}</div>
         </div>
         ${reworkBtn}
@@ -1592,7 +1592,7 @@ function showQcReview(job) {
       ${thumb}
       <div class="qc-info">
         <div class="qc-title">
-          Scena ${idx+1} — ${scene.caption || '(senza didascalia)'}
+          Scena ${idx} (scene_${String(idx).padStart(3,'0')}) — ${scene.caption || '(senza didascalia)'}
           <span class="qc-verdict ${verdict}">${verdict === 'reject' ? '✗ Rifiutata' : '⚠ Segnalata'}</span>
         </div>
         <div class="qc-issues">${issues}</div>
