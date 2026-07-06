@@ -169,6 +169,7 @@ async def auth_middleware(request: Request, call_next):
     # Clip previews need to be exempt because browsers can't send headers for <video src>
     if (path in ("/", "", "/health")
             or path.startswith("/static")
+            or path.startswith("/test-scratch/")
             or "/clip/" in path
             or path.endswith("/download")
             or "/image/" in path):
@@ -188,6 +189,23 @@ if (BASE_DIR / "ui.html").exists():
 
 
 # ── Utility endpoints ──────────────────────────────────────────────────────────
+
+@app.get("/test-scratch/{filename}")
+def serve_test_scratch(filename: str):
+    """Serves files ONLY from jobs/_test_scratch/ — a dedicated directory
+    for depth-rendering (or any other) test output that is NEVER touched
+    by production job assembly code. This exists specifically so testing
+    can never again contaminate a real client job's clips folder, which
+    happened once already and corrupted a delivered video.
+    """
+    # Reject any path traversal attempt
+    if "/" in filename or ".." in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    test_path = JOBS_DIR / "_test_scratch" / filename
+    if not test_path.exists():
+        raise HTTPException(status_code=404, detail="Test file not found")
+    return FileResponse(str(test_path), media_type="video/mp4")
+
 
 @app.get("/health")
 def health():

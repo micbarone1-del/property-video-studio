@@ -162,18 +162,47 @@ def _reproject_frame(image: np.ndarray, depth: np.ndarray, dx: float, dy: float,
     h, w = depth.shape
     yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
 
-    # CRITICAL FIX: normalise depth per-image to full 0..1 range.
-    # Raw depth values vary wildly between photos — a shallow bathroom might
-    # have mean depth 0.17, meaning parallax_strength stays tiny everywhere
-    # and movement becomes imperceptible even with strong dx/dy/dz inputs.
-    # Stretching to the image's own min-max range ensures the nearest point
-    # in THIS photo always gets full parallax strength, regardless of the
-    # depth model's absolute output scale for that particular scene.
-    d_min, d_max = depth.min(), depth.max()
-    if d_max - d_min > 1e-6:
-        parallax_strength = (depth - d_min) / (d_max - d_min)
+    # FIX 1: percentile-based normalisation instead of raw min/max.
+    # A single small bright region (e.g. a doorway sliver) can dominate a
+    # min-max stretch, compressing the REST of the room's depth variation
+    # down near zero — meaning walls/floor (what the eye actually reads for
+    # parallax) barely move, while that one small region gets a hugely
+    # disproportionate shift, which looks like warping rather than movement.
+    # Clipping to the 5th-95th percentile before stretching spreads the
+    # BULK of the scene's real depth variation across the full 0..1 range.
+    # FIX 1 (refined): compute the normalisation range from the CENTRE
+    # region of the frame only. Real estate photos often have doors or
+    # windows compositionally placed near frame edges — these can occupy
+    # a large enough fraction of pixels (10%+) that simple percentile
+    # clipping over the WHOLE image still gets dominated by them. The
+    # centre of the frame is much more likely to represent "the room
+    # itself" — the walls/floor/furniture the eye actually reads for
+    # parallax — so we scale based on that, then apply the resulting
+    # scale to the full image (edges still move, just using a scale
+    # that isn't skewed by what's compositionally at the frame border).
+    ch0, ch1 = int(h * 0.2), int(h * 0.8)
+    cw0, cw1 = int(w * 0.2), int(w * 0.8)
+    center_region = depth[ch0:ch1, cw0:cw1]
+    p5, p95 = np.percentile(center_region, [5, 95])
+    if p95 - p5 > 1e-6:
+        parallax_strength = np.clip((depth - p5) / (p95 - p5), 0.0, 1.0).astype(np.float32)
     else:
-        parallax_strength = depth  # flat scene, fall back to raw values
+        parallax_strength = depth.astype(np.float32)  # flat scene, fall back to raw values
+
+    # FIX 2: edge-gradient damping. Sharp depth discontinuities (door frames,
+    # furniture edges) are exactly where naive per-pixel shifting tears the
+    # image — foreground and background on either side of the edge want to
+    # move by very different amounts, and interpolation between them warps.
+    # Damping movement specifically where the LOCAL depth gradient is high
+    # prevents tearing at these boundaries without needing full 3D mesh
+    # reconstruction — the trade-off is slightly less parallax exactly at
+    # edges, in exchange for those edges staying visually stable.
+    grad_x = cv2.Sobel(parallax_strength, cv2.CV_32F, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(parallax_strength, cv2.CV_32F, 0, 1, ksize=3)
+    gradient_mag = np.sqrt(grad_x**2 + grad_y**2)
+    gradient_mag = cv2.GaussianBlur(gradient_mag, (5, 5), 0)  # smooth the damping mask itself
+    edge_damping = 1.0 / (1.0 + gradient_mag * 8.0)  # high gradient → damping approaches 0
+    parallax_strength = parallax_strength * edge_damping
 
     shift_x = dx * w * _TEST_SHIFT_MULT * parallax_strength
     shift_y = dy * h * _TEST_SHIFT_MULT * parallax_strength
