@@ -71,6 +71,7 @@ _FRAME_COST = {
 TIER_COST_PER_CLIP = {
     "eco":      LYRA_COST_81_FRAMES + (8 * TOPAZ_COST_PER_SEC),  # Lyra + Topaz
     "standard": 0.56,   # Kling 2.5 Turbo Pro (kept for backward compat)
+    "luma":     0.46,   # Luma Ray 2 — new default, confirmed reliable via testing
     "premium":  0.80,   # Veo 3.1 Fast
 }
 
@@ -244,7 +245,12 @@ def format_cost_display(cost: dict, previous_reworks: list = None) -> dict:
     lines = []
     if cost.get("video_eur", 0) > 0:
         tier = cost.get("model_tier", "premium")
-        tier_labels = {"eco": "Lyra 2.0 + Topaz", "standard": "Kling 2.5 Turbo", "premium": "Veo 3.1 Fast", "premium_veo": "Veo 3.1 Standard"}
+        tier_labels = {
+            "eco":      "Lyra 2.0 + Topaz",
+            "standard": "Kling 2.5 Turbo",
+            "luma":     "Luma Ray 2",
+            "premium":  "Veo 3.1 Fast",
+        }
         model_label = tier_labels.get(tier, "Veo 3.1 Fast")
         if cost.get("ltx_clips", 0) > 0:
             model_label += f" + LTX fallback ({cost['ltx_clips']} clips)"

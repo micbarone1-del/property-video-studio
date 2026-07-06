@@ -308,9 +308,10 @@
         <div>
           <label>Video quality tier</label>
           <select id="model-tier" onchange="onTierChange(this.value)">
-            <option value="eco">Eco — Lyra 2.0 + upscale (~€0.12/clip) · budget</option>
-            <option value="premium" selected>⭐ Professional — Veo 3.1 Fast (~€0.80/clip) · recommended</option>
-            <option value="premium_veo">Premium — Veo 3.1 Standard (~€1.60/clip) · no circular wipe</option>
+            <option value="eco">Eco — Lyra 2.0 + upscale (~€0.05/clip) · budget</option>
+            <option value="luma" selected>⭐ Luma Ray 2 (~€0.46/clip) · consigliato — 3D reale, no warping</option>
+            <option value="premium">Veo 3.1 Fast (~€0.80/clip)</option>
+            <option value="premium_veo">Veo 3.1 Standard (~€1.60/clip) · no circular wipe</option>
           </select>
         </div>
         <div>
@@ -1344,8 +1345,8 @@ async function updateCostEstimate() {
   const visionQc     = document.getElementById('do-vision-qc').checked;
 
   // Cost per 8s clip by tier
-  const TIER_COST    = { eco: 0.12, premium: 0.80, premium_veo: 1.60 };
-  const CLIP_COST    = TIER_COST[tier] || 0.80;
+  const TIER_COST    = { eco: 0.05, luma: 0.46, premium: 0.80, premium_veo: 1.60 };
+  const CLIP_COST    = TIER_COST[tier] || 0.46;
   const UPSCALE      = 0.030;
   const VIDEO_UP_PER_SEC = 0.02;
   const EL_PER_CHAR  = 0.0003;
@@ -1362,7 +1363,7 @@ async function updateCostEstimate() {
   const visCost   = visionQc ? n * 2 * FLORENCE : 0;
   const total     = videoCost + upCost + vidUpCost + ttsCost + visCost + INFRA;
 
-  const tierLabel = { eco: 'Lyra 2.0 + Topaz', premium: 'Veo 3.1 Fast', premium_veo: 'Veo 3.1 Standard' };
+  const tierLabel = { eco: 'Lyra 2.0 + Topaz', luma: 'Luma Ray 2', premium: 'Veo 3.1 Fast', premium_veo: 'Veo 3.1 Standard' };
   const panel = document.getElementById('cost-panel');
   const lines = document.getElementById('cost-lines');
   panel.style.display = 'block';

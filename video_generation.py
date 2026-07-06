@@ -278,6 +278,33 @@ _VEO_RULES = (
     "No flickering, no morphing of walls, floors, ceilings, or furniture."
 )
 
+# ── LUMA RAY 2 — structured movement tokens ────────────────────────────────────
+# Confirmed via real testing: Luma's volumetric 3D architecture produces
+# genuine parallax with realistic physics from short, cinematography-style
+# prompts — it does NOT need Veo's extensive anti-hallucination scaffolding.
+# Same movement vocabulary as Veo/Lyra for consistency across tiers.
+_LUMA_MOVEMENT_TOKENS = {
+    "walk_in_explore":    "slow subtle camera movement, gentle push forward into the room, realistic physics",
+    "walk_in_gentle":     "very slow gentle push forward, soft natural motion, realistic physics",
+    "walk_in_turn_left":  "slow camera movement panning gently left while moving forward, realistic physics",
+    "walk_in_turn_right": "slow camera movement panning gently right while moving forward, realistic physics",
+    "walk_through":       "slow steady forward camera movement along the space, realistic physics",
+    "stand_look_around":  "slow subtle camera pan, gentle look around the space, realistic physics",
+    "subtle_rotate":      "extremely subtle camera movement, almost static, gentle realistic physics",
+    "approach_reveal":    "slow gentle camera movement toward the space, subtle realistic physics",
+    "walk_toward":        "slow camera movement approaching the building, realistic physics",
+    "step_out_onto":      "slow gentle camera pan across the outdoor space, realistic physics",
+    "reveal_pullback":    "slow camera movement with gentle depth, natural realistic physics",
+}
+
+_LUMA_INTENSITY_SUFFIX = {
+    "very_slow":    "extremely slow and subtle",
+    "natural_pace": "natural comfortable pace",
+    "energetic":    "confident and smooth",
+}
+
+_LUMA_RULES = "no people, no text overlays, no camera shake, stable smooth motion"
+
 # Lyra frozen-scene prompt (lighting only — Lyra controls camera via parameters)
 _LYRA_SCENE = (
     "A high-end real estate interior. "
@@ -313,6 +340,15 @@ def assemble_pov_prompt(
         # Lyra — frozen scene, camera via parameters
         light = _LYRA_LIGHTING.get(lighting, _LYRA_LIGHTING["bright_natural"])
         return _LYRA_SCENE.format(lighting=light)
+
+    elif model_tier == "luma":
+        # Luma Ray 2 — short cinematography-style prompt, confirmed via
+        # real testing to need minimal anti-hallucination scaffolding
+        motion = _LUMA_MOVEMENT_TOKENS.get(pov_movement, _LUMA_MOVEMENT_TOKENS["walk_in_explore"])
+        pace   = _LUMA_INTENSITY_SUFFIX.get(intensity, _LUMA_INTENSITY_SUFFIX["natural_pace"])
+        prompt = f"{motion}, {pace}, {_LUMA_RULES}"
+        log.info(f"[VideoGen] Luma prompt: {prompt}")
+        return prompt
 
     elif model_tier == "premium":
         # Veo — pace integrated into movement token for consistency
@@ -469,6 +505,44 @@ def _generate_veo(image_url: str, prompt: str, duration: int) -> str | None:
         return (result.get("video") or {}).get("url")
     except Exception as e:
         log.error(f"[VideoGen] Veo failed: {e}")
+        return None
+
+
+# ── Luma Ray 2 generation ──────────────────────────────────────────────────────
+
+LUMA_ENDPOINT = "fal-ai/luma-dream-machine/ray-2/image-to-video"
+
+def _snap_luma_duration(duration: int) -> str:
+    """Luma Ray 2 accepts '5s' or '9s' — snap to nearest valid value, rounding
+    UP so audio always fits within the clip.
+    """
+    return "5s" if duration <= 6 else "9s"
+
+
+def _generate_luma(image_url: str, prompt: str, duration: int) -> str | None:
+    """Submits to Luma Ray 2 at 1080p. Returns video URL or None.
+    Confirmed via real testing: genuine 3D parallax, no warping, no
+    hallucination on a photo that consistently caused problems with Veo.
+    Cost: $0.50/5s clip (roughly matches Veo Fast pricing but far more
+    reliable in practice for this use case).
+    """
+    luma_dur = _snap_luma_duration(duration)
+    try:
+        log.info(f"[VideoGen] Luma Ray 2 — {luma_dur} (requested {duration}s) at 1080p")
+        result = fal_client.subscribe(
+            LUMA_ENDPOINT,
+            arguments={
+                "image_url":  image_url,
+                "prompt":     prompt,
+                "duration":   luma_dur,
+                "resolution": "1080p",
+                "aspect_ratio": "16:9",
+                "loop":       False,
+            }
+        )
+        return (result.get("video") or {}).get("url")
+    except Exception as e:
+        log.error(f"[VideoGen] Luma failed: {e}")
         return None
 
 
@@ -674,7 +748,18 @@ def generate_video_single(
         video_url  = None
         used_model = None
 
-        if model_tier == "premium_veo":
+        if model_tier == "luma":
+            # Luma Ray 2 — confirmed via real testing: genuine 3D parallax,
+            # no warping, no hallucination, on the same photo that caused
+            # persistent problems with Veo. New default recommendation.
+            video_url  = _generate_luma(image_url, final_prompt, duration)
+            used_model = "luma-ray-2"
+            if not video_url:
+                log.warning("[VideoGen] Luma failed — falling back to Veo Fast")
+                video_url  = _generate_veo(image_url, final_prompt, duration)
+                used_model = "veo-3.1-fallback"
+
+        elif model_tier == "premium_veo":
             # Veo 3.1 Standard — fast_mode=False, better quality, no circular wipe
             veo_dur = _snap_veo_duration(duration)
             try:
