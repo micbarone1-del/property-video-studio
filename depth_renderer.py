@@ -42,6 +42,11 @@ DEPTH_ENDPOINT = "fal-ai/image-preprocessors/depth-anything/v2"
 TARGET_W, TARGET_H = 1920, 1080
 FPS = 24
 
+# Configurable strength multipliers — batch_depth_test.py overrides these
+# per-variant to efficiently compare parameter combinations in one run.
+_TEST_SHIFT_MULT = 0.25   # lateral shift strength
+_TEST_ZOOM_MULT  = 0.35   # push/pull (dolly) strength
+
 
 # ── Depth estimation ────────────────────────────────────────────────────────────
 
@@ -170,12 +175,12 @@ def _reproject_frame(image: np.ndarray, depth: np.ndarray, dx: float, dy: float,
     else:
         parallax_strength = depth  # flat scene, fall back to raw values
 
-    shift_x = dx * w * 0.25 * parallax_strength
-    shift_y = dy * h * 0.25 * parallax_strength
+    shift_x = dx * w * _TEST_SHIFT_MULT * parallax_strength
+    shift_y = dy * h * _TEST_SHIFT_MULT * parallax_strength
 
     # Push/pull: near pixels move outward from centre faster (dolly zoom effect)
     cx, cy = w / 2.0, h / 2.0
-    zoom_factor = 1.0 + dz * 0.35 * parallax_strength
+    zoom_factor = 1.0 + dz * _TEST_ZOOM_MULT * parallax_strength
     src_x = cx + (xx - cx) / np.clip(zoom_factor, 0.4, 2.5) - shift_x
     src_y = cy + (yy - cy) / np.clip(zoom_factor, 0.4, 2.5) - shift_y
 
