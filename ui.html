@@ -381,6 +381,7 @@
   <!-- ③ Scenes -->
   <section>
     <p class="sec-label">Scenes — one per photo</p>
+    <div id="editing-job-indicator" style="display:none;font-size:.78rem;color:var(--muted);margin-bottom:10px;padding:6px 12px;background:var(--paper);border-radius:6px;font-family:monospace"></div>
     <div id="scenes-container">
       <div class="empty-state">Upload photos above to configure scenes</div>
     </div>
@@ -475,6 +476,7 @@ async function stopCurrentJob() {
 // ══════════════════════════════════════════════════════════════════════════════
 
 let narrationDistribution = null;  // holds the calculated result until confirmed
+let narrationExistsOnServer = false;  // server truth — persists across page loads/job reopens, unlike narrationDistribution which is session-local
 let durationChangedSceneIndices = new Set();  // scenes whose duration actually changed via narration redistribution
 
 async function generateNarration() {
@@ -804,8 +806,34 @@ async function editJob(jobId, baseJobId) {
     currentJobId = baseJobId;
     files = [];
     newlyAddedSceneIndices.clear();  // fresh job context — no new scenes yet
+    durationChangedSceneIndices.clear();
     Object.keys(sceneAnalysis).forEach(k => delete sceneAnalysis[k]);
     Object.keys(sceneUserData).forEach(k => delete sceneUserData[k]);
+
+    // Restore narration state from the SERVER (not a session-local flag) —
+    // this is what fixes "reopening a job doesn't recognise narration
+    // already exists". narrationExistsOnServer persists this truth
+    // regardless of page reloads or reopening from the library.
+    narrationExistsOnServer = !!job.narration_path;
+    narrationDistribution = null;  // reset calculated result, but flag above tracks real existence
+    const narrationTextEl = document.getElementById('narration-text');
+    if (narrationTextEl) narrationTextEl.value = job.narration_text || '';
+    const narrationStatusEl = document.getElementById('narration-status');
+    if (narrationStatusEl) {
+      narrationStatusEl.textContent = narrationExistsOnServer
+        ? `✓ Narrazione esistente (${job.narration_duration_secs || '?'}s) — modifica il testo e premi Genera voiceover per aggiornarla`
+        : '';
+      narrationStatusEl.style.color = 'var(--muted)';
+    }
+
+    // Show the job ID persistently above the scene cards while editing —
+    // not just buried in the library or final result page — so it's
+    // always clear which video you're currently working on.
+    const indicatorEl = document.getElementById('editing-job-indicator');
+    if (indicatorEl) {
+      indicatorEl.style.display = 'block';
+      indicatorEl.innerHTML = `📁 Stai modificando: <strong>${job.property_name || 'Property'}</strong> — ID: <code>${jobId}</code>`;
+    }
 
     for (let i = 0; i < scenesConfig.length; i++) {
       const scene = scenesConfig[i];
@@ -1634,12 +1662,21 @@ genBtn.addEventListener('click', async () => {
   }
 
   // SAFETY GUARD: if an existing job is loaded and nothing needs video
-  // regeneration, check whether narration was regenerated since the last
-  // assembly — if so, do a CHEAP reassembly-only pass (new audio overlaid
-  // onto existing clips, zero Veo/Luma cost). Only block entirely if
-  // there's truly nothing to do at all.
+  // regeneration, check the SERVER's record of whether this job has
+  // narration (not a browser-memory variable, which is unreliable after
+  // page reload / re-opening the job in a new session). If narration
+  // exists, always offer the cheap reassembly-only pass.
   if (currentJobId) {
-    if (narrationDistribution) {
+    let jobHasNarration = false;
+    try {
+      const jobRes = await authFetch(`${API_BASE}/jobs/${currentJobId}`);
+      if (jobRes.ok) {
+        const jobData = await jobRes.json();
+        jobHasNarration = !!jobData.narration_path;
+      }
+    } catch(_) {}
+
+    if (jobHasNarration) {
       genBtn.disabled    = true;
       genBtn.textContent = 'Riassemblaggio…';
       progSec.style.display = 'block';
