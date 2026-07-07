@@ -403,6 +403,7 @@ async def create_job(
     model_tier: str = Form("standard"),       # eco / standard / premium
     lighting: str = Form("bright_natural"),   # property-level lighting
     intensity: str = Form("natural_pace"),    # property-level motion intensity
+    start_generation: bool = Form(True),      # False = draft mode, no video cost yet
 ):
     # Rate limit check
     client_ip = request.client.host if request.client else "unknown"
@@ -473,10 +474,11 @@ async def create_job(
     )
 
     JOBS[job_id] = {
-        "status":           "queued",
+        "status":           "draft" if not start_generation else "queued",
         "progress":         0,
-        "message":          "Job queued",
+        "message":          "Scene salvate — pronto per narrazione" if not start_generation else "Job queued",
         "scenes":           [],
+        "scenes_config":    scenes_config,  # needed by narration endpoints even in draft mode
         "output_path":      None,
         "created_at":       datetime.utcnow().isoformat(),
         "property_name":    property_name,
@@ -487,6 +489,9 @@ async def create_job(
         "model_tier":       model_tier,
         "lighting":         lighting,
         "intensity":        intensity,
+        "voice_id":         voice_id,
+        "enhance_images":   enhance_images,
+        "upscale_images":   upscale_images,
         "cost_estimate":    format_cost_display(cost_estimate),
         "cost_actual":      None,
         "reworks":          [],
@@ -495,29 +500,95 @@ async def create_job(
     }
     _save_job(job_id)
 
+    if start_generation:
+        background_tasks.add_task(
+            run_pipeline,
+            job_id=job_id,
+            job_dir=job_dir,
+            image_paths=saved_images,
+            scenes_config=scenes_config,
+            property_name=property_name,
+            voice_id=voice_id,
+            do_lighting=enhance_images,
+            do_upscale=upscale_images,
+            transition_style=transition_style,
+            enable_vision_qc=enable_vision_qc,
+            do_video_upscale=do_video_upscale,
+            model_tier=model_tier,
+            lighting=lighting,
+            intensity=intensity,
+        )
+
+    return {
+        "job_id":       job_id,
+        "status":       JOBS[job_id]["status"],
+        "cost_estimate": format_cost_display(cost_estimate),
+    }
+
+
+@app.post("/jobs/{job_id}/start-generation")
+async def start_generation_for_draft(job_id: str, background_tasks: BackgroundTasks):
+    """
+    Triggers actual video generation for a job that was created in draft
+    mode (start_generation=False) — the second half of the narration-first
+    workflow: photos + scenes were saved with no cost, narration was
+    generated and durations confirmed, and NOW generation actually starts
+    with the correct, already-verified durations. No rework ever needed
+    purely for timing reasons.
+    """
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+    if job.get("status") != "draft":
+        raise HTTPException(status_code=400, detail=f"Job is not in draft state (status: {job.get('status')})")
+
+    if not _acquire_job_lock(job_id, "start generation"):
+        lock = _job_lock_status(job_id)
+        raise HTTPException(status_code=409, detail=f"Job is busy ({lock.get('operation')})")
+
+    job_dir = JOBS_DIR / job_id
+    scenes_config = job.get("scenes_config", [])
+    image_paths = []
+    for scene in scenes_config:
+        sid = scene.get("scene_id")
+        for ext in [".jpg", ".jpeg", ".png", ".webp"]:
+            candidate = job_dir / "images" / f"{sid}{ext}"
+            if candidate.exists():
+                image_paths.append(str(candidate))
+                break
+        else:
+            # Fallback to old index-based naming for the same scene
+            idx = scenes_config.index(scene)
+            for ext in [".jpg", ".jpeg", ".png", ".webp"]:
+                candidate = job_dir / "images" / f"scene_{idx:03d}{ext}"
+                if candidate.exists():
+                    image_paths.append(str(candidate))
+                    break
+
+    job["status"]  = "queued"
+    job["message"] = "Generazione avviata"
+    _save_job(job_id)
+    _release_job_lock(job_id)  # run_pipeline manages its own lock internally via its update() calls
+
     background_tasks.add_task(
         run_pipeline,
         job_id=job_id,
         job_dir=job_dir,
-        image_paths=saved_images,
+        image_paths=image_paths,
         scenes_config=scenes_config,
-        property_name=property_name,
-        voice_id=voice_id,
-        do_lighting=enhance_images,
-        do_upscale=upscale_images,
-        transition_style=transition_style,
-        enable_vision_qc=enable_vision_qc,
-        do_video_upscale=do_video_upscale,
-        model_tier=model_tier,
-        lighting=lighting,
-        intensity=intensity,
+        property_name=job.get("property_name", "Property"),
+        voice_id=job.get("voice_id", ""),
+        do_lighting=job.get("enhance_images", True),
+        do_upscale=job.get("upscale_images", True),
+        transition_style=job.get("transition_style", "fade"),
+        enable_vision_qc=job.get("enable_vision_qc", True),
+        do_video_upscale=job.get("do_video_upscale", True),
+        model_tier=job.get("model_tier", "premium"),
+        lighting=job.get("lighting", "bright_natural"),
+        intensity=job.get("intensity", "natural_pace"),
     )
 
-    return {
-        "job_id":       job_id,
-        "status":       "queued",
-        "cost_estimate": format_cost_display(cost_estimate),
-    }
+    return {"job_id": job_id, "status": "queued"}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1498,8 +1569,10 @@ async def run_pipeline(
         for i, (scene, img) in enumerate(zip(scenes_config, enhanced_paths)):
             # Check for cancellation request between scenes
             if JOBS.get(job_id, {}).get("cancel_requested"):
-                log.info(f"[Job {job_id}] Cancellation requested — stopping before scene {i+1}")
-                update("failed", int(35 + (i/n)*40), f"Fermato dall'utente dopo {i} scene")
+                log.info(f"[Job {job_id}] Cancellation requested — stopping before scene {i}")
+                update("stopped", int(35 + (i/n)*40),
+                       f"Fermato dall'utente — {i} di {n} scene completate. "
+                       f"Puoi riassemblare con le scene già pronte, o riavviare la generazione.")
                 return
 
             clip_out     = str(video_clips_dir / f"scene_{i:03d}.mp4")
