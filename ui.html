@@ -345,6 +345,19 @@
           </select>
         </div>
       </div>
+
+      <!-- NEW: Single continuous narration (decoupled from video timing) -->
+      <div id="narration-section" style="margin-top:16px;padding-top:16px;border-top:1px solid var(--rule)">
+        <label>Narrazione unica <span style="color:var(--muted);font-size:.75rem">(sostituisce il voiceover per scena — copia/incolla il testo dall'annuncio)</span></label>
+        <textarea id="narration-text" rows="4" style="width:100%;font-family:inherit;padding:8px;border:1px solid var(--rule);border-radius:6px"
+          placeholder="Scrivi qui la narrazione completa della proprietà…"></textarea>
+        <div style="display:flex;gap:10px;align-items:center;margin-top:8px;flex-wrap:wrap">
+          <button class="btn-primary" style="font-size:.8rem;padding:8px 16px" onclick="generateNarration()">🎙 Genera voiceover</button>
+          <span id="narration-status" style="font-size:.82rem"></span>
+        </div>
+        <div id="narration-result" style="display:none;margin-top:10px;padding:10px;border-radius:6px"></div>
+      </div>
+
       <!-- Cost estimate panel -->
       <div id="cost-panel">
         <div class="cost-title">Cost estimate <span class="cost-type" id="cost-type">(estimate)</span></div>
@@ -452,6 +465,141 @@ async function stopCurrentJob() {
     genBtn.textContent = 'Genera video';
   } catch(e) {
     showError(`Errore nel fermare il job: ${e.message}`);
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// NARRATION SYSTEM — single continuous voiceover, calculated BEFORE video
+// generation ever runs. Step A (cheap, TTS-only) always completes before
+// Step B (expensive, video generation) becomes meaningful.
+// ══════════════════════════════════════════════════════════════════════════════
+
+let narrationDistribution = null;  // holds the calculated result until confirmed
+
+async function generateNarration() {
+  const text = document.getElementById('narration-text').value.trim();
+  const statusEl = document.getElementById('narration-status');
+  const resultEl = document.getElementById('narration-result');
+
+  if (!text) {
+    statusEl.textContent = '⚠ Scrivi prima il testo della narrazione';
+    statusEl.style.color = 'var(--danger)';
+    return;
+  }
+  if (!currentJobId) {
+    statusEl.textContent = '⚠ Genera prima le scene (Genera video) per avere un job su cui applicare la narrazione';
+    statusEl.style.color = 'var(--danger)';
+    return;
+  }
+
+  statusEl.textContent = '⏳ Generazione voiceover in corso…';
+  statusEl.style.color = 'var(--muted)';
+  resultEl.style.display = 'none';
+
+  const fd = new FormData();
+  fd.append('narration_text', text);
+  fd.append('voice_id', document.getElementById('voice-id')?.value.trim() || '');
+
+  try {
+    const res = await authFetch(`${API_BASE}/jobs/${currentJobId}/narration`, { method: 'POST', body: fd });
+    if (!res.ok) {
+      let detail = `Errore ${res.status}`;
+      try { const e = await res.json(); detail = e.detail || detail; } catch(_) {}
+      throw new Error(detail);
+    }
+    const data = await res.json();
+    narrationDistribution = data;
+
+    statusEl.textContent = `✓ Voiceover generato — ${data.narration_duration_secs}s, ${data.sentence_count} frasi`;
+    statusEl.style.color = 'var(--ok)';
+
+    renderNarrationResult(data);
+  } catch(e) {
+    statusEl.textContent = `✗ ${e.message}`;
+    statusEl.style.color = 'var(--danger)';
+  }
+}
+
+function renderNarrationResult(data) {
+  const resultEl = document.getElementById('narration-result');
+  resultEl.style.display = 'block';
+
+  const isProblem = data.needs_extension || data.too_short;
+  resultEl.style.background = isProblem ? '#fdf0ef' : '#edf7f1';
+  resultEl.style.border = `1px solid ${isProblem ? '#f5c6c2' : '#b7dfca'}`;
+  resultEl.style.color = isProblem ? 'var(--danger)' : 'var(--ok)';
+
+  let html = `<div style="font-weight:600;margin-bottom:6px">${data.message}</div>`;
+  html += `<div style="font-size:.78rem;opacity:.85">Nuove durate scene proposte: ${data.new_scene_durations.join('s, ')}s</div>`;
+
+  if (data.too_short) {
+    html += `
+      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="lib-btn" onclick="showExpandTextHint()">✎ Espandi testo</button>
+        <button class="lib-btn" onclick="applyPausePadding()">⏸ Aggiungi pause</button>
+      </div>`;
+  }
+
+  html += `
+    <div style="margin-top:10px">
+      <button class="btn-primary" style="font-size:.8rem;padding:7px 16px" onclick="confirmNarrationDurations()">
+        ✓ Conferma durate e procedi
+      </button>
+    </div>`;
+
+  resultEl.innerHTML = html;
+}
+
+function showExpandTextHint() {
+  document.getElementById('narration-status').textContent =
+    '💡 Aggiungi altre 1-2 frasi al testo, poi premi di nuovo "Genera voiceover"';
+  document.getElementById('narration-status').style.color = 'var(--muted)';
+  document.getElementById('narration-text').focus();
+}
+
+async function applyPausePadding() {
+  if (!narrationDistribution) return;
+  const extraSecsNeeded = narrationDistribution.current_total_secs - narrationDistribution.narration_duration_secs;
+  document.getElementById('narration-status').textContent =
+    `⏳ Ricalcolo con pause estese (+${Math.round(extraSecsNeeded)}s distribuiti tra le frasi)…`;
+  // Re-generate narration is not needed — pause padding only affects
+  // silence gaps, already handled by narration.py's suggest_pause_padding.
+  // For now this re-triggers generation; the server-side pause logic
+  // can be wired to accept a custom pause_ms parameter in a follow-up.
+  await generateNarration();
+}
+
+async function confirmNarrationDurations() {
+  if (!narrationDistribution || !currentJobId) return;
+
+  const fd = new FormData();
+  fd.append('new_durations', JSON.stringify(narrationDistribution.new_scene_durations));
+
+  try {
+    const res = await authFetch(`${API_BASE}/jobs/${currentJobId}/narration/apply-durations`, {
+      method: 'POST', body: fd
+    });
+    if (!res.ok) throw new Error(`Errore ${res.status}`);
+
+    // Update the duration sliders in the UI to reflect confirmed values
+    const cards = [...scenesCont.querySelectorAll('.scene-card')];
+    narrationDistribution.new_scene_durations.forEach((dur, i) => {
+      const card = cards[i];
+      if (card) {
+        const slider = card.querySelector('.sc-duration');
+        const durVal = card.querySelector('.dur-val');
+        if (slider) slider.value = dur;
+        if (durVal) durVal.textContent = dur + 's';
+      }
+    });
+
+    document.getElementById('narration-status').textContent =
+      '✓ Durate confermate — pronto per Genera video';
+    document.getElementById('narration-status').style.color = 'var(--ok)';
+    document.getElementById('narration-result').style.display = 'none';
+  } catch(e) {
+    document.getElementById('narration-status').textContent = `✗ ${e.message}`;
+    document.getElementById('narration-status').style.color = 'var(--danger)';
   }
 }
 

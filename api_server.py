@@ -462,6 +462,99 @@ async def create_job(
     }
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# NARRATION SYSTEM — single continuous voiceover, decoupled from video timing
+# ══════════════════════════════════════════════════════════════════════════════
+# Step A ("Genera voiceover") — cheap, TTS-only. Measures actual duration,
+# calculates required scene durations BEFORE any video generation.
+# Step B ("Genera video") — only runs once duration is confirmed correct.
+# This prevents ever paying for a wrongly-timed video clip.
+
+@app.post("/jobs/{job_id}/narration")
+async def generate_narration(
+    job_id: str,
+    narration_text: str = Form(...),
+    voice_id: str = Form(""),
+):
+    """
+    Step A: generates the narration audio ONLY (cheap — ElevenLabs cost
+    only, no Veo/Luma cost). Measures the actual duration and returns
+    the calculated scene duration distribution for the UI to display
+    BEFORE any video generation happens.
+    """
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+
+    if not _acquire_job_lock(job_id, "generate narration"):
+        lock = _job_lock_status(job_id)
+        raise HTTPException(status_code=409, detail=f"Job is busy ({lock.get('operation')})")
+
+    try:
+        job_dir = JOBS_DIR / job_id
+        narration_path = str(job_dir / "narration.mp3")
+
+        from narration import generate_narration_audio, calculate_scene_durations
+        result = await asyncio.to_thread(
+            generate_narration_audio, narration_text, narration_path,
+            voice_id or None
+        )
+
+        if not result.get("ok"):
+            raise HTTPException(status_code=500, detail=result.get("error", "Narration generation failed"))
+
+        scenes_config = job.get("scenes_config", [])
+        n_scenes = len(scenes_config)
+        current_durations = [int(s.get("duration", 6)) for s in scenes_config] or [6] * n_scenes
+
+        distribution = calculate_scene_durations(
+            narration_duration_secs=result["duration_secs"],
+            scene_count=n_scenes,
+            current_durations=current_durations,
+        )
+
+        job["narration_text"] = narration_text
+        job["narration_path"] = narration_path
+        job["narration_duration_secs"] = result["duration_secs"]
+        job["narration_sentence_timings"] = result.get("sentence_timings", [])
+        _save_job(job_id)
+
+        return {
+            "job_id": job_id,
+            "narration_duration_secs": result["duration_secs"],
+            "sentence_count": result.get("sentence_count", 0),
+            **distribution,
+        }
+    finally:
+        _release_job_lock(job_id)
+
+
+@app.post("/jobs/{job_id}/narration/apply-durations")
+async def apply_narration_durations(job_id: str, new_durations: str = Form(...)):
+    """
+    Applies the calculated (or user-adjusted) scene durations to the job's
+    scenes_config BEFORE video generation — the final confirmation step
+    of the "calculate first, generate once" flow.
+    """
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+
+    try:
+        durations = json.loads(new_durations)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid durations: {e}")
+
+    scenes_config = job.get("scenes_config", [])
+    for i, d in enumerate(durations):
+        if i < len(scenes_config):
+            scenes_config[i]["duration"] = d
+    job["scenes_config"] = scenes_config
+    _save_job(job_id)
+
+    return {"job_id": job_id, "scenes_config": scenes_config}
+
+
 # ── Job status & download ──────────────────────────────────────────────────────
 
 @app.get("/jobs/")
