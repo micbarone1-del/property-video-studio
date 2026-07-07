@@ -1395,15 +1395,47 @@ async def run_pipeline(
         models_used    = []
         audio_chars    = []
 
-        # ── Stage 1: Image enhancement ────────────────────────────────────
+        # ── Stage 1: Watermark removal (explicit per-scene, AI-driven) ────
+        # Only runs for scenes where the user explicitly checked the
+        # "remove watermark" toggle — never automatic. If removal fails,
+        # we fall back to the original image and flag it as a QC issue
+        # rather than silently using a possibly-botched result.
+        from watermark_removal import remove_watermark
+        watermark_qc_issues = []
+        working_image_paths = list(image_paths)  # may get swapped per-scene below
+
+        for i, scene in enumerate(scenes_config):
+            if not scene.get("remove_watermark"):
+                continue
+            update("running", int(2 + (i/n)*3), f"Rimozione watermark scena {i}…")
+            wm_out = str(enhanced_dir / f"scene_{i:03d}_dewatermarked.jpg")
+            wm_result = await asyncio.to_thread(remove_watermark, image_paths[i], wm_out)
+            if wm_result.get("ok"):
+                working_image_paths[i] = wm_out
+                log.info(f"[Job {job_id}] Watermark removed for scene {i}")
+            else:
+                watermark_qc_issues.append(i)
+                log.warning(f"[Job {job_id}] Watermark removal failed for scene {i} — "
+                            f"using original image, flagged for QC review")
+
+        # ── Stage 2: Image enhancement ────────────────────────────────────
         from image_enhance import enhance_image
-        for i, img_path in enumerate(image_paths):
+        for i, img_path in enumerate(working_image_paths):
             update("running", int(5 + (i/n)*15), f"Enhancing image {i} of {n-1} (scene_{i:03d})…")
             out    = str(enhanced_dir / f"scene_{i:03d}_enhanced.jpg")
             result = await asyncio.to_thread(enhance_image, img_path, out, do_lighting, do_upscale)
             enhanced_paths.append(result)
 
-        # ── Stage 2: TTS audio + TTS QC → sets actual clip duration ──────
+        # Surface any watermark removal failures as QC issues now that
+        # enhancement is done and qc_results exists to append into
+        for i in watermark_qc_issues:
+            qc_results.append({
+                "scene": i, "type": "watermark",
+                "verdict": "flag",
+                "issues": ["Rimozione watermark non riuscita — immagine originale usata, watermark ancora presente"],
+            })
+
+        # ── Stage 3: TTS audio + TTS QC → sets actual clip duration ──────
         from voice_generation import generate_speech as generate_voice
         from vision_analysis  import analyse_tts
 

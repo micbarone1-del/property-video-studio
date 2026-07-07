@@ -1196,6 +1196,7 @@ function saveSceneData() {
       duration:     card.querySelector('.sc-duration')?.value || '8',
       space_type:   card.querySelector('.sc-space-type')?.value || 'large',
       pov_movement: card.querySelector('.sc-pov-movement')?.value || 'walk_in_explore',
+      remove_watermark: card.querySelector('.sc-remove-watermark')?.checked || false,
       rework_open:  document.getElementById(`rw-panel-${i}`)?.classList.contains('open') || false,
     };
   });
@@ -1308,6 +1309,12 @@ function renderScenes() {
               <span class="dur-val">${saved.duration||'8'}s</span>
             </div>
           </div>
+        </div>
+        <div style="margin-top:8px">
+          <label style="display:flex;align-items:center;gap:6px;font-size:.8rem;cursor:pointer">
+            <input type="checkbox" class="sc-remove-watermark" ${saved.remove_watermark ? 'checked' : ''} />
+            Rimuovi watermark/logo da questa foto
+          </label>
         </div>
       </div>
       ${reworkPanel}`;
@@ -1544,6 +1551,7 @@ function getScenesConfig() {
     duration:     parseInt(card.querySelector('.sc-duration').value, 10),
     space_type:   card.querySelector('.sc-space-type').value,
     pov_movement: card.querySelector('.sc-pov-movement').value,
+    remove_watermark: card.querySelector('.sc-remove-watermark')?.checked || false,
   }));
 }
 
