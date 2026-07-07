@@ -1214,12 +1214,31 @@ async def run_reassemble_only(job_id: str):
 
         clip_paths  = []
         audio_paths = []
-        for scene in scenes_config:
+        for scene_idx, scene in enumerate(scenes_config):
             sid = scene.get("scene_id")
             clip_path  = job_dir / "clips" / f"{sid}.mp4"
             audio_path = job_dir / "audio" / f"{sid}.mp3"
+
+            # FALLBACK: some jobs predate the scene_id architecture and
+            # only have legacy scene_NNN.mp4 / scene_NNN.mp3 files. If the
+            # scene_id-named file isn't found, fall back to the legacy
+            # index-based name — and self-heal by copying it to the new
+            # scene_id name, so this fallback is never needed again for
+            # this job on future reassembly calls.
             if not clip_path.exists():
-                log.warning(f"[Job {job_id}] Missing clip for scene {sid} — skipping from assembly")
+                legacy_clip = job_dir / "clips" / f"scene_{scene_idx:03d}.mp4"
+                if legacy_clip.exists():
+                    shutil.copy2(str(legacy_clip), str(clip_path))
+                    log.info(f"[Job {job_id}] Migrated legacy clip scene_{scene_idx:03d}.mp4 → {sid}.mp4")
+
+            if not audio_path.exists():
+                legacy_audio = job_dir / "audio" / f"scene_{scene_idx:03d}.mp3"
+                if legacy_audio.exists():
+                    shutil.copy2(str(legacy_audio), str(audio_path))
+                    log.info(f"[Job {job_id}] Migrated legacy audio scene_{scene_idx:03d}.mp3 → {sid}.mp3")
+
+            if not clip_path.exists():
+                log.warning(f"[Job {job_id}] Missing clip for scene {sid} (index {scene_idx}) — skipping from assembly")
                 continue
             clip_paths.append(str(clip_path))
             audio_paths.append(str(audio_path) if audio_path.exists() else None)
