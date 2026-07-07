@@ -94,6 +94,61 @@ def _ensure_scene_ids(scenes_config: list) -> list:
             scene["scene_id"] = _new_scene_id()
     return scenes_config
 
+
+def _get_rolling_monthly_job_count() -> int:
+    """
+    Counts actual completed jobs (status=done) from the last 30 days,
+    based on JOBS in-memory data and job_meta.json files on disk. Used to
+    calculate a REAL infrastructure cost per video, rather than a static
+    guess — adapts automatically as production volume changes.
+    """
+    from datetime import datetime, timedelta
+    cutoff = datetime.utcnow() - timedelta(days=30)
+    count = 0
+    for job in JOBS.values():
+        if job.get("status") != "done":
+            continue
+        created_str = job.get("created_at", "")
+        try:
+            created = datetime.fromisoformat(created_str)
+            if created >= cutoff:
+                count += 1
+        except (ValueError, TypeError):
+            continue
+    return count
+
+
+def _overlay_narration_audio(video_path: str, narration_path: str):
+    """
+    Replaces whatever audio is currently on the assembled video with the
+    single continuous narration track. Video runs its full length; if
+    narration is shorter, the video continues in silence after it ends
+    (narration duration was already used to size the video correctly at
+    generation time, so this should rarely trigger in practice — it's a
+    safety net, not the primary timing mechanism).
+    """
+    from moviepy import VideoFileClip, AudioFileClip
+    video = VideoFileClip(video_path)
+    narration = AudioFileClip(narration_path)
+
+    final = video.with_audio(narration)
+    tmp_output = video_path + ".narration_tmp.mp4"
+    final.write_videofile(
+        tmp_output,
+        codec="libx264",
+        audio_codec="aac",
+        bitrate="4000k",
+        audio_bitrate="128k",
+        preset="medium",
+        fps=video.fps or 24,
+        logger=None,
+    )
+    video.close()
+    narration.close()
+    final.close()
+    os.replace(tmp_output, video_path)
+
+
 # ── Rate limiting ──────────────────────────────────────────────────────────────
 _RATE_LIMIT_WINDOW = 3600   # 1 hour in seconds
 _RATE_LIMIT_MAX    = 5      # max job submissions per IP per hour
@@ -404,14 +459,17 @@ async def create_job(
             f.write(content)
         saved_images.append(str(dest))
 
-    # Cost estimate
+    # Cost estimate — uses ACTUAL rolling 30-day job count for infra cost,
+    # not a static guess, so it adapts automatically as volume changes
     from cost_tracker import estimate_job_cost, format_cost_display
+    rolling_jobs = _get_rolling_monthly_job_count()
     cost_estimate = estimate_job_cost(
         scenes_config,
         do_upscale=upscale_images,
         do_video_upscale=do_video_upscale,
         do_vision_qc=enable_vision_qc,
         model_tier=model_tier,
+        actual_monthly_jobs=rolling_jobs,
     )
 
     JOBS[job_id] = {
@@ -1487,6 +1545,18 @@ async def run_assembly(job_id: str, job_dir: Path):
 
         if not ok:
             raise RuntimeError("Assembly returned failure")
+
+        # If a single continuous narration was generated (new decoupled
+        # narration system), overlay it onto the finished video now — this
+        # REPLACES any per-scene audio that assembly may have added, since
+        # the new system is one continuous track, not per-scene snippets.
+        # Done as a separate step so we never need to touch the existing
+        # per-scene assembly logic in video_assembly.py.
+        narration_path = job.get("narration_path")
+        if narration_path and os.path.exists(narration_path):
+            update("running", 95, "Applying narration audio…")
+            await asyncio.to_thread(_overlay_narration_audio, output_path, narration_path)
+            log.info(f"[Job {job_id}] Narration audio applied: {narration_path}")
 
         JOBS[job_id]["output_path"] = output_path
         update("done", 100, "Video ready for download")

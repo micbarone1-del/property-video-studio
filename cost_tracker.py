@@ -46,10 +46,22 @@ FLORENCE_COST_PER_CALL = 0.0002
 # ElevenLabs TTS — per character
 ELEVENLABS_COST_PER_CHAR = float(os.getenv("ELEVENLABS_COST_PER_CHAR", "0.0003"))
 
-# Infrastructure
-VPS_MONTHLY_EUR    = float(os.getenv("VPS_MONTHLY_COST_EUR",   "52.45"))
-MONTHLY_JOBS       = int(  os.getenv("MONTHLY_JOBS_ESTIMATE",  "20"))
-INFRA_COST_PER_JOB = VPS_MONTHLY_EUR / max(MONTHLY_JOBS, 1)
+# Infrastructure — updated to annual Hostinger plan: $371.88 + 22% VAT = $453.69/year
+VPS_MONTHLY_EUR      = float(os.getenv("VPS_MONTHLY_COST_EUR", "34.79"))  # ~$37.81/mo at 0.92 EUR/USD
+MONTHLY_JOBS_DEFAULT = int(os.getenv("MONTHLY_JOBS_ESTIMATE", "20"))  # fallback if no rolling data yet
+
+def get_infra_cost_per_job(actual_monthly_jobs: int = None) -> float:
+    """
+    Infrastructure cost per video, based on ACTUAL rolling job volume when
+    available (passed in from api_server.py's real job history), falling
+    back to the static estimate only when no real data exists yet (e.g.
+    very first jobs before any history has accumulated).
+    """
+    job_count = actual_monthly_jobs if actual_monthly_jobs and actual_monthly_jobs > 0 else MONTHLY_JOBS_DEFAULT
+    return VPS_MONTHLY_EUR / max(job_count, 1)
+
+# Static fallback for any code path not yet passing actual_monthly_jobs
+INFRA_COST_PER_JOB = get_infra_cost_per_job()
 
 # Frame mapping (mirrors video_generation.py)
 _DURATION_TO_FRAMES = {
@@ -77,13 +89,18 @@ TIER_COST_PER_CLIP = {
 
 
 def estimate_job_cost(
-    scenes:           list,
-    do_upscale:       bool = True,
-    do_video_upscale: bool = True,
-    do_vision_qc:     bool = True,
-    model_tier:       str  = "premium",
+    scenes:              list,
+    do_upscale:          bool = True,
+    do_video_upscale:    bool = True,
+    do_vision_qc:        bool = True,
+    model_tier:          str  = "premium",
+    actual_monthly_jobs: int  = None,
 ) -> dict:
-    """Estimates the total cost of a job before generation starts."""
+    """Estimates the total cost of a job before generation starts.
+    actual_monthly_jobs: real rolling count of jobs completed in the last
+    30 days, passed from api_server.py — used to calculate the true
+    per-video infrastructure share rather than a static guess.
+    """
     n = len(scenes)
 
     # Video generation cost — tier-aware
@@ -102,7 +119,7 @@ def estimate_job_cost(
     tts_cost     = total_chars * ELEVENLABS_COST_PER_CHAR
     vision_calls = (n * 2) if do_vision_qc else 0
     vision_cost  = vision_calls * FLORENCE_COST_PER_CALL
-    infra_cost   = INFRA_COST_PER_JOB
+    infra_cost   = get_infra_cost_per_job(actual_monthly_jobs)
     total = video_cost + upscale_cost + video_upscale_cost + tts_cost + vision_cost + infra_cost
 
     return {

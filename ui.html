@@ -1414,6 +1414,35 @@ function toggleRework(i) {
 function onDurationChange(input) {
   input.closest('.sc-fields').querySelector('.dur-val').textContent = input.value + 's';
   updateCostEstimate();
+  checkNarrationDurationMatch();
+}
+
+function checkNarrationDurationMatch() {
+  // Live feedback whenever scene durations change AFTER narration was
+  // already generated once — recalculates the comparison locally without
+  // needing another server call, since we already know the narration
+  // duration from the last "Genera voiceover" click.
+  if (!narrationDistribution) return;  // narration never generated yet — nothing to compare
+
+  const sliders = [...scenesCont.querySelectorAll('.sc-duration')];
+  const currentTotal = sliders.reduce((sum, s) => sum + parseInt(s.value || 0), 0);
+  const narrationSecs = narrationDistribution.narration_duration_secs;
+  const targetTotal = narrationSecs + 2.5; // END_BUFFER_SECS, matches narration.py
+
+  const statusEl = document.getElementById('narration-status');
+  const tooShort = (currentTotal - narrationSecs) > (4.0 + 2.5); // TOO_SHORT_THRESHOLD + buffer
+  const needsExtension = targetTotal > currentTotal;
+
+  if (needsExtension) {
+    statusEl.textContent = `⚠ Le scene attuali (${currentTotal}s) sono più corte della narrazione (${narrationSecs}s + pausa) — il video verrà esteso`;
+    statusEl.style.color = 'var(--danger)';
+  } else if (tooShort) {
+    statusEl.textContent = `⚠ Le scene attuali (${currentTotal}s) superano la narrazione di troppo — ${Math.round(currentTotal - narrationSecs)}s di silenzio previsti`;
+    statusEl.style.color = 'var(--danger)';
+  } else {
+    statusEl.textContent = `✓ Durate scene (${currentTotal}s) compatibili con la narrazione (${narrationSecs}s)`;
+    statusEl.style.color = 'var(--ok)';
+  }
 }
 
 // ── Voiceover word count + auto-duration ──────────────────────────────────────
