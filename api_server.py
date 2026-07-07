@@ -613,6 +613,33 @@ async def apply_narration_durations(job_id: str, new_durations: str = Form(...))
     return {"job_id": job_id, "scenes_config": scenes_config}
 
 
+@app.post("/jobs/{job_id}/narration/reassemble")
+async def reassemble_with_narration(job_id: str, background_tasks: BackgroundTasks):
+    """
+    Cheap path for when narration text changed but scene durations did
+    NOT — no video regeneration needed, just re-run assembly with the
+    latest narration audio overlaid. Zero Veo/Luma cost, just re-encoding
+    the already-generated clips with new audio.
+    """
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+
+    if not job.get("narration_path"):
+        raise HTTPException(status_code=400, detail="No narration generated yet for this job")
+
+    if not _acquire_job_lock(job_id, "reassemble with narration"):
+        lock = _job_lock_status(job_id)
+        raise HTTPException(status_code=409, detail=f"Job is busy ({lock.get('operation')})")
+
+    job["status"] = "running"
+    job["message"] = "Riassemblaggio con nuova narrazione…"
+    _save_job(job_id)
+
+    background_tasks.add_task(run_reassemble_only, job_id)
+    return {"job_id": job_id, "status": "running"}
+
+
 # ── Job status & download ──────────────────────────────────────────────────────
 
 @app.get("/jobs/")
@@ -1214,6 +1241,16 @@ async def run_reassemble_only(job_id: str):
         )
         if not ok:
             raise RuntimeError("Assemblaggio fallito")
+
+        # Apply narration audio if this job has a single continuous
+        # narration track — this is what makes "narration changed but
+        # video durations unchanged" work correctly: reassembly still
+        # runs and picks up the LATEST narration file every time.
+        narration_path = job.get("narration_path")
+        if narration_path and os.path.exists(narration_path):
+            update("running", 95, "Applying narration audio…")
+            await asyncio.to_thread(_overlay_narration_audio, output_path, narration_path)
+            log.info(f"[Job {job_id}] Narration audio applied: {narration_path}")
 
         job["output_path"] = output_path
         update("done", 100, "Video pronto per il download")

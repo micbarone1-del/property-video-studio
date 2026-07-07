@@ -1633,14 +1633,34 @@ genBtn.addEventListener('click', async () => {
     return;
   }
 
-  // SAFETY GUARD: if an existing job is loaded (currentJobId set) and
-  // there is genuinely nothing to rework (no manual panels open, no new
-  // scenes, no duration changes), do NOT fall through to full job
-  // resubmission — that would silently regenerate everything from
-  // scratch at full cost for zero reason. This was a real bug that
-  // wasted money regenerating an unchanged video.
+  // SAFETY GUARD: if an existing job is loaded and nothing needs video
+  // regeneration, check whether narration was regenerated since the last
+  // assembly — if so, do a CHEAP reassembly-only pass (new audio overlaid
+  // onto existing clips, zero Veo/Luma cost). Only block entirely if
+  // there's truly nothing to do at all.
   if (currentJobId) {
-    showError('Nessuna modifica da generare — le scene sono già aggiornate. Se vuoi rigenerare qualcosa, usa "↺ Rifai questa scena" sulla scena specifica.');
+    if (narrationDistribution) {
+      genBtn.disabled    = true;
+      genBtn.textContent = 'Riassemblaggio…';
+      progSec.style.display = 'block';
+      updateProgress(5, 'Applicazione nuova narrazione al video…');
+      try {
+        const res = await authFetch(`${API_BASE}/jobs/${currentJobId}/narration/reassemble`, { method: 'POST' });
+        if (!res.ok) {
+          let detail = `Errore ${res.status}`;
+          try { const e = await res.json(); detail = e.detail || detail; } catch(_) {}
+          throw new Error(detail);
+        }
+        activeJobId = currentJobId;
+        startPolling(currentJobId);
+      } catch(e) {
+        showError(e.message);
+        genBtn.disabled    = false;
+        genBtn.textContent = 'Genera video';
+      }
+      return;
+    }
+    showError('Nessuna modifica da generare — le scene sono già aggiornate. Se vuoi rigenerare qualcosa, usa "↺ Rifai questa scena" sulla scena specifica, oppure genera prima il voiceover se hai modificato la narrazione.');
     return;
   }
 
