@@ -475,6 +475,7 @@ async function stopCurrentJob() {
 // ══════════════════════════════════════════════════════════════════════════════
 
 let narrationDistribution = null;  // holds the calculated result until confirmed
+let durationChangedSceneIndices = new Set();  // scenes whose duration actually changed via narration redistribution
 
 async function generateNarration() {
   const text = document.getElementById('narration-text').value.trim();
@@ -581,22 +582,31 @@ async function confirmNarrationDurations() {
     });
     if (!res.ok) throw new Error(`Errore ${res.status}`);
 
-    // Update the duration sliders in the UI to reflect confirmed values
+    // Compare OLD vs NEW duration per scene — only mark as "needs rework"
+    // the scenes whose duration genuinely changed. If narration redistribution
+    // proposes the SAME durations already in place, nothing needs regenerating.
+    durationChangedSceneIndices.clear();
     const cards = [...scenesCont.querySelectorAll('.scene-card')];
     narrationDistribution.new_scene_durations.forEach((dur, i) => {
       const card = cards[i];
-      if (card) {
-        const slider = card.querySelector('.sc-duration');
-        const durVal = card.querySelector('.dur-val');
-        if (slider) slider.value = dur;
-        if (durVal) durVal.textContent = dur + 's';
+      if (!card) return;
+      const slider = card.querySelector('.sc-duration');
+      const durVal = card.querySelector('.dur-val');
+      const oldDur = slider ? parseInt(slider.value) : null;
+      if (oldDur !== null && oldDur !== dur) {
+        durationChangedSceneIndices.add(i);
       }
+      if (slider) slider.value = dur;
+      if (durVal) durVal.textContent = dur + 's';
     });
 
-    document.getElementById('narration-status').textContent =
-      '✓ Durate confermate — pronto per Genera video';
+    const nChanged = durationChangedSceneIndices.size;
+    document.getElementById('narration-status').textContent = nChanged > 0
+      ? `✓ Durate confermate — ${nChanged} scena/e da rigenerare (durata cambiata)`
+      : '✓ Durate confermate — nessuna scena richiede rigenerazione (durate invariate)';
     document.getElementById('narration-status').style.color = 'var(--ok)';
     document.getElementById('narration-result').style.display = 'none';
+    updateCostEstimate();
   } catch(e) {
     document.getElementById('narration-status').textContent = `✗ ${e.message}`;
     document.getElementById('narration-status').style.color = 'var(--danger)';
@@ -1401,6 +1411,7 @@ function openReworkPanel(i, btn) {
     btn.style.color    = 'var(--ok)';
     btn.style.borderColor = 'var(--ok)';
   }
+  updateCostEstimate();
 }
 
 function toggleRework(i) {
@@ -1409,6 +1420,7 @@ function toggleRework(i) {
   sceneUserData[i].rework_open = !sceneUserData[i].rework_open;
   const panel = document.getElementById(`rw-panel-${i}`);
   if (panel) panel.classList.toggle('open');
+  updateCostEstimate();
 }
 
 function onDurationChange(input) {
@@ -1515,6 +1527,30 @@ async function updateCostEstimate() {
   }
   const config = getScenesConfig();
 
+  // Determine which scenes will ACTUALLY be generated this time —
+  // if editing an existing job, only rework-marked scenes cost anything;
+  // a fresh upload costs for all scenes. This was previously always
+  // costing for ALL scenes even during a rework of just 1-2 of them.
+  let scenesToCharge = config;
+  let isRework = false;
+  if (currentJobId) {
+    const reworkIndices = new Set();
+    [...scenesCont.querySelectorAll('.rework-panel.open')].forEach(panel => {
+      const i = parseInt(panel.id.replace('rw-panel-',''));
+      if (!isNaN(i)) reworkIndices.add(i);
+    });
+    newlyAddedSceneIndices.forEach(i => reworkIndices.add(i));
+    durationChangedSceneIndices.forEach(i => reworkIndices.add(i));
+    if (reworkIndices.size > 0) {
+      isRework = true;
+      scenesToCharge = config.filter((_, i) => reworkIndices.has(i));
+    } else {
+      // Existing job, nothing marked for rework — no video cost at all
+      scenesToCharge = [];
+      isRework = true;
+    }
+  }
+
   // Client-side cost estimate (mirrors cost_tracker.py logic)
   const tier         = document.getElementById('model-tier').value;
   const upscale      = document.getElementById('do-upscale').checked;
@@ -1528,32 +1564,39 @@ async function updateCostEstimate() {
   const VIDEO_UP_PER_SEC = 0.02;
   const EL_PER_CHAR  = 0.0003;
   const FLORENCE     = 0.0002;
-  const INFRA        = 52.45 / 20;
+  const INFRA        = 34.79 / 20;  // updated annual Hostinger cost — server recalculates actual rolling value
 
-  const n         = config.length;
-  const videoCost = config.reduce((s,sc) => s + CLIP_COST, 0);
+  const n         = scenesToCharge.length;
+  const videoCost = scenesToCharge.reduce((s,sc) => s + CLIP_COST, 0);
   const upCost    = upscale ? n * UPSCALE : 0;
   const vidUpCost = videoUpscale
-    ? config.reduce((s,sc) => s + (sc.duration * VIDEO_UP_PER_SEC), 0) : 0;
-  const chars     = config.reduce((s,sc) => s + sc.voiceover.length, 0);
+    ? scenesToCharge.reduce((s,sc) => s + (sc.duration * VIDEO_UP_PER_SEC), 0) : 0;
+  const chars     = scenesToCharge.reduce((s,sc) => s + sc.voiceover.length, 0);
   const ttsCost   = chars * EL_PER_CHAR;
   const visCost   = visionQc ? n * 2 * FLORENCE : 0;
-  const total     = videoCost + upCost + vidUpCost + ttsCost + visCost + INFRA;
+  // Infra cost only applies to a fresh full job — a rework of 1-2 scenes
+  // doesn't incur a fresh infrastructure share
+  const infraCost = isRework ? 0 : INFRA;
+  const total     = videoCost + upCost + vidUpCost + ttsCost + visCost + infraCost
 
   const tierLabel = { eco: 'Lyra 2.0 + Topaz', luma: 'Luma Ray 2', premium: 'Veo 3.1 Fast', premium_veo: 'Veo 3.1 Standard' };
   const panel = document.getElementById('cost-panel');
   const lines = document.getElementById('cost-lines');
   panel.style.display = 'block';
-  document.getElementById('cost-type').textContent = '(stima)';
+  document.getElementById('cost-type').textContent = isRework ? `(rework — ${n} scena/e)` : '(stima)';
   document.getElementById('cost-total').textContent = `€${total.toFixed(2)}`;
 
   let html = '';
-  html += `<div class="cost-row"><span>Generazione video (${n} clip — ${tierLabel[tier]})</span><span>€${videoCost.toFixed(3)}</span></div>`;
-  if (upCost > 0) html += `<div class="cost-row"><span>Upscaling immagini AI (${n})</span><span>€${upCost.toFixed(3)}</span></div>`;
-  if (vidUpCost > 0) html += `<div class="cost-row"><span>Topaz video upscale 1080p</span><span>€${vidUpCost.toFixed(3)}</span></div>`;
-  if (ttsCost > 0) html += `<div class="cost-row"><span>Voiceover (${chars.toLocaleString()} caratteri)</span><span>€${ttsCost.toFixed(4)}</span></div>`;
-  if (visCost > 0) html += `<div class="cost-row"><span>Vision QC (${n*2} analisi)</span><span>€${visCost.toFixed(4)}</span></div>`;
-  html += `<div class="cost-row"><span>Quota infrastruttura</span><span>€${INFRA.toFixed(2)}</span></div>`;
+  if (isRework && n === 0) {
+    html = `<div class="cost-row"><span>Nessuna scena da rigenerare</span><span>€0.00</span></div>`;
+  } else {
+    html += `<div class="cost-row"><span>${isRework ? 'Rework' : 'Generazione'} video (${n} clip — ${tierLabel[tier]})</span><span>€${videoCost.toFixed(3)}</span></div>`;
+    if (upCost > 0) html += `<div class="cost-row"><span>Upscaling immagini AI (${n})</span><span>€${upCost.toFixed(3)}</span></div>`;
+    if (vidUpCost > 0) html += `<div class="cost-row"><span>Topaz video upscale 1080p</span><span>€${vidUpCost.toFixed(3)}</span></div>`;
+    if (ttsCost > 0) html += `<div class="cost-row"><span>Voiceover (${chars.toLocaleString()} caratteri)</span><span>€${ttsCost.toFixed(4)}</span></div>`;
+    if (visCost > 0) html += `<div class="cost-row"><span>Vision QC (${n*2} analisi)</span><span>€${visCost.toFixed(4)}</span></div>`;
+    if (infraCost > 0) html += `<div class="cost-row"><span>Quota infrastruttura</span><span>€${infraCost.toFixed(2)}</span></div>`;
+  }
   lines.innerHTML = html;
 }
 
@@ -1575,6 +1618,10 @@ genBtn.addEventListener('click', async () => {
     newlyAddedSceneIndices.forEach(i => {
       if (i < files.length && !reworkScenes.includes(i)) reworkScenes.push(i);
     });
+    // Auto-include scenes whose duration changed due to narration redistribution
+    durationChangedSceneIndices.forEach(i => {
+      if (i < files.length && !reworkScenes.includes(i)) reworkScenes.push(i);
+    });
   }
 
   if (reworkScenes.length > 0 && currentJobId) {
@@ -1583,6 +1630,17 @@ genBtn.addEventListener('click', async () => {
       if (sceneUserData[i]) sceneUserData[i].rework_open = false;
     });
     await submitRework(reworkScenes);
+    return;
+  }
+
+  // SAFETY GUARD: if an existing job is loaded (currentJobId set) and
+  // there is genuinely nothing to rework (no manual panels open, no new
+  // scenes, no duration changes), do NOT fall through to full job
+  // resubmission — that would silently regenerate everything from
+  // scratch at full cost for zero reason. This was a real bug that
+  // wasted money regenerating an unchanged video.
+  if (currentJobId) {
+    showError('Nessuna modifica da generare — le scene sono già aggiornate. Se vuoi rigenerare qualcosa, usa "↺ Rifai questa scena" sulla scena specifica.');
     return;
   }
 
