@@ -489,10 +489,44 @@ async function generateNarration() {
     statusEl.style.color = 'var(--danger)';
     return;
   }
-  if (!currentJobId) {
-    statusEl.textContent = '⚠ Genera prima le scene (Genera video) per avere un job su cui applicare la narrazione';
+  if (!files.length) {
+    statusEl.textContent = '⚠ Carica prima le foto delle scene';
     statusEl.style.color = 'var(--danger)';
     return;
+  }
+
+  // CORRECT FLOW: if no job exists yet, create one in DRAFT mode first —
+  // photos + scene config saved, ZERO video generation cost — so narration
+  // can be measured and durations calculated BEFORE any expensive step runs.
+  if (!currentJobId) {
+    statusEl.textContent = '⏳ Preparazione scene (nessun costo)…';
+    statusEl.style.color = 'var(--muted)';
+    try {
+      const config = getScenesConfig();
+      const fd = new FormData();
+      files.forEach(f => fd.append('images', f));
+      fd.append('config', JSON.stringify(config));
+      fd.append('property_name', document.getElementById('prop-name')?.value || 'Property');
+      fd.append('model_tier', document.getElementById('model-tier').value);
+      fd.append('lighting', document.getElementById('lighting').value);
+      fd.append('intensity', document.getElementById('intensity').value);
+      fd.append('start_generation', 'false');  // draft mode — no cost yet
+
+      const res = await authFetch(`${API_BASE}/jobs/`, { method: 'POST', body: fd });
+      if (!res.ok) {
+        let detail = `Errore ${res.status}`;
+        try { const e = await res.json(); detail = e.detail || detail; } catch(_) {}
+        throw new Error(detail);
+      }
+      const data = await res.json();
+      currentJobId = data.job_id;
+      completedScenes = [];  // no scenes generated yet — draft only
+      console.log(`Draft job created: ${currentJobId}`);
+    } catch(e) {
+      statusEl.textContent = `✗ Errore preparazione scene: ${e.message}`;
+      statusEl.style.color = 'var(--danger)';
+      return;
+    }
   }
 
   statusEl.textContent = '⏳ Generazione voiceover in corso…';
@@ -1669,10 +1703,50 @@ genBtn.addEventListener('click', async () => {
     return;
   }
 
-  // SAFETY GUARD: if an existing job is loaded and nothing needs video
-  // regeneration, check the SERVER's record of whether this job has
-  // narration (not a browser-memory variable, which is unreliable after
-  // page reload / re-opening the job in a new session). If narration
+  // SAFETY GUARD: if an existing job is loaded, check its actual server
+  // status first. A DRAFT job (created via narration-first flow, no
+  // video generated yet) needs /start-generation, not reassembly —
+  // there's nothing to reassemble yet. This is checked BEFORE the
+  // narration-reassembly check below, since a draft job may also have
+  // narration_path set (narration can be generated before video).
+  if (currentJobId) {
+    let jobStatus = null;
+    try {
+      const jobRes = await authFetch(`${API_BASE}/jobs/${currentJobId}`);
+      if (jobRes.ok) {
+        const jobData = await jobRes.json();
+        jobStatus = jobData.status;
+      }
+    } catch(_) {}
+
+    if (jobStatus === 'draft') {
+      genBtn.disabled    = true;
+      genBtn.textContent = 'Avvio generazione…';
+      progSec.style.display   = 'block';
+      resultSec.style.display = 'none';
+      updateProgress(0, 'Avvio generazione video…');
+      try {
+        const res = await authFetch(`${API_BASE}/jobs/${currentJobId}/start-generation`, { method: 'POST' });
+        if (!res.ok) {
+          let detail = `Errore ${res.status}`;
+          try { const e = await res.json(); detail = e.detail || detail; } catch(_) {}
+          throw new Error(detail);
+        }
+        activeJobId = currentJobId;
+        startPolling(currentJobId);
+      } catch(e) {
+        showError(e.message);
+        genBtn.disabled    = false;
+        genBtn.textContent = 'Genera video';
+      }
+      return;
+    }
+  }
+
+  // SAFETY GUARD: if an existing (non-draft) job is loaded and nothing
+  // needs video regeneration, check the SERVER's record of whether this
+  // job has narration (not a browser-memory variable, which is unreliable
+  // after page reload / re-opening the job in a new session). If narration
   // exists, always offer the cheap reassembly-only pass.
   if (currentJobId) {
     let jobHasNarration = false;
