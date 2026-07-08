@@ -1,34 +1,70 @@
 # Property Video Studio — Status
-_Last updated: July 8, 2026 (verified against the live repository and the project's maintained cross-session memory)_
 
-Repository: github.com/micbarone1-del/property-video-studio (public). Deployment: Hostinger VPS (187.77.196.94:8000), isolated at /var/www/property-video-studio/. Runs via uvicorn api_server:app, systemd unit property-video.service.
+_Last verified: July 8, 2026 — full audit of all 25 repository files, read directly (not summarized from memory or prior chats). Server and GitHub `main` confirmed in sync as of this audit (see Infrastructure Note)._
 
-## Architecture
+## Architecture — live production pipeline
 
-Backend: api_server.py (FastAPI). Frontend: ui.html, login-screen protected. Video generation tiers: Luma Ray 2 is the current default (confirmed superior — genuine 3D parallax, no warping, roughly €0.46/clip), with Veo 3.1 Standard as an alternate tier (roughly €1.60/clip). Kling references remain in the code but are not part of the intended routing. Pipeline modules: voice_generation.py and narration.py (narration-first TTS), video_assembly.py and video_editor.py (MoviePy, explicit bitrate control), image_enhance.py, watermark_removal.py (done), cost_tracker.py (rolling 30-day job count for infra cost share), credit_monitor.py. Job architecture is confirmed rebuilt as one stable directory per job with locked scene IDs, replacing the old fragile sibling-directory rework model, which repeatedly failed on parent-chain lookups. Test isolation: a dedicated jobs/_test_scratch/ directory and /test-scratch/ endpoint now enforce separation between test/debug output and real client job directories, after a test clip contaminated a real client delivery. Auth is verified live and active, not disabled; .env is gitignored, and the repo is public, so no secrets are committed to it. Narration-first workflow: backend (draft-mode job creation, /start-generation) is deployed; the full end-to-end UI cycle (upload, narration, confirm duration, generate) still needs a clean confirmed test run with no missing-job errors.
+**Backend:** FastAPI (`api_server.py`, current version — a prior audit this session mistakenly read a stale cached snapshot of this file; that error has been corrected here).
 
-## Feature Status
+**Auth:** Conditional — gated by `X-Access-Key` header against a `UI_ACCESS_KEY` environment variable if one is set; open access if the env var is unset. (Not independently confirmed whether `.env` on the server actually sets this, since `.env` is gitignored and wasn't read.)
 
-Done: web UI with login screen, replacing the original email interface; isolated VPS deployment with the original Gustavo newsletter codebase untouched; image upscaling and lighting optimization; watermark removal from input photos (fal.ai object-removal, per-photo toggle); logo watermark burned into output video; credit and balance monitoring with in-UI banner and email alerts; cost estimation panel now using rolling 30-day job count for infrastructure share; space-characteristics dropdown; structured dropdown-driven prompt assembly with the full uncropped image always sent to the model; QC people-detection false positives on furniture vocabulary fixed; the Veo duration parameter bug fixed (was previously silently defaulting all clips to 8 seconds regardless of actual TTS length); three separate TTS/video duration-sync bugs fixed (timeline-cursor ordering, snap-up rounding, cross-scene overlap); video bitrate fix (roughly 20Mbps default down to 4Mbps, about 5x smaller files); range-request streaming added to download and clip-preview endpoints; auth key persistence fixed via localStorage, with /health and /clip/ correctly exempted from auth; job architecture rebuild (single directory per job, locked scene IDs, test-output isolation); drag-and-drop scene reorder, add-scene button, and a 1s TTS tail gap; rework system now uses strict scene-index bounds, preventing cross-contamination between jobs; Luma Ray 2 integrated and confirmed as the new default tier.
+**Video generation (`video_generation.py`) — four tiers, all fully implemented and live:**
+- **`eco`** — Lyra 2.0 zoom (`fal-ai/lyra-2/zoom`) + Topaz upscale 720p→1080p. ~€0.045–0.125/clip by frame count. Lyra is parametric (camera controlled via API params, not prompt) — uses a frozen-scene prompt style, distinct from Veo/Luma's motion-description prompts.
+- **`luma`** — Luma Ray 2 (`fal-ai/luma-dream-machine/ray-2/image-to-video`). **Current default**, selected in `ui.html`. ~€0.46/clip. Confirmed via real testing: genuine 3D parallax, no warping, including on the bathroom photo that previously broke both depth rendering and Veo. Automatic fallback to Veo 3.1 Fast on failure.
+- **`premium`** — Veo 3.1 Fast, native 1080p. ~€0.80/clip.
+- **`premium_veo`** — Veo 3.1 Standard (`fast_mode=False`). ~€1.60/clip. Explicitly built and labeled to avoid the circular/internal transition problem ("no circular wipe" in both UI and code comments). Falls back to Veo Fast on failure.
+- Model tier is selected in the UI dropdown and passed through the job config to `generate_video_single` — fully wired end to end.
+- **Kling: fully removed from all functional code.** Two harmless dead comments remain (`video_generation.py`, `cost_tracker.py`) referencing Kling for historical prompt-design rationale only.
 
-In progress or partial — do not treat as fully done: the narration-first workflow backend is deployed, but a full clean end-to-end UI test has not yet been confirmed; range streaming was added to help preview load times, but this only partially addresses the original five-minute load complaint, since full HLS streaming has not been built; video_generation.py still contains an active mapping of the "standard" tier to the Kling endpoint plus 36 other Kling references, despite Kling having been rejected for this use case, so current real routing behavior is unverified; no full clean end-to-end retest has been explicitly confirmed after the July 1-2 multi-bug complaint; circular/internal transitions are likely an upstream fal.ai/Veo limitation, only partially mitigated.
+**Narration-first workflow:** fully implemented — draft-mode job creation, `/jobs/{id}/narration` (TTS-only step), `/apply-durations`, `/reassemble-with-narration`, `/start-generation`. TTS is generated and measured before video generation, durations confirmed in UI, video generated to match. Valid duration snap values account for both Veo (4/6/8s) and Luma (5/9s) — see `narration.py`.
 
-Paused: Depth Renderer (depth_renderer.py) reached a technical ceiling — movement too subtle, warping at hard depth edges — and has been deprioritized now that Luma Ray 2 pragmatically solves the same small-room, no-hallucination problem. It is not integrated into the main pipeline.
+**Job model:** single-directory-per-job, locked/stable `scene_id`s, 0-indexed scene numbering throughout UI and server. Job locking prevents assembly race conditions. New rework endpoints (`redo_scene`, `add_scene`, `delete_scene`) use strict scene-index bounds — the fix for the earlier test-clip contamination incident is present and confirmed. The old sibling-directory `/jobs/{id}/rework` endpoint still exists but is explicitly marked legacy in code, kept only for in-flight old jobs — no new work should build on it.
 
-Discussed but not implemented: an automated URL-scraping workflow for photo selection (see backlog.md — the priority order and gap-handling rule are specified, but narration automation from scraped ad copy is not yet specified); a multi-job dashboard with a concurrent queue; an auto maintenance scheduler; YouTube auto-upload; a cost report (dedicated login-protected page, per-job table, CSV export); a video library / old-job browsing UI; portrait/vertical format; human characters; virtual furniture staging.
+**Test isolation:** `jobs/_test_scratch/` + `/test-scratch/` endpoint, confirmed implemented as documented.
 
-## Bugs Fixed
+**Assembly:** `video_assembly.py` — `assemble_property_video()`, MoviePy-based, explicit bitrate control, transition styles (fade/fade_white/slide_left/slide_right/cut).
 
-Tuple-unpack crash in download_asset(); process-killing sys.exit(1); swapped argument order in mass_generation(); undefined output_path; caption/title mismatch; hardcoded .png extension corrupting jpegs; fragile Excel boolean parsing; hardcoded nonexistent transition paths; three TTS/video duration-desync bugs; the Veo durationsecs/duration parameter bug that silently capped clips at 8 seconds; sessionStorage auth-logout bug; QC interior/exterior misclassification; QC people-detection false positives on furniture vocabulary; Veo hallucinated-fill-on-crop bug; video bitrate bloat; a /health auth-exemption regression that was reverted by a git pull and then re-fixed; test-clip contamination of a real client video, root-caused and fixed via _test_scratch/ isolation.
+**Watermark removal:** `watermark_removal.py` (fal.ai object-removal) — strips source-listing-site watermarks from uploaded photos. Distinct from the planned client-logo overlay feature (backlog), which would add the agency's own logo rather than remove anything.
 
-## Known Issues / Open Bugs
+**QC:** `vision_analysis.py` (Florence-2-based).
 
-Kling routing in video_generation.py needs direct verification against the intended design. Video/QC preview load times are only partially improved (range streaming, not full HLS). No confirmed clean end-to-end retest since the July 1-2 complaint round. No confirmed clean end-to-end test of the narration-first workflow specifically. Circular transitions only partially mitigated. Video library / old-job browsing is not built; current retention is about 1 week with no browsing UI.
+**Cost tracking:** `cost_tracker.py` — per-tier billing (frame-based for Lyra, per-second for Veo/Luma), rolling 30-day job count for infrastructure cost-per-video.
 
-## Backlog
+**Credits:** `credit_monitor.py`, exposed via `/credits` endpoint.
 
-See backlog.md in this repository for full detail, including the automated scraping requirement. Keep both this file and backlog.md updated whenever a bug is fixed, a feature's status changes, or a backlog item's requirements are refined — dated and specific, never rounding up partial progress to "done."
+**Streaming:** Range-request streaming implemented on both `/clip/` (preview) and `/download` endpoints.
 
-## Standing Safeguards / Rules
+**Retention:** auto-cleanup of jobs older than 7 days, confirmed in code.
 
-Never modify the original Gustavo newsletter codebase or folder. Always verify a GitHub upload actually took (grep, wc -l, py_compile, or node --check) before pulling and restarting. Video must always be generated after narration/audio, at the audio's measured duration. Always send the full, uncropped original image to the video model; cropping is prompt-hint language only. All test/debug output must go to jobs/_test_scratch/ or /test-scratch/ — never into a real job's clips/ or audio/ directory, following the client-delivery incident. The repository is public — never commit real API keys, access keys, or tokens; .env is gitignored, and it must stay that way.
+## Present in repo but NOT part of the live pipeline (legacy / standalone)
+
+Flagging these explicitly so they aren't mistaken for active code in future sessions:
+
+- **`main.py`, `communication.py`, and the CLI paths in `video_assembly.py`/`video_editor.py`** — a self-contained legacy automation (Excel-via-email intake, Google Drive upload, email delivery, using `StorySequencer`/`VideoCompositor`). Confirmed disconnected from the live API: `communication.py`'s Google API dependencies aren't even listed in `requirements.txt`. Note: `video_editor.py`'s legacy path has its own logo-overlay support (`show_logo`/`logo_path`) — relevant context for scoping the client-logo backlog item, but not directly reusable since it's a different code path from the live `assemble_property_video()`.
+- **`depth_renderer.py`** — a genuinely sophisticated, complete implementation (percentile normalization anchored to frame center, edge-gradient damping at depth discontinuities, bilateral filtering, motion blur, disocclusion inpainting). Includes a `measure_depth_score()` function intended for auto-routing flat/shallow scenes to depth-rendering vs. deep scenes to Veo — **this routing logic exists but is not called anywhere in `api_server.py`**, so it's not active in production. Kept for reference; Luma Ray 2 has pragmatically solved the problem this was built for.
+- **`batch_depth_test.py`** — parameter-comparison test harness for `depth_renderer.py`. Standalone, not imported elsewhere.
+- **`test_luma.py`** — standalone script that validated Luma Ray 2 against the bathroom photo before it was merged into `video_generation.py`. No longer needed for that purpose but harmless to keep.
+- **`reassemble_fix.py`** — a one-off manual repair script hardcoded to a specific past job ID (`161dfaf7_rw9f6a`). Not a reusable tool; an artifact of a prior incident fix. Candidate for deletion.
+
+## Resolved / corrected this session (July 8, 2026)
+
+- **"Kling routing unverified"** — closed, confirmed no functional Kling code exists.
+- **"Luma Ray 2 needs integration"** — closed, already fully implemented and already the default.
+- **"Veo circular/internal transition"** — upgraded from "on hold" to resolved in code (`premium_veo` tier exists specifically to fix this); recommend one real test clip for visual confirmation before considering it fully closed.
+- **Earlier in this same session, an incorrect audit was reported** claiming `video_generation.py` only used a bare `fal-ai/ltx-2.3` endpoint with no tier system — this was based on a stale/cached fetch and was wrong. Corrected via direct terminal `grep` and full file reads.
+
+## Open items
+
+- **Rework edge cases (watch item, no known repro):** full end-to-end test passed; possible fixes may still be needed for specific use cases. Flag with a concrete repro when one surfaces.
+- **Video library & job browsing UI:** reported as implemented (user, July 8, 2026) — not yet independently code-verified. Needs confirmation of scope and whether it changes the 7-day retention window.
+- **`.env` contents** (auth key presence, API keys) not verified — file is correctly gitignored and wasn't read.
+
+## Infrastructure note — GitHub/server sync gap (found & fixed July 8, 2026)
+
+GitHub `main` was 3 commits behind the live server at the start of this session (2 `status.md` commits + 1 `backlog.md` commit existed on GitHub but hadn't been pulled to the server). Reconciled via clean fast-forward merge (commit `08905c6`) — no data lost, no conflicts. **Standing precaution:** verify sync in both directions at the start of any code-work session (`git status` on server; `git fetch && git log HEAD..origin/main --oneline`) before treating either side as authoritative.
+
+## Standing safeguards (unchanged)
+
+- Stale browser cache can cause subtle bugs — hard refresh to verify JS changes.
+- Terminal paste artifacts are a real hazard — stray characters from pasting can silently corrupt commands.
+- Repo is public — never commit secrets; `.env` stays gitignored.
