@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
@@ -23,6 +23,7 @@
   }
   body { font-family: var(--sans); background: var(--paper); color: var(--ink); min-height:100vh; }
 
+
   /* Header */
   header { background:var(--green); color:#fff; padding:18px 40px; display:flex; align-items:center; gap:16px; border-bottom:3px solid var(--accent); }
   header h1 { font-family:var(--serif); font-size:1.5rem; font-weight:normal; }
@@ -33,6 +34,7 @@
   #diag-btn:hover { background:rgba(255,255,255,.1); }
   @keyframes pulse { 0%,100%{opacity:1}50%{opacity:.35} }
 
+
   /* Layout */
   main { max-width:940px; margin:0 auto; padding:32px 24px 80px; }
   section + section { margin-top:32px; }
@@ -40,12 +42,14 @@
   .sec-label::after { content:''; flex:1; height:1px; background:var(--rule); }
   .card { background:var(--card); border:1px solid var(--rule); border-radius:var(--radius); padding:20px; }
 
+
   /* Alerts */
   .alert { padding:11px 14px; border-radius:var(--radius); font-size:.83rem; margin-top:10px; }
   .alert-error  { background:#fdf0ef; border:1px solid #f5c6c2; color:var(--danger); }
   .alert-warn   { background:#fef9ef; border:1px solid #f5dfa2; color:var(--warn); }
   .alert-ok     { background:#edf7f1; border:1px solid #b7dfca; color:var(--ok); }
   .empty-state  { text-align:center; padding:28px; color:var(--muted); font-size:.83rem; }
+
 
   /* Login screen */
   #login-screen { display:none; position:fixed; inset:0; background:var(--green); z-index:1000; align-items:center; justify-content:center; flex-direction:column; gap:24px; }
@@ -60,6 +64,8 @@
   .login-error { color:var(--danger); font-size:.82rem; margin-top:8px; min-height:20px; }
 
 
+
+
   #credit-banner { display:none; margin-bottom:20px; border:1px solid #f5c6c2; border-radius:var(--radius); overflow:hidden; }
   .cb-head { background:#c0392b; color:#fff; padding:8px 14px; font-size:.8rem; font-weight:600; }
   .cb-body { background:#fdf0ef; padding:11px 14px; display:flex; flex-direction:column; gap:7px; }
@@ -68,12 +74,14 @@
   .cb-topup { font-size:.76rem; color:var(--green); border:1px solid var(--green); border-radius:3px; padding:2px 8px; text-decoration:none; }
   .cb-time  { font-size:.7rem; color:var(--muted); margin-top:2px; }
 
+
   /* Cost panel */
   #cost-panel { display:none; background:#f0f4f2; border:1px solid #c8ddd2; border-radius:var(--radius); padding:14px 16px; margin-top:14px; }
   .cost-title { font-size:.75rem; letter-spacing:.08em; text-transform:uppercase; color:var(--green); font-weight:600; margin-bottom:8px; }
   .cost-row   { display:flex; justify-content:space-between; font-size:.8rem; color:var(--muted); padding:2px 0; }
   .cost-total { display:flex; justify-content:space-between; font-size:.9rem; font-weight:600; color:var(--ink); border-top:1px solid #c8ddd2; margin-top:6px; padding-top:6px; }
   .cost-type  { font-size:.68rem; color:var(--muted); font-weight:normal; }
+
 
   /* Form */
   label { display:block; font-size:.79rem; color:var(--muted); margin-bottom:4px; }
@@ -90,6 +98,7 @@
   .toggle input:checked + .tog-sl { background:var(--green); }
   .toggle input:checked + .tog-sl::before { transform:translateX(16px); }
 
+
   /* Drop zone */
   #drop-zone { border:2px dashed var(--rule); border-radius:var(--radius); padding:32px 24px; text-align:center; cursor:pointer; transition:border-color .2s,background .2s; position:relative; }
   #drop-zone.drag-over { border-color:var(--accent); background:#fdf8ef; }
@@ -97,6 +106,7 @@
   #drop-zone .di { font-size:1.8rem; margin-bottom:6px; }
   #drop-zone p { font-size:.83rem; color:var(--muted); }
   #drop-zone strong { color:var(--green); }
+
 
   /* Scene cards */
   #scenes-container { display:flex; flex-direction:column; gap:14px; }
@@ -117,6 +127,7 @@
   .sc-row3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; }
   @media(max-width:680px){ .sc-row3 { grid-template-columns:1fr; } }
 
+
   /* Voiceover word count */
   .vo-wrap { position:relative; }
   .vo-counter { position:absolute; bottom:6px; right:8px; font-size:.7rem; color:var(--muted); pointer-events:none; }
@@ -125,10 +136,12 @@
   .vo-hint { font-size:.72rem; color:var(--muted); margin-top:3px; }
   .vo-hint.over { color:var(--danger); }
 
+
   /* Duration */
   .dur-row { display:flex; align-items:center; gap:8px; font-size:.8rem; }
   .dur-row input[type=range] { flex:1; accent-color:var(--green); }
   .dur-val { min-width:26px; text-align:right; color:var(--green); font-weight:600; }
+
 
   /* QC review panel */
   #qc-section { display:none; }
@@ -150,10 +163,12 @@
   .btn-assemble { background:var(--green); color:#fff; border:none; border-radius:var(--radius); padding:11px 28px; font-size:.9rem; cursor:pointer; margin-top:14px; }
   .btn-assemble:disabled { opacity:.5; cursor:not-allowed; }
 
+
   /* Buttons */
   .btn-primary { background:var(--green); color:#fff; border:none; border-radius:var(--radius); padding:12px 30px; font-size:.92rem; font-family:var(--sans); cursor:pointer; transition:background .15s,transform .1s; }
   .btn-primary:hover:not(:disabled) { background:#2e4535; }
   .btn-primary:disabled { opacity:.5; cursor:not-allowed; }
+
 
   /* Progress */
   #progress-section { display:none; }
@@ -169,6 +184,7 @@
   .sp-dot.failed  { background:var(--danger); }
   .sp-dot.flag    { background:var(--warn); }
 
+
   /* Drag and drop scene reorder */
   .scene-card { cursor:default; transition:opacity .2s, transform .15s; }
   .scene-card.dragging { opacity:.4; transform:scale(.98); }
@@ -178,9 +194,11 @@
   .sc-drag-handle:active { cursor:grabbing; }
   .sc-drag-handle:hover { color:var(--accent); }
 
+
   /* Add scene button */
   .btn-add-scene { display:flex; align-items:center; gap:8px; background:none; border:2px dashed var(--rule); border-radius:var(--radius); padding:12px 20px; color:var(--muted); font-size:.83rem; cursor:pointer; width:100%; justify-content:center; margin-top:10px; transition:border-color .2s, color .2s; }
   .btn-add-scene:hover { border-color:var(--accent); color:var(--accent); }
+
 
   /* Video library */
   .lib-toggle { background:none; border:1px solid var(--rule); border-radius:var(--radius); padding:7px 16px; font-size:.8rem; color:var(--muted); cursor:pointer; display:flex; align-items:center; gap:8px; width:100%; }
@@ -202,10 +220,12 @@
   .lib-btn.lib-primary { background:var(--green); color:#fff; border-color:var(--green); }
   .lib-empty { text-align:center; padding:16px; color:var(--muted); font-size:.83rem; }
 
+
   /* Result */
   #result-section { display:none; }
   #video-preview  { width:100%; border-radius:var(--radius); border:1px solid var(--rule); background:#000; }
   .btn-download   { display:inline-flex; align-items:center; gap:8px; background:var(--accent); color:var(--ink); border:none; border-radius:var(--radius); padding:10px 24px; font-size:.88rem; cursor:pointer; font-weight:600; margin-top:12px; text-decoration:none; }
+
 
   /* Diagnostics modal */
   #diag-modal { display:none; position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:100; align-items:center; justify-content:center; }
@@ -218,9 +238,34 @@
   .diag-ok  { color:var(--ok); }
   .diag-err { color:var(--danger); }
   .diag-loading { color:var(--muted); font-size:.83rem; padding:12px 0; text-align:center; }
+
+
+  /* Maintenance modal */
+  #maint-modal { display:none; position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:100; align-items:center; justify-content:center; }
+  #maint-modal.open { display:flex; }
+  .maint-box { background:#fff; border-radius:var(--radius); padding:24px; width:480px; max-width:95vw; max-height:85vh; overflow-y:auto; }
+  .maint-title { font-size:1rem; font-weight:600; margin-bottom:14px; display:flex; justify-content:space-between; }
+  .maint-close { background:none; border:none; font-size:1.2rem; cursor:pointer; color:var(--muted); }
+  .maint-row   { display:flex; justify-content:space-between; font-size:.83rem; padding:5px 0; border-bottom:1px solid var(--rule); }
+  .maint-row:last-child { border-bottom:none; }
+  .maint-ok   { color:var(--ok); }
+  .maint-warn { color:var(--warn); }
+  .maint-red  { color:var(--danger); font-weight:600; }
+  .maint-loading { color:var(--muted); font-size:.83rem; padding:12px 0; text-align:center; }
+  .maint-banner  { display:none; background:#fdf0ef; border:1px solid #f5c6c2; color:var(--danger); padding:8px 12px; border-radius:var(--radius); font-size:.82rem; font-weight:600; margin-bottom:10px; }
+  #maint-btn { background:none; border:1px solid rgba(255,255,255,.4); color:#fff; border-radius:var(--radius); padding:5px 12px; font-size:.75rem; cursor:pointer; margin-left:8px; position:relative; }
+  #maint-btn:hover { background:rgba(255,255,255,.1); }
+  #maint-btn.red::after { content:''; position:absolute; top:-3px; right:-3px; width:8px; height:8px; border-radius:50%; background:#e74c3c; }
+  .maint-emails-section { margin-top:14px; padding-top:12px; border-top:1px solid var(--rule); }
+  .maint-emails-label { font-size:.75rem; color:var(--muted); margin-bottom:6px; }
+  #maint-emails-input { width:100%; padding:7px 10px; border:1px solid var(--rule); border-radius:var(--radius); font-size:.83rem; font-family:var(--sans); margin-bottom:8px; }
+  .maint-save-btn { background:var(--green); color:#fff; border:none; border-radius:var(--radius); padding:7px 16px; font-size:.8rem; cursor:pointer; }
+  .maint-save-btn:hover { background:#2e4535; }
+  .maint-saved-msg { font-size:.75rem; color:var(--ok); margin-left:10px; }
 </style>
 </head>
 <body>
+
 
 <!-- Login screen -->
 <div id="login-screen" class="visible">
@@ -235,12 +280,15 @@
   </div>
 </div>
 
+
 <header>
   <h1>Property Video Studio</h1>
   <span class="sub">Real Estate · AI Video Generator</span>
   <button id="diag-btn" onclick="openDiagnostics()">⚙ System</button>
+  <button id="maint-btn" onclick="openMaintenance()">🔧 Maintenance</button>
   <span id="credit-dot" onclick="document.getElementById('credit-banner').scrollIntoView({behavior:'smooth'})" title="Credit status"></span>
 </header>
+
 
 <!-- Diagnostics modal -->
 <div id="diag-modal">
@@ -253,7 +301,28 @@
   </div>
 </div>
 
+
+<!-- Maintenance modal -->
+<div id="maint-modal">
+  <div class="maint-box">
+    <div class="maint-title">
+      System Maintenance
+      <button class="maint-close" onclick="closeMaintenance()">✕</button>
+    </div>
+    <div id="maint-banner" class="maint-banner">⚠ Maintenance flagged an issue — see details below.</div>
+    <div id="maint-content"><div class="maint-loading">Loading…</div></div>
+    <div class="maint-emails-section">
+      <div class="maint-emails-label">Alert emails (comma-separated):</div>
+      <input id="maint-emails-input" type="text" placeholder="es. mario@esempio.com, luca@esempio.com" />
+      <button class="maint-save-btn" onclick="saveMaintenanceEmails()">Save</button>
+      <span id="maint-saved-msg" class="maint-saved-msg" style="display:none">Saved ✓</span>
+    </div>
+  </div>
+</div>
+
+
 <main>
+
 
   <!-- Video library -->
   <section id="library-section" style="margin-bottom:20px">
@@ -271,11 +340,13 @@
     </div>
   </section>
 
+
   <!-- Credit banner -->
   <div id="credit-banner">
     <div class="cb-head">⚠ Low Credits — action needed</div>
     <div class="cb-body" id="credit-body"></div>
   </div>
+
 
   <!-- ① Property details -->
   <section>
@@ -346,6 +417,7 @@
         </div>
       </div>
 
+
       <!-- NEW: Single continuous narration (decoupled from video timing) -->
       <div id="narration-section" style="margin-top:16px;padding-top:16px;border-top:1px solid var(--rule)">
         <label>Narrazione unica <span style="color:var(--muted);font-size:.75rem">(sostituisce il voiceover per scena — copia/incolla il testo dall'annuncio)</span></label>
@@ -358,6 +430,7 @@
         <div id="narration-result" style="display:none;margin-top:10px;padding:10px;border-radius:6px"></div>
       </div>
 
+
       <!-- Cost estimate panel -->
       <div id="cost-panel">
         <div class="cost-title">Cost estimate <span class="cost-type" id="cost-type">(estimate)</span></div>
@@ -366,6 +439,7 @@
       </div>
     </div>
   </section>
+
 
   <!-- ② Upload -->
   <section>
@@ -377,6 +451,7 @@
       <p style="margin-top:5px">JPEG · PNG · WebP · multiple files supported · max 20MB each</p>
     </div>
   </section>
+
 
   <!-- ③ Scenes -->
   <section>
@@ -393,11 +468,13 @@
     </button>
   </section>
 
+
   <!-- ④ Generate -->
   <section>
     <button class="btn-primary" id="generate-btn" disabled>Generate Video</button>
     <div id="error-msg"></div>
   </section>
+
 
   <!-- ⑤ Progress -->
   <section id="progress-section">
@@ -416,6 +493,7 @@
     </div>
   </section>
 
+
   <!-- ⑥ QC Review -->
   <section id="qc-section">
     <p class="sec-label">Quality control review</p>
@@ -427,6 +505,7 @@
       Assemble Video →
     </button>
   </section>
+
 
   <!-- ⑦ Result -->
   <section id="result-section">
@@ -443,18 +522,23 @@
     </div>
   </section>
 
+
 </main>
+
 
 <script>
 const API_BASE = '';
 
+
 // ── Video library ──────────────────────────────────────────────────────────────
 let libraryOpen = false;
+
 
 async function stopCurrentJob() {
   const jobToStop = activeJobId || currentJobId;
   if (!jobToStop) return;
   if (!confirm(`Fermare il job ${jobToStop}? I clip già generati verranno mantenuti, quelli in corso verranno persi.`)) return;
+
 
   try {
     const res = await authFetch(`/jobs/${jobToStop}/stop`, { method: 'POST' });
@@ -469,20 +553,24 @@ async function stopCurrentJob() {
   }
 }
 
+
 // ══════════════════════════════════════════════════════════════════════════════
 // NARRATION SYSTEM — single continuous voiceover, calculated BEFORE video
 // generation ever runs. Step A (cheap, TTS-only) always completes before
 // Step B (expensive, video generation) becomes meaningful.
 // ══════════════════════════════════════════════════════════════════════════════
 
+
 let narrationDistribution = null;  // holds the calculated result until confirmed
 let narrationExistsOnServer = false;  // server truth — persists across page loads/job reopens, unlike narrationDistribution which is session-local
 let durationChangedSceneIndices = new Set();  // scenes whose duration actually changed via narration redistribution
+
 
 async function generateNarration() {
   const text = document.getElementById('narration-text').value.trim();
   const statusEl = document.getElementById('narration-status');
   const resultEl = document.getElementById('narration-result');
+
 
   if (!text) {
     statusEl.textContent = '⚠ Scrivi prima il testo della narrazione';
@@ -494,6 +582,7 @@ async function generateNarration() {
     statusEl.style.color = 'var(--danger)';
     return;
   }
+
 
   // CORRECT FLOW: if no job exists yet, create one in DRAFT mode first —
   // photos + scene config saved, ZERO video generation cost — so narration
@@ -512,6 +601,7 @@ async function generateNarration() {
       fd.append('intensity', document.getElementById('intensity').value);
       fd.append('start_generation', 'false');  // draft mode — no cost yet
 
+
       const res = await authFetch(`${API_BASE}/jobs/`, { method: 'POST', body: fd });
       if (!res.ok) {
         let detail = `Errore ${res.status}`;
@@ -529,13 +619,16 @@ async function generateNarration() {
     }
   }
 
+
   statusEl.textContent = '⏳ Generazione voiceover in corso…';
   statusEl.style.color = 'var(--muted)';
   resultEl.style.display = 'none';
 
+
   const fd = new FormData();
   fd.append('narration_text', text);
   fd.append('voice_id', document.getElementById('voice-id')?.value.trim() || '');
+
 
   try {
     const res = await authFetch(`${API_BASE}/jobs/${currentJobId}/narration`, { method: 'POST', body: fd });
@@ -547,8 +640,10 @@ async function generateNarration() {
     const data = await res.json();
     narrationDistribution = data;
 
+
     statusEl.textContent = `✓ Voiceover generato — ${data.narration_duration_secs}s, ${data.sentence_count} frasi`;
     statusEl.style.color = 'var(--ok)';
+
 
     renderNarrationResult(data);
   } catch(e) {
@@ -557,17 +652,21 @@ async function generateNarration() {
   }
 }
 
+
 function renderNarrationResult(data) {
   const resultEl = document.getElementById('narration-result');
   resultEl.style.display = 'block';
+
 
   const isProblem = data.needs_extension || data.too_short;
   resultEl.style.background = isProblem ? '#fdf0ef' : '#edf7f1';
   resultEl.style.border = `1px solid ${isProblem ? '#f5c6c2' : '#b7dfca'}`;
   resultEl.style.color = isProblem ? 'var(--danger)' : 'var(--ok)';
 
+
   let html = `<div style="font-weight:600;margin-bottom:6px">${data.message}</div>`;
   html += `<div style="font-size:.78rem;opacity:.85">Nuove durate scene proposte: ${data.new_scene_durations.join('s, ')}s</div>`;
+
 
   if (data.too_short) {
     html += `
@@ -577,6 +676,7 @@ function renderNarrationResult(data) {
       </div>`;
   }
 
+
   html += `
     <div style="margin-top:10px">
       <button class="btn-primary" style="font-size:.8rem;padding:7px 16px" onclick="confirmNarrationDurations()">
@@ -584,8 +684,10 @@ function renderNarrationResult(data) {
       </button>
     </div>`;
 
+
   resultEl.innerHTML = html;
 }
+
 
 function showExpandTextHint() {
   document.getElementById('narration-status').textContent =
@@ -593,6 +695,7 @@ function showExpandTextHint() {
   document.getElementById('narration-status').style.color = 'var(--muted)';
   document.getElementById('narration-text').focus();
 }
+
 
 async function applyPausePadding() {
   if (!narrationDistribution) return;
@@ -606,17 +709,21 @@ async function applyPausePadding() {
   await generateNarration();
 }
 
+
 async function confirmNarrationDurations() {
   if (!narrationDistribution || !currentJobId) return;
 
+
   const fd = new FormData();
   fd.append('new_durations', JSON.stringify(narrationDistribution.new_scene_durations));
+
 
   try {
     const res = await authFetch(`${API_BASE}/jobs/${currentJobId}/narration/apply-durations`, {
       method: 'POST', body: fd
     });
     if (!res.ok) throw new Error(`Errore ${res.status}`);
+
 
     // Compare OLD vs NEW duration per scene — only mark as "needs rework"
     // the scenes whose duration genuinely changed. If narration redistribution
@@ -636,6 +743,7 @@ async function confirmNarrationDurations() {
       if (durVal) durVal.textContent = dur + 's';
     });
 
+
     const nChanged = durationChangedSceneIndices.size;
     document.getElementById('narration-status').textContent = nChanged > 0
       ? `✓ Durate confermate — ${nChanged} scena/e da rigenerare (durata cambiata)`
@@ -649,6 +757,7 @@ async function confirmNarrationDurations() {
   }
 }
 
+
 async function toggleLibrary() {
   libraryOpen = !libraryOpen;
   const list = document.getElementById('library-list');
@@ -656,6 +765,7 @@ async function toggleLibrary() {
   document.getElementById('library-legend').style.display = libraryOpen ? 'flex' : 'none';
   if (libraryOpen) await loadLibrary();
 }
+
 
 async function loadLibrary() {
   const list = document.getElementById('library-list');
@@ -665,12 +775,15 @@ async function loadLibrary() {
     const data = await res.json();
     const jobs = data.jobs || [];
 
+
     document.getElementById('lib-count').textContent = jobs.length;
+
 
     if (!jobs.length) {
       list.innerHTML = '<div class="lib-empty">Nessun video generato ancora.</div>';
       return;
     }
+
 
     // Group jobs by base property (original job_id, stripping _rw suffix)
     const groups = {};
@@ -680,12 +793,14 @@ async function loadLibrary() {
       groups[baseId].push(j);
     });
 
+
     // For each group, sort by created_at descending — newest first
     const groupList = Object.entries(groups).map(([baseId, versions]) => {
       versions.sort((a,b) => (b.created_at || '').localeCompare(a.created_at || ''));
       return { baseId, versions, latest: versions[0] };
     });
     groupList.sort((a,b) => (b.latest.created_at || '').localeCompare(a.latest.created_at || ''));
+
 
     const statusMap = {
       done:               { icon: '✓', cls: 'lib-done',    label: 'Completato' },
@@ -695,6 +810,7 @@ async function loadLibrary() {
       queued:             { icon: '○', cls: 'lib-queued',  label: 'In coda' },
     };
 
+
     list.innerHTML = groupList.map(g => {
       const j       = g.latest;
       const date    = j.created_at ? new Date(j.created_at).toLocaleDateString('it-IT', {day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}) : '';
@@ -703,6 +819,7 @@ async function loadLibrary() {
       const st      = statusMap[j.status] || { icon: '?', cls: 'lib-queued', label: j.status };
       const versionLabel = g.versions.length > 1 ? ` · v${g.versions.length} (più recente)` : '';
 
+
       const dlBtn   = j.has_video
         ? `<a class="lib-btn lib-primary" href="/jobs/${j.job_id}/download" download>⬇</a>`
         : '';
@@ -710,6 +827,7 @@ async function loadLibrary() {
       const histBtn = g.versions.length > 1
         ? `<button class="lib-btn" onclick="toggleHistory('${g.baseId}')" id="hist-btn-${g.baseId}">🕐 ${g.versions.length}</button>`
         : '';
+
 
       const historyRows = g.versions.slice(1).map(v => {
         const vdate = v.created_at ? new Date(v.created_at).toLocaleDateString('it-IT', {day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '';
@@ -726,6 +844,7 @@ async function loadLibrary() {
         </div>`;
       }).join('');
 
+
       return `<div class="lib-job ${st.cls}">
         <div class="lib-info">
           <div class="lib-name">${st.icon} ${j.property_name}${versionLabel}</div>
@@ -740,10 +859,12 @@ async function loadLibrary() {
   }
 }
 
+
 function toggleHistory(baseId) {
   const hist = document.getElementById(`hist-${baseId}`);
   if (hist) hist.style.display = hist.style.display === 'none' ? 'flex' : 'none';
 }
+
 
 async function loadJobIntoUI(jobId) {
   try {
@@ -758,10 +879,13 @@ async function loadJobIntoUI(jobId) {
       return;
     }
 
+
     const baseJobId = jobId.split('_rw')[0];
+
 
     // Show read-only preview: final video + scene thumbnails with QC status
     showJobPreview(jobId, baseJobId, job);
+
 
   } catch(e) {
     console.error('loadJobIntoUI error:', e);
@@ -769,12 +893,15 @@ async function loadJobIntoUI(jobId) {
   }
 }
 
+
 function showJobPreview(jobId, baseJobId, job) {
   libraryOpen = false;
   document.getElementById('library-list').classList.remove('open');
 
+
   const scenesConfig = job.scenes_config || [];
   const sceneStatuses = job.scenes || [];
+
 
   const thumbsHtml = scenesConfig.map((scene, i) => {
     const status = sceneStatuses.find(s => s.index === i);
@@ -791,6 +918,7 @@ function showJobPreview(jobId, baseJobId, job) {
         </div>
       </div>`;
   }).join('');
+
 
   const previewHtml = `
     <section id="job-preview-section">
@@ -810,6 +938,7 @@ function showJobPreview(jobId, baseJobId, job) {
       </div>
     </section>`;
 
+
   let container = document.getElementById('job-preview-container');
   if (!container) {
     container = document.createElement('div');
@@ -820,10 +949,12 @@ function showJobPreview(jobId, baseJobId, job) {
   container.scrollIntoView({behavior:'smooth'});
 }
 
+
 function closeJobPreview() {
   const container = document.getElementById('job-preview-container');
   if (container) container.innerHTML = '';
 }
+
 
 async function editJob(jobId, baseJobId) {
   // Explicit action: load this job's exact scene list into the editable form
@@ -832,10 +963,12 @@ async function editJob(jobId, baseJobId) {
     const job = await res.json();
     const scenesConfig = job.scenes_config || [];
 
+
     if (!scenesConfig.length) {
       showError('Nessuna configurazione scene trovata per questo job');
       return;
     }
+
 
     currentJobId = baseJobId;
     files = [];
@@ -843,6 +976,7 @@ async function editJob(jobId, baseJobId) {
     durationChangedSceneIndices.clear();
     Object.keys(sceneAnalysis).forEach(k => delete sceneAnalysis[k]);
     Object.keys(sceneUserData).forEach(k => delete sceneUserData[k]);
+
 
     // Restore narration state from the SERVER (not a session-local flag) —
     // this is what fixes "reopening a job doesn't recognise narration
@@ -860,6 +994,7 @@ async function editJob(jobId, baseJobId) {
       narrationStatusEl.style.color = 'var(--muted)';
     }
 
+
     // Show the job ID persistently above the scene cards while editing —
     // not just buried in the library or final result page — so it's
     // always clear which video you're currently working on.
@@ -868,6 +1003,7 @@ async function editJob(jobId, baseJobId) {
       indicatorEl.style.display = 'block';
       indicatorEl.innerHTML = `📁 Stai modificando: <strong>${job.property_name || 'Property'}</strong> — ID: <code>${jobId}</code>`;
     }
+
 
     for (let i = 0; i < scenesConfig.length; i++) {
       const scene = scenesConfig[i];
@@ -892,6 +1028,7 @@ async function editJob(jobId, baseJobId) {
       };
     }
 
+
     completedScenes = job.scenes || [];
     renderScenes();
     closeJobPreview();
@@ -902,14 +1039,17 @@ async function editJob(jobId, baseJobId) {
   }
 }
 
+
 // Auto-refresh library count on load
 authFetch('/jobs/').then(r => r.json()).then(d => {
   const count = d.total || 0;
   if (count > 0) document.getElementById('lib-count').textContent = count;
 }).catch(() => {});
 
+
 // ── Login ──────────────────────────────────────────────────────────────────────
 const SESSION_KEY = 'pvs_access';
+
 
 async function checkLogin() {
   const stored = localStorage.getItem(SESSION_KEY);
@@ -923,6 +1063,7 @@ async function checkLogin() {
   }
   document.getElementById('login-screen').classList.add('visible');
 }
+
 
 async function submitLogin() {
   const key = document.getElementById('login-key').value.trim();
@@ -945,17 +1086,21 @@ async function submitLogin() {
   }
 }
 
+
 function showApp() {
   document.getElementById('login-screen').classList.remove('visible');
 }
 
+
 checkLogin();
+
 
 // ── Auth fetch helper — adds access key to all requests ───────────────────────
 function authHeaders(extra = {}) {
   const key = localStorage.getItem(SESSION_KEY) || '';
   return key ? { 'X-Access-Key': key, ...extra } : extra;
 }
+
 
 async function authFetch(url, options = {}) {
   options.headers = { ...authHeaders(), ...(options.headers || {}) };
@@ -978,6 +1123,7 @@ let completedScenes = [];
 let newlyAddedSceneIndices = new Set(); // explicit tracking — never infer "new" from array length
 let reworkOpen = {};
 
+
 // ── DOM refs ───────────────────────────────────────────────────────────────────
 const dropZone   = document.getElementById('drop-zone');
 const fileInput  = document.getElementById('file-input');
@@ -988,11 +1134,13 @@ const progSec    = document.getElementById('progress-section');
 const qcSec      = document.getElementById('qc-section');
 const resultSec  = document.getElementById('result-section');
 
+
 // ── File handling ─────────────────────────────────────────────────────────────
 dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
 dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
 dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('drag-over'); addFiles([...e.dataTransfer.files]); });
 fileInput.addEventListener('change', () => { addFiles([...fileInput.files]); fileInput.value = ''; });
+
 
 function addFiles(newFiles) {
   const imgs = newFiles.filter(f => f.type.startsWith('image/'));
@@ -1004,8 +1152,10 @@ function addFiles(newFiles) {
   updateCostEstimate();
 }
 
+
 // ── Drag and drop scene reorder ────────────────────────────────────────────────
 let dragSrcIndex = null;
+
 
 function onDragStart(event, index) {
   dragSrcIndex = index;
@@ -1016,12 +1166,14 @@ function onDragStart(event, index) {
   }, 0);
 }
 
+
 function onDragEnd(event) {
   document.querySelectorAll('.scene-card').forEach(c => {
     c.classList.remove('dragging','drag-over-top','drag-over-bottom');
   });
   dragSrcIndex = null;
 }
+
 
 function onDragOver(event, index) {
   event.preventDefault();
@@ -1036,32 +1188,40 @@ function onDragOver(event, index) {
   card.classList.add(event.clientY < mid ? 'drag-over-top' : 'drag-over-bottom');
 }
 
+
 function onDragLeave(event) {
   event.currentTarget?.classList?.remove('drag-over-top','drag-over-bottom');
 }
 
+
 function onDrop(event, targetIndex) {
   event.preventDefault();
   if (dragSrcIndex === null || dragSrcIndex === targetIndex) return;
+
 
   const card = scenesCont.querySelector(`[data-index="${targetIndex}"]`);
   const rect  = card?.getBoundingClientRect();
   const mid   = rect ? rect.top + rect.height / 2 : 0;
   const insertBefore = event.clientY < mid;
 
+
   // Save current state before reorder
   saveSceneData();
+
 
   // Reorder files array
   const movedFile    = files.splice(dragSrcIndex, 1)[0];
   const movedAnalysis = sceneAnalysis[dragSrcIndex];
   const movedData    = sceneUserData[dragSrcIndex];
 
+
   // Adjust target index after splice
   let ti = targetIndex > dragSrcIndex ? targetIndex - 1 : targetIndex;
   if (!insertBefore) ti += 1;
 
+
   files.splice(ti, 0, movedFile);
+
 
   // Rebuild sceneAnalysis and sceneUserData with new indices
   const newAnalysis  = {};
@@ -1077,14 +1237,17 @@ function onDrop(event, targetIndex) {
   newAnalysis[ti]  = movedAnalysis;
   newUserData[ti]  = movedData;
 
+
   Object.keys(sceneAnalysis).forEach(k => delete sceneAnalysis[k]);
   Object.keys(sceneUserData).forEach(k => delete sceneUserData[k]);
   Object.assign(sceneAnalysis, newAnalysis);
   Object.assign(sceneUserData, newUserData);
 
+
   renderScenes();
   updateCostEstimate();
 }
+
 
 // ── Add new scenes after upload ────────────────────────────────────────────────
 function addMoreScenes(input) {
@@ -1100,6 +1263,7 @@ function addMoreScenes(input) {
   input.value = '';
 }
 
+
 function removeScene(i) {
   files.splice(i, 1);
   delete sceneAnalysis[i];
@@ -1107,23 +1271,28 @@ function removeScene(i) {
   updateCostEstimate();
 }
 
+
 // ── Vision analysis on upload ─────────────────────────────────────────────────
 async function analyseImage(index) {
   const file = files[index];
   if (!file) return;
 
+
   // Mark as analysing
   sceneAnalysis[index] = { analysing: true };
   updateSceneBadge(index, 'analysing', '🔍 Analysing…');
 
+
   const fd = new FormData();
   fd.append('image', file);
+
 
   try {
     const res = await authFetch(`${API_BASE}/analyse-image`, { method: 'POST', body: fd });
     if (!res.ok) throw new Error('Analysis failed');
     const data = await res.json();
     sceneAnalysis[index] = data;
+
 
     // Auto-fill space type and POV movement in scene card
     const card = scenesCont.querySelector(`[data-index="${index}"]`);
@@ -1134,14 +1303,17 @@ async function analyseImage(index) {
       if (moveSel  && data.suggested_movement) moveSel.value = data.suggested_movement;
     }
 
+
     const label = spaceLabel(data.v7_space_type || data.space_type) + (data.confidence < 0.7 ? ' ?' : '');
     updateSceneBadge(index, 'ok', `🏠 ${label}`);
+
 
   } catch(e) {
     sceneAnalysis[index] = { error: true };
     updateSceneBadge(index, '', '');
   }
 }
+
 
 function spaceLabel(type) {
   const map = {
@@ -1156,6 +1328,7 @@ function spaceLabel(type) {
   return map[type] || type;
 }
 
+
 function updateSceneBadge(index, cls, text) {
   const card = scenesCont.querySelector(`[data-index="${index}"]`);
   if (!card) return;
@@ -1165,6 +1338,7 @@ function updateSceneBadge(index, cls, text) {
   badge.className = 'sc-ai-badge' + (cls ? ' ' + cls : '');
   badge.style.display = text ? '' : 'none';
 }
+
 
 // ── v7 Structured dropdown options ────────────────────────────────────────────
 const SPACE_OPTS = {
@@ -1176,6 +1350,7 @@ const SPACE_OPTS = {
   outdoor:  'Esterno — giardino, piscina, facciata',
   elevated: 'Balcone / terrazza / loggia',
 };
+
 
 const MOVEMENT_OPTS = {
   walk_in_explore:    '⭐ Entra ed esplora — sguardo naturale (consigliato)',
@@ -1191,6 +1366,7 @@ const MOVEMENT_OPTS = {
   step_out_onto:      'Esci verso — per balconi e terrazze (max 60°)',
 };
 
+
 // Space type → default POV movement mapping (mirrors SPACE_DEFAULT_MOVEMENT in video_generation.py)
 const SPACE_DEFAULT_MOVEMENT_MAP = {
   large:    'walk_in_explore',
@@ -1201,6 +1377,7 @@ const SPACE_DEFAULT_MOVEMENT_MAP = {
   outdoor:  'reveal_pullback',
   elevated: 'step_out_onto',
 };
+
 
 function onSpaceTypeChange(index, value) {
   // Auto-update POV movement when user manually changes space type
@@ -1213,12 +1390,14 @@ function onSpaceTypeChange(index, value) {
   updateCostEstimate();
 }
 
+
 // Show/hide video upscale toggle based on tier
 function onTierChange(tier) {
   const upscaleRow = document.getElementById('video-upscale-row');
   if (upscaleRow) upscaleRow.style.display = tier === 'eco' ? '' : 'none';
   updateCostEstimate();
 }
+
 
 // ── Save/restore scene user data across renders ────────────────────────────────
 function saveSceneData() {
@@ -1236,12 +1415,14 @@ function saveSceneData() {
   });
 }
 
+
 function renderScenes() {
   saveSceneData();
   genBtn.disabled = files.length === 0;
   // Show/hide add scene button
   const addBtn = document.getElementById('add-scene-btn');
   if (addBtn) addBtn.style.display = files.length > 0 ? 'flex' : 'none';
+
 
   if (!files.length) {
     scenesCont.innerHTML = '<div class="empty-state">Upload photos above to configure scenes</div>';
@@ -1254,11 +1435,13 @@ function renderScenes() {
     const saved    = sceneUserData[i] || {};
     const scStatus = completedScenes.find(s => s.index === i);
 
+
     const badge = ai && !ai.analysing && !ai.error
       ? `<span class="sc-ai-badge">🏠 ${spaceLabel(ai.v7_space_type || ai.space_type)}</span>`
       : ai && ai.analysing
         ? `<span class="sc-ai-badge analysing">🔍 Analisi…</span>`
         : `<span class="sc-ai-badge" style="display:none"></span>`;
+
 
     // Status badge after job completion
     const statusBadge = scStatus
@@ -1267,11 +1450,13 @@ function renderScenes() {
         : `<span class="sc-ai-badge" style="background:#fdf0ef;color:var(--danger)">✗ fallito</span>`
       : '';
 
+
     const spaceOpts = Object.entries(SPACE_OPTS)
       .map(([v,l]) => `<option value="${v}"${v===(saved.space_type||'large')?'selected':''}>${l}</option>`).join('');
     const moveOpts = Object.entries(MOVEMENT_OPTS)
       .map(([v,l]) => `<option value="${v}"${v===(saved.pov_movement||'walk_in_explore')?'selected':''}>${l}</option>`).join('');
     const spaceSelect = `<select class="sc-space-type" onchange="onSpaceTypeChange(${i}, this.value)">${spaceOpts}</select>`;
+
 
     // Rework panel — shown if job completed
     const reworkPanel = scStatus ? `
@@ -1281,12 +1466,14 @@ function renderScenes() {
         </div>
       </div>` : '';
 
+
     const sceneIdForThis = saved.scene_id || null;
     const reworkBtn = scStatus
       ? (sceneIdForThis
           ? `<button class="btn-rework-toggle" onclick="redoSceneNew(${i}, '${sceneIdForThis}')" id="rw-btn-${i}">↺ Rifai questa scena</button>`
           : `<button class="btn-rework-toggle" onclick="openReworkPanel(${i}, this)" id="rw-btn-${i}">↺ Rifai questa scena (legacy)</button>`)
       : '';
+
 
     const card = document.createElement('div');
     card.className = `scene-card${scStatus ? (scStatus.video==='ok' ? ' qc-pass' : ' qc-fail') : ''}`;
@@ -1354,6 +1541,7 @@ function renderScenes() {
       ${reworkPanel}`;
     scenesCont.appendChild(card);
 
+
     // Restore AI suggestions only if no saved user data
     if (ai && !saved.space_type) {
       if (ai.v7_space_type) card.querySelector('.sc-space-type').value = ai.v7_space_type;
@@ -1362,9 +1550,11 @@ function renderScenes() {
   });
 }
 
+
 function onCaptionChange(index, value) {
   updateCostEstimate();
 }
+
 
 function bulkRework() {
   if (!completedScenes.length) {
@@ -1388,16 +1578,20 @@ function bulkRework() {
   showError(`↑ ${completedScenes.length} scena/e aperte — premi Genera video per rigenerare`);
 }
 
+
 // ══════════════════════════════════════════════════════════════════════════════
 // NEW SOLID REWORK MODEL — scene_id based, single job directory, no siblings
 // ══════════════════════════════════════════════════════════════════════════════
+
 
 async function redoSceneNew(cardIndex, sceneId) {
   const card = scenesCont.querySelector(`[data-index="${cardIndex}"]`);
   if (!card) return;
 
+
   const btn = document.getElementById(`rw-btn-${cardIndex}`);
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Invio…'; }
+
 
   const sceneUpdate = {
     caption:      card.querySelector('.sc-caption')?.value.trim() || '',
@@ -1406,8 +1600,10 @@ async function redoSceneNew(cardIndex, sceneId) {
     pov_movement: card.querySelector('.sc-pov-movement')?.value || 'walk_in_explore',
   };
 
+
   const fd = new FormData();
   fd.append('scene_update', JSON.stringify(sceneUpdate));
+
 
   try {
     const res = await authFetch(`${API_BASE}/jobs/${currentJobId}/scenes/${sceneId}/redo`, {
@@ -1435,6 +1631,7 @@ async function redoSceneNew(cardIndex, sceneId) {
   }
 }
 
+
 async function addSceneNewSolid(file, sceneConfig) {
   if (!currentJobId) {
     showError('Nessun job caricato — apri prima un video dalla libreria');
@@ -1444,8 +1641,10 @@ async function addSceneNewSolid(file, sceneConfig) {
   fd.append('image', file);
   fd.append('scene_config', JSON.stringify(sceneConfig));
 
+
   updateProgress(5, 'Caricamento nuova scena…');
   progSec.style.display = 'block';
+
 
   try {
     const res = await authFetch(`${API_BASE}/jobs/${currentJobId}/scenes`, { method: 'POST', body: fd });
@@ -1466,6 +1665,7 @@ async function addSceneNewSolid(file, sceneConfig) {
   }
 }
 
+
 function openReworkPanel(i, btn) {
   saveSceneData();
   sceneUserData[i] = sceneUserData[i] || {};
@@ -1483,6 +1683,7 @@ function openReworkPanel(i, btn) {
   updateCostEstimate();
 }
 
+
 function toggleRework(i) {
   saveSceneData();
   sceneUserData[i] = sceneUserData[i] || {};
@@ -1492,11 +1693,13 @@ function toggleRework(i) {
   updateCostEstimate();
 }
 
+
 function onDurationChange(input) {
   input.closest('.sc-fields').querySelector('.dur-val').textContent = input.value + 's';
   updateCostEstimate();
   checkNarrationDurationMatch();
 }
+
 
 function checkNarrationDurationMatch() {
   // Live feedback whenever scene durations change AFTER narration was
@@ -1505,14 +1708,17 @@ function checkNarrationDurationMatch() {
   // duration from the last "Genera voiceover" click.
   if (!narrationDistribution) return;  // narration never generated yet — nothing to compare
 
+
   const sliders = [...scenesCont.querySelectorAll('.sc-duration')];
   const currentTotal = sliders.reduce((sum, s) => sum + parseInt(s.value || 0), 0);
   const narrationSecs = narrationDistribution.narration_duration_secs;
   const targetTotal = narrationSecs + 2.5; // END_BUFFER_SECS, matches narration.py
 
+
   const statusEl = document.getElementById('narration-status');
   const tooShort = (currentTotal - narrationSecs) > (4.0 + 2.5); // TOO_SHORT_THRESHOLD + buffer
   const needsExtension = targetTotal > currentTotal;
+
 
   if (needsExtension) {
     statusEl.textContent = `⚠ Le scene attuali (${currentTotal}s) sono più corte della narrazione (${narrationSecs}s + pausa) — il video verrà esteso`;
@@ -1526,6 +1732,7 @@ function checkNarrationDurationMatch() {
   }
 }
 
+
 // ── Voiceover word count + auto-duration ──────────────────────────────────────
 const CHARS_PER_SEC   = 16;
 const TTS_BUFFER_SECS = 2;
@@ -1533,10 +1740,12 @@ const MAX_DURATION    = 20;
 const MIN_DURATION    = 4;
 const VALID_DURATIONS = [4, 6, 8, 10, 12, 14, 16, 18, 20];
 
+
 function snapDuration(secs) {
   for (const v of VALID_DURATIONS) if (v >= secs) return v;
   return MAX_DURATION;
 }
+
 
 function onVoiceoverChange(index, textarea) {
   const chars    = textarea.value.trim().length;
@@ -1548,7 +1757,9 @@ function onVoiceoverChange(index, textarea) {
   const slider   = card ? card.querySelector('.sc-duration') : null;
   const durVal   = card ? card.querySelector('.dur-val') : null;
 
+
   if (!counter) return;
+
 
   if (chars === 0) {
     counter.textContent = '';
@@ -1557,7 +1768,9 @@ function onVoiceoverChange(index, textarea) {
     return;
   }
 
+
   counter.textContent = `~${estSecs}s (+2s buffer)`;
+
 
   if (bufferedSecs > MAX_DURATION) {
     counter.className = 'vo-counter over';
@@ -1574,8 +1787,10 @@ function onVoiceoverChange(index, textarea) {
     }
   }
 
+
   updateCostEstimate();
 }
+
 
 // ── Build config from scene cards ─────────────────────────────────────────────
 function getScenesConfig() {
@@ -1589,6 +1804,7 @@ function getScenesConfig() {
   }));
 }
 
+
 // ── Live cost estimate ─────────────────────────────────────────────────────────
 async function updateCostEstimate() {
   if (files.length === 0) {
@@ -1596,6 +1812,7 @@ async function updateCostEstimate() {
     return;
   }
   const config = getScenesConfig();
+
 
   // Determine which scenes will ACTUALLY be generated this time —
   // if editing an existing job, only rework-marked scenes cost anything;
@@ -1621,11 +1838,13 @@ async function updateCostEstimate() {
     }
   }
 
+
   // Client-side cost estimate (mirrors cost_tracker.py logic)
   const tier         = document.getElementById('model-tier').value;
   const upscale      = document.getElementById('do-upscale').checked;
   const videoUpscale = document.getElementById('do-video-upscale').checked && tier === 'eco';
   const visionQc     = document.getElementById('do-vision-qc').checked;
+
 
   // Cost per 8s clip by tier
   const TIER_COST    = { eco: 0.05, luma: 0.46, premium: 0.80, premium_veo: 1.60 };
@@ -1635,6 +1854,7 @@ async function updateCostEstimate() {
   const EL_PER_CHAR  = 0.0003;
   const FLORENCE     = 0.0002;
   const INFRA        = 34.79 / 20;  // updated annual Hostinger cost — server recalculates actual rolling value
+
 
   const n         = scenesToCharge.length;
   const videoCost = scenesToCharge.reduce((s,sc) => s + CLIP_COST, 0);
@@ -1649,12 +1869,14 @@ async function updateCostEstimate() {
   const infraCost = isRework ? 0 : INFRA;
   const total     = videoCost + upCost + vidUpCost + ttsCost + visCost + infraCost
 
+
   const tierLabel = { eco: 'Lyra 2.0 + Topaz', luma: 'Luma Ray 2', premium: 'Veo 3.1 Fast', premium_veo: 'Veo 3.1 Standard' };
   const panel = document.getElementById('cost-panel');
   const lines = document.getElementById('cost-lines');
   panel.style.display = 'block';
   document.getElementById('cost-type').textContent = isRework ? `(rework — ${n} scena/e)` : '(stima)';
   document.getElementById('cost-total').textContent = `€${total.toFixed(2)}`;
+
 
   let html = '';
   if (isRework && n === 0) {
@@ -1670,10 +1892,12 @@ async function updateCostEstimate() {
   lines.innerHTML = html;
 }
 
+
 // ── Submit job ─────────────────────────────────────────────────────────────────
 genBtn.addEventListener('click', async () => {
   errorMsg.innerHTML = '';
   if (!files.length) return;
+
 
   // Check if any rework panels are open — if so, route to rework endpoint
   const reworkScenes = [];
@@ -1681,6 +1905,7 @@ genBtn.addEventListener('click', async () => {
     const i = parseInt(panel.id.replace('rw-panel-',''));
     if (!isNaN(i)) reworkScenes.push(i);
   });
+
 
   // Auto-include genuinely new scenes (explicitly tracked via newlyAddedSceneIndices)
   // — never inferred from completedScenes.length, which can be stale/incorrect
@@ -1694,6 +1919,7 @@ genBtn.addEventListener('click', async () => {
     });
   }
 
+
   if (reworkScenes.length > 0 && currentJobId) {
     // Reset rework_open for all submitted scenes before routing
     reworkScenes.forEach(i => {
@@ -1702,6 +1928,7 @@ genBtn.addEventListener('click', async () => {
     await submitRework(reworkScenes);
     return;
   }
+
 
   // SAFETY GUARD: if an existing job is loaded, check its actual server
   // status first. A DRAFT job (created via narration-first flow, no
@@ -1718,6 +1945,7 @@ genBtn.addEventListener('click', async () => {
         jobStatus = jobData.status;
       }
     } catch(_) {}
+
 
     if (jobStatus === 'draft') {
       genBtn.disabled    = true;
@@ -1743,6 +1971,7 @@ genBtn.addEventListener('click', async () => {
     }
   }
 
+
   // SAFETY GUARD: if an existing (non-draft) job is loaded and nothing
   // needs video regeneration, check the SERVER's record of whether this
   // job has narration (not a browser-memory variable, which is unreliable
@@ -1757,6 +1986,7 @@ genBtn.addEventListener('click', async () => {
         jobHasNarration = !!jobData.narration_path;
       }
     } catch(_) {}
+
 
     if (jobHasNarration) {
       genBtn.disabled    = true;
@@ -1783,6 +2013,7 @@ genBtn.addEventListener('click', async () => {
     return;
   }
 
+
   // Full new job — reset all rework state
   Object.keys(sceneUserData).forEach(i => {
     if (sceneUserData[i]) sceneUserData[i].rework_open = false;
@@ -1794,6 +2025,7 @@ genBtn.addEventListener('click', async () => {
   qcSec.style.display      = 'none';
   progSec.style.display    = 'block';
   updateProgress(0, 'Caricamento foto…');
+
 
   const config = getScenesConfig();
   const fd     = new FormData();
@@ -1809,6 +2041,7 @@ genBtn.addEventListener('click', async () => {
   fd.append('model_tier',        document.getElementById('model-tier').value);
   fd.append('lighting',          document.getElementById('lighting').value);
   fd.append('intensity',         document.getElementById('intensity').value);
+
 
   try {
     const res = await authFetch(`${API_BASE}/jobs/`, { method: 'POST', body: fd });
@@ -1830,6 +2063,7 @@ genBtn.addEventListener('click', async () => {
   }
 });
 
+
 // ── Rework submission ──────────────────────────────────────────────────────────
 async function submitRework(reworkScenes) {
   genBtn.disabled    = true;
@@ -1839,7 +2073,9 @@ async function submitRework(reworkScenes) {
   qcSec.style.display     = 'none';
   updateProgress(0, `Rework ${reworkScenes.length} scena/e selezionata/e…`);
 
+
   const updatedScenes = getScenesConfig();
+
 
   // Always redo both audio and video — video is generated AFTER audio to get correct duration
   const cfg = {
@@ -1849,10 +2085,13 @@ async function submitRework(reworkScenes) {
     updated_scenes: updatedScenes,
   };
 
+
   console.log(`Rework: job ${currentJobId}, scenes ${reworkScenes}`);
+
 
   const fd = new FormData();
   fd.append('rework_config', JSON.stringify(cfg));
+
 
   // CRITICAL: genuinely new scenes have their photo only in browser memory —
   // it was never uploaded to the server. Attach those files now.
@@ -1864,7 +2103,9 @@ async function submitRework(reworkScenes) {
     }
   });
 
+
   const targetJobId = currentJobId;
+
 
   try {
     const res = await authFetch(`${API_BASE}/jobs/${targetJobId}/rework`, { method:'POST', body:fd });
@@ -1879,10 +2120,12 @@ async function submitRework(reworkScenes) {
     reworkScenes.forEach(idx => newlyAddedSceneIndices.delete(idx));
     genBtn.textContent = 'Rework in corso…';
 
+
     // Close all rework panels after submission
     reworkScenes.forEach(idx => {
       if (sceneUserData[idx]) sceneUserData[idx].rework_open = false;
     });
+
 
     startPolling(job_id);
   } catch(e) {
@@ -1892,7 +2135,9 @@ async function submitRework(reworkScenes) {
   }
 }
 
+
 function log(msg) { console.log(`[PVS] ${msg}`); }
+
 
 // ── Polling ────────────────────────────────────────────────────────────────────
 function startPolling(jobId) {
@@ -1903,8 +2148,10 @@ function startPolling(jobId) {
       if (!res.ok) return;
       const job = await res.json();
 
+
       updateProgress(job.progress, job.message);
       if (job.scenes && job.scenes.length) renderSceneProgress(job.scenes);
+
 
       if (job.status === 'done') {
         clearInterval(pollTimer);
@@ -1929,11 +2176,13 @@ function startPolling(jobId) {
   }, 3000);
 }
 
+
 // ── QC review panel ────────────────────────────────────────────────────────────
 function showQcReview(job) {
   qcSec.style.display = 'block';
   qcSec.scrollIntoView({ behavior: 'smooth' });
   qcDecisions = {};
+
 
   const body    = document.getElementById('qc-body');
   const awaiting = job.awaiting_scenes || {};
@@ -1941,11 +2190,13 @@ function showQcReview(job) {
   const flagged  = awaiting.flagged  || [];
   const allFlagged = [...new Set([...rejected, ...flagged])];
 
+
   if (allFlagged.length === 0) {
     body.innerHTML = '<p style="color:var(--ok);padding:10px">Tutte le scene hanno passato il QC.</p>';
     document.getElementById('assemble-btn').disabled = false;
     return;
   }
+
 
   body.innerHTML = allFlagged.map(idx => {
     const scene   = (job.scenes || []).find(s => s.index === idx) || {};
@@ -1955,6 +2206,7 @@ function showQcReview(job) {
       .flatMap(q => q.issues || []).join('; ') || 'Verificare manualmente';
     const thumb   = files[idx] ? `<img class="qc-thumb" src="${URL.createObjectURL(files[idx])}" />` : '';
 
+
     // Video preview — link to the generated clip
     const clipUrl  = `${API_BASE}/jobs/${currentJobId}/clip/${idx}`;
     const videoPreview = `
@@ -1962,6 +2214,7 @@ function showQcReview(job) {
         <summary style="font-size:.76rem;color:var(--green);cursor:pointer">▶ Anteprima clip generata</summary>
         <video src="${clipUrl}" controls style="width:100%;max-width:320px;margin-top:6px;border-radius:4px;border:1px solid var(--rule)"></video>
       </details>`;
+
 
     return `<div class="qc-scene" id="qc-scene-${idx}">
       ${thumb}
@@ -1981,10 +2234,12 @@ function showQcReview(job) {
     </div>`;
   }).join('');
 
+
   // Auto-mark rejected as needing redo
   rejected.forEach(idx => setQcDecision(idx, 'redo'));
   updateAssembleBtn(allFlagged);
 }
+
 
 function setQcDecision(idx, decision) {
   qcDecisions[idx] = decision;
@@ -1993,16 +2248,19 @@ function setQcDecision(idx, decision) {
   const card = document.getElementById(`qc-scene-${idx}`);
   if (card) card.style.opacity = decision ? '0.7' : '1';
 
+
   const awaiting = Object.keys(qcDecisions).length;
   const allFlagged = [...document.querySelectorAll('[id^="qc-scene-"]')]
     .map(el => parseInt(el.id.replace('qc-scene-', '')));
   updateAssembleBtn(allFlagged);
 }
 
+
 function updateAssembleBtn(allFlagged) {
   const allDecided = allFlagged.every(idx => qcDecisions[idx]);
   document.getElementById('assemble-btn').disabled = !allDecided;
 }
+
 
 async function submitApproval() {
   const approvedScenes = Object.entries(qcDecisions)
@@ -2010,11 +2268,13 @@ async function submitApproval() {
   const redoScenes = Object.entries(qcDecisions)
     .filter(([,d]) => d === 'redo').map(([i]) => parseInt(i));
 
+
   const fd = new FormData();
   fd.append('approval', JSON.stringify({
     approved_scenes: approvedScenes,
     redo_scenes:     redoScenes,
   }));
+
 
   try {
     const res = await authFetch(`${API_BASE}/jobs/${currentJobId}/approve`, { method: 'POST', body: fd });
@@ -2032,12 +2292,14 @@ async function submitApproval() {
   }
 }
 
+
 // ── UI helpers ─────────────────────────────────────────────────────────────────
 function updateProgress(pct, msg) {
   document.getElementById('prog-bar').style.width = pct + '%';
   document.getElementById('prog-pct').textContent  = pct + '%';
   document.getElementById('prog-msg').textContent  = msg;
 }
+
 
 function renderSceneProgress(scenes) {
   const el = document.getElementById('scene-progress');
@@ -2054,6 +2316,7 @@ function renderSceneProgress(scenes) {
     </div>`;
   }).join('');
 }
+
 
 function showResult(jobId, propName, scenes) {
   // CRITICAL: Reset ALL rework panel open states before re-rendering.
@@ -2077,6 +2340,7 @@ function showResult(jobId, propName, scenes) {
   resultSec.scrollIntoView({ behavior: 'smooth' });
 }
 
+
 function showCostPanel(costData, type) {
   const panel = document.getElementById('cost-panel');
   const lines = document.getElementById('cost-lines');
@@ -2090,9 +2354,11 @@ function showCostPanel(costData, type) {
     .join('');
 }
 
+
 function showError(msg) {
   errorMsg.innerHTML = `<div class="alert alert-error">⚠ ${msg}</div>`;
 }
+
 
 // ── Browser notifications ─────────────────────────────────────────────────────
 function requestNotificationPermission() {
@@ -2100,6 +2366,7 @@ function requestNotificationPermission() {
     Notification.requestPermission();
   }
 }
+
 
 function notifyJobComplete(propName, success) {
   if ('Notification' in window && Notification.permission === 'granted') {
@@ -2114,6 +2381,7 @@ function notifyJobComplete(propName, success) {
     );
   }
 }
+
 
 // Request permission on page load
 requestNotificationPermission();
@@ -2140,6 +2408,7 @@ async function checkCredits() {
 checkCredits();
 setInterval(checkCredits, 10 * 60 * 1000);
 
+
 // ── Diagnostics ────────────────────────────────────────────────────────────────
 async function openDiagnostics() {
   document.getElementById('diag-modal').classList.add('open');
@@ -2165,6 +2434,76 @@ function closeDiagnostics() {
 document.getElementById('diag-modal').addEventListener('click', e => {
   if (e.target === document.getElementById('diag-modal')) closeDiagnostics();
 });
+
+
+// ── Maintenance panel ──────────────────────────────────────────────────────────
+async function openMaintenance() {
+  document.getElementById('maint-modal').classList.add('open');
+  document.getElementById('maint-content').innerHTML = '<div class="maint-loading">Loading…</div>';
+  document.getElementById('maint-banner').style.display = 'none';
+  try {
+    const res  = await authFetch(`${API_BASE}/maintenance/status`);
+    const data = await res.json();
+    if (!data.timestamp) {
+      document.getElementById('maint-content').innerHTML = `<div class="maint-loading">${data.note || 'No maintenance run yet.'}</div>`;
+    } else {
+      const statusClass = { ok: 'maint-ok', warn: 'maint-warn', red: 'maint-red' };
+      const checksHtml = (data.checks || []).map(c =>
+        `<div class="maint-row"><span>${c.name}</span><span class="${statusClass[c.status]||''}">${c.detail}</span></div>`
+      ).join('');
+      const cleanup = data.cleanup || {};
+      document.getElementById('maint-content').innerHTML = `
+        <div style="font-size:.72rem;color:var(--muted);margin-bottom:8px">Last run: ${new Date(data.timestamp).toLocaleString()}</div>
+        ${checksHtml}
+        <div class="maint-row"><span>Last cleanup</span><span>${cleanup.items_removed||0} item(s) removed, ${cleanup.reclaimed_mb||0} MB reclaimed</span></div>
+      `;
+      if (data.any_red) document.getElementById('maint-banner').style.display = 'block';
+    }
+  } catch(e) {
+    document.getElementById('maint-content').innerHTML = `<div class="maint-loading" style="color:var(--danger)">Errore: ${e.message}</div>`;
+  }
+  loadMaintenanceEmails();
+}
+function closeMaintenance() {
+  document.getElementById('maint-modal').classList.remove('open');
+}
+document.getElementById('maint-modal').addEventListener('click', e => {
+  if (e.target === document.getElementById('maint-modal')) closeMaintenance();
+});
+async function loadMaintenanceEmails() {
+  try {
+    const res  = await authFetch(`${API_BASE}/maintenance/alert-emails`);
+    const data = await res.json();
+    document.getElementById('maint-emails-input').value = (data.emails || []).join(', ');
+  } catch(e) {}
+}
+async function saveMaintenanceEmails() {
+  const raw    = document.getElementById('maint-emails-input').value;
+  const emails = raw.split(',').map(e => e.trim()).filter(e => e);
+  try {
+    await authFetch(`${API_BASE}/maintenance/alert-emails`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ emails }),
+    });
+    const msg = document.getElementById('maint-saved-msg');
+    msg.style.display = 'inline';
+    setTimeout(() => msg.style.display = 'none', 2000);
+  } catch(e) {
+    alert('Errore nel salvataggio: ' + e.message);
+  }
+}
+// Also flag the header button red if a maintenance check is currently red
+async function checkMaintenanceFlag() {
+  try {
+    const res  = await authFetch(`${API_BASE}/maintenance/status`);
+    const data = await res.json();
+    document.getElementById('maint-btn').classList.toggle('red', !!data.any_red);
+  } catch(e) {}
+}
+checkMaintenanceFlag();
+setInterval(checkMaintenanceFlag, 10 * 60 * 1000);
+
 
 // ── Cost estimate on toggle changes ───────────────────────────────────────────
 ['do-upscale','do-vision-qc','do-video-upscale','model-tier','lighting','intensity'].forEach(id => {

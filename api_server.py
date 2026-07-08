@@ -10,10 +10,12 @@ New in v3:
   - Cost estimation returned with job creation
   - Actual cost tracked after completion
   - GET /diagnostics endpoint with disk, API health, job stats, auto-cleanup
+  - GET/POST /maintenance/* endpoints — scheduled health-check report + editable alert recipient list
   - Security: 20MB file size limit, max 20 images, rate limit 5 jobs/hour/IP
   - File type validation by magic bytes
   - Job persistence to disk (survives server restart) — preserved from v2
 """
+
 
 import os
 import uuid
@@ -26,17 +28,21 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from collections import defaultdict
 
+
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, BackgroundTasks, Request, Header
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
+
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
+
 # ── Access key auth ────────────────────────────────────────────────────────────
 UI_ACCESS_KEY = os.getenv("UI_ACCESS_KEY", "").strip()
+
 
 def _check_access(request: Request) -> bool:
     """Returns True if request is authorised. Always True if no key configured."""
@@ -45,11 +51,14 @@ def _check_access(request: Request) -> bool:
     key = request.headers.get("X-Access-Key", "").strip()
     return key == UI_ACCESS_KEY
 
+
 BASE_DIR = Path(__file__).parent
 JOBS_DIR = BASE_DIR / "jobs"
 JOBS_DIR.mkdir(exist_ok=True)
 
+
 JOBS: dict = {}
+
 
 # ── Job locks — prevent concurrent modification of the same job ───────────────
 # Solves the "parallel processing corrupted things" issue: any operation that
@@ -57,6 +66,7 @@ JOBS: dict = {}
 # lock. A second request for the same job while locked gets a clear 409 error
 # instead of racing against the first and corrupting shared files.
 _JOB_LOCKS: dict = {}   # job_id -> {"locked": bool, "since": iso timestamp, "operation": str}
+
 
 def _acquire_job_lock(job_id: str, operation: str) -> bool:
     """Returns True if lock acquired, False if job is already locked."""
@@ -70,12 +80,16 @@ def _acquire_job_lock(job_id: str, operation: str) -> bool:
     }
     return True
 
+
 def _release_job_lock(job_id: str):
     if job_id in _JOB_LOCKS:
         _JOB_LOCKS[job_id]["locked"] = False
 
+
 def _job_lock_status(job_id: str) -> dict:
     return _JOB_LOCKS.get(job_id, {"locked": False})
+
+
 
 
 # ── Stable scene IDs ────────────────────────────────────────────────────────────
@@ -85,6 +99,7 @@ def _job_lock_status(job_id: str) -> dict:
 def _new_scene_id() -> str:
     return "sc_" + uuid.uuid4().hex[:8]
 
+
 def _ensure_scene_ids(scenes_config: list) -> list:
     """Assigns a stable scene_id to any scene that doesn't have one yet.
     Called on job creation and whenever scenes_config is saved, so old
@@ -93,6 +108,8 @@ def _ensure_scene_ids(scenes_config: list) -> list:
         if "scene_id" not in scene or not scene["scene_id"]:
             scene["scene_id"] = _new_scene_id()
     return scenes_config
+
+
 
 
 def _get_rolling_monthly_job_count() -> int:
@@ -118,6 +135,8 @@ def _get_rolling_monthly_job_count() -> int:
     return count
 
 
+
+
 def _overlay_narration_audio(video_path: str, narration_path: str):
     """
     Replaces whatever audio is currently on the assembled video with the
@@ -130,6 +149,7 @@ def _overlay_narration_audio(video_path: str, narration_path: str):
     from moviepy import VideoFileClip, AudioFileClip
     video = VideoFileClip(video_path)
     narration = AudioFileClip(narration_path)
+
 
     final = video.with_audio(narration)
     tmp_output = video_path + ".narration_tmp.mp4"
@@ -149,10 +169,13 @@ def _overlay_narration_audio(video_path: str, narration_path: str):
     os.replace(tmp_output, video_path)
 
 
+
+
 # ── Rate limiting ──────────────────────────────────────────────────────────────
 _RATE_LIMIT_WINDOW = 3600   # 1 hour in seconds
 _RATE_LIMIT_MAX    = 5      # max job submissions per IP per hour
 _rate_tracker: dict = defaultdict(list)
+
 
 def _check_rate_limit(ip: str) -> bool:
     """Returns True if the IP is within the rate limit."""
@@ -163,6 +186,7 @@ def _check_rate_limit(ip: str) -> bool:
     _rate_tracker[ip].append(now)
     return True
 
+
 # ── File type validation (magic bytes) ────────────────────────────────────────
 _IMAGE_SIGNATURES = {
     b'\xff\xd8\xff': 'image/jpeg',
@@ -171,11 +195,13 @@ _IMAGE_SIGNATURES = {
     b'GIF8':         'image/gif',
 }
 
+
 def _validate_image_bytes(data: bytes) -> bool:
     for sig in _IMAGE_SIGNATURES:
         if data[:len(sig)] == sig:
             return True
     return False
+
 
 # ── Job persistence ────────────────────────────────────────────────────────────
 def _save_job(job_id: str):
@@ -189,6 +215,7 @@ def _save_job(job_id: str):
             json.dump(job, f)
     except Exception as e:
         log.warning(f"[Jobs] Could not save job meta for {job_id}: {e}")
+
 
 def _load_jobs_from_disk():
     loaded = 0
@@ -210,11 +237,14 @@ def _load_jobs_from_disk():
     if loaded:
         log.info(f"[Jobs] Restored {loaded} jobs from disk.")
 
+
 _load_jobs_from_disk()
+
 
 # ── App ────────────────────────────────────────────────────────────────────────
 app = FastAPI(title="Real Estate Video Generator", version="3.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
@@ -237,13 +267,17 @@ async def auth_middleware(request: Request, call_next):
         )
     return await call_next(request)
 
+
 if (BASE_DIR / "ui.html").exists():
     @app.get("/", response_class=FileResponse)
     def serve_ui():
         return FileResponse(BASE_DIR / "ui.html")
 
 
+
+
 # ── Utility endpoints ──────────────────────────────────────────────────────────
+
 
 @app.get("/test-scratch/{filename}")
 def serve_test_scratch(filename: str):
@@ -262,9 +296,13 @@ def serve_test_scratch(filename: str):
     return FileResponse(str(test_path), media_type="video/mp4")
 
 
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "time": datetime.utcnow().isoformat()}
+
+
 
 
 @app.get("/credits")
@@ -273,21 +311,26 @@ def get_credits():
     return get_all_credits()
 
 
+
+
 @app.get("/diagnostics")
 def diagnostics():
     """System health check, disk space, API reachability, auto-cleanup of old jobs."""
     import shutil as _shutil
     import requests as _requests
 
+
     # Disk space
     disk   = _shutil.disk_usage(str(BASE_DIR))
     disk_free_gb = round(disk.free / (1024**3), 1)
+
 
     # Job stats
     total_jobs     = len(JOBS)
     done_jobs      = sum(1 for j in JOBS.values() if j.get("status") == "done")
     failed_jobs    = sum(1 for j in JOBS.values() if j.get("status") == "failed")
     running_jobs   = sum(1 for j in JOBS.values() if j.get("status") == "running")
+
 
     # Auto-cleanup: remove job folders older than 7 days
     cutoff     = datetime.utcnow() - timedelta(days=7)
@@ -315,6 +358,7 @@ def diagnostics():
         except Exception:
             pass
 
+
     # API reachability
     def _ping(url, headers=None, timeout=5):
         try:
@@ -323,8 +367,10 @@ def diagnostics():
         except Exception:
             return False
 
+
     fal_key = os.getenv("FAL_KEY", "")
     el_key  = os.getenv("ELEVENLABS_API_KEY", "")
+
 
     fal_ok = _ping(
         "https://api.fal.ai/billing/credits",
@@ -334,6 +380,7 @@ def diagnostics():
         "https://api.elevenlabs.io/v1/user/subscription",
         headers={"xi-api-key": el_key} if el_key else None
     )
+
 
     return {
         "server_time":      datetime.utcnow().isoformat(),
@@ -349,7 +396,45 @@ def diagnostics():
     }
 
 
+
+
+# ── Maintenance scheduler endpoints ────────────────────────────────────────────
+# The actual checks run on a daily cron via maintenance_scheduler.py (standalone
+# script, not part of the request path). These endpoints just expose the latest
+# report and let the alert-recipient list be edited from the UI.
+
+
+@app.get("/maintenance/status")
+def get_maintenance_status():
+    """Returns the latest maintenance report for the UI panel."""
+    import maintenance_scheduler
+    if not maintenance_scheduler.STATUS_FILE.exists():
+        return {"timestamp": None, "checks": [], "cleanup": {}, "any_red": False,
+                "note": "No maintenance run has completed yet."}
+    return json.loads(maintenance_scheduler.STATUS_FILE.read_text())
+
+
+@app.get("/maintenance/alert-emails")
+def get_alert_emails():
+    import maintenance_scheduler
+    return {"emails": maintenance_scheduler.load_alert_emails()}
+
+
+@app.post("/maintenance/alert-emails")
+def set_alert_emails(payload: dict):
+    """Body: {"emails": ["a@x.com", "b@y.com"]}. Replaces the full list."""
+    import maintenance_scheduler
+    emails = payload.get("emails", [])
+    if not isinstance(emails, list) or not all(isinstance(e, str) for e in emails):
+        raise HTTPException(status_code=400, detail="emails must be a list of strings")
+    maintenance_scheduler.save_alert_emails(emails)
+    return {"emails": emails}
+
+
+
+
 # ── Vision analysis endpoint ───────────────────────────────────────────────────
+
 
 @app.post("/analyse-image")
 async def analyse_image(image: UploadFile = File(...)):
@@ -364,9 +449,11 @@ async def analyse_image(image: UploadFile = File(...)):
     if len(content) > MAX_SIZE:
         raise HTTPException(status_code=400, detail="Image too large (max 20MB)")
 
+
     # Validate file type
     if not _validate_image_bytes(content):
         raise HTTPException(status_code=400, detail="Invalid image file")
+
 
     # Save to temp file
     tmp_path = str(JOBS_DIR / f"tmp_analyse_{uuid.uuid4().hex[:8]}.jpg")
@@ -374,9 +461,11 @@ async def analyse_image(image: UploadFile = File(...)):
         with open(tmp_path, "wb") as f:
             f.write(content)
 
+
         from vision_analysis import analyse_input
         result = await asyncio.to_thread(analyse_input, tmp_path)
         return result
+
 
     finally:
         try:
@@ -385,7 +474,10 @@ async def analyse_image(image: UploadFile = File(...)):
             pass
 
 
+
+
 # ── Job submission ─────────────────────────────────────────────────────────────
+
 
 @app.post("/jobs/")
 async def create_job(
@@ -413,9 +505,11 @@ async def create_job(
             detail="Too many requests. Maximum 5 jobs per hour. Please wait before submitting again."
         )
 
+
     # Max images check
     if len(images) > 20:
         raise HTTPException(status_code=400, detail="Maximum 20 images per job")
+
 
     try:
         scenes_config = json.loads(config)
@@ -425,40 +519,48 @@ async def create_job(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid config JSON: {e}")
 
+
     if len(images) != len(scenes_config):
         raise HTTPException(
             status_code=400,
             detail=f"Images ({len(images)}) must match scene configs ({len(scenes_config)})"
         )
 
+
     job_id  = str(uuid.uuid4())[:8]
     job_dir = JOBS_DIR / job_id
     img_dir = job_dir / "images"
     img_dir.mkdir(parents=True)
 
+
     saved_images = []
     for i, upload in enumerate(images):
         content = await upload.read()
+
 
         # Size check per image
         if len(content) > 20 * 1024 * 1024:
             shutil.rmtree(str(job_dir), ignore_errors=True)
             raise HTTPException(status_code=400, detail=f"Image {i+1} exceeds 20MB limit")
 
+
         # Type check by magic bytes
         if not _validate_image_bytes(content):
             shutil.rmtree(str(job_dir), ignore_errors=True)
             raise HTTPException(status_code=400, detail=f"Image {i+1} is not a valid image file")
+
 
         ext = Path(upload.filename).suffix.lower() or ".jpg"
         if upload.content_type == "image/jpeg": ext = ".jpg"
         elif upload.content_type == "image/png":  ext = ".png"
         elif upload.content_type == "image/webp": ext = ".webp"
 
+
         dest = img_dir / f"scene_{i:03d}{ext}"
         with open(dest, "wb") as f:
             f.write(content)
         saved_images.append(str(dest))
+
 
     # Cost estimate — uses ACTUAL rolling 30-day job count for infra cost,
     # not a static guess, so it adapts automatically as volume changes
@@ -472,6 +574,7 @@ async def create_job(
         model_tier=model_tier,
         actual_monthly_jobs=rolling_jobs,
     )
+
 
     JOBS[job_id] = {
         "status":           "draft" if not start_generation else "queued",
@@ -500,6 +603,7 @@ async def create_job(
     }
     _save_job(job_id)
 
+
     if start_generation:
         background_tasks.add_task(
             run_pipeline,
@@ -519,11 +623,14 @@ async def create_job(
             intensity=intensity,
         )
 
+
     return {
         "job_id":       job_id,
         "status":       JOBS[job_id]["status"],
         "cost_estimate": format_cost_display(cost_estimate),
     }
+
+
 
 
 @app.post("/jobs/{job_id}/start-generation")
@@ -542,9 +649,11 @@ async def start_generation_for_draft(job_id: str, background_tasks: BackgroundTa
     if job.get("status") != "draft":
         raise HTTPException(status_code=400, detail=f"Job is not in draft state (status: {job.get('status')})")
 
+
     if not _acquire_job_lock(job_id, "start generation"):
         lock = _job_lock_status(job_id)
         raise HTTPException(status_code=409, detail=f"Job is busy ({lock.get('operation')})")
+
 
     job_dir = JOBS_DIR / job_id
     scenes_config = job.get("scenes_config", [])
@@ -565,10 +674,12 @@ async def start_generation_for_draft(job_id: str, background_tasks: BackgroundTa
                     image_paths.append(str(candidate))
                     break
 
+
     job["status"]  = "queued"
     job["message"] = "Generazione avviata"
     _save_job(job_id)
     _release_job_lock(job_id)  # run_pipeline manages its own lock internally via its update() calls
+
 
     background_tasks.add_task(
         run_pipeline,
@@ -588,7 +699,10 @@ async def start_generation_for_draft(job_id: str, background_tasks: BackgroundTa
         intensity=job.get("intensity", "natural_pace"),
     )
 
+
     return {"job_id": job_id, "status": "queued"}
+
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -598,6 +712,7 @@ async def start_generation_for_draft(job_id: str, background_tasks: BackgroundTa
 # calculates required scene durations BEFORE any video generation.
 # Step B ("Genera video") — only runs once duration is confirmed correct.
 # This prevents ever paying for a wrongly-timed video clip.
+
 
 @app.post("/jobs/{job_id}/narration")
 async def generate_narration(
@@ -615,13 +730,16 @@ async def generate_narration(
         raise HTTPException(status_code=404, detail="Job not found")
     job = JOBS[job_id]
 
+
     if not _acquire_job_lock(job_id, "generate narration"):
         lock = _job_lock_status(job_id)
         raise HTTPException(status_code=409, detail=f"Job is busy ({lock.get('operation')})")
 
+
     try:
         job_dir = JOBS_DIR / job_id
         narration_path = str(job_dir / "narration.mp3")
+
 
         from narration import generate_narration_audio, calculate_scene_durations
         result = await asyncio.to_thread(
@@ -629,12 +747,15 @@ async def generate_narration(
             voice_id or None
         )
 
+
         if not result.get("ok"):
             raise HTTPException(status_code=500, detail=result.get("error", "Narration generation failed"))
+
 
         scenes_config = job.get("scenes_config", [])
         n_scenes = len(scenes_config)
         current_durations = [int(s.get("duration", 6)) for s in scenes_config] or [6] * n_scenes
+
 
         distribution = calculate_scene_durations(
             narration_duration_secs=result["duration_secs"],
@@ -642,11 +763,13 @@ async def generate_narration(
             current_durations=current_durations,
         )
 
+
         job["narration_text"] = narration_text
         job["narration_path"] = narration_path
         job["narration_duration_secs"] = result["duration_secs"]
         job["narration_sentence_timings"] = result.get("sentence_timings", [])
         _save_job(job_id)
+
 
         return {
             "job_id": job_id,
@@ -656,6 +779,8 @@ async def generate_narration(
         }
     finally:
         _release_job_lock(job_id)
+
+
 
 
 @app.post("/jobs/{job_id}/narration/apply-durations")
@@ -669,10 +794,12 @@ async def apply_narration_durations(job_id: str, new_durations: str = Form(...))
         raise HTTPException(status_code=404, detail="Job not found")
     job = JOBS[job_id]
 
+
     try:
         durations = json.loads(new_durations)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid durations: {e}")
+
 
     scenes_config = job.get("scenes_config", [])
     for i, d in enumerate(durations):
@@ -681,7 +808,10 @@ async def apply_narration_durations(job_id: str, new_durations: str = Form(...))
     job["scenes_config"] = scenes_config
     _save_job(job_id)
 
+
     return {"job_id": job_id, "scenes_config": scenes_config}
+
+
 
 
 @app.post("/jobs/{job_id}/narration/reassemble")
@@ -696,22 +826,29 @@ async def reassemble_with_narration(job_id: str, background_tasks: BackgroundTas
         raise HTTPException(status_code=404, detail="Job not found")
     job = JOBS[job_id]
 
+
     if not job.get("narration_path"):
         raise HTTPException(status_code=400, detail="No narration generated yet for this job")
+
 
     if not _acquire_job_lock(job_id, "reassemble with narration"):
         lock = _job_lock_status(job_id)
         raise HTTPException(status_code=409, detail=f"Job is busy ({lock.get('operation')})")
 
+
     job["status"] = "running"
     job["message"] = "Riassemblaggio con nuova narrazione…"
     _save_job(job_id)
+
 
     background_tasks.add_task(run_reassemble_only, job_id)
     return {"job_id": job_id, "status": "running"}
 
 
+
+
 # ── Job status & download ──────────────────────────────────────────────────────
+
 
 @app.get("/jobs/")
 def list_jobs():
@@ -737,6 +874,8 @@ def list_jobs():
     return {"jobs": jobs, "total": len(jobs)}
 
 
+
+
 @app.get("/jobs/{job_id}")
 def get_job(job_id: str):
     if job_id not in JOBS:
@@ -744,6 +883,8 @@ def get_job(job_id: str):
     job = JOBS[job_id].copy()
     job.pop("output_path", None)
     return job
+
+
 
 
 @app.get("/jobs/{job_id}/image/{scene_index}")
@@ -758,11 +899,13 @@ def get_scene_image(job_id: str, scene_index: int):
         raise HTTPException(status_code=404, detail="Job not found")
     job_dir = JOBS_DIR / job_id
 
+
     # Original upload FIRST — enhanced version only as last-resort fallback
     candidates = []
     for ext in [".jpg", ".jpeg", ".png", ".webp"]:
         candidates.append(job_dir / "images" / f"scene_{scene_index:03d}{ext}")
     candidates.append(job_dir / "enhanced" / f"scene_{scene_index:03d}_enhanced.jpg")
+
 
     for path in candidates:
         if path.exists():
@@ -772,7 +915,10 @@ def get_scene_image(job_id: str, scene_index: int):
                 headers={"Cache-Control": "no-store, no-cache, must-revalidate"}
             )
 
+
     raise HTTPException(status_code=404, detail="Image not found")
+
+
 
 
 @app.get("/jobs/{job_id}/clip/{scene_index}")
@@ -792,8 +938,10 @@ async def get_clip(job_id: str, scene_index: int, request: Request):
     if not clip_path.exists():
         raise HTTPException(status_code=404, detail="Clip not found")
 
+
     file_size = clip_path.stat().st_size
     range_header = request.headers.get("range")
+
 
     if range_header:
         # Parse range header e.g. "bytes=0-1023"
@@ -806,6 +954,7 @@ async def get_clip(job_id: str, scene_index: int, request: Request):
             end   = min(end, file_size - 1)
             chunk_size = end - start + 1
 
+
             def iter_file(path, start, chunk):
                 with open(path, "rb") as f:
                     f.seek(start)
@@ -816,6 +965,7 @@ async def get_clip(job_id: str, scene_index: int, request: Request):
                             break
                         remaining -= len(data)
                         yield data
+
 
             return StreamingResponse(
                 iter_file(str(clip_path), start, chunk_size),
@@ -829,6 +979,7 @@ async def get_clip(job_id: str, scene_index: int, request: Request):
                 }
             )
 
+
     return FileResponse(
         str(clip_path),
         media_type="video/mp4",
@@ -838,6 +989,8 @@ async def get_clip(job_id: str, scene_index: int, request: Request):
             "Content-Length": str(file_size),
         }
     )
+
+
 
 
 @app.post("/jobs/{job_id}/stop")
@@ -856,6 +1009,8 @@ def stop_job(job_id: str):
     }
 
 
+
+
 @app.get("/jobs/{job_id}/download")
 async def download_job(job_id: str, request: Request):
     if job_id not in JOBS:
@@ -868,8 +1023,10 @@ async def download_job(job_id: str, request: Request):
         raise HTTPException(status_code=500, detail="Output file missing")
     filename = f"{job.get('property_name','property').replace(' ','_')}_video.mp4"
 
+
     file_size = Path(output_path).stat().st_size
     range_header = request.headers.get("range")
+
 
     if range_header:
         import re as _re
@@ -881,6 +1038,7 @@ async def download_job(job_id: str, request: Request):
             end   = min(end, file_size - 1)
             chunk_size = end - start + 1
 
+
             def _iter(path, s, c):
                 with open(path, "rb") as f:
                     f.seek(s)
@@ -891,6 +1049,7 @@ async def download_job(job_id: str, request: Request):
                             break
                         remaining -= len(data)
                         yield data
+
 
             return StreamingResponse(
                 _iter(output_path, start, chunk_size),
@@ -904,6 +1063,7 @@ async def download_job(job_id: str, request: Request):
                 }
             )
 
+
     return FileResponse(
         output_path,
         media_type="video/mp4",
@@ -912,7 +1072,10 @@ async def download_job(job_id: str, request: Request):
     )
 
 
+
+
 # ── QC approval gate ───────────────────────────────────────────────────────────
+
 
 @app.post("/jobs/{job_id}/approve")
 async def approve_job(
@@ -935,13 +1098,16 @@ async def approve_job(
     if job["status"] != "awaiting_approval":
         raise HTTPException(status_code=400, detail="Job is not awaiting approval")
 
+
     try:
         data = json.loads(approval)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid approval JSON: {e}")
 
+
     redo_scenes     = data.get("redo_scenes", [])
     approved_scenes = data.get("approved_scenes", [])
+
 
     # Update qc_verdict for manually approved scenes so the library
     # preview reflects the accurate final status, not the stale AI verdict
@@ -951,6 +1117,7 @@ async def approve_job(
             if s.get("index") in approved_scenes:
                 s["qc_verdict"] = "approved"  # was reject/flag, now human-approved
         JOBS[job_id]["scenes"] = scenes
+
 
     if redo_scenes:
         # Mark job as needing rework for rejected scenes
@@ -980,11 +1147,15 @@ async def approve_job(
             job_dir=job_dir,
         )
 
+
     _save_job(job_id)
     return {"job_id": job_id, "status": JOBS[job_id]["status"]}
 
 
+
+
 # ── Rework endpoint ────────────────────────────────────────────────────────────
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # NEW SOLID JOB MODEL — single directory per property, stable scene IDs, locking
@@ -999,9 +1170,12 @@ async def approve_job(
 #   - Every operation either fully succeeds (job_meta.json updated) or fully
 #     fails (job_meta.json untouched) — no partial/corrupted states.
 
+
 @app.get("/jobs/{job_id}/lock-status")
 def get_lock_status(job_id: str):
     return _job_lock_status(job_id)
+
+
 
 
 @app.post("/jobs/{job_id}/scenes/{scene_id}/redo")
@@ -1022,6 +1196,7 @@ async def redo_scene(
     if scene_idx is None:
         raise HTTPException(status_code=404, detail=f"Scene {scene_id} not found in this job")
 
+
     if not _acquire_job_lock(job_id, f"redo scene {scene_id}"):
         lock = _job_lock_status(job_id)
         raise HTTPException(
@@ -1029,11 +1204,13 @@ async def redo_scene(
             detail=f"Job is currently being modified ({lock.get('operation')}) — please wait and try again."
         )
 
+
     try:
         updates = json.loads(scene_update)
     except Exception as e:
         _release_job_lock(job_id)
         raise HTTPException(status_code=400, detail=f"Invalid scene_update: {e}")
+
 
     # Apply the text/config updates to this scene now (before background task,
     # so the UI reflects the edit immediately even while generation is running)
@@ -1048,8 +1225,11 @@ async def redo_scene(
     job["message"] = f"Rigenerazione scena in corso…"
     _save_job(job_id)
 
+
     background_tasks.add_task(run_redo_scene, job_id=job_id, scene_id=scene_id)
     return {"job_id": job_id, "scene_id": scene_id, "status": "running"}
+
+
 
 
 @app.post("/jobs/{job_id}/scenes")
@@ -1067,6 +1247,7 @@ async def add_scene(
         raise HTTPException(status_code=404, detail="Job not found")
     job = JOBS[job_id]
 
+
     if not _acquire_job_lock(job_id, "add scene"):
         lock = _job_lock_status(job_id)
         raise HTTPException(
@@ -1074,11 +1255,13 @@ async def add_scene(
             detail=f"Job is currently being modified ({lock.get('operation')}) — please wait and try again."
         )
 
+
     try:
         cfg = json.loads(scene_config)
     except Exception as e:
         _release_job_lock(job_id)
         raise HTTPException(status_code=400, detail=f"Invalid scene_config: {e}")
+
 
     content = await image.read()
     if len(content) > 20 * 1024 * 1024:
@@ -1087,6 +1270,7 @@ async def add_scene(
     if not _validate_image_bytes(content):
         _release_job_lock(job_id)
         raise HTTPException(status_code=400, detail="Invalid image file")
+
 
     scene_id = _new_scene_id()
     new_scene = {
@@ -1098,9 +1282,11 @@ async def add_scene(
         "duration":     cfg.get("duration", 8),
     }
 
+
     job_dir = JOBS_DIR / job_id
     img_dir = job_dir / "images"
     img_dir.mkdir(parents=True, exist_ok=True)
+
 
     ext = ".jpg"
     if image.content_type == "image/png":  ext = ".png"
@@ -1110,6 +1296,7 @@ async def add_scene(
         f.write(content)
     log.info(f"[AddScene] Saved new scene image: {dest}")
 
+
     scenes_config = job.get("scenes_config", [])
     scenes_config.append(new_scene)
     job["scenes_config"]  = scenes_config
@@ -1118,8 +1305,11 @@ async def add_scene(
     job["message"] = "Generazione nuova scena in corso…"
     _save_job(job_id)
 
+
     background_tasks.add_task(run_redo_scene, job_id=job_id, scene_id=scene_id)
     return {"job_id": job_id, "scene_id": scene_id, "status": "running"}
+
+
 
 
 @app.delete("/jobs/{job_id}/scenes/{scene_id}")
@@ -1129,9 +1319,11 @@ async def delete_scene(job_id: str, background_tasks: BackgroundTasks):
         raise HTTPException(status_code=404, detail="Job not found")
     job = JOBS[job_id]
 
+
     if not _acquire_job_lock(job_id, "delete scene"):
         lock = _job_lock_status(job_id)
         raise HTTPException(status_code=409, detail=f"Job is currently being modified ({lock.get('operation')})")
+
 
     scenes_config = job.get("scenes_config", [])
     scenes_config = [s for s in scenes_config if s.get("scene_id") != scene_id]
@@ -1141,8 +1333,11 @@ async def delete_scene(job_id: str, background_tasks: BackgroundTasks):
     job["message"] = "Riassemblaggio dopo rimozione scena…"
     _save_job(job_id)
 
+
     background_tasks.add_task(run_reassemble_only, job_id=job_id)
     return {"job_id": job_id, "status": "running"}
+
+
 
 
 async def run_redo_scene(job_id: str, scene_id: str):
@@ -1154,6 +1349,7 @@ async def run_redo_scene(job_id: str, scene_id: str):
         _save_job(job_id)
         log.info(f"[Job {job_id}] {progress}% — {message}")
 
+
     try:
         job = JOBS[job_id]
         job_dir = JOBS_DIR / job_id
@@ -1163,19 +1359,23 @@ async def run_redo_scene(job_id: str, scene_id: str):
             raise ValueError(f"Scene {scene_id} not found")
         scene = scenes_config[scene_idx]
 
+
         lighting  = job.get("lighting", "bright_natural")
         intensity = job.get("intensity", "natural_pace")
         model_tier = job.get("model_tier", "premium")
         do_video_upscale = job.get("do_video_upscale", True)
 
+
         voiceover = scene.get("voiceover", "").strip()
         user_duration = int(scene.get("duration", 10))
         actual_duration = user_duration
+
 
         # ── Step 1: TTS ──────────────────────────────────────────────────
         audio_dir = job_dir / "audio"
         audio_dir.mkdir(exist_ok=True)
         audio_out = str(audio_dir / f"{scene_id}.mp3")
+
 
         if voiceover:
             update("running", 15, f"Rigenero voiceover…")
@@ -1195,10 +1395,12 @@ async def run_redo_scene(job_id: str, scene_id: str):
                 except Exception as e:
                     log.warning(f"[Job {job_id}] Could not measure audio: {e}")
 
+
         # ── Step 2: find or create enhanced source image ──────────────────
         img_dir = job_dir / "images"
         enhanced_dir = job_dir / "enhanced"
         enhanced_dir.mkdir(exist_ok=True)
+
 
         source_img = None
         for ext in [".jpg", ".jpeg", ".png", ".webp"]:
@@ -1209,6 +1411,7 @@ async def run_redo_scene(job_id: str, scene_id: str):
         if not source_img:
             raise ValueError(f"No source image found for scene {scene_id}")
 
+
         enhanced_img = enhanced_dir / f"{scene_id}_enhanced.jpg"
         if not enhanced_img.exists():
             from image_enhance import enhance_image
@@ -1216,10 +1419,12 @@ async def run_redo_scene(job_id: str, scene_id: str):
             await asyncio.to_thread(enhance_image, str(source_img), str(enhanced_img), True, True)
         img_for_generation = str(enhanced_img) if enhanced_img.exists() else str(source_img)
 
+
         # ── Step 3: video generation ───────────────────────────────────────
         clips_dir = job_dir / "clips"
         clips_dir.mkdir(exist_ok=True)
         clip_out = str(clips_dir / f"{scene_id}.mp4")
+
 
         update("running", 40, f"Rigenero clip ({actual_duration}s)…")
         from video_generation import generate_video_single
@@ -1234,8 +1439,10 @@ async def run_redo_scene(job_id: str, scene_id: str):
             do_video_upscale=do_video_upscale,
         )
 
+
         if not ok_video:
             raise RuntimeError("Video generation failed")
+
 
         # Update scene status
         statuses = job.get("scenes", [])
@@ -1255,8 +1462,10 @@ async def run_redo_scene(job_id: str, scene_id: str):
         job["scenes"] = statuses
         _save_job(job_id)
 
+
         # ── Step 4: reassemble using ALL current scenes ────────────────────
         await run_reassemble_only(job_id)
+
 
     except Exception as e:
         log.error(f"[Job {job_id}] redo_scene failed: {e}", exc_info=True)
@@ -1264,6 +1473,8 @@ async def run_redo_scene(job_id: str, scene_id: str):
         _save_job(job_id)
     finally:
         _release_job_lock(job_id)
+
+
 
 
 async def run_reassemble_only(job_id: str):
@@ -1276,12 +1487,15 @@ async def run_reassemble_only(job_id: str):
         _save_job(job_id)
         log.info(f"[Job {job_id}] {progress}% — {message}")
 
+
     try:
         job = JOBS[job_id]
         job_dir = JOBS_DIR / job_id
         scenes_config = job.get("scenes_config", [])
 
+
         update("running", 85, "Riassemblaggio video finale…")
+
 
         clip_paths  = []
         audio_paths = []
@@ -1289,6 +1503,7 @@ async def run_reassemble_only(job_id: str):
             sid = scene.get("scene_id")
             clip_path  = job_dir / "clips" / f"{sid}.mp4"
             audio_path = job_dir / "audio" / f"{sid}.mp3"
+
 
             # FALLBACK: some jobs predate the scene_id architecture and
             # only have legacy scene_NNN.mp4 / scene_NNN.mp3 files. If the
@@ -1302,11 +1517,13 @@ async def run_reassemble_only(job_id: str):
                     shutil.copy2(str(legacy_clip), str(clip_path))
                     log.info(f"[Job {job_id}] Migrated legacy clip scene_{scene_idx:03d}.mp4 → {sid}.mp4")
 
+
             if not audio_path.exists():
                 legacy_audio = job_dir / "audio" / f"scene_{scene_idx:03d}.mp3"
                 if legacy_audio.exists():
                     shutil.copy2(str(legacy_audio), str(audio_path))
                     log.info(f"[Job {job_id}] Migrated legacy audio scene_{scene_idx:03d}.mp3 → {sid}.mp3")
+
 
             if not clip_path.exists():
                 log.warning(f"[Job {job_id}] Missing clip for scene {sid} (index {scene_idx}) — skipping from assembly")
@@ -1314,8 +1531,10 @@ async def run_reassemble_only(job_id: str):
             clip_paths.append(str(clip_path))
             audio_paths.append(str(audio_path) if audio_path.exists() else None)
 
+
         if not clip_paths:
             raise RuntimeError("Nessuna clip disponibile per l'assemblaggio")
+
 
         output_path = str(job_dir / f"{job.get('property_name','Property').replace(' ','_')}_final.mp4")
         from video_assembly import assemble_property_video
@@ -1332,6 +1551,7 @@ async def run_reassemble_only(job_id: str):
         if not ok:
             raise RuntimeError("Assemblaggio fallito")
 
+
         # Apply narration audio if this job has a single continuous
         # narration track — this is what makes "narration changed but
         # video durations unchanged" work correctly: reassembly still
@@ -1342,8 +1562,10 @@ async def run_reassemble_only(job_id: str):
             await asyncio.to_thread(_overlay_narration_audio, output_path, narration_path)
             log.info(f"[Job {job_id}] Narration audio applied: {narration_path}")
 
+
         job["output_path"] = output_path
         update("done", 100, "Video pronto per il download")
+
 
     except Exception as e:
         log.error(f"[Job {job_id}] reassembly failed: {e}", exc_info=True)
@@ -1353,10 +1575,13 @@ async def run_reassemble_only(job_id: str):
         _release_job_lock(job_id)
 
 
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # LEGACY sibling-directory rework model — kept only for any old in-flight jobs.
 # Do not build new features on this. Use the endpoints above instead.
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 @app.post("/jobs/{job_id}/rework")
 async def rework_job(
@@ -1372,16 +1597,19 @@ async def rework_job(
     if original["status"] not in ["done", "failed", "awaiting_approval"]:
         raise HTTPException(status_code=400, detail="Job must be completed before rework")
 
+
     try:
         cfg = json.loads(rework_config)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid rework_config: {e}")
+
 
     # Save any newly uploaded scene images (scenes added via "+ Aggiungi scena"
     # that don't exist yet in the original job's images/ directory)
     job_dir  = JOBS_DIR / job_id
     img_dir  = job_dir / "images"
     img_dir.mkdir(parents=True, exist_ok=True)
+
 
     for upload, idx_str in zip(new_images, new_image_indices):
         try:
@@ -1400,6 +1628,7 @@ async def rework_job(
         except Exception as e:
             log.error(f"[Rework] Failed to save new image for index {idx_str}: {e}")
 
+
     rework_id = f"{job_id}_rw{str(uuid.uuid4())[:4]}"
     updated_scene_count = len(cfg.get("updated_scenes", [])) or original["total_scenes"]
     JOBS[rework_id] = {
@@ -1414,12 +1643,16 @@ async def rework_job(
         "cost_actual":   None,
     }
 
+
     background_tasks.add_task(run_rework, rework_id=rework_id, parent_job_id=job_id, cfg=cfg,
                               do_video_upscale=JOBS[job_id].get("do_video_upscale", True))
     return {"job_id": rework_id, "status": "queued", "parent_job_id": job_id}
 
 
+
+
 # ── Pipeline runner ────────────────────────────────────────────────────────────
+
 
 async def run_pipeline(
     job_id:           str,
@@ -1441,21 +1674,26 @@ async def run_pipeline(
         JOBS[job_id].update({"status": status, "progress": progress, "message": message})
         log.info(f"[Job {job_id}] {progress}% — {message}")
 
+
     # Store scenes_config for approval step
     JOBS[job_id]["scenes_config"] = scenes_config
+
 
     try:
         update("running", 2, "Starting pipeline…")
 
+
         from credit_monitor import check_and_alert
         credit_status = check_and_alert(job_id=job_id, property_name=property_name)
         JOBS[job_id]["credits"] = credit_status
+
 
         enhanced_dir    = job_dir / "enhanced"
         audio_dir       = job_dir / "audio"
         video_clips_dir = job_dir / "clips"
         for d in [enhanced_dir, audio_dir, video_clips_dir]:
             d.mkdir(exist_ok=True)
+
 
         n              = len(image_paths)
         enhanced_paths = []
@@ -1466,6 +1704,7 @@ async def run_pipeline(
         models_used    = []
         audio_chars    = []
 
+
         # ── Stage 1: Watermark removal (explicit per-scene, AI-driven) ────
         # Only runs for scenes where the user explicitly checked the
         # "remove watermark" toggle — never automatic. If removal fails,
@@ -1474,6 +1713,7 @@ async def run_pipeline(
         from watermark_removal import remove_watermark
         watermark_qc_issues = []
         working_image_paths = list(image_paths)  # may get swapped per-scene below
+
 
         for i, scene in enumerate(scenes_config):
             if not scene.get("remove_watermark"):
@@ -1489,6 +1729,7 @@ async def run_pipeline(
                 log.warning(f"[Job {job_id}] Watermark removal failed for scene {i} — "
                             f"using original image, flagged for QC review")
 
+
         # ── Stage 2: Image enhancement ────────────────────────────────────
         from image_enhance import enhance_image
         for i, img_path in enumerate(working_image_paths):
@@ -1496,6 +1737,7 @@ async def run_pipeline(
             out    = str(enhanced_dir / f"scene_{i:03d}_enhanced.jpg")
             result = await asyncio.to_thread(enhance_image, img_path, out, do_lighting, do_upscale)
             enhanced_paths.append(result)
+
 
         # Surface any watermark removal failures as QC issues now that
         # enhancement is done and qc_results exists to append into
@@ -1506,17 +1748,21 @@ async def run_pipeline(
                 "issues": ["Rimozione watermark non riuscita — immagine originale usata, watermark ancora presente"],
             })
 
+
         # ── Stage 3: TTS audio + TTS QC → sets actual clip duration ──────
         from voice_generation import generate_speech as generate_voice
         from vision_analysis  import analyse_tts
 
+
         actual_durations = []   # per scene — set from audio or user slider
+
 
         for i, (scene, img) in enumerate(zip(scenes_config, enhanced_paths)):
             voiceover     = scene.get("voiceover", "").strip()
             audio_out     = str(audio_dir / f"scene_{i:03d}.mp3")
             user_duration = int(scene.get("duration", 10))
             update("running", int(20 + (i/n)*15), f"Generating audio {i} of {n-1} (scene_{i:03d})…")
+
 
             if voiceover:
                 ok = await asyncio.to_thread(
@@ -1527,6 +1773,7 @@ async def run_pipeline(
                     # TTS QC — also measures actual duration
                     tts_qc = await asyncio.to_thread(analyse_tts, audio_out, voiceover)
                     log.info(f"[Job {job_id}] TTS QC scene {i}: {tts_qc['verdict']}")
+
 
                     if tts_qc["verdict"] == "reject":
                         log.warning(f"[Job {job_id}] TTS rejected scene {i}: {tts_qc['issues']}")
@@ -1549,6 +1796,7 @@ async def run_pipeline(
                         else:
                             actual_durations.append(user_duration)
 
+
                     qc_results.append({"scene": i, "type": "tts", **tts_qc})
                 else:
                     audio_paths.append(None)
@@ -1559,12 +1807,15 @@ async def run_pipeline(
                 audio_chars.append({"chars": 0})
                 actual_durations.append(user_duration)
 
+
         # ── Stage 3: Video generation + Vision QC ─────────────────────────
         from video_generation  import generate_video_single
         from vision_analysis   import analyse_output
 
+
         flagged_scenes  = []
         rejected_scenes = []
+
 
         for i, (scene, img) in enumerate(zip(scenes_config, enhanced_paths)):
             # Check for cancellation request between scenes
@@ -1575,6 +1826,7 @@ async def run_pipeline(
                        f"Puoi riassemblare con le scene già pronte, o riavviare la generazione.")
                 return
 
+
             clip_out     = str(video_clips_dir / f"scene_{i:03d}.mp4")
             # Use actual audio duration if available, fall back to user setting
             duration     = actual_durations[i] if i < len(actual_durations) else int(scene.get("duration", 10))
@@ -1582,6 +1834,7 @@ async def run_pipeline(
             space_type   = scene.get("space_type",   "large")
             pov_movement = scene.get("pov_movement", "walk_in_explore")
             update("running", int(35 + (i/n)*40), f"Generating video clip {i} of {n-1} (scene_{i:03d}, {duration}s)…")
+
 
             ok = await asyncio.to_thread(
                 generate_video_single,
@@ -1594,10 +1847,13 @@ async def run_pipeline(
                 do_video_upscale=do_video_upscale,
             )
 
+
             model = model_tier
+
 
             models_used.append(model)
             video_clip_paths.append(clip_out if ok else None)
+
 
             # Vision QC
             video_verdict = "pass"
@@ -1609,12 +1865,14 @@ async def run_pipeline(
                 log.info(f"[Job {job_id}] Video QC scene {i}: {video_verdict}")
                 qc_results.append({"scene": i, "type": "video", **vid_qc})
 
+
                 if video_verdict == "reject":
                     rejected_scenes.append(i)
                 elif video_verdict == "flag":
                     flagged_scenes.append(i)
             elif not ok:
                 video_verdict = "failed"
+
 
             scene_statuses.append({
                 "index":           i,
@@ -1627,9 +1885,11 @@ async def run_pipeline(
                 "qc_verdict":      video_verdict,
             })
 
+
         JOBS[job_id]["scenes"]     = scene_statuses
         JOBS[job_id]["qc_results"] = qc_results
         _save_job(job_id)
+
 
         # ── QC gate: pause if any scenes rejected or flagged ──────────────
         if rejected_scenes or flagged_scenes:
@@ -1649,11 +1909,13 @@ async def run_pipeline(
             _save_job(job_id)
             return   # pipeline pauses here — resumed by /approve endpoint
 
+
         # ── Stage 4: Assembly ─────────────────────────────────────────────
         JOBS[job_id]["video_clip_paths"] = video_clip_paths
         JOBS[job_id]["audio_paths"]      = audio_paths
         JOBS[job_id]["enhanced_paths"]   = enhanced_paths
         await run_assembly(job_id, job_dir)
+
 
         # ── Actual cost ───────────────────────────────────────────────────
         from cost_tracker import calculate_actual_cost, format_cost_display
@@ -1665,7 +1927,9 @@ async def run_pipeline(
         JOBS[job_id]["cost_actual"] = format_cost_display(actual)
         _save_job(job_id)
 
+
         check_and_alert(job_id=job_id, property_name=property_name)
+
 
     except Exception as e:
         log.error(f"[Job {job_id}] Pipeline failed: {e}", exc_info=True)
@@ -1673,12 +1937,16 @@ async def run_pipeline(
         _save_job(job_id)
 
 
+
+
 # ── Assembly step (called from pipeline and from /approve) ────────────────────
+
 
 async def run_assembly(job_id: str, job_dir: Path):
     def update(status, progress, message):
         JOBS[job_id].update({"status": status, "progress": progress, "message": message})
         log.info(f"[Job {job_id}] {progress}% — {message}")
+
 
     try:
         job              = JOBS[job_id]
@@ -1689,8 +1957,10 @@ async def run_assembly(job_id: str, job_dir: Path):
         property_name    = job.get("property_name", "Property")
         transition_style = job.get("transition_style", "fade")
 
+
         update("running", 82, "Assembling final video…")
         output_path = str(job_dir / f"{property_name.replace(' ','_')}_final.mp4")
+
 
         from video_assembly import assemble_property_video
         ok = await asyncio.to_thread(
@@ -1704,8 +1974,10 @@ async def run_assembly(job_id: str, job_dir: Path):
             transition_style=transition_style,
         )
 
+
         if not ok:
             raise RuntimeError("Assembly returned failure")
+
 
         # If a single continuous narration was generated (new decoupled
         # narration system), overlay it onto the finished video now — this
@@ -1719,9 +1991,11 @@ async def run_assembly(job_id: str, job_dir: Path):
             await asyncio.to_thread(_overlay_narration_audio, output_path, narration_path)
             log.info(f"[Job {job_id}] Narration audio applied: {narration_path}")
 
+
         JOBS[job_id]["output_path"] = output_path
         update("done", 100, "Video ready for download")
         _save_job(job_id)
+
 
     except Exception as e:
         log.error(f"[Assembly {job_id}] Failed: {e}", exc_info=True)
@@ -1729,7 +2003,10 @@ async def run_assembly(job_id: str, job_dir: Path):
         _save_job(job_id)
 
 
+
+
 # ── Rework runner ──────────────────────────────────────────────────────────────
+
 
 async def run_rework(rework_id: str, parent_job_id: str, cfg: dict, do_video_upscale: bool = True):
     def update(status, progress, message):
@@ -1737,14 +2014,17 @@ async def run_rework(rework_id: str, parent_job_id: str, cfg: dict, do_video_ups
         _save_job(rework_id)
         log.info(f"[Rework {rework_id}] {progress}% — {message}")
 
+
     try:
         if parent_job_id not in JOBS:
             raise ValueError(f"Parent job {parent_job_id} not found")
+
 
         parent     = JOBS[parent_job_id]
         parent_dir = JOBS_DIR / parent_job_id
         rework_dir = JOBS_DIR / rework_id
         rework_dir.mkdir(exist_ok=True)
+
 
         # Copy existing clips/audio/enhanced from parent job
         # Use dirs_exist_ok=True to avoid FileExistsError on retry
@@ -1756,18 +2036,22 @@ async def run_rework(rework_id: str, parent_job_id: str, cfg: dict, do_video_ups
             elif not dst.exists():
                 (rework_dir / sub).mkdir(exist_ok=True)
 
+
         scenes_to_redo = cfg.get("scenes", [])
         redo_video     = cfg.get("redo_video", True)
         redo_audio     = cfg.get("redo_audio", False)
         updated_scenes = cfg.get("updated_scenes", [])
         n              = max(len(scenes_to_redo), 1)
 
+
         # Get model settings from parent job
         model_tier  = parent.get("model_tier",  "premium")
         lighting    = parent.get("lighting",    "bright_natural")
         intensity   = parent.get("intensity",   "natural_pace")
 
+
         update("running", 5, f"Rework di {len(scenes_to_redo)} scena/e…")
+
 
         # Save the COMPLETE scene list for this job — not just the reworked ones.
         # This ensures opening this job later shows exactly what was produced,
@@ -1776,11 +2060,14 @@ async def run_rework(rework_id: str, parent_job_id: str, cfg: dict, do_video_ups
         JOBS[rework_id]["total_scenes"]  = len(updated_scenes)
         _save_job(rework_id)
 
+
         from voice_generation import generate_speech as generate_voice
         from video_generation import generate_video_single
         from pydub import AudioSegment as _AudioSegment
 
+
         scene_statuses = list(parent.get("scenes", []))
+
 
         for idx, scene_index in enumerate(scenes_to_redo):
             # Check for cancellation request between scenes
@@ -1789,15 +2076,18 @@ async def run_rework(rework_id: str, parent_job_id: str, cfg: dict, do_video_ups
                 update("failed", int(10 + (idx/n)*80), f"Fermato dall'utente dopo {idx} scene")
                 return
 
+
             scene = updated_scenes[scene_index] if scene_index < len(updated_scenes) else {}
             voiceover    = scene.get("voiceover", "").strip()
             space_type   = scene.get("space_type",   "large")
             pov_movement = scene.get("pov_movement", "walk_in_explore")
             user_duration = int(scene.get("duration", 10))
 
+
             # ── Step 1: Generate TTS audio first ──────────────────────────────
             audio_out = str(rework_dir / "audio" / f"scene_{scene_index:03d}.mp3")
             actual_duration = user_duration  # fallback
+
 
             if voiceover:
                 update("running", int(10 + (idx/n)*20), f"Rigenero audio scena {scene_index} (scene_{scene_index:03d})…")
@@ -1815,8 +2105,10 @@ async def run_rework(rework_id: str, parent_job_id: str, cfg: dict, do_video_ups
                     except Exception as e:
                         log.warning(f"[Rework] Could not measure audio: {e}")
 
+
             # ── Step 2: Generate video at correct duration ────────────────────
             clip_out = str(rework_dir / "clips" / f"scene_{scene_index:03d}.mp4")
+
 
             # Find source image
             enhanced_img = str(rework_dir / "enhanced" / f"scene_{scene_index:03d}_enhanced.jpg")
@@ -1829,10 +2121,12 @@ async def run_rework(rework_id: str, parent_job_id: str, cfg: dict, do_video_ups
                         enhanced_img = str(candidate)
                         break
 
+
             if not Path(enhanced_img).exists():
                 log.error(f"[Rework] No source image for scene {scene_index}")
                 update("running", int(30 + (idx/n)*50), f"Scena {scene_index} (scene_{scene_index:03d}): immagine non trovata")
                 continue
+
 
             update("running", int(30 + (idx/n)*50), f"Rigenero clip scena {scene_index} (scene_{scene_index:03d}, {actual_duration}s)…")
             ok_video = await asyncio.to_thread(
@@ -1845,6 +2139,7 @@ async def run_rework(rework_id: str, parent_job_id: str, cfg: dict, do_video_ups
                 model_tier=model_tier,
                 do_video_upscale=do_video_upscale,
             )
+
 
             # Update scene status — append new entry if this scene index
             # doesn't exist yet (e.g. a newly added scene beyond the original count)
@@ -1870,12 +2165,15 @@ async def run_rework(rework_id: str, parent_job_id: str, cfg: dict, do_video_ups
                     "qc_verdict":   "pass",
                 })
 
+
         scene_statuses.sort(key=lambda s: s.get("index", 0))
         JOBS[rework_id]["scenes"] = scene_statuses
         _save_job(rework_id)
 
+
         update("running", 85, "Riassemblaggio video finale…")
         output_path = str(rework_dir / f"{parent['property_name'].replace(' ','_')}_rework.mp4")
+
 
         # Copy clips for scenes NOT in scenes_to_redo (those were just regenerated above)
         # Always use the most recent clip across all related job directories
@@ -1902,6 +2200,7 @@ async def run_rework(rework_id: str, parent_job_id: str, cfg: dict, do_video_ups
                     log.info(f"[Rework] Scene {scene_idx}: reusing clip from {job_dir.name}")
                     break
 
+
         # CRITICAL FIX: only ever consider scene_NNN.mp4 files where NNN is
         # strictly within this job's actual scene count. An unrestricted
         # glob here would pick up ANY file matching the naming pattern —
@@ -1917,13 +2216,16 @@ async def run_rework(rework_id: str, parent_job_id: str, cfg: dict, do_video_ups
             else:
                 log.warning(f"[Rework] Scene {scene_idx} has no clip — will be missing from assembly")
 
+
         if not clip_paths:
             raise RuntimeError("Nessuna clip trovata per l'assemblaggio")
+
 
         audio_paths = []
         for cp in clip_paths:
             ap = rework_dir / "audio" / cp.name.replace(".mp4", ".mp3")
             audio_paths.append(str(ap) if ap.exists() else None)
+
 
         from video_assembly import assemble_property_video
         ok = await asyncio.to_thread(
@@ -1936,11 +2238,14 @@ async def run_rework(rework_id: str, parent_job_id: str, cfg: dict, do_video_ups
             property_name=parent["property_name"],
         )
 
+
         if not ok:
             raise RuntimeError("Assemblaggio rework fallito")
 
+
         JOBS[rework_id]["output_path"] = output_path
         update("done", 100, "Rework video pronto per il download")
+
 
     except Exception as e:
         log.error(f"[Rework {rework_id}] Failed: {e}", exc_info=True)
