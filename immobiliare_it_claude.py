@@ -89,22 +89,32 @@ def extract_listing(url: str) -> dict:
             model=MODEL,
             max_tokens=4096,
             tools=[{
-                "type": "web_fetch_20250910",  # VERIFY against current API docs before relying on this
+                "type": "web_fetch_20250910",
                 "name": "web_fetch",
                 "max_uses": 1,
             }],
+            extra_headers={"anthropic-beta": "web-fetch-2025-09-10"},  # REQUIRED — web_fetch is beta-gated
             messages=[{"role": "user", "content": EXTRACTION_PROMPT.format(url=url)}],
         )
 
         text_parts = [block.text for block in response.content if getattr(block, "type", None) == "text"]
         raw = "".join(text_parts).strip()
-        # defensive: strip markdown fences if the model added them anyway
         if raw.startswith("```"):
             raw = raw.strip("`")
             if raw.startswith("json"):
                 raw = raw[4:].strip()
 
+        if not raw:
+            # Diagnostic fallback — show exactly what block types came back,
+            # rather than just failing with an opaque JSON parse error
+            block_types = [getattr(b, "type", "?") for b in response.content]
+            return {"ok": False, "photos": [], "description": "", "price": None,
+                    "address": None,
+                    "error": f"No text content in response. stop_reason={response.stop_reason}, "
+                             f"content block types={block_types}"}
+
         data = json.loads(raw)
+
 
         # sanity-check categories — anything unexpected gets bucketed as
         # uncategorized rather than silently trusting an unexpected value
@@ -116,6 +126,9 @@ def extract_listing(url: str) -> dict:
         data["error"] = None
         return data
 
+    except json.JSONDecodeError as e:
+        return {"ok": False, "photos": [], "description": "", "price": None,
+                "address": None, "error": f"JSON parse failed: {e}. Raw response was: {raw[:500]}"}
     except Exception as e:
         return {"ok": False, "photos": [], "description": "", "price": None,
                 "address": None, "error": str(e)}
