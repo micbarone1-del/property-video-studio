@@ -129,13 +129,16 @@ _RESOLUTION_UPGRADE_PATTERNS = [
 ]
 
 
-def try_upgrade_resolution(image_url: str) -> str:
+def try_upgrade_resolution(image_url: str) -> dict:
     """Attempts a few common CDN size-suffix substitutions via a cheap HEAD
     request, returning the first one that responds successfully. Falls back
     to the original URL if none work — this is a best-effort heuristic, not
     a confirmed-correct mechanism, since it hasn't been validated against
     which pattern (if any) actually serves a genuinely higher-resolution
     image rather than just a differently-named same-size file.
+
+    Returns {"url": str, "upgraded": bool} — the upgraded flag makes this
+    visible/loggable instead of a silent no-op when nothing works.
     """
     for pattern, replacement in _RESOLUTION_UPGRADE_PATTERNS:
         candidate = re.sub(pattern, replacement, image_url)
@@ -144,10 +147,10 @@ def try_upgrade_resolution(image_url: str) -> str:
         try:
             resp = requests.head(candidate, timeout=5)
             if resp.status_code == 200:
-                return candidate
+                return {"url": candidate, "upgraded": True}
         except Exception:
             continue
-    return image_url
+    return {"url": image_url, "upgraded": False}
 
 
 # ── Core extraction ─────────────────────────────────────────────────────────
@@ -208,7 +211,9 @@ def extract_listing(url: str, attempt_resolution_upgrade: bool = True) -> dict:
             if p.get("category") not in CATEGORIES:
                 p["category"] = "uncategorized"
             if attempt_resolution_upgrade and p.get("url"):
-                p["url"] = try_upgrade_resolution(p["url"])
+                upgrade_result = try_upgrade_resolution(p["url"])
+                p["url"] = upgrade_result["url"]
+                p["resolution_upgraded"] = upgrade_result["upgraded"]
 
         data["ok"] = True
         data["error"] = None
@@ -355,6 +360,86 @@ def download_selected_photos(selection: dict, output_dir: Path) -> dict:
     return selection
 
 
+# ── Narration/caption auto-generation from scraped description ─────────────
+# Per the agreed decision: auto-generate narration/captions from the scraped
+# listing text rather than leaving it fully manual. Plain text generation —
+# no web_fetch tool/beta header needed here, since the description text is
+# already in hand from extract_listing().
+
+NARRATION_PROMPT = """You are writing a short, natural-sounding Italian voiceover script for a real estate property video, based on this listing description:
+
+---
+{description}
+---
+
+Property details: {address}, {price}
+
+The video will show these rooms/spaces, in this order: {categories}
+
+Write:
+1. A single continuous narration script (in Italian) for the whole video — warm, professional real estate tone, roughly 15-25 seconds of spoken audio per scene (~40-60 words per scene, so about {total_words} words total for {n_scenes} scenes). Should flow as ONE continuous piece, not separated per scene with headers or labels.
+2. A short on-screen caption (3-6 words, in Italian) for EACH scene/category listed above.
+
+Return ONLY a JSON object (no other text, no markdown fences):
+{{
+  "continuous_narration": "...",
+  "captions": {{"category_name": "...", ...}}
+}}
+
+Base everything on the actual property description above — don't invent details not mentioned there (e.g. don't state a room count or feature that isn't in the description).
+"""
+
+
+def generate_narration_from_description(description: str, selected_categories: list,
+                                          address: str = None, price: str = None) -> dict:
+    """
+    Generates a continuous narration script + per-scene on-screen captions
+    from the scraped listing description, via the Claude API (same key as
+    extraction, plain text generation — no web_fetch tool needed here).
+
+    Returns:
+      {"ok": bool, "continuous_narration": str, "captions": {category: str, ...}, "error": str | None}
+    """
+    n_scenes = max(len(selected_categories), 1)
+    prompt = NARRATION_PROMPT.format(
+        description=description,
+        address=address or "non specificato",
+        price=price or "non specificato",
+        categories=", ".join(selected_categories),
+        total_words=n_scenes * 50,
+        n_scenes=n_scenes,
+    )
+    raw = ""
+    json_str = ""
+    try:
+        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=2048,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text_parts = [b.text for b in response.content if getattr(b, "type", None) == "text"]
+        raw = "".join(text_parts).strip()
+
+        json_str = raw
+        fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
+        if fence_match:
+            json_str = fence_match.group(1)
+        else:
+            brace_match = re.search(r"\{.*\}", raw, re.DOTALL)
+            if brace_match:
+                json_str = brace_match.group(0)
+
+        data = json.loads(json_str)
+        return {"ok": True, "continuous_narration": data.get("continuous_narration", ""),
+                "captions": data.get("captions", {}), "error": None}
+    except json.JSONDecodeError as e:
+        return {"ok": False, "continuous_narration": "", "captions": {},
+                "error": f"JSON parse failed: {e}. Extracted text was: {json_str[:500]}"}
+    except Exception as e:
+        return {"ok": False, "continuous_narration": "", "captions": {}, "error": str(e)}
+
+
 # ── Photo selection: priority order + gap detection ─────────────────────────
 
 def select_photos(photos: list, target_per_category: dict = None) -> dict:
@@ -415,11 +500,15 @@ if __name__ == "__main__":
 
     print(f"--- Extraction: {len(result['photos'])} photos found ---")
     by_cat = {}
+    upgraded_count = 0
     for p in result["photos"]:
         by_cat.setdefault(p["category"], 0)
         by_cat[p["category"]] += 1
+        if p.get("resolution_upgraded"):
+            upgraded_count += 1
     for cat, count in by_cat.items():
         print(f"  {cat}: {count}")
+    print(f"  Resolution upgrade: {upgraded_count}/{len(result['photos'])} photos got a higher-res URL")
 
     print("\n--- Resolving uncategorized photos via vision QC fallback ---")
     result["photos"] = resolve_uncategorized_photos(result["photos"])
@@ -456,3 +545,17 @@ if __name__ == "__main__":
     print(f"\nDescription: {result['description'][:100]}...")
     print(f"Price: {result['price']}")
     print(f"Address: {result['address']}")
+
+    print("\n--- Generating narration + captions from scraped description ---")
+    selected_categories = [cat for cat, photos in selection["selected"].items() if photos]
+    narration = generate_narration_from_description(
+        result["description"], selected_categories, result["address"], result["price"]
+    )
+    if narration["ok"]:
+        print(f"\nContinuous narration:\n{narration['continuous_narration']}\n")
+        print("Per-scene captions:")
+        for cat, caption in narration["captions"].items():
+            print(f"  {cat}: {caption}")
+    else:
+        print(f"NARRATION GENERATION FAILED: {narration['error']}")
+

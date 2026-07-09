@@ -21,11 +21,10 @@ Items are ordered by priority. Each entry includes scope, decisions already made
 
 **Concretely remaining:**
 1. Test the same engine against a real idealista.it listing, then a real casa.it listing — need one real URL from each to validate (untested so far).
-2. Verify the image-resolution-upgrade heuristic actually finds higher-res images, not just differently-named same-size ones.
-3. Verify the "uncategorized" photo → vision-QC fallback actually works against `vision_analysis.py`'s real output schema (unverified assumption).
-4. Decide how many photos per category a real video actually needs (currently a placeholder default of 1 each).
-5. Build narration/caption auto-generation from the extracted description text — not started yet.
-6. Build the actual integration: a `/scrape-listing` API endpoint + a "paste listing URL" input in the UI, wiring the engine into real job creation.
+2. Verify the image-resolution-upgrade heuristic actually finds higher-res images, not just differently-named same-size ones — now has visibility logging (`resolution_upgraded: true/false` per photo), needs a re-run to check.
+3. Decide how many photos per category a real video actually needs (currently a placeholder default of 1 each) — needs a product decision, not a technical one.
+4. Human-review the auto-generated narration/caption text for quality and accuracy — built and running, not yet quality-checked by a person.
+5. Build the actual integration: a `/scrape-listing` API endpoint + a "paste listing URL" input in the UI, wiring the engine into real job creation.
 
 **Note:** flagged by the user as needing a full day of focused work — this session covered the core engine; the integration layer above is the remaining work.
 
