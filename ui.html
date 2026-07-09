@@ -30,8 +30,7 @@
   header .sub { font-size:.75rem; opacity:.6; letter-spacing:.1em; text-transform:uppercase; }
   #credit-dot { width:9px; height:9px; border-radius:50%; background:var(--accent); margin-left:auto; cursor:pointer; flex-shrink:0; }
   #credit-dot.low { background:#e74c3c; animation:pulse 1.5s infinite; }
-  #diag-btn { background:none; border:1px solid rgba(255,255,255,.4); color:#fff; border-radius:var(--radius); padding:5px 12px; font-size:.75rem; cursor:pointer; margin-left:8px; }
-  #diag-btn:hover { background:rgba(255,255,255,.1); }
+  /* System diagnostics button/modal removed — fully superseded by the Maintenance panel (job stats folded in there instead) */
   @keyframes pulse { 0%,100%{opacity:1}50%{opacity:.35} }
 
 
@@ -227,18 +226,6 @@
   .btn-download   { display:inline-flex; align-items:center; gap:8px; background:var(--accent); color:var(--ink); border:none; border-radius:var(--radius); padding:10px 24px; font-size:.88rem; cursor:pointer; font-weight:600; margin-top:12px; text-decoration:none; }
 
 
-  /* Diagnostics modal */
-  #diag-modal { display:none; position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:100; align-items:center; justify-content:center; }
-  #diag-modal.open { display:flex; }
-  .diag-box { background:#fff; border-radius:var(--radius); padding:24px; width:440px; max-width:95vw; }
-  .diag-title { font-size:1rem; font-weight:600; margin-bottom:14px; display:flex; justify-content:space-between; }
-  .diag-close { background:none; border:none; font-size:1.2rem; cursor:pointer; color:var(--muted); }
-  .diag-row   { display:flex; justify-content:space-between; font-size:.83rem; padding:5px 0; border-bottom:1px solid var(--rule); }
-  .diag-row:last-child { border-bottom:none; }
-  .diag-ok  { color:var(--ok); }
-  .diag-err { color:var(--danger); }
-  .diag-loading { color:var(--muted); font-size:.83rem; padding:12px 0; text-align:center; }
-
 
   /* Maintenance modal */
   #maint-modal { display:none; position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:100; align-items:center; justify-content:center; }
@@ -252,7 +239,7 @@
   .maint-warn { color:var(--warn); }
   .maint-red  { color:var(--danger); font-weight:600; }
   .maint-loading { color:var(--muted); font-size:.83rem; padding:12px 0; text-align:center; }
-  .maint-banner  { display:none; background:#fdf0ef; border:1px solid #f5c6c2; color:var(--danger); padding:8px 12px; border-radius:var(--radius); font-size:.82rem; font-weight:600; margin-bottom:10px; }
+  .maint-banner  { display:none; padding:8px 12px; border-radius:var(--radius); font-size:.82rem; font-weight:600; margin-bottom:10px; border:1px solid; }
   #maint-btn { background:none; border:1px solid rgba(255,255,255,.4); color:#fff; border-radius:var(--radius); padding:5px 12px; font-size:.75rem; cursor:pointer; margin-left:8px; position:relative; }
   #maint-btn:hover { background:rgba(255,255,255,.1); }
   #maint-btn.red::after { content:''; position:absolute; top:-3px; right:-3px; width:8px; height:8px; border-radius:50%; background:#e74c3c; }
@@ -284,22 +271,9 @@
 <header>
   <h1>Property Video Studio</h1>
   <span class="sub">Real Estate · AI Video Generator</span>
-  <button id="diag-btn" onclick="openDiagnostics()">⚙ System</button>
   <button id="maint-btn" onclick="openMaintenance()">🔧 Maintenance</button>
   <span id="credit-dot" onclick="document.getElementById('credit-banner').scrollIntoView({behavior:'smooth'})" title="Credit status"></span>
 </header>
-
-
-<!-- Diagnostics modal -->
-<div id="diag-modal">
-  <div class="diag-box">
-    <div class="diag-title">
-      System Diagnostics
-      <button class="diag-close" onclick="closeDiagnostics()">✕</button>
-    </div>
-    <div id="diag-content"><div class="diag-loading">Loading…</div></div>
-  </div>
-</div>
 
 
 <!-- Maintenance modal -->
@@ -309,7 +283,7 @@
       System Maintenance
       <button class="maint-close" onclick="closeMaintenance()">✕</button>
     </div>
-    <div id="maint-banner" class="maint-banner">⚠ Maintenance flagged an issue — see details below.</div>
+    <div id="maint-banner" class="maint-banner">Loading status…</div>
     <div id="maint-content"><div class="maint-loading">Loading…</div></div>
     <div class="maint-emails-section">
       <div class="maint-emails-label">Alert emails (comma-separated):</div>
@@ -2409,33 +2383,6 @@ checkCredits();
 setInterval(checkCredits, 10 * 60 * 1000);
 
 
-// ── Diagnostics ────────────────────────────────────────────────────────────────
-async function openDiagnostics() {
-  document.getElementById('diag-modal').classList.add('open');
-  document.getElementById('diag-content').innerHTML = '<div class="diag-loading">Caricamento…</div>';
-  try {
-    const res  = await authFetch(`${API_BASE}/diagnostics`);
-    const data = await res.json();
-    document.getElementById('diag-content').innerHTML = `
-      <div class="diag-row"><span>Ora server</span><span>${data.server_time?.slice(0,19).replace('T',' ')}</span></div>
-      <div class="diag-row"><span>Spazio disco libero</span><span>${data.disk_free_gb} GB</span></div>
-      <div class="diag-row"><span>Job totali</span><span>${data.jobs_total} (${data.jobs_done} completati, ${data.jobs_failed} falliti)</span></div>
-      <div class="diag-row"><span>fal.ai</span><span class="${data.fal_reachable?'diag-ok':'diag-err'}">${data.fal_reachable?'✓ Raggiungibile':'✗ Non raggiungibile'}</span></div>
-      <div class="diag-row"><span>ElevenLabs</span><span class="${data.elevenlabs_reachable?'diag-ok':'diag-err'}">${data.elevenlabs_reachable?'✓ Raggiungibile':'✗ Non raggiungibile'}</span></div>
-      ${data.cleaned_jobs > 0 ? `<div class="diag-row"><span>Job eliminati (>7gg)</span><span>${data.cleaned_jobs} (${data.freed_mb} MB liberati)</span></div>` : ''}
-    `;
-  } catch(e) {
-    document.getElementById('diag-content').innerHTML = `<div class="diag-loading" style="color:var(--danger)">Errore: ${e.message}</div>`;
-  }
-}
-function closeDiagnostics() {
-  document.getElementById('diag-modal').classList.remove('open');
-}
-document.getElementById('diag-modal').addEventListener('click', e => {
-  if (e.target === document.getElementById('diag-modal')) closeDiagnostics();
-});
-
-
 // ── Maintenance panel ──────────────────────────────────────────────────────────
 async function openMaintenance() {
   document.getElementById('maint-modal').classList.add('open');
@@ -2447,17 +2394,44 @@ async function openMaintenance() {
     if (!data.timestamp) {
       document.getElementById('maint-content').innerHTML = `<div class="maint-loading">${data.note || 'No maintenance run yet.'}</div>`;
     } else {
+      const ragIcon = { ok: '🟢', warn: '🟡', red: '🔴' };
       const statusClass = { ok: 'maint-ok', warn: 'maint-warn', red: 'maint-red' };
-      const checksHtml = (data.checks || []).map(c =>
-        `<div class="maint-row"><span>${c.name}</span><span class="${statusClass[c.status]||''}">${c.detail}</span></div>`
+      const checksHtml = (data.checks || []).map(c => `
+        <div class="maint-row" style="flex-direction:column;align-items:flex-start;gap:2px">
+          <div style="display:flex;justify-content:space-between;width:100%">
+            <span>${ragIcon[c.status]||'⚪'} <strong>${c.title || c.name}</strong></span>
+          </div>
+          <div class="${statusClass[c.status]||''}" style="font-size:.82rem">${c.summary || c.detail}</div>
+          ${c.summary ? `<div style="font-size:.68rem;color:var(--muted)">${c.detail}</div>` : ''}
+        </div>`
       ).join('');
       const cleanup = data.cleanup || {};
+      const js = data.job_stats || {};
+      const jobStatsHtml = (js.total != null) ? `
+        <div style="font-size:.75rem;color:var(--muted);margin-top:10px;padding-top:10px;border-top:1px solid var(--rule)">
+          📊 ${js.total} job(s) total — ${js.done||0} completed, ${js.failed||0} failed, ${js.running||0} in progress
+        </div>` : '';
       document.getElementById('maint-content').innerHTML = `
-        <div style="font-size:.72rem;color:var(--muted);margin-bottom:8px">Last run: ${new Date(data.timestamp).toLocaleString()}</div>
+        <div style="font-size:.72rem;color:var(--muted);margin-bottom:10px">Last checked: ${new Date(data.timestamp).toLocaleString()}</div>
         ${checksHtml}
-        <div class="maint-row"><span>Last cleanup</span><span>${cleanup.items_removed||0} item(s) removed, ${cleanup.reclaimed_mb||0} MB reclaimed</span></div>
+        <div style="font-size:.75rem;color:var(--muted);margin-top:8px">🧹 Last cleanup: ${cleanup.items_removed||0} old test file(s) removed, ${cleanup.reclaimed_mb||0} MB freed</div>
+        ${jobStatsHtml}
       `;
-      if (data.any_red) document.getElementById('maint-banner').style.display = 'block';
+      const banner = document.getElementById('maint-banner');
+      const overall = data.overall || {};
+      if (overall.status === 'red') {
+        banner.style.display = 'block';
+        banner.style.background = '#fdf0ef'; banner.style.borderColor = '#f5c6c2'; banner.style.color = 'var(--danger)';
+        banner.innerHTML = `🔴 ${overall.summary || 'Action needed.'}`;
+      } else if (overall.status === 'warn') {
+        banner.style.display = 'block';
+        banner.style.background = '#fef9ef'; banner.style.borderColor = '#f5dfa2'; banner.style.color = 'var(--warn)';
+        banner.innerHTML = `🟡 ${overall.summary || 'Worth a look.'}`;
+      } else {
+        banner.style.display = 'block';
+        banner.style.background = '#edf7f1'; banner.style.borderColor = '#b7dfca'; banner.style.color = 'var(--ok)';
+        banner.innerHTML = `🟢 ${overall.summary || 'All systems normal.'}`;
+      }
     }
   } catch(e) {
     document.getElementById('maint-content').innerHTML = `<div class="maint-loading" style="color:var(--danger)">Errore: ${e.message}</div>`;

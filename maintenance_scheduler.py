@@ -146,23 +146,46 @@ def _is_due(check_name: str, last_run: dict) -> bool:
 
 
 # ── Individual checks ────────────────────────────────────────────────────────
+# Each check returns: name (internal id), title (human label), status
+# (ok/warn/red — maps to green/amber/red), summary (plain-English sentence,
+# the primary thing a non-technical reader sees), and detail (technical
+# specifics, kept for troubleshooting but shown de-emphasized in the UI).
 
 def check_disk() -> dict:
     total, used, free = shutil.disk_usage(BASE_DIR)
     pct = round(used / total * 100, 1)
+    free_gb = free // (1024**3)
     status = "red" if pct >= DISK_RED_PCT else "warn" if pct >= DISK_WARN_PCT else "ok"
-    return {"name": "disk_usage", "status": status,
-            "detail": f"{pct}% used ({free // (1024**3)} GB free)"}
+    if status == "ok":
+        summary = f"Plenty of storage space available ({free_gb} GB free)."
+    elif status == "warn":
+        summary = f"Storage is getting full ({pct}% used, {free_gb} GB free) — worth keeping an eye on."
+    else:
+        summary = f"Storage is almost full ({pct}% used, only {free_gb} GB free) — action needed soon."
+    return {"name": "disk_usage", "title": "Storage Space", "status": status,
+            "summary": summary, "detail": f"{pct}% used ({free_gb} GB free)"}
 
 
 def check_credits() -> dict:
     try:
         credits = credit_monitor.get_all_credits()
-        status = "red" if credits.get("any_low") else "ok"
-        detail = f"fal: {credits.get('fal', {}).get('balance')}, elevenlabs: {credits.get('elevenlabs', {}).get('remaining_chars')}"
-        return {"name": "credits", "status": status, "detail": detail}
+        any_low = credits.get("any_low", False)
+        fal_bal  = credits.get("fal", {}).get("balance")
+        el_chars = credits.get("elevenlabs", {}).get("remaining_chars")
+        parts = []
+        if fal_bal is not None:
+            parts.append(f"fal.ai: €{fal_bal:.2f} remaining")
+        if el_chars is not None:
+            parts.append(f"ElevenLabs: {el_chars:,} characters remaining")
+        detail = ", ".join(parts) if parts else "balances unavailable"
+        status = "red" if any_low else "ok"
+        summary = ("One or more API credit balances are running low — top up soon to avoid interruptions."
+                   if any_low else f"Credit balances look healthy ({detail}).")
+        return {"name": "credits", "title": "API Credits", "status": status,
+                "summary": summary, "detail": detail}
     except Exception as e:
-        return {"name": "credits", "status": "warn", "detail": f"check failed: {e}"}
+        return {"name": "credits", "title": "API Credits", "status": "warn",
+                "summary": "Couldn't check credit balances this time.", "detail": f"check failed: {e}"}
 
 
 def check_service() -> dict:
@@ -172,15 +195,20 @@ def check_service() -> dict:
     try:
         resp = requests.get(f"{API_BASE}/health", timeout=5)
         ok = resp.status_code == 200 and "ok" in resp.text
-        return {"name": "service_status", "status": "ok" if ok else "red",
-                "detail": f"HTTP {resp.status_code}: {resp.text[:80]}"}
+        status = "ok" if ok else "red"
+        summary = "Server is online and responding normally." if ok \
+                  else f"Server responded unexpectedly (HTTP {resp.status_code}) — may need attention."
+        return {"name": "service_status", "title": "Server Status", "status": status,
+                "summary": summary, "detail": f"HTTP {resp.status_code}: {resp.text[:80]}"}
     except Exception as e:
-        return {"name": "service_status", "status": "red", "detail": f"server unreachable: {e}"}
+        return {"name": "service_status", "title": "Server Status", "status": "red",
+                "summary": "Server is not responding — it may be down.", "detail": f"unreachable: {e}"}
 
 
 def check_stuck_jobs() -> dict:
     if not JOBS_DIR.exists():
-        return {"name": "stuck_jobs", "status": "ok", "detail": "no jobs directory"}
+        return {"name": "stuck_jobs", "title": "Stuck Jobs", "status": "ok",
+                "summary": "No jobs directory found.", "detail": "no jobs directory"}
     stuck = []
     cutoff = datetime.now() - timedelta(minutes=STUCK_JOB_MINUTES)
     for job_dir in JOBS_DIR.iterdir():
@@ -201,17 +229,25 @@ def check_stuck_jobs() -> dict:
                     stuck.append(job_dir.name)
             except Exception:
                 pass
-    return {"name": "stuck_jobs", "status": "red" if stuck else "ok",
-            "detail": f"{len(stuck)} stuck job(s): {', '.join(stuck)}" if stuck else "none"}
+    if stuck:
+        summary = f"{len(stuck)} job(s) appear stuck and may need attention."
+    else:
+        summary = "No stuck jobs — everything is processing normally."
+    return {"name": "stuck_jobs", "title": "Stuck Jobs", "status": "red" if stuck else "ok",
+            "summary": summary, "detail": f"{', '.join(stuck)}" if stuck else "none"}
 
 
 def check_test_scratch() -> dict:
     if not TEST_SCRATCH_DIR.exists():
-        return {"name": "test_scratch_size", "status": "ok", "detail": "directory does not exist"}
+        return {"name": "test_scratch_size", "title": "Test Files", "status": "ok",
+                "summary": "No test files directory found.", "detail": "directory does not exist"}
     total_bytes = sum(f.stat().st_size for f in TEST_SCRATCH_DIR.rglob("*") if f.is_file())
     mb = round(total_bytes / (1024**2), 1)
     status = "warn" if mb >= TEST_SCRATCH_WARN_MB else "ok"
-    return {"name": "test_scratch_size", "status": status, "detail": f"{mb} MB"}
+    summary = (f"Test files taking up more space than usual ({mb} MB) — may need manual cleanup."
+               if status == "warn" else f"Test files are at a normal size ({mb} MB).")
+    return {"name": "test_scratch_size", "title": "Test Files", "status": status,
+            "summary": summary, "detail": f"{mb} MB"}
 
 
 def _diagnostics_headers() -> dict:
@@ -225,18 +261,28 @@ def check_cleanup_ran() -> dict:
     logic actually lives, so this reuses it rather than re-implementing
     deletion in a second place. Re-scans the filesystem afterward to
     confirm nothing past the retention window is still sitting there.
+    Also captures job counts from that same call (job_stats) — informational
+    only, refreshed at this check's own cadence since it shares the endpoint.
     """
     try:
         resp = requests.get(f"{API_BASE}/diagnostics", headers=_diagnostics_headers(), timeout=15)
         resp.raise_for_status()
         diag = resp.json()
         cleaned_by_diagnostics = diag.get("cleaned_jobs", 0)
+        job_stats = {
+            "total":   diag.get("jobs_total"),
+            "done":    diag.get("jobs_done"),
+            "failed":  diag.get("jobs_failed"),
+            "running": diag.get("jobs_running"),
+        }
     except Exception as e:
-        return {"name": "cleanup_verification", "status": "warn",
-                "detail": f"could not reach /diagnostics to trigger cleanup: {e}"}
+        return {"name": "cleanup_verification", "title": "Old Job Cleanup", "status": "warn",
+                "summary": "Couldn't run the cleanup check this time.",
+                "detail": f"could not reach /diagnostics: {e}"}
 
     if not JOBS_DIR.exists():
-        return {"name": "cleanup_verification", "status": "ok", "detail": "no jobs directory"}
+        return {"name": "cleanup_verification", "title": "Old Job Cleanup", "status": "ok",
+                "summary": "No jobs directory found.", "detail": "no jobs directory", "job_stats": job_stats}
 
     cutoff = datetime.now() - timedelta(days=JOB_RETENTION_DAYS + 1)
     stale = []
@@ -248,13 +294,19 @@ def check_cleanup_ran() -> dict:
             stale.append(job_dir.name)
 
     if stale:
+        summary = f"{len(stale)} old job(s) should have been cleaned up but weren't — worth a look."
         detail = (f"{len(stale)} job(s) still past retention after triggering cleanup "
                   f"(diagnostics reported {cleaned_by_diagnostics} cleaned this run): "
                   f"{', '.join(stale[:5])}{'...' if len(stale) > 5 else ''}")
-        return {"name": "cleanup_verification", "status": "red", "detail": detail}
-    return {"name": "cleanup_verification", "status": "ok",
-            "detail": f"clean — {cleaned_by_diagnostics} job(s) removed this run" if cleaned_by_diagnostics
-                      else "clean, nothing needed removal"}
+        return {"name": "cleanup_verification", "title": "Old Job Cleanup", "status": "red",
+                "summary": summary, "detail": detail, "job_stats": job_stats}
+
+    summary = (f"Cleaned up {cleaned_by_diagnostics} old job(s) automatically." if cleaned_by_diagnostics
+               else "All old jobs are cleaned up — nothing needed removal.")
+    return {"name": "cleanup_verification", "title": "Old Job Cleanup", "status": "ok",
+            "summary": summary,
+            "detail": f"{cleaned_by_diagnostics} job(s) removed this run" if cleaned_by_diagnostics else "clean",
+            "job_stats": job_stats}
 
 
 def _tail_lines(path: Path, n: int) -> list:
@@ -278,13 +330,17 @@ def _tail_lines(path: Path, n: int) -> list:
 
 def check_fallback_rate() -> dict:
     if not LOG_FILE.exists():
-        return {"name": "fallback_rate", "status": "warn", "detail": "log file not found — check LOG_FILE path"}
+        return {"name": "fallback_rate", "title": "Video Generation Reliability", "status": "warn",
+                "summary": "Couldn't check video generation logs this time.",
+                "detail": "log file not found — check LOG_FILE path"}
     lines = _tail_lines(LOG_FILE, FALLBACK_LOG_TAIL_LINES)
     count = sum(1 for l in lines
                 if "falling back to Veo" in l or "Luma failed" in l or "Veo Standard failed" in l)
     status = "red" if count >= FALLBACK_RATE_RED else "ok"
-    return {"name": "fallback_rate", "status": status,
-            "detail": f"{count} fallback event(s) in last {len(lines)} log lines scanned"}
+    summary = (f"{count} videos recently fell back to a backup model — possible issue with fal.ai or Luma."
+               if status == "red" else "Video generation is running smoothly, no unusual fallbacks.")
+    return {"name": "fallback_rate", "title": "Video Generation Reliability", "status": status,
+            "summary": summary, "detail": f"{count} fallback event(s) in last {len(lines)} log lines scanned"}
 
 
 # ── Housekeeping ─────────────────────────────────────────────────────────────
@@ -367,10 +423,12 @@ def run_due_checks() -> dict:
     last_run = _load_last_run()
 
     prior_status = {}
+    prior_job_stats = None
     if STATUS_FILE.exists():
         try:
             prior = json.loads(STATUS_FILE.read_text())
             prior_status = {c["name"]: c for c in prior.get("checks", [])}
+            prior_job_stats = prior.get("job_stats")
         except Exception:
             pass
 
@@ -382,7 +440,8 @@ def run_due_checks() -> dict:
             try:
                 results[name] = fn()
             except Exception as e:
-                results[name] = {"name": name, "status": "warn", "detail": f"check crashed: {e}"}
+                results[name] = {"name": name, "title": name, "status": "warn",
+                                  "summary": "This check failed to run.", "detail": f"check crashed: {e}"}
             last_run[name] = datetime.now().isoformat()
             ran_this_tick.append(name)
 
@@ -391,13 +450,32 @@ def run_due_checks() -> dict:
     if "test_scratch_size" in ran_this_tick:
         cleanup_result = clean_test_scratch()
 
+    # job_stats travels alongside cleanup_verification's result (shares the
+    # same /diagnostics call) but is informational, not a RAG-checked item —
+    # pull it out into its own top-level report field.
+    job_stats = prior_job_stats
+    if "cleanup_verification" in results and "job_stats" in results["cleanup_verification"]:
+        job_stats = results["cleanup_verification"].pop("job_stats")
+
     checks_list = [v for k, v in results.items() if not k.startswith("_")]
-    any_red = any(c.get("status") == "red" for c in checks_list)
+    any_red  = any(c.get("status") == "red"  for c in checks_list)
+    any_warn = any(c.get("status") == "warn" for c in checks_list)
+
+    if any_red:
+        overall = {"status": "red",
+                   "summary": "Action needed: " + ", ".join(c["title"] for c in checks_list if c.get("status") == "red")}
+    elif any_warn:
+        overall = {"status": "warn",
+                   "summary": "Worth a look: " + ", ".join(c["title"] for c in checks_list if c.get("status") == "warn")}
+    else:
+        overall = {"status": "ok", "summary": "All systems normal."}
 
     report = {
         "timestamp": datetime.now().isoformat(),
         "checks_ran_this_tick": ran_this_tick,
+        "overall": overall,
         "checks": checks_list,
+        "job_stats": job_stats,
         "cleanup": cleanup_result,
         "any_red": any_red,
     }
@@ -407,7 +485,7 @@ def run_due_checks() -> dict:
         red_checks = [c for c in checks_list if c.get("status") == "red"]
         body = "<h3>Property Video Studio — Maintenance Alert</h3><ul>"
         for c in red_checks:
-            body += f"<li><b>{c['name']}</b>: {c['detail']}</li>"
+            body += f"<li><b>{c['title']}</b>: {c['summary']}</li>"
         body += "</ul>"
         if send_maintenance_alert("Property Video Studio — Maintenance Alert", body):
             last_run["_last_alert_sent"] = datetime.now().isoformat()
