@@ -293,7 +293,19 @@ def serve_test_scratch(filename: str):
     test_path = JOBS_DIR / "_test_scratch" / filename
     if not test_path.exists():
         raise HTTPException(status_code=404, detail="Test file not found")
-    return FileResponse(str(test_path), media_type="video/mp4")
+
+    # Detect real content type by extension — this endpoint originally only
+    # served test video clips (hardcoded video/mp4), which silently broke
+    # when used for test images (the browser gets real JPEG bytes but a
+    # video/mp4 header, so it renders a blank video player instead).
+    ext = Path(filename).suffix.lower()
+    media_types = {
+        ".mp4": "video/mp4", ".mov": "video/quicktime",
+        ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".png": "image/png", ".webp": "image/webp",
+    }
+    media_type = media_types.get(ext, "application/octet-stream")
+    return FileResponse(str(test_path), media_type=media_type)
 
 
 
