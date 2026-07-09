@@ -1,70 +1,119 @@
 # Property Video Studio — Status
 
-_Last verified: July 8, 2026 — full audit of all 25 repository files, read directly (not summarized from memory or prior chats). Server and GitHub `main` confirmed in sync as of this audit (see Infrastructure Note)._
+_Last verified: July 9, 2026 — full repository audit (July 8) plus live-tested maintenance scheduler feature (July 9). Server and GitHub `main` confirmed in sync throughout via direct terminal verification, not assumption._
+
+---
+
+## ⚠ READ THIS FIRST — Working with Claude in this project
+
+This section exists so a new chat doesn't have to rediscover the same things through trial and error. It documents real environment facts and working patterns, not preferences — verify against live output if anything here seems to have changed.
+
+**Terminal commands must always be given as one complete, ready-to-paste block** — never a fragment requiring manual mid-command editing (e.g. never "insert your token here" in the middle of a URL). If a value like a token needs to go into a command, build the full line with the real value substituted in, and note if a leading space is intentional (keeps it out of shell history on most systems).
+
+**Deployment reality — this matters, it caused a real bug this session:** the app runs via a `screen` session executing `uvicorn` directly (see `start.sh`), **not a systemd unit**, despite that being assumed/documented at one point. `systemctl is-active property-video.service` will not work — there is no such unit. Logs are piped to **`/tmp/property-video.log`** via `tee` inside the screen session, not any file inside the project directory. The correct way to verify the app is actually healthy is an HTTP call to `http://localhost:8000/health` — the same check `start.sh` itself uses.
+
+**Claude's file-reading tools have a hard restriction:** Claude cannot fetch a GitHub URL (raw or blob) unless that *exact* URL has already appeared in the conversation — either typed by the user, or returned by a prior search. Claude cannot construct a plausible-looking URL itself, even by following the exact same pattern as a file that just worked. In practice: **always paste the exact `github.com/.../blob/main/FILENAME` or `raw.githubusercontent.com/.../FILENAME` URL directly**, don't assume Claude can just "go check the repo."
+
+**For files too large for one fetch to return in full** (this repo's `api_server.py` and `ui.html` are both large enough to hit this), the reliable path is:
+1. Ask Claude in Chrome (a separate browsing-capable Claude instance, accessible via its own sidebar/extension) to create a Google Doc and paste the raw file content into it via the `raw.githubusercontent.com` URL.
+2. Set that Doc's sharing to "Anyone with the link" / Viewer.
+3. Paste the Doc's `.../export?format=txt` URL (not the `/edit` URL — that's a JS app shell with no readable text) back into chat for Claude to fetch.
+4. **If the export URL 401s even though the Doc is confirmed publicly viewable** (this happened repeatedly this session, likely a Google-side quirk specific to the export endpoint, not a real permissions problem) — skip straight to: in the Doc, **File → Download → Plain text (.txt)**, then upload that .txt file directly into the chat. This sidesteps Google's export permissions entirely and has been 100% reliable when the export URL wasn't.
+
+**GitHub push authentication:** password auth for git operations was removed by GitHub in 2021 and will never work, regardless of which password is tried. A Personal Access Token (classic, `repo` scope) is required, used as `https://username:TOKEN@github.com/...`. Build this as one complete pasteable line with the token substituted in — never leave it as a fill-in-the-blank mid-command. **Treat any token that appears in this chat as burned** — revoke it on GitHub (Settings → Developer settings → Personal access tokens) once done, since it's been exposed in a place that isn't meant to hold credentials.
+
+**Before trusting either GitHub or the server as "current," verify sync in both directions** — this project hit a real 3-commit gap once (docs committed on GitHub but never pulled to the server) that could have caused a bad merge if not caught first:
+```bash
+cd /var/www/property-video-studio/ && git status && git fetch origin && git log --oneline HEAD..origin/main
+```
+
+**Rollback is always available and safe.** Every commit stays in git history; nothing is destructive. To undo a specific commit cleanly: `git revert <hash>`. Always note the current `HEAD` commit hash before a risky deploy so there's a known-good point to reference.
+
+**A stale/cached fetch gave confidently wrong answers once this session** — an early read of `video_generation.py` and `api_server.py` returned old, pre-Luma-integration content with no visible error, leading to an incorrect claim that Luma wasn't integrated at all (it was, and was already the default). The fix was cross-referencing against a live `grep`/`cat` from the terminal, which is authoritative in a way a browser-based fetch apparently isn't always guaranteed to be. **When a code claim really matters, verify it against live terminal output, not just one fetch.**
+
+---
 
 ## Architecture — live production pipeline
 
-**Backend:** FastAPI (`api_server.py`, current version — a prior audit this session mistakenly read a stale cached snapshot of this file; that error has been corrected here).
+**Backend:** FastAPI (`api_server.py`).
 
-**Auth:** Conditional — gated by `X-Access-Key` header against a `UI_ACCESS_KEY` environment variable if one is set; open access if the env var is unset. (Not independently confirmed whether `.env` on the server actually sets this, since `.env` is gitignored and wasn't read.)
+**Auth:** Conditional — gated by `X-Access-Key` header against a `UI_ACCESS_KEY` environment variable if one is set; open access if unset.
 
-**Video generation (`video_generation.py`) — four tiers, all fully implemented and live:**
-- **`eco`** — Lyra 2.0 zoom (`fal-ai/lyra-2/zoom`) + Topaz upscale 720p→1080p. ~€0.045–0.125/clip by frame count. Lyra is parametric (camera controlled via API params, not prompt) — uses a frozen-scene prompt style, distinct from Veo/Luma's motion-description prompts.
-- **`luma`** — Luma Ray 2 (`fal-ai/luma-dream-machine/ray-2/image-to-video`). **Current default**, selected in `ui.html`. ~€0.46/clip. Confirmed via real testing: genuine 3D parallax, no warping, including on the bathroom photo that previously broke both depth rendering and Veo. Automatic fallback to Veo 3.1 Fast on failure.
+**Video generation (`video_generation.py`) — four tiers, all implemented and live:**
+- **`eco`** — Lyra 2.0 zoom + Topaz upscale. ~€0.045–0.125/clip.
+- **`luma`** — Luma Ray 2. **Current default.** ~€0.46/clip. Confirmed via real testing: genuine 3D parallax, no warping, including on a bathroom photo that previously broke both depth rendering and Veo. Falls back to Veo Fast on failure.
 - **`premium`** — Veo 3.1 Fast, native 1080p. ~€0.80/clip.
-- **`premium_veo`** — Veo 3.1 Standard (`fast_mode=False`). ~€1.60/clip. Explicitly built and labeled to avoid the circular/internal transition problem ("no circular wipe" in both UI and code comments). Falls back to Veo Fast on failure.
-- Model tier is selected in the UI dropdown and passed through the job config to `generate_video_single` — fully wired end to end.
-- **Kling: fully removed from all functional code.** Two harmless dead comments remain (`video_generation.py`, `cost_tracker.py`) referencing Kling for historical prompt-design rationale only.
+- **`premium_veo`** — Veo 3.1 Standard. ~€1.60/clip. Built specifically to avoid the circular/internal transition problem. Falls back to Veo Fast on failure.
+- **Kling: fully removed from all functional code** — no live references remain.
 
-**Narration-first workflow:** fully implemented — draft-mode job creation, `/jobs/{id}/narration` (TTS-only step), `/apply-durations`, `/reassemble-with-narration`, `/start-generation`. TTS is generated and measured before video generation, durations confirmed in UI, video generated to match. Valid duration snap values account for both Veo (4/6/8s) and Luma (5/9s) — see `narration.py`.
+**Narration-first workflow:** fully implemented — draft-mode job creation, `/jobs/{id}/narration`, `/apply-durations`, `/reassemble-with-narration`, `/start-generation`. TTS generated and measured before video generation; durations confirmed before any video cost is incurred.
 
-**Job model:** single-directory-per-job, locked/stable `scene_id`s, 0-indexed scene numbering throughout UI and server. Job locking prevents assembly race conditions. New rework endpoints (`redo_scene`, `add_scene`, `delete_scene`) use strict scene-index bounds — the fix for the earlier test-clip contamination incident is present and confirmed. The old sibling-directory `/jobs/{id}/rework` endpoint still exists but is explicitly marked legacy in code, kept only for in-flight old jobs — no new work should build on it.
+**Job model:** single-directory-per-job, stable `scene_id`s, job locking. New rework endpoints (`redo_scene`/`add_scene`/`delete_scene`) use strict scene-index bounds. The old sibling-directory `/jobs/{id}/rework` endpoint is legacy, kept only for old in-flight jobs.
 
-**Test isolation:** `jobs/_test_scratch/` + `/test-scratch/` endpoint, confirmed implemented as documented.
+**Test isolation:** `jobs/_test_scratch/` + `/test-scratch/` endpoint.
 
-**Assembly:** `video_assembly.py` — `assemble_property_video()`, MoviePy-based, explicit bitrate control, transition styles (fade/fade_white/slide_left/slide_right/cut).
+**Assembly:** `video_assembly.py` — MoviePy, explicit bitrate control.
 
-**Watermark removal:** `watermark_removal.py` (fal.ai object-removal) — strips source-listing-site watermarks from uploaded photos. Distinct from the planned client-logo overlay feature (backlog), which would add the agency's own logo rather than remove anything.
+**Watermark removal:** `watermark_removal.py` (fal.ai) — strips source-listing-site watermarks from uploaded photos.
 
-**QC:** `vision_analysis.py` (Florence-2-based).
+**QC:** `vision_analysis.py` (Florence-2).
 
-**Cost tracking:** `cost_tracker.py` — per-tier billing (frame-based for Lyra, per-second for Veo/Luma), rolling 30-day job count for infrastructure cost-per-video.
+**Video library / job browsing UI:** confirmed implemented in `ui.html` (a "Cronologia video" section with grouped job history, status legend) — independently code-verified July 9, not just reported.
 
-**Credits:** `credit_monitor.py`, exposed via `/credits` endpoint.
+---
 
-**Streaming:** Range-request streaming implemented on both `/clip/` (preview) and `/download` endpoints.
+## NEW — Automatic maintenance scheduler (completed July 9, 2026)
 
-**Retention:** auto-cleanup of jobs older than 7 days, confirmed in code.
+Built in response to backlog item "Auto maintenance scheduler." Fully deployed, live-tested, and confirmed working — not just written.
+
+**Architecture:** `maintenance_scheduler.py`, triggered by cron every 5 minutes. Each individual check runs on its **own** interval (tracked in `maintenance_last_run.json`), not a single fixed frequency — a 5-minute health check would be pointless run daily, and a destructive cleanup running every 5 minutes would be reckless. Current intervals:
+
+| Check | Interval | Reasoning |
+|---|---|---|
+| `service_status` | 5 min | HTTP check against `/health` — outages need fast detection |
+| `disk_usage` | 30 min | |
+| `stuck_jobs` | 30 min | |
+| `credits` | 1 hr | `credit_monitor.py` already alerts directly per-job; this is a backup net |
+| `fallback_rate` | 1 hr | Log-scans for Luma/Veo fallback spikes (possible upstream fal.ai issue) |
+| `test_scratch_size` | 6 hr | Low urgency |
+| `cleanup_verification` | 24 hr | **The only check with a real destructive side effect** (triggers actual job deletion) — deliberately least frequent |
+
+**Why cron (external), not an in-app background task:** the `service_status` check exists to catch the app crashing. If it were scheduled from *within* `api_server.py` itself, it would die along with the thing it's meant to detect. Running it as an independent, cron-triggered process is what makes it a real check.
+
+**Alerting:** email to every address in `maintenance_alert_emails.json` (editable via `/maintenance/alert-emails` GET/POST, and in the UI's "🔧 Maintenance" panel), throttled to at most one email per hour for an ongoing issue. Uses the same Gmail SMTP credentials as `credit_monitor.py` (`ALERT_EMAIL_FROM`/`ALERT_EMAIL_PASSWORD`) — **important:** the app password must be generated while logged into `video.AI.automated.email@gmail.com` specifically (the bot account `ALERT_EMAIL_FROM` points to), not a personal Google account — this caused repeated `535 Bad Credentials` failures before being caught.
+
+**UI:** "🔧 Maintenance" button in the header (turns red if any check is currently red), modal showing check results + last cleanup summary, editable comma-separated alert-email list.
+
+**Two real, previously-invisible bugs found and fixed while building this** (not hypothetical — confirmed via live test runs):
+1. The existing 7-day job cleanup only ever deleted jobs with status `done` or `failed` — anything stuck mid-workflow (`running`, `queued`, `draft`, `awaiting_approval`) accumulated forever regardless of age. Fixed: cleanup now applies to any status, based on `job_meta.json`'s filesystem last-modified time (updated by `_save_job()` on every real state change) rather than the `created_at` field.
+2. Job directories with **no `job_meta.json` at all** (orphaned — likely from a job creation that crashed before its first save) were permanently un-deletable, since the cleanup logic required that file to exist just to check eligibility. Fixed: falls back to the directory's own mtime when `job_meta.json` is missing.
+
+Combined, these two fixes cleared **34 stale/orphaned job directories** in production during testing (12 + 22 across two cleanup runs).
+
+**Deployment note:** `cron` was not installed on this VPS at all before this session (`crontab: command not found`) — installed via `apt-get install -y cron` and enabled via systemd (`cron` itself does run as a systemd service, unlike the app).
+
+---
 
 ## Present in repo but NOT part of the live pipeline (legacy / standalone)
 
-Flagging these explicitly so they aren't mistaken for active code in future sessions:
+- **`main.py`, `communication.py`**, and the CLI paths in `video_assembly.py`/`video_editor.py` — self-contained legacy automation (Excel-via-email intake, Drive upload, email delivery). Confirmed disconnected: `communication.py`'s Google API dependencies aren't even in `requirements.txt`. Note: `video_editor.py`'s legacy path has its own logo-overlay support — relevant context for the client-logo backlog item, but not directly reusable (different code path from the live `assemble_property_video()`).
+- **`depth_renderer.py`** — sophisticated, complete implementation, but its `measure_depth_score()` auto-routing logic is not called anywhere in `api_server.py`. Kept for reference; Luma Ray 2 solved the problem this was built for.
+- **`batch_depth_test.py`, `test_luma.py`** — standalone test scripts, not imported by the live pipeline.
+- **`reassemble_fix.py`** — one-off manual repair script hardcoded to a specific past job ID. Candidate for deletion.
 
-- **`main.py`, `communication.py`, and the CLI paths in `video_assembly.py`/`video_editor.py`** — a self-contained legacy automation (Excel-via-email intake, Google Drive upload, email delivery, using `StorySequencer`/`VideoCompositor`). Confirmed disconnected from the live API: `communication.py`'s Google API dependencies aren't even listed in `requirements.txt`. Note: `video_editor.py`'s legacy path has its own logo-overlay support (`show_logo`/`logo_path`) — relevant context for scoping the client-logo backlog item, but not directly reusable since it's a different code path from the live `assemble_property_video()`.
-- **`depth_renderer.py`** — a genuinely sophisticated, complete implementation (percentile normalization anchored to frame center, edge-gradient damping at depth discontinuities, bilateral filtering, motion blur, disocclusion inpainting). Includes a `measure_depth_score()` function intended for auto-routing flat/shallow scenes to depth-rendering vs. deep scenes to Veo — **this routing logic exists but is not called anywhere in `api_server.py`**, so it's not active in production. Kept for reference; Luma Ray 2 has pragmatically solved the problem this was built for.
-- **`batch_depth_test.py`** — parameter-comparison test harness for `depth_renderer.py`. Standalone, not imported elsewhere.
-- **`test_luma.py`** — standalone script that validated Luma Ray 2 against the bathroom photo before it was merged into `video_generation.py`. No longer needed for that purpose but harmless to keep.
-- **`reassemble_fix.py`** — a one-off manual repair script hardcoded to a specific past job ID (`161dfaf7_rw9f6a`). Not a reusable tool; an artifact of a prior incident fix. Candidate for deletion.
-
-## Resolved / corrected this session (July 8, 2026)
-
-- **"Kling routing unverified"** — closed, confirmed no functional Kling code exists.
-- **"Luma Ray 2 needs integration"** — closed, already fully implemented and already the default.
-- **"Veo circular/internal transition"** — upgraded from "on hold" to resolved in code (`premium_veo` tier exists specifically to fix this); recommend one real test clip for visual confirmation before considering it fully closed.
-- **Earlier in this same session, an incorrect audit was reported** claiming `video_generation.py` only used a bare `fal-ai/ltx-2.3` endpoint with no tier system — this was based on a stale/cached fetch and was wrong. Corrected via direct terminal `grep` and full file reads.
+---
 
 ## Open items
 
-- **Rework edge cases (watch item, no known repro):** full end-to-end test passed; possible fixes may still be needed for specific use cases. Flag with a concrete repro when one surfaces.
-- **Video library & job browsing UI:** reported as implemented (user, July 8, 2026) — not yet independently code-verified. Needs confirmation of scope and whether it changes the 7-day retention window.
-- **`.env` contents** (auth key presence, API keys) not verified — file is correctly gitignored and wasn't read.
+- **Rework edge cases (watch item, no known repro):** flag with a concrete repro when one surfaces.
+- **`.env` contents** (auth key presence, API keys) not independently verified — correctly gitignored, not read.
+- **Maintenance scheduler tiering** — first manual run correctly fired all 7 checks (expected, nothing had run before). Subsequent 5-minute ticks should show `checks_ran_this_tick` shrinking to mostly `["service_status"]` in `/tmp/maintenance.log` — not yet independently confirmed after a paste error interrupted the verification command; worth a quick `tail -50 /tmp/maintenance.log` check.
 
-## Infrastructure note — GitHub/server sync gap (found & fixed July 8, 2026)
+---
 
-GitHub `main` was 3 commits behind the live server at the start of this session (2 `status.md` commits + 1 `backlog.md` commit existed on GitHub but hadn't been pulled to the server). Reconciled via clean fast-forward merge (commit `08905c6`) — no data lost, no conflicts. **Standing precaution:** verify sync in both directions at the start of any code-work session (`git status` on server; `git fetch && git log HEAD..origin/main --oneline`) before treating either side as authoritative.
-
-## Standing safeguards (unchanged)
+## Standing safeguards
 
 - Stale browser cache can cause subtle bugs — hard refresh to verify JS changes.
-- Terminal paste artifacts are a real hazard — stray characters from pasting can silently corrupt commands.
+- **Terminal paste artifacts are a real, recurring hazard** — stray bracketed-paste characters (e.g. `^[[200~...~`) can silently corrupt or no-op a pasted command. If a command's expected output doesn't appear, check for this before assuming something deeper is wrong.
 - Repo is public — never commit secrets; `.env` stays gitignored.
+- Never paste real credentials (passwords, tokens) into chat as reusable secrets — treat anything that appears here as compromised and rotate it.

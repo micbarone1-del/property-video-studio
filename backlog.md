@@ -1,56 +1,104 @@
-# Property Video Studio — Backlog & Detailed Requirements
-_Last updated: July 8, 2026_
+# Property Video Studio — Backlog
 
-Keep this file and status.md updated together whenever a bug is fixed, a feature's status changes, or a backlog item's requirements are refined. Entries should be dated and specific — never round up partial progress to "done."
+_Last updated: July 9, 2026 — removed "Auto maintenance scheduler" (completed and verified — see status.md), renumbered remaining items._
 
-## Automated URL-scraping workflow (photo selection and sequencing)
+Items are ordered by priority. Each entry includes scope, decisions already made, and open questions still needing resolution.
 
-Scrape a property's online ad to automatically pull photos, replacing manual upload/selection for at least part of the workflow. Photo selection and sequencing must follow this agreed priority order: exterior, then living areas, then kitchen, then bedrooms, then bathrooms, then outdoor. If the scraped ad does not have enough usable photos to fill this sequence, the system must surface the gap explicitly and require manual upload — it must never silently degrade quality or substitute lower-quality or irrelevant photos to compensate. Narration sequencing/automation is not yet specified: it is unclear whether narration should be auto-generated from the scraped ad's description text, written manually per scene as today, or some hybrid of the two — this needs to be defined with the client before it can be scoped or built. The source site(s) to scrape, and how scraped photos map to specific ad fields, are also not yet specified.
+---
 
-## Cost report
+## 1. Automated URL-scraping for photo selection — HIGH PRIORITY
 
-A dedicated report, separate from the main tool, requiring its own login (its own access key, distinct from the main tool's key). Contents: a table listing every job — property name, date, number of scenes, model tier used, pre-generation cost estimate, and actual cost incurred including any reworks (itemized or totaled per property). Must be exportable as CSV so it can be shared with the business partner. Not yet built — no reporting code exists in the repository currently.
+**Scope:** Given a property listing URL, automatically scrape photos instead of requiring manual upload.
 
-## Multi-job dashboard + concurrent queue
+**Decisions already made:**
+- Priority order for photo categories: exterior → living areas → kitchen → bedrooms → bathrooms → outdoor.
+- When scraped photos are insufficient for a category, surface the gap explicitly and require manual upload rather than silently degrading quality or skipping the scene.
 
-Submit multiple properties at once as a batch, each processed as its own job, without needing to babysit one at a time. Target concurrency (originally around 3 parallel jobs) needs to be confirmed against actual fal.ai and ElevenLabs rate limits before being implemented.
+**Open questions:**
+- Which source/listing sites need to be supported.
+- Should narration/captions also be auto-generated from scraped listing copy, or does the agent still write those manually even when photos are scraped?
 
-## Auto maintenance scheduler
+**Note:** flagged by the user as needing a full day of focused work — not a quick add.
 
-Named as a priority item; no functional detail (what maintenance tasks, what cadence) has ever been specified. Needs requirements gathering before this can be scoped.
+---
 
-## YouTube auto-upload
+## 2. Multi-job dashboard / concurrent job queue
 
-Automatic upload of the finished video to a private YouTube channel after generation completes, via OAuth2 — removing the manual download/upload step entirely. Not yet built.
+**Scope:** View and manage multiple jobs running at once, rather than one at a time.
 
-## Faster video preview
+**Open questions:**
+- Concurrency target hasn't been checked against fal.ai/ElevenLabs rate limits — needs that check before real scoping.
 
-QC and final video previews have historically taken up to about 5 minutes to load, since Veo/Luma outputs are large 1080p files. Range-request streaming has been added to the download and clip-preview endpoints, which partially helps, but the originally proposed full fix — converting clips to HLS via FFmpeg so playback starts within 2-3 seconds — has not been built.
+---
 
-## Video library / old-job access
+## 3. Portrait/vertical format support
 
-Interface to browse and access past jobs, currently retained for about 1 week. Needs to cover reworks too. Each rework already gets a unique job ID (parent id plus a rework suffix), so the missing piece is purely a browsing UI, ideally displayed as a version history per property.
+**Open questions:**
+- Blocked on confirming which of the four video-generation tiers actually support vertical/portrait output natively.
+- Two possible implementation approaches were discussed previously; neither has been decided.
 
-## Watermark removal from input photos — DONE
+---
 
-Implemented via watermark_removal.py: fal.ai object-removal endpoint, AI-driven detection with no fixed-region assumptions (since watermark position and size vary by agency), an explicit per-photo toggle rather than automatic application to every photo, and a QC-flag fallback if removal is unreliable rather than silently using a bad result.
+## 4. Human characters
 
-## Logo watermark on video — DONE
+**Open questions:**
+- None of the current four tiers are validated for realistic human characters. Would conceptually need a Kling-style model added as a fifth tier, but this hasn't been scoped beyond that observation.
 
-Bottom-right burn-in via MoviePy, already implemented.
+---
 
-## Portrait/vertical format
+## 5. Virtual furniture staging
 
-Blocked on model support, since Luma/Veo are primarily landscape. Two approaches were discussed but neither decided: use a different model with native portrait support, or post-process/letterbox the landscape output.
+**Scope:** Discussed only. No requirements, approach, or constraints defined yet.
 
-## Depth renderer for small rooms — PAUSED
+---
 
-Zero-hallucination camera movement via depth estimation and pixel reprojection (no generative model involved, so it cannot invent content not present in the original photo) — originally intended for small rooms where Lyra/Veo tend to degrade to a flat 2D zoom or hallucinate. Development reached a technical ceiling (movement too subtle, warping at hard depth edges) and has been paused, since Luma Ray 2 was confirmed via real-world testing to pragmatically solve the same underlying problem. Not integrated into the main pipeline.
+## 6. Cost report — DEPRIORITIZED
 
-## Human characters
+**Scope:**
+- Per-job cost report, grouped by job **and** by rework.
+- Dedicated login separate from the main job-creation UI.
+- Later phase: reconcile computed/estimated costs against actual invoices paid to each platform.
 
-Conceptually routed to Kling for character and motion realism. Never scoped beyond that.
+**Open questions:**
+- Invoice reconciliation format/source not yet defined.
 
-## Virtual furniture staging
+---
 
-Conceptually related to human characters — a realistically furnished, human-populated room as one combined feature. Never scoped further.
+## 7. Client logo superimposition — LOW PRIORITY
+
+**Scope — fully defined, ready to build:**
+- Position: bottom-right corner. Duration: full video. Opacity: solid.
+- Storage: one logo per agency client via `clients/{client_slug}/logo.png` + a `clients.json` manifest. MVP: manual file drop + manual JSON edit, no upload UI needed yet.
+- Job creation gets a Client dropdown populated from `clients.json`; job stores `client_slug` so reworks reuse the same logo.
+- Format validation: multi-format accepted, but any upload without an alpha channel is rejected with a clear error.
+- Compositing: single `CompositeVideoClip` addition in `video_assembly.py`'s `assemble_property_video()`.
+- Confirmed distinct from `watermark_removal.py` (removes source-site watermarks; this adds the agency's own logo).
+- Confirmed via full repo audit: no existing "client/agency" entity in the job model — this requires a new field/dropdown, not an extension of something existing. `video_editor.py`'s legacy path has its own separate logo-overlay code, not directly reusable.
+
+---
+
+## 8. HLS preview streaming — LOW PRIORITY
+
+**Scope:** Segment the preview video for faster playback start, without touching the downloadable file.
+
+**Decisions already made:**
+- Original assembled MP4 stays untouched for `/download`.
+- Only `/clip/` preview path changes to serve HLS-packaged segments.
+- One rendition is sufficient — range-streaming (already implemented) already partially addresses this.
+
+---
+
+## 9. YouTube auto-upload — LOW PRIORITY
+
+**Scope:** Discussed only. No requirements defined yet.
+
+---
+
+## Recently completed (see status.md for full detail)
+
+- **Auto maintenance scheduler** — completed and live-tested July 9, 2026. Tiered per-check frequencies via cron, real bugs fixed in the underlying 7-day job cleanup (two separate issues found and fixed), email alerting with cooldown, UI panel with editable recipient list.
+
+## Not backlog items — standing watch items (tracked in status.md, not here)
+
+- Rework edge cases that may surface in specific use cases (no confirmed repro yet).
+- Maintenance scheduler tiering behavior — pending one more log confirmation (`tail /tmp/maintenance.log`) after a paste error interrupted the last check.
