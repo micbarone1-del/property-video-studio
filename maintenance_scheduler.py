@@ -1,42 +1,52 @@
 """
 maintenance_scheduler.py
 
-Daily automated health & maintenance check for Property Video Studio.
+Tiered automatic health & maintenance checks for Property Video Studio.
 
-Run via cron (see setup command in the deployment notes) — NOT imported by
-api_server.py's request path. It writes its report to maintenance_status.json,
-which api_server.py exposes via GET /maintenance/status for the UI panel.
+Unlike a single "run everything once a day" script, each check below runs
+on its OWN interval (see CHECK_INTERVALS). This file is designed to be
+invoked FREQUENTLY (every 5 minutes, via cron — see deployment notes below),
+but each individual check only actually executes once its own interval has
+elapsed since it last ran. maintenance_last_run.json persists per-check
+timestamps so this stays correct across restarts and repeated invocations.
 
-Checks performed (all read-only, cheap — safe to run even if a job happens
-to be generating at the same time):
-  - Disk usage on the project volume
-  - fal.ai / ElevenLabs credit balance (reuses credit_monitor.get_all_credits())
-  - property-video.service systemd status
-  - Stuck jobs (status stuck in "generating"/"processing" past STUCK_JOB_MINUTES)
-  - _test_scratch/ directory size (should stay small — growth means test
-    cleanup isn't actually happening)
-  - Recent Luma→Veo / Veo-Standard→Fast fallback rate (log scan) — a spike can
-    mean an upstream fal.ai issue, not just one bad photo
-  - Confirms the existing 7-day job auto-cleanup is actually deleting what it
-    should (nothing currently checks that it *worked*, only that it *runs*)
+WHY THE OUTER TRIGGER MUST BE EXTERNAL (cron), NOT AN IN-APP BACKGROUND TASK:
+service_status is a health check on api_server.py itself. If that check
+were scheduled from WITHIN api_server.py (e.g. an asyncio background task),
+it could never detect the one failure mode that matters most — the app
+process itself crashing or hanging — because the check would die along
+with the thing it's supposed to be watching. Running this as an
+independent, cron-triggered process is what makes it a real check.
 
-Housekeeping performed:
-  - Deletes _test_scratch/ contents older than TEST_SCRATCH_MAX_AGE_DAYS
-  - Reports reclaimed disk space
+Deployment (run once):
+  apt-get install -y cron && systemctl enable cron && systemctl start cron
+  (crontab -l 2>/dev/null; echo "*/5 * * * * cd /var/www/property-video-studio && venv/bin/python3 maintenance_scheduler.py >> /tmp/maintenance.log 2>&1") | crontab -
 
-On any RED-flag check, sends one alert email to every address in
-maintenance_alert_emails.json (editable via the API / UI — see api_server.py's
-/maintenance/alert-emails endpoints), reusing the Gmail SMTP credentials
-already configured for credit_monitor.py (ALERT_EMAIL_FROM / ALERT_EMAIL_PASSWORD
-in .env). Does not touch credit_monitor.py's own existing single-recipient
-alert path — that keeps working independently for its own per-job checks.
+Checks and their intervals — see CHECK_INTERVALS below for the source of
+truth; this table is illustrative:
+  - service_status        every  5 min  — HTTP health check; outages need fast detection
+  - disk_usage             every 30 min
+  - stuck_jobs              every 30 min
+  - credits                every  1 hr  — credit_monitor already alerts directly
+                                          at job start/end; this is a backup net
+  - fallback_rate          every  1 hr
+  - test_scratch_size      every  6 hr  — low urgency
+  - cleanup_verification   every 24 hr  — the only check with a real destructive
+                                          side effect (triggers actual job deletion
+                                          via /diagnostics) — deliberately the
+                                          least frequent
 
-NOTE ON JOB SCHEMA ASSUMPTIONS: check_stuck_jobs() and check_cleanup_ran()
-assume each job directory has a job.json with "status" and
-"generation_started_at" fields, and that job-directory mtime reflects last
-activity. If the actual field names in api_server.py's job model differ,
-these two checks will just harmlessly report "none/ok" rather than error —
-adjust the field names below to match reality before trusting their output.
+On any RED-flag check (from the latest known state of ALL checks, not just
+ones that happened to run this tick), sends an alert email to every address
+in maintenance_alert_emails.json — throttled to at most one email per
+ALERT_COOLDOWN_MINUTES for an ongoing issue, so a persistent problem doesn't
+spam an email every 5 minutes.
+
+NOTE ON JOB SCHEMA ASSUMPTIONS: check_stuck_jobs() assumes each job
+directory's job.json has "status" and "generation_started_at" fields.
+If the actual field names differ, this check will just harmlessly report
+"none" rather than error — verify against real job.json content if you
+want to trust this one specifically.
 """
 
 import os
@@ -62,18 +72,32 @@ BASE_DIR          = Path(__file__).parent
 JOBS_DIR          = BASE_DIR / "jobs"
 TEST_SCRATCH_DIR  = JOBS_DIR / "_test_scratch"
 STATUS_FILE       = BASE_DIR / "maintenance_status.json"
+LAST_RUN_FILE     = BASE_DIR / "maintenance_last_run.json"
 ALERT_EMAILS_FILE = BASE_DIR / "maintenance_alert_emails.json"
 LOG_FILE          = Path("/tmp/property-video.log")  # confirmed via start.sh — screen session pipes uvicorn output here
 API_BASE          = "http://localhost:8000"
 
+# ── Per-check frequency, in minutes — the actual scheduling source of truth ──
+CHECK_INTERVALS = {
+    "service_status":       5,
+    "disk_usage":           30,
+    "stuck_jobs":            30,
+    "credits":               60,
+    "fallback_rate":         60,
+    "test_scratch_size":     360,
+    "cleanup_verification":  1440,
+}
+ALERT_COOLDOWN_MINUTES = 60  # don't re-email more than once/hour for an ongoing issue
+
 # ── Thresholds (tune as needed) ─────────────────────────────────────────────
 DISK_WARN_PCT             = 80
 DISK_RED_PCT              = 90
-STUCK_JOB_MINUTES         = 45     # a single scene generation shouldn't take this long
+STUCK_JOB_MINUTES         = 45
 TEST_SCRATCH_WARN_MB      = 500
 TEST_SCRATCH_MAX_AGE_DAYS = 3
-JOB_RETENTION_DAYS        = 7      # must match api_server.py's own cleanup window
-FALLBACK_RATE_RED         = 5      # more than N fallbacks logged looks like an upstream issue
+JOB_RETENTION_DAYS        = 7
+FALLBACK_RATE_RED         = 5
+FALLBACK_LOG_TAIL_LINES   = 5000  # bound scan cost regardless of run frequency
 
 EMAIL_FROM     = credit_monitor.EMAIL_FROM
 EMAIL_PASSWORD = credit_monitor.EMAIL_PASSWORD
@@ -93,6 +117,32 @@ def load_alert_emails() -> list:
 
 def save_alert_emails(emails: list) -> None:
     ALERT_EMAILS_FILE.write_text(json.dumps(emails, indent=2))
+
+
+# ── Per-check scheduling state ──────────────────────────────────────────────
+
+def _load_last_run() -> dict:
+    if LAST_RUN_FILE.exists():
+        try:
+            return json.loads(LAST_RUN_FILE.read_text())
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_last_run(data: dict) -> None:
+    LAST_RUN_FILE.write_text(json.dumps(data, indent=2))
+
+
+def _is_due(check_name: str, last_run: dict) -> bool:
+    last = last_run.get(check_name)
+    if not last:
+        return True  # never run before
+    interval = timedelta(minutes=CHECK_INTERVALS.get(check_name, 60))
+    try:
+        return datetime.now() - datetime.fromisoformat(last) > interval
+    except Exception:
+        return True
 
 
 # ── Individual checks ────────────────────────────────────────────────────────
@@ -172,12 +222,9 @@ def _diagnostics_headers() -> dict:
 def check_cleanup_ran() -> dict:
     """Triggers the server's REAL 7-day auto-cleanup by calling its own
     /diagnostics endpoint over HTTP — that's the only place the deletion
-    logic actually lives (inside api_server.py), so this reuses it rather
-    than re-implementing deletion in a second, separate place. Calling the
-    live endpoint also means the server's in-memory job list gets updated
-    correctly, which a standalone script deleting files directly could not
-    safely do. After triggering it, re-scans the filesystem to confirm
-    nothing past the retention window is still sitting there.
+    logic actually lives, so this reuses it rather than re-implementing
+    deletion in a second place. Re-scans the filesystem afterward to
+    confirm nothing past the retention window is still sitting there.
     """
     try:
         resp = requests.get(f"{API_BASE}/diagnostics", headers=_diagnostics_headers(), timeout=15)
@@ -210,19 +257,34 @@ def check_cleanup_ran() -> dict:
                       else "clean, nothing needed removal"}
 
 
+def _tail_lines(path: Path, n: int) -> list:
+    """Efficiently reads roughly the last n lines of a (potentially large)
+    log file, without loading the whole thing into memory."""
+    try:
+        with open(path, 'rb') as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            block = 8192
+            data = b''
+            while size > 0 and data.count(b'\n') <= n:
+                step = min(block, size)
+                size -= step
+                f.seek(size)
+                data = f.read(step) + data
+        return data.decode(errors='ignore').splitlines()[-n:]
+    except Exception:
+        return []
+
+
 def check_fallback_rate() -> dict:
     if not LOG_FILE.exists():
         return {"name": "fallback_rate", "status": "warn", "detail": "log file not found — check LOG_FILE path"}
-    count = 0
-    try:
-        with open(LOG_FILE) as f:
-            for line in f:
-                if "falling back to Veo" in line or "Luma failed" in line or "Veo Standard failed" in line:
-                    count += 1
-    except Exception as e:
-        return {"name": "fallback_rate", "status": "warn", "detail": f"could not read log: {e}"}
+    lines = _tail_lines(LOG_FILE, FALLBACK_LOG_TAIL_LINES)
+    count = sum(1 for l in lines
+                if "falling back to Veo" in l or "Luma failed" in l or "Veo Standard failed" in l)
     status = "red" if count >= FALLBACK_RATE_RED else "ok"
-    return {"name": "fallback_rate", "status": status, "detail": f"{count} fallback event(s) found in log"}
+    return {"name": "fallback_rate", "status": status,
+            "detail": f"{count} fallback event(s) in last {len(lines)} log lines scanned"}
 
 
 # ── Housekeeping ─────────────────────────────────────────────────────────────
@@ -247,7 +309,7 @@ def clean_test_scratch() -> dict:
     return {"reclaimed_mb": round(reclaimed / (1024**2), 1), "items_removed": removed}
 
 
-# ── Email ──────────────────────────────────────────────────────────────────
+# ── Email ────────────────────────────────────────────────────────────────────
 
 def send_maintenance_alert(subject: str, body_html: str) -> bool:
     recipients = load_alert_emails()
@@ -270,40 +332,90 @@ def send_maintenance_alert(subject: str, body_html: str) -> bool:
         return False
 
 
-# ── Main ─────────────────────────────────────────────────────────────────────
+def _alert_is_on_cooldown(last_run: dict) -> bool:
+    last_alert = last_run.get("_last_alert_sent")
+    if not last_alert:
+        return False
+    try:
+        return datetime.now() - datetime.fromisoformat(last_alert) < timedelta(minutes=ALERT_COOLDOWN_MINUTES)
+    except Exception:
+        return False
 
-def run_maintenance() -> dict:
-    checks = [
-        check_disk(),
-        check_credits(),
-        check_service(),
-        check_stuck_jobs(),
-        check_test_scratch(),
-        check_cleanup_ran(),
-        check_fallback_rate(),
-    ]
-    cleanup_result = clean_test_scratch()
-    any_red = any(c["status"] == "red" for c in checks)
+
+# ── Registry — check name -> function ───────────────────────────────────────
+CHECK_FUNCTIONS = {
+    "service_status":       check_service,
+    "disk_usage":           check_disk,
+    "stuck_jobs":           check_stuck_jobs,
+    "credits":              check_credits,
+    "fallback_rate":        check_fallback_rate,
+    "test_scratch_size":    check_test_scratch,
+    "cleanup_verification": check_cleanup_ran,
+}
+
+
+# ── Main entry point ─────────────────────────────────────────────────────────
+
+def run_due_checks() -> dict:
+    """Call this frequently (every 5 min via cron — see module docstring).
+    Each individual check only actually executes once its own interval has
+    elapsed. Always writes a FULL, merged status snapshot — checks that
+    weren't due this tick keep their last known result — so the UI panel
+    and any consumer of maintenance_status.json always sees a complete
+    picture, not just whatever happened to run in this particular tick.
+    """
+    last_run = _load_last_run()
+
+    prior_status = {}
+    if STATUS_FILE.exists():
+        try:
+            prior = json.loads(STATUS_FILE.read_text())
+            prior_status = {c["name"]: c for c in prior.get("checks", [])}
+        except Exception:
+            pass
+
+    results = dict(prior_status)
+    ran_this_tick = []
+
+    for name, fn in CHECK_FUNCTIONS.items():
+        if _is_due(name, last_run):
+            try:
+                results[name] = fn()
+            except Exception as e:
+                results[name] = {"name": name, "status": "warn", "detail": f"check crashed: {e}"}
+            last_run[name] = datetime.now().isoformat()
+            ran_this_tick.append(name)
+
+    cleanup_result = (prior_status.get("_cleanup_housekeeping")
+                       or {"reclaimed_mb": 0, "items_removed": 0})
+    if "test_scratch_size" in ran_this_tick:
+        cleanup_result = clean_test_scratch()
+
+    checks_list = [v for k, v in results.items() if not k.startswith("_")]
+    any_red = any(c.get("status") == "red" for c in checks_list)
 
     report = {
         "timestamp": datetime.now().isoformat(),
-        "checks": checks,
+        "checks_ran_this_tick": ran_this_tick,
+        "checks": checks_list,
         "cleanup": cleanup_result,
         "any_red": any_red,
     }
     STATUS_FILE.write_text(json.dumps(report, indent=2))
 
-    if any_red:
-        red_checks = [c for c in checks if c["status"] == "red"]
+    if any_red and not _alert_is_on_cooldown(last_run):
+        red_checks = [c for c in checks_list if c.get("status") == "red"]
         body = "<h3>Property Video Studio — Maintenance Alert</h3><ul>"
         for c in red_checks:
             body += f"<li><b>{c['name']}</b>: {c['detail']}</li>"
         body += "</ul>"
-        send_maintenance_alert("Property Video Studio — Maintenance Alert", body)
+        if send_maintenance_alert("Property Video Studio — Maintenance Alert", body):
+            last_run["_last_alert_sent"] = datetime.now().isoformat()
 
-    log.info(f"[Maintenance] Run complete. any_red={any_red}")
+    _save_last_run(last_run)
+    log.info(f"[Maintenance] Tick complete. ran={ran_this_tick} any_red={any_red}")
     return report
 
 
 if __name__ == "__main__":
-    run_maintenance()
+    run_due_checks()
