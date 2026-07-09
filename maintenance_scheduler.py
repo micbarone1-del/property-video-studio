@@ -43,13 +43,13 @@ import os
 import json
 import shutil
 import smtplib
-import subprocess
 import logging
 from datetime import datetime, timedelta
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from pathlib import Path
 
+import requests
 from dotenv import load_dotenv
 import credit_monitor
 
@@ -63,7 +63,8 @@ JOBS_DIR          = BASE_DIR / "jobs"
 TEST_SCRATCH_DIR  = JOBS_DIR / "_test_scratch"
 STATUS_FILE       = BASE_DIR / "maintenance_status.json"
 ALERT_EMAILS_FILE = BASE_DIR / "maintenance_alert_emails.json"
-LOG_FILE          = BASE_DIR / "server.log"  # adjust if the actual log path differs
+LOG_FILE          = Path("/tmp/property-video.log")  # confirmed via start.sh — screen session pipes uvicorn output here
+API_BASE          = "http://localhost:8000"
 
 # ── Thresholds (tune as needed) ─────────────────────────────────────────────
 DISK_WARN_PCT             = 80
@@ -115,16 +116,16 @@ def check_credits() -> dict:
 
 
 def check_service() -> dict:
+    """Deployment runs via a `screen` session + uvicorn (see start.sh), not a
+    systemd unit — so the real check is hitting the server's own /health
+    endpoint, the same check start.sh itself uses to confirm a successful launch."""
     try:
-        result = subprocess.run(
-            ["systemctl", "is-active", "property-video.service"],
-            capture_output=True, text=True, timeout=5
-        )
-        active = result.stdout.strip() == "active"
-        return {"name": "service_status", "status": "ok" if active else "red",
-                "detail": result.stdout.strip()}
+        resp = requests.get(f"{API_BASE}/health", timeout=5)
+        ok = resp.status_code == 200 and "ok" in resp.text
+        return {"name": "service_status", "status": "ok" if ok else "red",
+                "detail": f"HTTP {resp.status_code}: {resp.text[:80]}"}
     except Exception as e:
-        return {"name": "service_status", "status": "warn", "detail": f"check failed: {e}"}
+        return {"name": "service_status", "status": "red", "detail": f"server unreachable: {e}"}
 
 
 def check_stuck_jobs() -> dict:
@@ -163,10 +164,33 @@ def check_test_scratch() -> dict:
     return {"name": "test_scratch_size", "status": status, "detail": f"{mb} MB"}
 
 
+def _diagnostics_headers() -> dict:
+    key = os.getenv("UI_ACCESS_KEY", "").strip()
+    return {"X-Access-Key": key} if key else {}
+
+
 def check_cleanup_ran() -> dict:
-    """Confirms no job directory is older than JOB_RETENTION_DAYS (+1 day buffer)."""
+    """Triggers the server's REAL 7-day auto-cleanup by calling its own
+    /diagnostics endpoint over HTTP — that's the only place the deletion
+    logic actually lives (inside api_server.py), so this reuses it rather
+    than re-implementing deletion in a second, separate place. Calling the
+    live endpoint also means the server's in-memory job list gets updated
+    correctly, which a standalone script deleting files directly could not
+    safely do. After triggering it, re-scans the filesystem to confirm
+    nothing past the retention window is still sitting there.
+    """
+    try:
+        resp = requests.get(f"{API_BASE}/diagnostics", headers=_diagnostics_headers(), timeout=15)
+        resp.raise_for_status()
+        diag = resp.json()
+        cleaned_by_diagnostics = diag.get("cleaned_jobs", 0)
+    except Exception as e:
+        return {"name": "cleanup_verification", "status": "warn",
+                "detail": f"could not reach /diagnostics to trigger cleanup: {e}"}
+
     if not JOBS_DIR.exists():
         return {"name": "cleanup_verification", "status": "ok", "detail": "no jobs directory"}
+
     cutoff = datetime.now() - timedelta(days=JOB_RETENTION_DAYS + 1)
     stale = []
     for job_dir in JOBS_DIR.iterdir():
@@ -175,9 +199,15 @@ def check_cleanup_ran() -> dict:
         mtime = datetime.fromtimestamp(job_dir.stat().st_mtime)
         if mtime < cutoff:
             stale.append(job_dir.name)
-    return {"name": "cleanup_verification", "status": "red" if stale else "ok",
-            "detail": f"{len(stale)} job(s) past retention still present: {', '.join(stale[:5])}"
-                      if stale else "cleanup running as expected"}
+
+    if stale:
+        detail = (f"{len(stale)} job(s) still past retention after triggering cleanup "
+                  f"(diagnostics reported {cleaned_by_diagnostics} cleaned this run): "
+                  f"{', '.join(stale[:5])}{'...' if len(stale) > 5 else ''}")
+        return {"name": "cleanup_verification", "status": "red", "detail": detail}
+    return {"name": "cleanup_verification", "status": "ok",
+            "detail": f"clean — {cleaned_by_diagnostics} job(s) removed this run" if cleaned_by_diagnostics
+                      else "clean, nothing needed removal"}
 
 
 def check_fallback_rate() -> dict:
