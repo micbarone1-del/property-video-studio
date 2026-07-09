@@ -332,21 +332,26 @@ def diagnostics():
     running_jobs   = sum(1 for j in JOBS.values() if j.get("status") == "running")
 
 
-    # Auto-cleanup: remove job folders older than 7 days
+    # Auto-cleanup: remove ALL job folders (any status — done, failed, or
+    # stuck/abandoned mid-workflow) with no activity in the last 7 days.
+    # Cutoff is based on job_meta.json's own filesystem last-modified time,
+    # not the created_at field inside it — job_meta.json is rewritten by
+    # _save_job() on every meaningful state change (progress updates,
+    # narration steps, rework, etc.), so its mtime is an accurate "last
+    # touched" timestamp. This is safer than created_at for not deleting
+    # something that's old but was actually worked on recently.
     cutoff     = datetime.utcnow() - timedelta(days=7)
     cleaned    = 0
     freed_mb   = 0
     for job_dir in JOBS_DIR.iterdir():
-        if not job_dir.is_dir():
+        if not job_dir.is_dir() or job_dir.name == "_test_scratch":
             continue
         meta = job_dir / "job_meta.json"
         if not meta.exists():
             continue
         try:
-            with open(meta) as f:
-                data = json.load(f)
-            created = datetime.fromisoformat(data.get("created_at", "2000-01-01"))
-            if created < cutoff and data.get("status") in ["done", "failed"]:
+            last_activity = datetime.utcfromtimestamp(meta.stat().st_mtime)
+            if last_activity < cutoff:
                 size_mb = sum(
                     f.stat().st_size for f in job_dir.rglob("*") if f.is_file()
                 ) / (1024**2)
