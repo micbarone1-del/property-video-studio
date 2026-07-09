@@ -39,6 +39,9 @@ network access and no API key to test with):
 import os
 import json
 import anthropic
+from dotenv import load_dotenv
+
+load_dotenv()
 
 MODEL = "claude-haiku-4-5-20251001"  # cheapest current model; upgrade to
                                        # claude-sonnet-5 if extraction quality
