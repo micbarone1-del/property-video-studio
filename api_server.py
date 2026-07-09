@@ -347,10 +347,17 @@ def diagnostics():
         if not job_dir.is_dir() or job_dir.name == "_test_scratch":
             continue
         meta = job_dir / "job_meta.json"
-        if not meta.exists():
-            continue
+        # Prefer job_meta.json's own mtime (rewritten by _save_job() on
+        # every real state change). If no job_meta.json exists at all —
+        # an orphaned directory from a job creation that crashed before
+        # its first save — fall back to the directory's own mtime. Either
+        # way, no metadata + old age means it can never load into JOBS or
+        # appear in the UI regardless, so there's no reason to keep it.
         try:
-            last_activity = datetime.utcfromtimestamp(meta.stat().st_mtime)
+            if meta.exists():
+                last_activity = datetime.utcfromtimestamp(meta.stat().st_mtime)
+            else:
+                last_activity = datetime.utcfromtimestamp(job_dir.stat().st_mtime)
             if last_activity < cutoff:
                 size_mb = sum(
                     f.stat().st_size for f in job_dir.rglob("*") if f.is_file()
