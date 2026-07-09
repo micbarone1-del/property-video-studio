@@ -6,19 +6,28 @@ Items are ordered by priority. Each entry includes scope, decisions already made
 
 ---
 
-## 1. Automated URL-scraping for photo selection — HIGH PRIORITY
+## 1. Automated URL-scraping for photo selection — HIGH PRIORITY — IN PROGRESS
 
 **Scope:** Given a property listing URL, automatically scrape photos instead of requiring manual upload.
 
 **Decisions already made:**
 - Priority order for photo categories: exterior → living areas → kitchen → bedrooms → bathrooms → outdoor.
 - When scraped photos are insufficient for a category, surface the gap explicitly and require manual upload rather than silently degrading quality or skipping the scene.
+- Source sites: start with immobiliare.it, idealista.it, casa.it — plus a "request a new site" workflow for anything else (implemented — see status.md).
+- Photo categorization: prefer the site's own image captions/labels; AI vision classification (reusing existing `vision_analysis.py`) as fallback for anything unlabeled/ambiguous.
+- Narration/captions: yes, auto-generate from the scraped listing description text (not yet built — see below).
 
-**Open questions:**
-- Which source/listing sites need to be supported.
-- Should narration/captions also be auto-generated from scraped listing copy, or does the agent still write those manually even when photos are scraped?
+**Real progress (see status.md for full detail):** core extraction engine (`listing_scraper.py`) built and confirmed working end-to-end on a real immobiliare.it listing — photos, labels, categories, description, price, address all correct. Had to solve a real IP-blocking problem (immobiliare.it blocks this VPS's direct requests) by routing the fetch through the Claude API instead of a direct HTTP call.
 
-**Note:** flagged by the user as needing a full day of focused work — not a quick add.
+**Concretely remaining:**
+1. Test the same engine against a real idealista.it listing, then a real casa.it listing — need one real URL from each to validate (untested so far).
+2. Verify the image-resolution-upgrade heuristic actually finds higher-res images, not just differently-named same-size ones.
+3. Verify the "uncategorized" photo → vision-QC fallback actually works against `vision_analysis.py`'s real output schema (unverified assumption).
+4. Decide how many photos per category a real video actually needs (currently a placeholder default of 1 each).
+5. Build narration/caption auto-generation from the extracted description text — not started yet.
+6. Build the actual integration: a `/scrape-listing` API endpoint + a "paste listing URL" input in the UI, wiring the engine into real job creation.
+
+**Note:** flagged by the user as needing a full day of focused work — this session covered the core engine; the integration layer above is the remaining work.
 
 ---
 

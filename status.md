@@ -62,7 +62,30 @@ cd /var/www/property-video-studio/ && git status && git fetch origin && git log 
 
 ---
 
-## NEW — Automatic maintenance scheduler (completed July 9, 2026)
+## NEW — Automated URL-scraping for photo selection (in progress, July 9, 2026)
+
+**Module:** `listing_scraper.py` — supersedes the earlier `immobiliare_it.py` (direct BeautifulSoup scraping) and `immobiliare_it_claude.py` (single-site version), both now obsolete and candidates for deletion once this is confirmed stable.
+
+**Core mechanism:** rather than a direct HTTP request from this server, extraction happens via a Claude API call using the `web_fetch` server tool (requires `anthropic` package + `ANTHROPIC_API_KEY` in `.env`, plus the `web-fetch-2025-09-10` beta header). This is not a workaround for convenience — direct `requests.get()` calls to immobiliare.it from this VPS return a confirmed 403 (IP-based blocking, not a header/User-Agent issue — verified by testing full realistic browser headers, which made no difference, and confirming the same URL loads normally from a real residential browser). The Claude API fetch runs from Anthropic's infrastructure, not this VPS, sidestepping that block. Rough cost: ~$0.02/listing on Haiku 4.5 (web_fetch itself has no per-call fee, only token cost for fetched content).
+
+Because extraction works by Claude reading the page **semantically** rather than via hardcoded CSS/DOM selectors, one script covers all three initially-scoped sites (immobiliare.it, idealista.it, casa.it) rather than needing a separate adapter per site.
+
+**CONFIRMED WORKING (live-tested against a real client listing, July 9 2026):**
+- Fetch + extraction on immobiliare.it: 45 real photos correctly separated from floor plans/agent photos, each with its real Italian label and a sensible category (22 outdoor, 7 living, 4 bedrooms, 4 bathrooms, 3 kitchen, 2 exterior, 3 uncategorized on the test listing).
+- Description, price, and address all extracted correctly.
+
+**Watermark removal — different default than manual uploads:** scraped photos come from a public listing portal and are highly likely to carry that portal's own watermark. Unlike manually uploaded photos (where watermark removal is an opt-in toggle, since an agent's own photos usually aren't watermarked), removal is the **default, not optional**, for every scraped photo — implemented in `download_and_dewatermark()`. If removal itself fails, falls back to the raw downloaded image rather than dropping the photo, but flags this clearly (`watermark_removed: False` + an error note) so a failure doesn't silently ship a possibly-watermarked image.
+
+**NOT YET TESTED — needs real verification before trusting in production:**
+- **idealista.it and casa.it** — same code path, but zero real listings tested against either yet.
+- **Image resolution upgrade heuristic** (`try_upgrade_resolution()`) — attempts common CDN size-suffix substitutions via HEAD request (e.g. `m-c.jpg` → `xl-c.jpg`) before falling back to whatever Claude returned. This is a guess at CDN URL patterns, not a confirmed mechanism — needs checking whether it actually finds a higher-resolution image or just a different-but-same-size file.
+- **Vision-QC fallback for "uncategorized" photos** (`classify_uncategorized_photo()`) — calls the existing `vision_analysis.py`'s `analyse_input()`, assuming its return dict has a "space_type"-like field mappable to our 6 categories. This assumption has not been independently re-verified against real `analyse_input()` output this session — that function was originally built for camera-movement decisions, which may not map cleanly onto exterior/living/kitchen/bedrooms/bathrooms/outdoor.
+- **Photo-selection defaults** (`select_photos()`, how many photos per category a real video needs) — currently defaults to 1 per category as a placeholder, not a confirmed product requirement.
+
+**"Request a new site" workflow:** implemented — any URL from a domain outside `SUPPORTED_DOMAINS` gets logged to `scraper_site_requests.json` (domain + example URL + timestamp) and returns a clear "not supported yet, upload manually" response, rather than guessing at an unfamiliar site's structure.
+
+**NOT YET BUILT:** the actual integration into job creation — there's no `/scrape-listing` API endpoint yet, and no "paste a listing URL" input in `ui.html`. This session produced and tested the extraction/selection engine; wiring it into the live job-creation flow is the next layer, deliberately not started until the engine itself is confirmed solid on all three sites.
+
 
 Built in response to backlog item "Auto maintenance scheduler." Fully deployed, live-tested, and confirmed working — not just written.
 
