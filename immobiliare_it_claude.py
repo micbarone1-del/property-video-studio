@@ -37,6 +37,7 @@ network access and no API key to test with):
 """
 
 import os
+import re
 import json
 import anthropic
 from dotenv import load_dotenv
@@ -105,15 +106,25 @@ def extract_listing(url: str) -> dict:
                 raw = raw[4:].strip()
 
         if not raw:
-            # Diagnostic fallback — show exactly what block types came back,
-            # rather than just failing with an opaque JSON parse error
             block_types = [getattr(b, "type", "?") for b in response.content]
             return {"ok": False, "photos": [], "description": "", "price": None,
                     "address": None,
                     "error": f"No text content in response. stop_reason={response.stop_reason}, "
                              f"content block types={block_types}"}
 
-        data = json.loads(raw)
+        # Extract JSON wherever it appears in the text — Claude sometimes adds
+        # a friendly preface sentence before the actual JSON/code fence, so
+        # don't assume the response starts with it.
+        json_str = raw
+        fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
+        if fence_match:
+            json_str = fence_match.group(1)
+        else:
+            brace_match = re.search(r"\{.*\}", raw, re.DOTALL)
+            if brace_match:
+                json_str = brace_match.group(0)
+
+        data = json.loads(json_str)
 
 
         # sanity-check categories — anything unexpected gets bucketed as
@@ -128,7 +139,7 @@ def extract_listing(url: str) -> dict:
 
     except json.JSONDecodeError as e:
         return {"ok": False, "photos": [], "description": "", "price": None,
-                "address": None, "error": f"JSON parse failed: {e}. Raw response was: {raw[:500]}"}
+                "address": None, "error": f"JSON parse failed: {e}. Extracted text was: {json_str[:500]}"}
     except Exception as e:
         return {"ok": False, "photos": [], "description": "", "price": None,
                 "address": None, "error": str(e)}
