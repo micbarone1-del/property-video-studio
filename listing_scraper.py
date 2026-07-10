@@ -614,6 +614,25 @@ def generate_narration_and_derive_scenes(
     needed_secs = speech_secs + LEAD_SILENCE_SECS + TRAIL_SILENCE_SECS
     scene_count = math.ceil(needed_secs / SCENE_CLIP_SECS)
     scene_count = max(MIN_SCENES, min(MAX_SCENES, scene_count))
+
+    # Avoid excess trailing silence: rounding up to the next scene can leave
+    # far more than TRAIL_SILENCE_SECS of dead air if speech was only just
+    # over the previous boundary (e.g. 27.7s speech needing 30.7s total
+    # rounds all the way up to 35s, leaving 6.3s trailing instead of ~2-3s).
+    # Prefer a small trim to fit the LOWER scene count over accepting a
+    # whole wasted extra scene, as long as that still clears the min.
+    trail_would_be = (scene_count * SCENE_CLIP_SECS) - LEAD_SILENCE_SECS - speech_secs
+    excess_trail = trail_would_be - TRAIL_SILENCE_SECS
+    if excess_trail > 4.0 and (scene_count - 1) >= MIN_SCENES and audio_path:
+        lower_scene_count = scene_count - 1
+        max_speech_for_lower = (lower_scene_count * SCENE_CLIP_SECS) - LEAD_SILENCE_SECS - TRAIL_SILENCE_SECS
+        audio_path = _fade_out_and_trim(audio_path, max_speech_for_lower)
+        speech_secs = max_speech_for_lower
+        scene_count = lower_scene_count
+        was_trimmed = True
+        log.info(f"[Scraper] Trimmed {excess_trail:.1f}s to avoid excess trailing silence "
+                 f"(fit {lower_scene_count} scenes instead of {lower_scene_count + 1})")
+
     video_duration_secs = scene_count * SCENE_CLIP_SECS
 
     return {
@@ -744,6 +763,70 @@ def select_photos(photos: list, target_per_category: dict = None) -> dict:
     }
 
 
+QUALITY_RANKING_PROMPT = """You are selecting the best photo(s) of a "{category}" for a real estate video. You'll see {n} candidate photos, labeled Photo 1 through Photo {n}.
+
+Rank them from best to worst based on:
+- NO people visible in the photo — this is a significant penalty, avoid photos with people
+- Clearly shows the defining features of a {category} (e.g. a visible bed for a bedroom, sink/counter/appliances for a kitchen, toilet/shower/sink for a bathroom, a clear building facade for exterior)
+- Natural light present, well-lit rather than dark or harshly artificial
+- The room/space is shown fully and spaciously in frame, not a cramped or heavily cropped angle — a fuller, more complete view is better. This also matters practically: a fuller frame gives the AI video-generation model more real visual information to work with, which reduces the risk of it inventing or distorting details in an ambiguous or heavily-cropped area.
+
+Return ONLY a JSON array of integers, the photo numbers ordered best to worst, e.g. [3, 1, 2]. No other text.
+"""
+
+
+def rank_photos_by_quality(category: str, candidates: list, max_to_compare: int = 6) -> list:
+    """
+    Ranks candidate photos for a category by real visual quality, per the
+    agreed criteria above — replaces the previous behavior of just taking
+    whichever photo was listed first with no quality judgment at all.
+
+    Caps the comparison pool at max_to_compare (default 6) to bound cost
+    and time — for categories with many candidates (e.g. 24 outdoor
+    photos on a large villa), only the first max_to_compare are actually
+    compared. This is a deliberate cost/quality tradeoff, not exhaustive
+    optimization across every candidate.
+
+    Returns the candidates list REORDERED best-first. Falls back to the
+    original, unranked order if the vision call fails for any reason —
+    this is a quality improvement, not something that should block
+    selection if it errors.
+    """
+    if len(candidates) <= 1:
+        return candidates
+
+    pool = candidates[:max_to_compare]
+    remainder = candidates[max_to_compare:]
+
+    try:
+        import base64
+        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        content = [{"type": "text", "text": QUALITY_RANKING_PROMPT.format(category=category, n=len(pool))}]
+        for i, photo in enumerate(pool):
+            resp = requests.get(photo["url"], timeout=15)
+            resp.raise_for_status()
+            b64 = base64.b64encode(resp.content).decode("utf-8")
+            content.append({"type": "text", "text": f"Photo {i + 1}:"})
+            content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}})
+
+        response = client.messages.create(model=MODEL, max_tokens=200,
+                                             messages=[{"role": "user", "content": content}])
+        raw = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
+        order_match = re.search(r"\[[\d,\s]+\]", raw)
+        if not order_match:
+            return candidates
+        order = json.loads(order_match.group(0))
+        ranked = [pool[i - 1] for i in order if 1 <= i <= len(pool)]
+        ranked_ids = {id(p) for p in ranked}
+        for p in pool:
+            if id(p) not in ranked_ids:
+                ranked.append(p)  # safety: include anything the model's ranking missed
+        return ranked + remainder
+    except Exception as e:
+        log.warning(f"[Scraper] Quality ranking failed for {category}, using original order: {e}")
+        return candidates
+
+
 def select_photos_for_scene_count(photos: list, scene_count: int) -> dict:
     """
     Selects exactly scene_count photos across PRIORITY_ORDER categories —
@@ -766,6 +849,13 @@ def select_photos_for_scene_count(photos: list, scene_count: int) -> dict:
         cat = p.get("category")
         if cat in by_category:
             by_category[cat].append(p)
+
+    # Rank each category's candidates by real quality (no people, key room
+    # elements present, natural light, spacious framing) BEFORE selecting —
+    # only categories with more than one candidate incur the extra vision
+    # call, and rank_photos_by_quality() itself skips the work for len<=1.
+    for cat in by_category:
+        by_category[cat] = rank_photos_by_quality(cat, by_category[cat])
 
     selected = {cat: [] for cat in PRIORITY_ORDER}
     gaps = []
