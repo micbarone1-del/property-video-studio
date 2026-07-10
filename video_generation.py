@@ -30,6 +30,18 @@ from dotenv import load_dotenv
 load_dotenv()
 log = logging.getLogger(__name__)
 
+import concurrent.futures as _cf
+_FAL_SUBSCRIBE_TIMEOUT_SECS = 480
+
+def _subscribe_with_timeout(endpoint: str, arguments: dict) -> dict:
+    with _cf.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(fal_client.subscribe, endpoint, arguments=arguments)
+        try:
+            return future.result(timeout=_FAL_SUBSCRIBE_TIMEOUT_SECS)
+        except _cf.TimeoutError:
+            log.error(f"[VideoGen] fal_client.subscribe() timed out after {_FAL_SUBSCRIBE_TIMEOUT_SECS}s on {endpoint}")
+            raise TimeoutError(f"fal.ai queue stalled after {_FAL_SUBSCRIBE_TIMEOUT_SECS}s")
+
 # ── Model endpoints ────────────────────────────────────────────────────────────
 LYRA_ENDPOINT   = "fal-ai/lyra-2/zoom"
 KLING_ENDPOINT  = "fal-ai/kling-video/v2.5-turbo/pro/image-to-video"
@@ -450,9 +462,8 @@ def _generate_kling(image_url: str, prompt: str, duration: int) -> str | None:
     kling_dur = "5" if duration <= 7 else "10"
     try:
         log.info(f"[VideoGen] Kling 2.5 Turbo Pro — {kling_dur}s (requested {duration}s)")
-        result = fal_client.subscribe(
-            KLING_ENDPOINT,
-            arguments={
+        result = _subscribe_with_timeout(
+            KLING_ENDPOINT,{
                 "image_url":    image_url,
                 "prompt":       prompt,
                 "duration":     kling_dur,
@@ -489,9 +500,8 @@ def _generate_veo(image_url: str, prompt: str, duration: int) -> str | None:
     veo_dur = _snap_veo_duration(duration)
     try:
         log.info(f"[VideoGen] Veo 3.1 Fast — {veo_dur} (requested {duration}s) at 1080p")
-        result = fal_client.subscribe(
-            VEO_ENDPOINT,
-            arguments={
+        result = _subscribe_with_timeout(
+            VEO_ENDPOINT,{
                 "image_url":      image_url,
                 "prompt":         prompt,
                 "duration":       veo_dur,          # correct param name + string format
@@ -529,9 +539,8 @@ def _generate_luma(image_url: str, prompt: str, duration: int) -> str | None:
     luma_dur = _snap_luma_duration(duration)
     try:
         log.info(f"[VideoGen] Luma Ray 2 — {luma_dur} (requested {duration}s) at 1080p")
-        result = fal_client.subscribe(
-            LUMA_ENDPOINT,
-            arguments={
+        result = _subscribe_with_timeout(
+            LUMA_ENDPOINT,{
                 "image_url":  image_url,
                 "prompt":     prompt,
                 "duration":   luma_dur,
@@ -569,9 +578,8 @@ def _generate_lyra(image_url: str, prompt: str, duration: int,
     motion = _LYRA_MOTION.get(space_type, _LYRA_MOTION["large"])
     try:
         log.info(f"[VideoGen] Lyra 2.0 Eco — {duration}s space={space_type}")
-        result = fal_client.subscribe(
-            LYRA_ENDPOINT,
-            arguments={
+        result = _subscribe_with_timeout(
+            LYRA_ENDPOINT,{
                 "image_url":          image_url,
                 "prompt":             prompt,
                 "zoom_direction":     motion["zoom_direction"],
@@ -597,9 +605,8 @@ def _upscale_video(video_path: str, output_path: str) -> bool:
     try:
         log.info(f"[VideoGen] Topaz upscale: {video_path}")
         video_url = fal_client.upload_file(video_path)
-        result = fal_client.subscribe(
-            TOPAZ_ENDPOINT,
-            arguments={
+        result = _subscribe_with_timeout(
+            TOPAZ_ENDPOINT,{
                 "video_url":     video_url,
                 "scale":         2.0,
                 "model":         "Standard V2",
@@ -742,6 +749,19 @@ def generate_video_single(
                 image_data = f.read()
 
         log.info(f"[VideoGen] Image: {'cropped 85%' if model_tier=='eco' else 'full'} → uploading")
+        try:
+            from PIL import Image as _PIL_Image
+            import io as _io
+            _img = _PIL_Image.open(_io.BytesIO(image_data))
+            _w, _h = _img.size
+            if _w > 1920 or _h > 1920:
+                _img.thumbnail((1920, 1920), _PIL_Image.LANCZOS)
+                _buf = _io.BytesIO()
+                _img.save(_buf, format='JPEG', quality=92)
+                image_data = _buf.getvalue()
+                log.info(f"[VideoGen] Image resized from {_w}x{_h} to {_img.size} (max 1920x1920)")
+        except Exception as _resize_err:
+            log.warning(f"[VideoGen] Image resize failed, uploading as-is: {_resize_err}")
         image_url = _upload_bytes(image_data)
 
         # ── Route to correct model ─────────────────────────────────────────
