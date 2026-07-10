@@ -669,26 +669,31 @@ _CATEGORY_TO_SPACE_TYPE = {
 
 def build_standard_video_scenes_config(selection: dict, captions: dict, clip_duration_secs: int = 5) -> list:
     """
-    Returns a scenes_config list in PRIORITY_ORDER, one scene per category
-    that has a selected photo, ready to hand to the existing job-creation
-    pipeline. Each scene: {scene_id placeholder, caption, voiceover: "",
-    space_type, pov_movement, duration, local_image_path}.
+    Returns a scenes_config list in PRIORITY_ORDER, ONE SCENE PER SELECTED
+    PHOTO (not one scene per category — a category can have more than one
+    selected photo when scene_count > 6, e.g. exterior getting 2 photos).
+    Each scene: {caption, voiceover, space_type, pov_movement, duration,
+    local_image_path, category}.
+
+    BUG FIXED July 9 2026: this previously only ever took photos[0] per
+    category, silently dropping any additional photos a category received
+    from select_photos_for_scene_count() when scene_count > 6 — confirmed
+    via a live test where 7 photos were selected but only 6 scenes were
+    built, silently losing the second exterior photo.
     """
     scenes = []
     for category in PRIORITY_ORDER:
         photos = selection["selected"].get(category, [])
-        if not photos:
-            continue
-        photo = photos[0]
-        scenes.append({
-            "caption": captions.get(category, category),
-            "voiceover": "",  # continuous narration track applied separately, not per-scene
-            "space_type": _CATEGORY_TO_SPACE_TYPE.get(category, "large"),
-            "pov_movement": "walk_in_explore",
-            "duration": clip_duration_secs,
-            "local_image_path": photo.get("local_path"),
-            "category": category,
-        })
+        for photo in photos:
+            scenes.append({
+                "caption": captions.get(category, category),
+                "voiceover": "",  # continuous narration track applied separately, not per-scene
+                "space_type": _CATEGORY_TO_SPACE_TYPE.get(category, "large"),
+                "pov_movement": "walk_in_explore",
+                "duration": clip_duration_secs,
+                "local_image_path": photo.get("local_path"),
+                "category": category,
+            })
     return scenes
 
 
@@ -892,4 +897,33 @@ if __name__ == "__main__":
     print(f"\n--- scenes_config ready for job creation ({len(scenes_config)} scenes) ---")
     for s in scenes_config:
         print(f"  {s['category']}: {s['duration']}s, space_type={s['space_type']}, image={s['local_image_path']}")
+
+    # ── Copy artifacts to STABLE, predictable filenames for browser viewing ──
+    # Every run overwrites the same fixed names in jobs/_test_scratch/ (the
+    # project's existing test-isolation directory), rather than leaving
+    # random-named /tmp files that need fragile glob-matching in a separate
+    # shell command to find. Always accessible at:
+    #   http://<server>:8000/test-scratch/test_narration.mp3
+    #   http://<server>:8000/test-scratch/test_<category>_<NN>.jpg
+    import shutil as _shutil
+    scratch_root = BASE_DIR / "jobs" / "_test_scratch"
+    scratch_root.mkdir(parents=True, exist_ok=True)
+
+    if final_audio_path and os.path.exists(final_audio_path):
+        dest_audio = scratch_root / "test_narration.mp3"
+        _shutil.copy2(final_audio_path, dest_audio)
+        print(f"\nCopied narration to stable path: {dest_audio}")
+
+    for s in scenes_config:
+        src = s.get("local_image_path")
+        if src and os.path.exists(src):
+            dest = scratch_root / f"test_{Path(src).name}"
+            _shutil.copy2(src, dest)
+
+    print(f"\n--- Browser-viewable URLs (server must be running) ---")
+    print(f"  Narration: http://<your-server-ip>:8000/test-scratch/test_narration.mp3")
+    for s in scenes_config:
+        src = s.get("local_image_path")
+        if src:
+            print(f"  {s['category']}: http://<your-server-ip>:8000/test-scratch/test_{Path(src).name}")
 
