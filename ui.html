@@ -315,6 +315,31 @@
   </section>
 
 
+  <!-- Automated URL workflow (Phase 1: human-in-the-loop) -->
+  <section id="url-workflow-section">
+    <p class="sec-label">Automated workflow — start from a listing URL</p>
+    <div class="card">
+      <div class="row2">
+        <div>
+          <label>Listing URL</label>
+          <input type="text" id="url-workflow-input" placeholder="https://www.immobiliare.it/annunci/...">
+        </div>
+        <div>
+          <label>Property name (optional)</label>
+          <input type="text" id="url-workflow-property-name" placeholder="Lasciare vuoto per usare l'indirizzo">
+        </div>
+      </div>
+      <div style="margin-top:12px;display:flex;align-items:center;gap:12px">
+        <button class="btn-primary" onclick="startFromUrl()" id="url-workflow-btn">🔗 Avvia da URL</button>
+        <span id="url-workflow-status" style="font-size:.8rem;color:var(--muted)"></span>
+      </div>
+      <div style="font-size:.72rem;color:var(--muted);margin-top:8px">
+        Estrae foto, genera narrazione e popola le scene automaticamente. Rivedi tutto qui sotto prima di premere "Genera Video" — questo passaggio NON avvia ancora la generazione reale.
+      </div>
+    </div>
+  </section>
+
+
   <!-- Credit banner -->
   <div id="credit-banner">
     <div class="cb-head">⚠ Low Credits — action needed</div>
@@ -927,6 +952,58 @@ function showJobPreview(jobId, baseJobId, job) {
 function closeJobPreview() {
   const container = document.getElementById('job-preview-container');
   if (container) container.innerHTML = '';
+}
+
+
+// ── Automated URL workflow (Phase 1: human-in-the-loop) ─────────────────────
+async function startFromUrl() {
+  const urlInput = document.getElementById('url-workflow-input');
+  const nameInput = document.getElementById('url-workflow-property-name');
+  const statusEl = document.getElementById('url-workflow-status');
+  const btn = document.getElementById('url-workflow-btn');
+  const url = urlInput.value.trim();
+  if (!url) {
+    statusEl.textContent = 'Inserisci un URL prima di continuare.';
+    statusEl.style.color = 'var(--danger)';
+    return;
+  }
+
+  btn.disabled = true;
+  statusEl.style.color = 'var(--muted)';
+  statusEl.textContent = 'Estrazione in corso — foto, narrazione, scene (può richiedere 30-60s)...';
+
+  try {
+    const formData = new FormData();
+    formData.append('url', url);
+    if (nameInput.value.trim()) formData.append('property_name', nameInput.value.trim());
+
+    const res = await authFetch(`${API_BASE}/jobs/from-url`, { method: 'POST', body: formData });
+    const data = await res.json();
+
+    if (!res.ok) {
+      statusEl.textContent = `Errore: ${data.detail || 'richiesta fallita'}`;
+      statusEl.style.color = 'var(--danger)';
+      btn.disabled = false;
+      return;
+    }
+
+    statusEl.textContent = `✓ Creato: ${data.scene_count} scene, ${data.video_duration_secs}s — caricamento nell'editor...`;
+    statusEl.style.color = 'var(--ok)';
+
+    // Reuse the EXISTING job-loading function — same editable form every
+    // manually-created job already uses, no separate rendering path.
+    await editJob(data.job_id, data.job_id);
+
+    urlInput.value = '';
+    nameInput.value = '';
+    document.getElementById('url-workflow-section').scrollIntoView({behavior: 'smooth'});
+
+  } catch(e) {
+    statusEl.textContent = `Errore: ${e.message}`;
+    statusEl.style.color = 'var(--danger)';
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 
