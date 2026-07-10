@@ -471,7 +471,9 @@ Current narration to extend:
 
 Return ONLY the full extended narration text (no JSON, no markdown, no preamble)."""
 
-SHORTEN_PROMPT = """The narration below was measured at {actual_secs:.1f} seconds of spoken audio, but the video needs {target_secs} seconds. Shorten it to about {target_words} words, keeping the most important property details and the natural flow — don't just cut off the end abruptly.
+SHORTEN_PROMPT = """The narration below was measured at {actual_secs:.1f} seconds of spoken audio when read aloud, but the video needs {target_secs} seconds — it MUST be shorter than that, not just close to it. Rewrite it at no more than {target_words} words. This is a hard ceiling, not a target to approach — err on the side of cutting too much rather than too little, since a version that's slightly too short can be extended, but a version that's still too long will get its ending cut off mid-sentence in the final video.
+
+Keep the most important property details (location, size, standout features) and drop secondary ones first. Keep it flowing naturally — don't just truncate the end.
 
 Current narration to shorten:
 ---
@@ -516,11 +518,27 @@ def _pad_audio_with_silence(audio_path: str, extra_secs: float) -> str:
     return audio_path
 
 
+def _fade_out_and_trim(audio_path: str, target_secs: float, fade_ms: int = 800) -> str:
+    """Last-resort safety net: if the correction loop still couldn't land
+    within tolerance, trim to the target duration with a short fade-out
+    rather than leaving an uncontrolled overshoot for the video-assembly
+    step to abruptly (and audibly badly) cut off mid-sentence."""
+    from pydub import AudioSegment
+    audio = AudioSegment.from_file(audio_path)
+    target_ms = int(target_secs * 1000)
+    if len(audio) <= target_ms:
+        return audio_path
+    trimmed = audio[:target_ms].fade_out(fade_ms)
+    trimmed.export(audio_path, format="mp3")
+    return audio_path
+
+
 def generate_narration_matching_duration(
     description: str, selected_categories: list, address: str = None, price: str = None,
     target_duration_secs: float = STANDARD_VIDEO_DURATION_SECS,
     tolerance_secs: float = DURATION_TOLERANCE_SECS,
     voice_id: str = None,
+    max_correction_rounds: int = 2,
 ) -> dict:
     """
     Generates narration sized to fit a FIXED target video duration (the
@@ -528,51 +546,65 @@ def generate_narration_matching_duration(
     to it, not the other way around) — using real TTS measurement, not a
     word-count guess, to confirm the fit.
 
-    Strategy (bounded to at most 2 real TTS calls total):
-      1. Generate an initial narration text, TTS it once, measure real duration.
-      2. If too long: ask for a tighter rewrite, TTS + measure once more.
-      3. If too short: ask for an EXTENDED version using only real detail
-         from the description (no invented facts), TTS + measure once more.
-      4. Whatever gap remains after that (either direction, or if a second
-         TTS call still isn't a perfect match) gets closed with trailing
-         silence padding if short, or accepted as-is if still slightly
-         long — silence is the safe fallback, not further invention.
+    Strategy:
+      1. Generate an initial narration text, TTS it, measure real duration.
+      2. Loop up to max_correction_rounds times: if too long, ask for a
+         stricter rewrite (hard word ceiling, explicit "cut too much rather
+         than too little" instruction); if too short, ask for an EXTENDED
+         version using only real description content. Re-measure via real
+         TTS after each attempt.
+      3. If still outside tolerance after all rounds: pad with silence if
+         short (safe, invents nothing), or apply a graceful fade-out trim
+         if still long (avoids an abrupt mid-sentence cutoff — this is the
+         genuine safety net, not just accepting a mismatch).
+
+    Bounded to at most (1 + max_correction_rounds) real TTS calls — default
+    3 total — to control cost while prioritizing actually landing within
+    tolerance, since an audio track that's still too long risks getting
+    its ending cut off in the final video.
 
     Returns:
       {"ok": bool, "narration_text": str, "audio_path": str | None,
        "final_duration_secs": float | None, "captions": dict,
-       "tts_calls_used": int, "error": str | None}
+       "tts_calls_used": int, "was_trimmed": bool, "error": str | None}
     """
     base = generate_narration_from_description(description, selected_categories, address, price)
     if not base["ok"]:
         return {"ok": False, "narration_text": "", "audio_path": None,
                 "final_duration_secs": None, "captions": {}, "tts_calls_used": 0,
-                "error": f"initial narration generation failed: {base['error']}"}
+                "was_trimmed": False, "error": f"initial narration generation failed: {base['error']}"}
 
     narration_text = base["continuous_narration"]
     captions = base["captions"]
     tts_calls_used = 0
+    audio_path = None
+    actual_secs = None
 
     measurement = _measure_tts_duration(narration_text, voice_id)
     tts_calls_used += 1
     if not measurement["ok"]:
         return {"ok": False, "narration_text": narration_text, "audio_path": None,
                 "final_duration_secs": None, "captions": captions, "tts_calls_used": tts_calls_used,
-                "error": "TTS measurement failed on initial narration"}
+                "was_trimmed": False, "error": "TTS measurement failed on initial narration"}
 
     actual_secs = measurement["duration_secs"]
     audio_path = measurement["audio_path"]
-    diff = actual_secs - target_duration_secs
 
-    if abs(diff) > tolerance_secs:
-        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-        if diff > 0:
-            # too long — shrink
-            target_words = max(20, int(len(narration_text.split()) * (target_duration_secs / actual_secs)))
+    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+    for _round in range(max_correction_rounds):
+        diff = actual_secs - target_duration_secs
+        if abs(diff) <= tolerance_secs:
+            break  # within tolerance — done, no more correction needed
+
+        if diff > tolerance_secs:
+            # too long — shrink, with an explicit safety margin below the
+            # naive proportional estimate, since models tend to undershoot
+            # how much they actually cut when only given a soft target
+            naive_target_words = len(narration_text.split()) * (target_duration_secs / actual_secs)
+            target_words = max(15, int(naive_target_words * 0.85))  # 15% safety margin
             prompt = SHORTEN_PROMPT.format(actual_secs=actual_secs, target_secs=target_duration_secs,
                                             target_words=target_words, narration=narration_text)
         else:
-            # too short — extend using only real description content
             extra_words = int(abs(diff) * WORDS_PER_SECOND_ESTIMATE)
             prompt = EXTEND_PROMPT.format(actual_secs=actual_secs, target_secs=target_duration_secs,
                                            extra_words=extra_words, description=description,
@@ -581,24 +613,33 @@ def generate_narration_matching_duration(
             response = client.messages.create(model=MODEL, max_tokens=2048,
                                                  messages=[{"role": "user", "content": prompt}])
             revised = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
-            if revised:
-                # re-measure with real TTS — this is the second and final TTS call
-                remeasure = _measure_tts_duration(revised, voice_id)
-                tts_calls_used += 1
-                if remeasure["ok"]:
-                    narration_text = revised
-                    actual_secs = remeasure["duration_secs"]
-                    audio_path = remeasure["audio_path"]
-                    diff = actual_secs - target_duration_secs
+            if not revised:
+                break
+            remeasure = _measure_tts_duration(revised, voice_id)
+            tts_calls_used += 1
+            if not remeasure["ok"]:
+                break
+            narration_text = revised
+            actual_secs = remeasure["duration_secs"]
+            audio_path = remeasure["audio_path"]
         except Exception as e:
-            log.warning(f"[Scraper] Narration length-adjustment attempt failed, using original: {e}")
+            log.warning(f"[Scraper] Narration length-adjustment round failed, stopping loop: {e}")
+            break
 
-    # Final gap closure: pad with silence if still short (safe — no more
-    # invented content); accept as-is if still slightly long rather than
-    # spending a third paid TTS call chasing an exact match.
-    if diff < -tolerance_secs and audio_path:
-        audio_path = _pad_audio_with_silence(audio_path, abs(diff))
+    was_trimmed = False
+    final_diff = actual_secs - target_duration_secs
+    if final_diff < -tolerance_secs and audio_path:
+        audio_path = _pad_audio_with_silence(audio_path, abs(final_diff))
         actual_secs = target_duration_secs
+    elif final_diff > tolerance_secs and audio_path:
+        # Safety net: correction rounds didn't land it — trim with a
+        # graceful fade-out rather than leaving an uncontrolled overshoot
+        # for the video-assembly step to abruptly cut off mid-sentence.
+        audio_path = _fade_out_and_trim(audio_path, target_duration_secs)
+        actual_secs = target_duration_secs
+        was_trimmed = True
+        log.warning(f"[Scraper] Narration still {final_diff:.1f}s over target after "
+                    f"{max_correction_rounds} correction round(s) — applied fade-out trim as safety net.")
 
     return {
         "ok": True,
@@ -607,6 +648,7 @@ def generate_narration_matching_duration(
         "final_duration_secs": actual_secs,
         "captions": captions,
         "tts_calls_used": tts_calls_used,
+        "was_trimmed": was_trimmed,
         "error": None,
     }
 
@@ -767,7 +809,8 @@ if __name__ == "__main__":
     )
     if narration["ok"]:
         print(f"\nFinal narration ({narration['tts_calls_used']} TTS call(s) used, "
-              f"final duration: {narration['final_duration_secs']:.1f}s, target: 30s):\n")
+              f"final duration: {narration['final_duration_secs']:.1f}s, target: 30s"
+              f"{', TRIMMED via fade-out safety net' if narration['was_trimmed'] else ''}):\n")
         print(narration["narration_text"])
         print("\nPer-scene captions:")
         for cat, caption in narration["captions"].items():
