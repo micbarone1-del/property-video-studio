@@ -1022,6 +1022,7 @@ async function editJob(jobId, baseJobId) {
 
 
     currentJobId = baseJobId;
+    currentJobStatus = job.status || null;
     files = [];
     newlyAddedSceneIndices.clear();  // fresh job context — no new scenes yet
     durationChangedSceneIndices.clear();
@@ -1084,6 +1085,7 @@ async function editJob(jobId, baseJobId) {
     renderScenes();
     closeJobPreview();
     document.getElementById('scenes-container').scrollIntoView({behavior:'smooth'});
+    updateCostEstimate();
     const isFreshDraft = job.status === 'draft' && (!job.scenes || job.scenes.length === 0);
     showError(isFreshDraft
       ? `${scenesConfig.length} scene caricate — rivedi le scene e la narrazione, poi premi Genera Video quando sei pronto.`
@@ -1169,6 +1171,7 @@ async function authFetch(url, options = {}) {
 let files        = [];
 let pollTimer    = null;
 let currentJobId  = null;   // always the ORIGINAL job ID for rework purposes
+let currentJobStatus = null;  // 'draft' means never generated yet - charge for ALL scenes, not just rework-marked ones
 let activeJobId   = null;   // the currently polling job (may be a rework)
 let sceneAnalysis = {};
 let qcDecisions  = {};
@@ -1874,7 +1877,12 @@ async function updateCostEstimate() {
   // costing for ALL scenes even during a rework of just 1-2 of them.
   let scenesToCharge = config;
   let isRework = false;
-  if (currentJobId) {
+  if (currentJobId && currentJobStatus !== 'draft') {
+    // BUG FIXED: this branch previously ran for ANY loaded job (including
+    // a fresh draft that has never been generated), incorrectly charging
+    // nothing since a draft has no scenes "marked for rework" yet - there's
+    // nothing to mark, everything just needs generating for the first time.
+    // Now only applies to genuinely COMPLETED jobs being reworked.
     const reworkIndices = new Set();
     [...scenesCont.querySelectorAll('.rework-panel.open')].forEach(panel => {
       const i = parseInt(panel.id.replace('rw-panel-',''));
@@ -1886,11 +1894,14 @@ async function updateCostEstimate() {
       isRework = true;
       scenesToCharge = config.filter((_, i) => reworkIndices.has(i));
     } else {
-      // Existing job, nothing marked for rework — no video cost at all
+      // Existing COMPLETED job, nothing marked for rework — no video cost at all
       scenesToCharge = [];
       isRework = true;
     }
   }
+  // else: no job loaded yet, OR a fresh draft (currentJobStatus === 'draft')
+  // - charge for ALL scenes, same as a brand new manual upload, since
+  // nothing has ever been generated for this job yet.
 
 
   // Client-side cost estimate (mirrors cost_tracker.py logic)
