@@ -283,75 +283,54 @@ def resolve_uncategorized_photos(photos: list) -> list:
     return photos
 
 
-# ── Download + watermark removal for selected photos ────────────────────────
-# Scraped photos come from a public listing portal and are highly likely to
-# carry that portal's own watermark — unlike manually uploaded photos, where
-# watermark removal is an opt-in toggle (since an agent's own photos usually
-# aren't watermarked), removal is the DEFAULT here, not optional. Skipping it
-# risks shipping a client video with a competitor portal's logo burned in.
+# ── Download selected photos ──────────────────────────────────────────────
+# CHANGED July 10 2026: previously ran watermark removal eagerly during
+# scraping itself. Simplified per feedback — since scraped scenes already
+# pass through the standard scene-review UI before generation (same as
+# manual uploads), there's no need to spend fal.ai cost removing watermarks
+# during the scrape, especially if a scene gets swapped/rejected before
+# generation ever happens. Now just downloads the raw image; the existing
+# per-scene "remove_watermark" toggle (already built into the standard
+# pipeline) is pre-checked instead — see build_standard_video_scenes_config
+# — so actual removal happens at generation time via the same one existing
+# mechanism manual uploads already use, not a separate eager pass here.
 
-def download_and_dewatermark(photo_url: str, output_dir: Path, filename_stem: str) -> dict:
+def download_photo(photo_url: str, output_dir: Path, filename_stem: str) -> dict:
     """
-    Downloads one scraped photo and runs it through the existing
-    watermark_removal.py pipeline by default.
-
-    Returns:
-      {"ok": bool, "path": str | None, "watermark_removed": bool, "error": str | None}
-
-    If watermark removal itself fails, falls back to the raw downloaded
-    image rather than losing the photo entirely — but flags this clearly
-    (watermark_removed=False, error populated) so a failure doesn't silently
-    ship a possibly-watermarked image without anyone knowing.
+    Downloads one scraped photo. Returns:
+      {"ok": bool, "path": str | None, "error": str | None}
     """
-    from watermark_removal import remove_watermark
-
     output_dir.mkdir(parents=True, exist_ok=True)
-    raw_path = output_dir / f"{filename_stem}_raw.jpg"
-    clean_path = output_dir / f"{filename_stem}.jpg"
-
+    dest_path = output_dir / f"{filename_stem}.jpg"
     try:
         resp = requests.get(photo_url, timeout=20)
         resp.raise_for_status()
-        raw_path.write_bytes(resp.content)
+        dest_path.write_bytes(resp.content)
+        return {"ok": True, "path": str(dest_path), "error": None}
     except Exception as e:
-        return {"ok": False, "path": None, "watermark_removed": False,
-                "error": f"download failed: {e}"}
-
-    try:
-        wm_result = remove_watermark(str(raw_path), str(clean_path))
-        if wm_result.get("ok"):
-            return {"ok": True, "path": str(clean_path), "watermark_removed": True, "error": None}
-        log.warning(f"[Scraper] Watermark removal failed for {photo_url}: {wm_result.get('error')}")
-        return {"ok": True, "path": str(raw_path), "watermark_removed": False,
-                "error": f"watermark removal failed, using original: {wm_result.get('error')}"}
-    except Exception as e:
-        log.warning(f"[Scraper] Watermark removal crashed for {photo_url}: {e}")
-        return {"ok": True, "path": str(raw_path), "watermark_removed": False,
-                "error": f"watermark removal crashed, using original: {e}"}
+        return {"ok": False, "path": None, "error": f"download failed: {e}"}
 
 
 def download_selected_photos(selection: dict, output_dir: Path) -> dict:
     """
-    Downloads and de-watermarks every photo in a select_photos() result —
-    only the selected subset, not the full scraped list, to avoid spending
-    watermark-removal cost on photos that won't even be used.
+    Downloads every photo in a select_photos() result — only the selected
+    subset, not the full scraped list. Watermark removal is NOT done here
+    (see module note above) — it's handled at generation time via the
+    existing per-scene toggle.
 
     Returns the same {"selected": {...}, "gaps": [...]} structure, with each
-    selected photo dict augmented with "local_path" and "watermark_removed".
-    Photos that fail to download entirely are dropped and reported in a new
-    "download_failures" list rather than silently disappearing.
+    selected photo dict augmented with "local_path". Photos that fail to
+    download entirely are dropped and reported in a new "download_failures"
+    list rather than silently disappearing.
     """
     download_failures = []
     for category, photos in selection["selected"].items():
         kept = []
         for i, p in enumerate(photos):
             stem = f"{category}_{i:02d}"
-            result = download_and_dewatermark(p["url"], output_dir, stem)
+            result = download_photo(p["url"], output_dir, stem)
             if result["ok"]:
                 p["local_path"] = result["path"]
-                p["watermark_removed"] = result["watermark_removed"]
-                if result["error"]:
-                    p["watermark_removal_note"] = result["error"]
                 kept.append(p)
             else:
                 download_failures.append({"category": category, "url": p["url"], "error": result["error"]})
@@ -764,6 +743,12 @@ def build_standard_video_scenes_config(selection: dict, captions: dict, clip_dur
     from select_photos_for_scene_count() when scene_count > 6 — confirmed
     via a live test where 7 photos were selected but only 6 scenes were
     built, silently losing the second exterior photo.
+
+    CHANGED July 10 2026: "remove_watermark" is pre-set to True on every
+    scene — scraped photos almost certainly carry the source portal's
+    watermark, and this reuses the SAME existing per-scene toggle manual
+    uploads already have, rather than a separate eager removal pass during
+    scraping (see download_selected_photos).
     """
     scenes = []
     for category in PRIORITY_ORDER:
@@ -777,6 +762,7 @@ def build_standard_video_scenes_config(selection: dict, captions: dict, clip_dur
                 "duration": clip_duration_secs,
                 "local_image_path": photo.get("local_path"),
                 "category": category,
+                "remove_watermark": True,
             })
     return scenes
 
@@ -900,26 +886,36 @@ def select_photos_for_scene_count(photos: list, scene_count: int) -> dict:
     was previously just a fixed placeholder: the answer is now derived
     from how much the property's real narration actually needs to say.
 
-    FLEXIBLE CATEGORY HANDLING (added per explicit requirement — many real
-    listings skip a category entirely, e.g. no exterior shot at all, and
-    that should never block the whole workflow): if a category has zero
-    candidates, its slot is backfilled from OTHER categories that have
-    surplus photos (a 2nd bedroom, a 2nd bathroom, or worst case another
-    shot of an already-used room) rather than left as a gap. A real,
-    reported gap now only happens if there simply aren't enough USABLE
-    photos across ALL categories combined to fill scene_count — not just
-    because one specific category happens to be missing.
+    FLEXIBLE CATEGORY HANDLING: if a category has zero candidates, its slot
+    is backfilled from OTHER categories that have surplus photos rather
+    than left as a gap. A real, reported gap only happens if there simply
+    aren't enough USABLE photos across ALL categories combined.
+
+    BUG FIXED July 10 2026 — when scene_count < 6, this previously took
+    PRIORITY_ORDER[:scene_count] (the first N categories BY LIST POSITION),
+    which meant "outdoor" (last in the list) was silently excluded EVERY
+    time scene_count came in under 6 — regardless of how many good photos
+    it had. Confirmed via real testing: outdoor had 20+ strong candidates
+    and still got dropped entirely. Now drops whichever category has the
+    FEWEST available photos first, using list position only as a tiebreak
+    — availability decides what gets cut, not raw position in the list.
+
+    Also deduplicates candidates by URL before selection, as a hard
+    safeguard against the same photo ever being selected twice (confirmed
+    via testing that this happened at least once — deduplicating at the
+    source removes any possibility of it, regardless of exact cause).
 
     Returns the same {"selected": {...}, "gaps": [...]} shape as before,
-    plus "scene_count_requested" for confirmation. "gaps" is now a list of
-    plain-language shortfall descriptions, not per-category dicts, since
-    a missing category alone is no longer treated as the reportable gap.
+    plus "scene_count_requested" for confirmation.
     """
     by_category = {cat: [] for cat in PRIORITY_ORDER}
+    seen_urls = set()
     for p in photos:
         cat = p.get("category")
-        if cat in by_category:
+        url = p.get("url")
+        if cat in by_category and url not in seen_urls:
             by_category[cat].append(p)
+            seen_urls.add(url)
 
     # Rank each category's candidates by real quality (no people, key room
     # elements present, natural light, spacious framing) BEFORE selecting —
@@ -928,7 +924,18 @@ def select_photos_for_scene_count(photos: list, scene_count: int) -> dict:
     for cat in by_category:
         by_category[cat] = rank_photos_by_quality(cat, by_category[cat])
 
-    base_categories = PRIORITY_ORDER[:scene_count] if scene_count <= len(PRIORITY_ORDER) else list(PRIORITY_ORDER)
+    if scene_count >= len(PRIORITY_ORDER):
+        base_categories = list(PRIORITY_ORDER)
+    else:
+        # Drop (len(PRIORITY_ORDER) - scene_count) categories — whichever
+        # have the FEWEST available photos, using later list position only
+        # as a tiebreak when counts are equal. This is what stops a
+        # photo-rich category (e.g. outdoor) from being dropped just
+        # because of where it sits in the priority list.
+        num_to_drop = len(PRIORITY_ORDER) - scene_count
+        drop_order = sorted(PRIORITY_ORDER, key=lambda cat: (len(by_category[cat]), -PRIORITY_ORDER.index(cat)))
+        dropped = set(drop_order[:num_to_drop])
+        base_categories = [cat for cat in PRIORITY_ORDER if cat not in dropped]
 
     selected = {cat: [] for cat in PRIORITY_ORDER}
     remaining = scene_count
@@ -1038,8 +1045,7 @@ if __name__ == "__main__":
     selection = download_selected_photos(selection, test_scratch_dir)
     for cat, photos in selection["selected"].items():
         for p in photos:
-            status = "watermark removed" if p.get("watermark_removed") else f"NOT removed ({p.get('watermark_removal_note', 'unknown reason')})"
-            print(f"  {cat}: {p.get('local_path')} — {status}")
+            print(f"  {cat}: {p.get('local_path')} (watermark removal deferred to generation-time toggle)")
     if selection["download_failures"]:
         print("\n  DOWNLOAD FAILURES:")
         for f in selection["download_failures"]:

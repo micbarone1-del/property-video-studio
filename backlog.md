@@ -149,6 +149,12 @@ Items are ordered by priority. Each entry includes scope, decisions already made
 
 **Scope not yet defined — needs a look at the current progress-polling code first** to know whether this is a display bug (wrong number shown) or a genuine lack of granular status (no visibility into which scene/stage is active, elapsed real time, etc.).
 
+## 14. Duration sliders don't support Luma's actual valid durations
+
+**Problem, confirmed real July 10 2026:** manual per-scene duration sliders move in 4s/6s increments (matching Veo's valid durations), never landing on 5s or 9s — Luma's only two valid clip durations. Any manual duration set via these sliders on the Luma tier gets silently snapped/distorted by the backend, with no indication to the user that their chosen value wasn't actually used.
+
+**Scope not yet defined — needs its own look:** should the slider be dynamic based on the currently selected model tier (5s/9s steps for Luma, 4s/6s/8s for Veo), or should snapping be made visible in the UI instead of silent?
+
 ---
 
 ## Recently completed (see status.md for full detail)
