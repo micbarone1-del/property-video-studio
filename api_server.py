@@ -303,6 +303,7 @@ def serve_test_scratch(filename: str):
         ".mp4": "video/mp4", ".mov": "video/quicktime",
         ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
         ".png": "image/png", ".webp": "image/webp",
+        ".mp3": "audio/mpeg", ".wav": "audio/wav",
     }
     media_type = media_types.get(ext, "application/octet-stream")
     return FileResponse(str(test_path), media_type=media_type)

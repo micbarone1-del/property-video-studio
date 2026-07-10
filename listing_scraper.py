@@ -47,6 +47,7 @@ KNOWN OPEN ITEMS (not blockers, flagged for follow-up):
 
 import os
 import re
+import math
 import json
 import logging
 from pathlib import Path
@@ -374,97 +375,25 @@ NARRATION_PROMPT = """You are writing a short, natural-sounding Italian voiceove
 
 Property details: {address}, {price}
 
-The video will show these rooms/spaces, in this order: {categories}
+Write a single continuous narration script (in Italian) covering this property naturally and completely — warm, professional real estate tone. Do NOT target a specific word count or duration; write however much is naturally needed to cover the property's real features well, neither padded nor rushed. Should flow as ONE continuous piece, no headers, no scene labels.
 
-Write:
-1. A single continuous narration script (in Italian) for the whole video — warm, professional real estate tone, roughly 15-25 seconds of spoken audio per scene (~40-60 words per scene, so about {total_words} words total for {n_scenes} scenes). Should flow as ONE continuous piece, not separated per scene with headers or labels.
-2. A short on-screen caption (3-6 words, in Italian) for EACH scene/category listed above.
+Return ONLY the narration text (no JSON, no markdown, no preamble, no quotation marks around it).
 
-Return ONLY a JSON object (no other text, no markdown fences):
-{{
-  "continuous_narration": "...",
-  "captions": {{"category_name": "...", ...}}
-}}
-
-Base everything on the actual property description above — don't invent details not mentioned there (e.g. don't state a room count or feature that isn't in the description).
+Base everything on the actual property description above — don't invent details not mentioned there.
 """
 
+CAPTIONS_PROMPT = """Based on this property description:
+---
+{description}
+---
 
-def generate_narration_from_description(description: str, selected_categories: list,
-                                          address: str = None, price: str = None) -> dict:
-    """
-    Generates a continuous narration script + per-scene on-screen captions
-    from the scraped listing description, via the Claude API (same key as
-    extraction, plain text generation — no web_fetch tool needed here).
+Write a short on-screen caption (3-6 words, in Italian) for each of these scenes/categories: {categories}
 
-    Returns:
-      {"ok": bool, "continuous_narration": str, "captions": {category: str, ...}, "error": str | None}
-    """
-    n_scenes = max(len(selected_categories), 1)
-    prompt = NARRATION_PROMPT.format(
-        description=description,
-        address=address or "non specificato",
-        price=price or "non specificato",
-        categories=", ".join(selected_categories),
-        total_words=n_scenes * 50,
-        n_scenes=n_scenes,
-    )
-    raw = ""
-    json_str = ""
-    try:
-        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-        response = client.messages.create(
-            model=MODEL,
-            max_tokens=2048,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text_parts = [b.text for b in response.content if getattr(b, "type", None) == "text"]
-        raw = "".join(text_parts).strip()
+Return ONLY a JSON object (no other text, no markdown fences): {{"category_name": "caption", ...}}
+Base captions on the actual description — don't invent details not mentioned there.
+"""
 
-        json_str = raw
-        fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
-        if fence_match:
-            json_str = fence_match.group(1)
-        else:
-            brace_match = re.search(r"\{.*\}", raw, re.DOTALL)
-            if brace_match:
-                json_str = brace_match.group(0)
-
-        data = json.loads(json_str)
-        return {"ok": True, "continuous_narration": data.get("continuous_narration", ""),
-                "captions": data.get("captions", {}), "error": None}
-    except json.JSONDecodeError as e:
-        return {"ok": False, "continuous_narration": "", "captions": {},
-                "error": f"JSON parse failed: {e}. Extracted text was: {json_str[:500]}"}
-    except Exception as e:
-        return {"ok": False, "continuous_narration": "", "captions": {}, "error": str(e)}
-
-
-# ── Narration-length adaptation for a fixed video duration ─────────────────
-# Standard automated output: 6 scenes x 5s = 30s exactly (5s is Luma Ray 2's
-# native duration, the current default/lowest-hallucination-risk tier — 4s
-# and 6s both snap to 5s on Luma anyway, so there's no finer-grained control
-# available at the video-clip level; the video's TOTAL length is fixed, and
-# narration adapts to fit it, not the other way around).
-#
-# Uses REAL TTS measurement (not a word-count guess) to confirm actual fit,
-# matching this project's existing narration-first philosophy. Bounded to
-# at most 2 real TTS calls to control cost — accepts the closest result
-# after that rather than looping indefinitely.
-
-STANDARD_VIDEO_DURATION_SECS = 30  # 6 scenes x 5s
-LEAD_SILENCE_SECS = 1.0    # video starts, THEN narration begins — hard requirement, not optional
-TRAIL_SILENCE_SECS = 2.0   # narration MUST end at least this long before the video ends — HARD MINIMUM,
-                            # not a soft tolerance. Overflow past this is never acceptable; running
-                            # shorter (more trailing silence) is always fine — asymmetric by design.
-MAX_SPEECH_SECS = STANDARD_VIDEO_DURATION_SECS - LEAD_SILENCE_SECS - TRAIL_SILENCE_SECS  # 27.0s hard ceiling
-SAFETY_MARGIN_SECS = 2.0   # target comfortably under the ceiling, not right at the edge
-TARGET_SPEECH_SECS = MAX_SPEECH_SECS - SAFETY_MARGIN_SECS  # 25.0s — what we actually aim for
-MIN_SPEECH_SECS = 15.0     # below this, extend with real content rather than just padding dead silence
-WORDS_PER_SECOND_ESTIMATE = 2.3    # rough Italian speaking-pace estimate for the FIRST draft only —
-                                     # every subsequent decision uses real measured TTS duration, not this guess
-
-EXTEND_PROMPT = """The narration below was measured at {actual_secs:.1f} seconds of spoken audio, but the video needs {target_secs} seconds. Extend it by about {extra_words} more words, using ONLY additional real detail from the original property description below — do not invent any facts, features, or details not present in the description.
+EXTEND_PROMPT = """The narration below was measured at {actual_secs:.1f} seconds of spoken audio, but should be closer to {target_secs:.0f} seconds. Extend it by about {extra_words} more words, using ONLY additional real detail from the original property description below — do not invent any facts, features, or details not present in the description.
 
 Original property description:
 ---
@@ -478,9 +407,9 @@ Current narration to extend:
 
 Return ONLY the full extended narration text (no JSON, no markdown, no preamble)."""
 
-SHORTEN_PROMPT = """The narration below was measured at {actual_secs:.1f} seconds of spoken audio when read aloud, but the video needs {target_secs} seconds — it MUST be shorter than that, not just close to it. Rewrite it at no more than {target_words} words. This is a hard ceiling, not a target to approach — err on the side of cutting too much rather than too little, since a version that's slightly too short can be extended, but a version that's still too long will get its ending cut off mid-sentence in the final video.
+SHORTEN_PROMPT = """The narration below was measured at {actual_secs:.1f} seconds of spoken audio, but needs to fit within {target_secs:.0f} seconds — it MUST be shorter than that, not just close to it. Rewrite it at no more than {target_words} words. This is a hard ceiling — err on the side of cutting too much rather than too little.
 
-Keep the most important property details (location, size, standout features) and drop secondary ones first. Keep it flowing naturally — don't just truncate the end.
+Keep the most important property details (location, size, standout features) and drop secondary ones first. Keep it flowing naturally.
 
 Current narration to shorten:
 ---
@@ -493,7 +422,9 @@ Return ONLY the shortened narration text (no JSON, no markdown, no preamble)."""
 def _measure_tts_duration(text: str, voice_id: str = None) -> dict:
     """Generates real TTS audio and measures its actual duration — the
     only reliable way to know how long narration text will actually take
-    to speak, per this project's existing narration-first approach."""
+    to speak. Never estimated from word/character count for any decision
+    that matters — every scene-count and fit decision below is made from
+    this real measurement, not a guess."""
     import tempfile
     from voice_generation import generate_speech
     from pydub import AudioSegment
@@ -509,15 +440,12 @@ def _measure_tts_duration(text: str, voice_id: str = None) -> dict:
     except Exception as e:
         log.error(f"[Scraper] TTS measurement failed: {e}")
         return {"ok": False, "duration_secs": None, "audio_path": None, "error": str(e)}
-    finally:
-        pass  # caller is responsible for cleaning up audio_path if returned
 
 
 def _fade_out_and_trim(audio_path: str, target_secs: float, fade_ms: int = 800) -> str:
-    """Last-resort safety net: if the correction loop still couldn't land
-    within tolerance, trim to the target duration with a short fade-out
-    rather than leaving an uncontrolled overshoot for the video-assembly
-    step to abruptly (and audibly badly) cut off mid-sentence."""
+    """Last-resort safety net only — trims with a graceful fade-out rather
+    than an abrupt cutoff, if narration still exceeds the absolute max
+    scene count even after one tightening pass."""
     from pydub import AudioSegment
     audio = AudioSegment.from_file(audio_path)
     target_ms = int(target_secs * 1000)
@@ -528,129 +456,197 @@ def _fade_out_and_trim(audio_path: str, target_secs: float, fade_ms: int = 800) 
     return audio_path
 
 
-def generate_narration_matching_duration(
-    description: str, selected_categories: list, address: str = None, price: str = None,
-    target_video_secs: float = STANDARD_VIDEO_DURATION_SECS,
-    voice_id: str = None,
-    max_correction_rounds: int = 3,
+def generate_captions_for_categories(description: str, categories: list) -> dict:
+    """Generates short on-screen captions for exactly the given categories —
+    called AFTER scene count/category selection is known (see
+    generate_narration_and_derive_scenes), not before, since which
+    categories end up selected depends on the real narration length."""
+    prompt = CAPTIONS_PROMPT.format(description=description, categories=", ".join(categories))
+    try:
+        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        response = client.messages.create(model=MODEL, max_tokens=1024,
+                                             messages=[{"role": "user", "content": prompt}])
+        raw = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
+        json_str = raw
+        fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
+        if fence_match:
+            json_str = fence_match.group(1)
+        else:
+            brace_match = re.search(r"\{.*\}", raw, re.DOTALL)
+            if brace_match:
+                json_str = brace_match.group(0)
+        return json.loads(json_str)
+    except Exception as e:
+        log.warning(f"[Scraper] Caption generation failed, using category names as fallback: {e}")
+        return {cat: cat for cat in categories}
+
+
+# ── Narration-first scene count derivation ──────────────────────────────────
+# Redesigned July 9 2026 per explicit guidance: do NOT estimate timing from
+# word/character count and force-fit narration into a pre-fixed video
+# length. Instead — write one natural narration, measure it ONCE with real
+# TTS, then DERIVE how many fixed-length scenes the video needs to contain
+# it. This is simpler, cheaper (usually just 1 TTS call, at most 2), and
+# avoids ever needing to awkwardly trim or pad narration to fit an
+# arbitrary pre-decided box.
+
+SCENE_CLIP_SECS = 5        # Luma Ray 2's native duration — zero snapping distortion
+LEAD_SILENCE_SECS = 1.0    # video starts, THEN narration begins — hard requirement
+TRAIL_SILENCE_SECS = 2.0   # narration MUST end at least this long before the video ends — hard minimum
+MIN_SCENES = 5             # 25s — tightened from an earlier 4-8 range per explicit requirement to
+MAX_SCENES = 7             # 35s — stay "roughly 30s", not drift as wide as 20-40s
+TARGET_SCENES = 6          # 30s — the anchor; derived scene count should land here in the common case
+MIN_SPEECH_SECS_FOR_RANGE = (MIN_SCENES * SCENE_CLIP_SECS) - LEAD_SILENCE_SECS - TRAIL_SILENCE_SECS  # 22s
+MAX_SPEECH_SECS_FOR_RANGE = (MAX_SCENES * SCENE_CLIP_SECS) - LEAD_SILENCE_SECS - TRAIL_SILENCE_SECS  # 32s
+
+
+def generate_narration_and_derive_scenes(
+    description: str, address: str = None, price: str = None, voice_id: str = None,
 ) -> dict:
     """
-    Generates narration for a FIXED video duration, with HARD structural
-    requirements — not a soft tolerance:
-      - Video starts, then 1s of silence, THEN narration begins.
-      - Narration must end at least 2s before the video ends — ALWAYS.
-        Overflowing this is never acceptable, no matter how close.
-      - Running SHORTER is always fine — more trailing silence is
-        preferred over any risk of narration overflowing into a still
-        image or getting cut off. Asymmetric by design.
+    Writes ONE natural narration (no artificial length target), measures
+    it ONCE with real TTS, then derives how many fixed SCENE_CLIP_SECS
+    scenes the video needs (narration + lead + trail silence, rounded up).
 
-    The max allowed spoken-narration duration (MAX_SPEECH_SECS) is a hard
-    ceiling, not a target to approach — correction always triggers if
-    exceeded, with zero tolerance for overflow. Correction on the "too
-    short" side is much more lenient, since extra silence is an acceptable
-    outcome, not a failure.
+    Keeps the result within a tightened band around 30s (MIN_SCENES=5 to
+    MAX_SCENES=7, i.e. 25-35s) rather than letting it drift freely — if the
+    natural narration falls outside MIN_SPEECH_SECS_FOR_RANGE /
+    MAX_SPEECH_SECS_FOR_RANGE, ONE correction pass is made (shorten if too
+    long, extend with real description content if too short), then
+    re-measured. This is symmetric: too-long and too-short are both
+    actively corrected toward the band, not just clamped afterward — a
+    silent clamp-only approach could otherwise leave several scenes near
+    the end playing with no narration if a listing's real content happens
+    to be sparse.
 
-    Returns a COMPLETE audio track already containing lead silence +
-    narration + trailing silence, padded to exactly target_video_secs —
-    ready to overlay directly onto the video, not just the bare narration.
+    Bounded to at most 2 real TTS calls (1 initial + 1 correction pass). A
+    fade-out trim remains as an absolute last-resort safety net if a
+    single shorten pass still isn't enough.
 
     Returns:
-      {"ok": bool, "narration_text": str, "audio_path": str | None,
-       "speech_duration_secs": float | None, "captions": dict,
+      {"ok": bool, "narration_text": str, "audio_path": str | None (bare
+       narration, NOT yet padded with lead/trail — see
+       build_final_audio_track), "speech_duration_secs": float | None,
+       "scene_count": int | None, "video_duration_secs": int | None,
        "tts_calls_used": int, "was_trimmed": bool, "error": str | None}
     """
-    base = generate_narration_from_description(description, selected_categories, address, price)
-    if not base["ok"]:
-        return {"ok": False, "narration_text": "", "audio_path": None,
-                "speech_duration_secs": None, "captions": {}, "tts_calls_used": 0,
-                "was_trimmed": False, "error": f"initial narration generation failed: {base['error']}"}
+    prompt = NARRATION_PROMPT.format(description=description, address=address or "non specificato",
+                                       price=price or "non specificato")
+    try:
+        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        response = client.messages.create(model=MODEL, max_tokens=2048,
+                                             messages=[{"role": "user", "content": prompt}])
+        narration_text = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
+    except Exception as e:
+        return {"ok": False, "narration_text": "", "audio_path": None, "speech_duration_secs": None,
+                "scene_count": None, "video_duration_secs": None, "tts_calls_used": 0,
+                "was_trimmed": False, "error": f"initial narration generation failed: {e}"}
 
-    narration_text = base["continuous_narration"]
-    captions = base["captions"]
-    tts_calls_used = 0
+    if not narration_text:
+        return {"ok": False, "narration_text": "", "audio_path": None, "speech_duration_secs": None,
+                "scene_count": None, "video_duration_secs": None, "tts_calls_used": 0,
+                "was_trimmed": False, "error": "empty narration returned"}
 
     measurement = _measure_tts_duration(narration_text, voice_id)
-    tts_calls_used += 1
+    tts_calls_used = 1
     if not measurement["ok"]:
         return {"ok": False, "narration_text": narration_text, "audio_path": None,
-                "speech_duration_secs": None, "captions": captions, "tts_calls_used": tts_calls_used,
-                "was_trimmed": False, "error": "TTS measurement failed on initial narration"}
+                "speech_duration_secs": None, "scene_count": None, "video_duration_secs": None,
+                "tts_calls_used": tts_calls_used, "was_trimmed": False,
+                "error": "TTS measurement failed on initial narration"}
 
-    actual_secs = measurement["duration_secs"]
+    speech_secs = measurement["duration_secs"]
     audio_path = measurement["audio_path"]
-
-    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-    for _round in range(max_correction_rounds):
-        # HARD ceiling check — zero tolerance for overflow. Being under
-        # MAX_SPEECH_SECS is always acceptable, however far under.
-        if actual_secs > MAX_SPEECH_SECS:
-            naive_target_words = len(narration_text.split()) * (TARGET_SPEECH_SECS / actual_secs)
-            target_words = max(15, int(naive_target_words * 0.85))  # extra safety margin below even the naive estimate
-            prompt = SHORTEN_PROMPT.format(actual_secs=actual_secs, target_secs=MAX_SPEECH_SECS,
-                                            target_words=target_words, narration=narration_text)
-        elif actual_secs < MIN_SPEECH_SECS:
-            extra_words = int((TARGET_SPEECH_SECS - actual_secs) * WORDS_PER_SECOND_ESTIMATE)
-            prompt = EXTEND_PROMPT.format(actual_secs=actual_secs, target_secs=TARGET_SPEECH_SECS,
-                                           extra_words=extra_words, description=description,
-                                           narration=narration_text)
-        else:
-            break  # under the hard ceiling and not too sparse — acceptable, done
-
-        try:
-            response = client.messages.create(model=MODEL, max_tokens=2048,
-                                                 messages=[{"role": "user", "content": prompt}])
-            revised = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
-            if not revised:
-                break
-            remeasure = _measure_tts_duration(revised, voice_id)
-            tts_calls_used += 1
-            if not remeasure["ok"]:
-                break
-            narration_text = revised
-            actual_secs = remeasure["duration_secs"]
-            audio_path = remeasure["audio_path"]
-        except Exception as e:
-            log.warning(f"[Scraper] Narration length-adjustment round failed, stopping loop: {e}")
-            break
-
     was_trimmed = False
-    if actual_secs > MAX_SPEECH_SECS and audio_path:
-        # Absolute safety net — correction rounds still didn't get it under
-        # the hard ceiling. Never acceptable to leave as-is: trim with a
-        # graceful fade-out rather than risk ANY overflow past the ceiling.
-        audio_path = _fade_out_and_trim(audio_path, MAX_SPEECH_SECS)
-        actual_secs = MAX_SPEECH_SECS
-        was_trimmed = True
-        log.warning(f"[Scraper] Narration still over the {MAX_SPEECH_SECS}s hard ceiling after "
-                    f"{max_correction_rounds} correction round(s) — applied fade-out trim as safety net.")
 
-    # Build the COMPLETE audio track: lead silence + narration + trailing
-    # silence, padded to exactly target_video_secs. This guarantees the
-    # structural requirement (1s lead, >=2s trail) regardless of exactly
-    # how long the narration ended up within its allowed range.
-    final_audio_path = None
-    if audio_path:
-        from pydub import AudioSegment
-        narration_audio = AudioSegment.from_file(audio_path)
-        lead_silence = AudioSegment.silent(duration=int(LEAD_SILENCE_SECS * 1000))
-        track_so_far_ms = len(lead_silence) + len(narration_audio)
-        target_ms = int(target_video_secs * 1000)
-        trail_ms = max(int(TRAIL_SILENCE_SECS * 1000), target_ms - track_so_far_ms)
-        trail_silence = AudioSegment.silent(duration=trail_ms)
-        full_track = lead_silence + narration_audio + trail_silence
-        final_audio_path = audio_path.replace(".mp3", "_full_track.mp3")
-        full_track.export(final_audio_path, format="mp3")
+    # Single correction pass if outside the tightened band — symmetric:
+    # both directions are actively corrected, not just clamped.
+    if speech_secs > MAX_SPEECH_SECS_FOR_RANGE:
+        target_speech = MAX_SPEECH_SECS_FOR_RANGE - 2.0  # margin under the ceiling, not right at the edge
+        naive_target_words = len(narration_text.split()) * (target_speech / speech_secs)
+        target_words = max(15, int(naive_target_words * 0.85))  # models tend to undershoot cuts
+        try:
+            shorten_prompt = SHORTEN_PROMPT.format(actual_secs=speech_secs, target_secs=target_speech,
+                                                     target_words=target_words, narration=narration_text)
+            response = client.messages.create(model=MODEL, max_tokens=2048,
+                                                 messages=[{"role": "user", "content": shorten_prompt}])
+            revised = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
+            if revised:
+                remeasure = _measure_tts_duration(revised, voice_id)
+                tts_calls_used += 1
+                if remeasure["ok"]:
+                    narration_text, speech_secs, audio_path = revised, remeasure["duration_secs"], remeasure["audio_path"]
+        except Exception as e:
+            log.warning(f"[Scraper] Shorten pass failed, proceeding as-is: {e}")
+
+        if speech_secs > MAX_SPEECH_SECS_FOR_RANGE and audio_path:
+            # still over after one pass — hard cap and fade-trim rather
+            # than build an ever-longer video
+            audio_path = _fade_out_and_trim(audio_path, MAX_SPEECH_SECS_FOR_RANGE)
+            speech_secs = MAX_SPEECH_SECS_FOR_RANGE
+            was_trimmed = True
+
+    elif speech_secs < MIN_SPEECH_SECS_FOR_RANGE:
+        target_speech = MIN_SPEECH_SECS_FOR_RANGE + 3.0  # margin above the floor
+        extra_words = int((target_speech - speech_secs) * WORDS_PER_SECOND_ESTIMATE)
+        try:
+            extend_prompt = EXTEND_PROMPT.format(actual_secs=speech_secs, target_secs=target_speech,
+                                                   extra_words=extra_words, description=description,
+                                                   narration=narration_text)
+            response = client.messages.create(model=MODEL, max_tokens=2048,
+                                                 messages=[{"role": "user", "content": extend_prompt}])
+            revised = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
+            if revised:
+                remeasure = _measure_tts_duration(revised, voice_id)
+                tts_calls_used += 1
+                if remeasure["ok"]:
+                    narration_text, speech_secs, audio_path = revised, remeasure["duration_secs"], remeasure["audio_path"]
+        except Exception as e:
+            log.warning(f"[Scraper] Extend pass failed, proceeding as-is "
+                        f"(may result in a shorter-than-usual video — acceptable if the listing "
+                        f"genuinely has little content, not silently forced): {e}")
+        # NOTE: if still short after one extend attempt (e.g. genuinely
+        # sparse listing), we deliberately do NOT loop further or invent
+        # content — scene_count will just land at MIN_SCENES with a bit
+        # more trailing silence than usual, which is preferable to padding
+        # with unsupported claims.
+
+    needed_secs = speech_secs + LEAD_SILENCE_SECS + TRAIL_SILENCE_SECS
+    scene_count = math.ceil(needed_secs / SCENE_CLIP_SECS)
+    scene_count = max(MIN_SCENES, min(MAX_SCENES, scene_count))
+    video_duration_secs = scene_count * SCENE_CLIP_SECS
 
     return {
         "ok": True,
         "narration_text": narration_text,
-        "audio_path": final_audio_path,
-        "speech_duration_secs": actual_secs,
-        "captions": captions,
+        "audio_path": audio_path,
+        "speech_duration_secs": speech_secs,
+        "scene_count": scene_count,
+        "video_duration_secs": video_duration_secs,
         "tts_calls_used": tts_calls_used,
         "was_trimmed": was_trimmed,
         "error": None,
     }
+
+
+
+def build_final_audio_track(audio_path: str, video_duration_secs: int) -> str:
+    """Builds the COMPLETE audio track: lead silence + narration + trailing
+    silence, padded to exactly video_duration_secs — ready to overlay
+    directly onto the video. Called once scene_count (and therefore real
+    video_duration_secs) is known."""
+    from pydub import AudioSegment
+    narration_audio = AudioSegment.from_file(audio_path)
+    lead_silence = AudioSegment.silent(duration=int(LEAD_SILENCE_SECS * 1000))
+    track_so_far_ms = len(lead_silence) + len(narration_audio)
+    target_ms = int(video_duration_secs * 1000)
+    trail_ms = max(int(TRAIL_SILENCE_SECS * 1000), target_ms - track_so_far_ms)
+    trail_silence = AudioSegment.silent(duration=trail_ms)
+    full_track = lead_silence + narration_audio + trail_silence
+    final_path = audio_path.replace(".mp3", "_full_track.mp3")
+    full_track.export(final_path, format="mp3")
+    return final_path
+
 
 
 # ── Build scenes_config for the standard automated video ───────────────────
@@ -743,6 +739,69 @@ def select_photos(photos: list, target_per_category: dict = None) -> dict:
     }
 
 
+def select_photos_for_scene_count(photos: list, scene_count: int) -> dict:
+    """
+    Selects exactly scene_count photos across PRIORITY_ORDER categories —
+    this is what answers the "how many photos per category" question that
+    was previously just a fixed placeholder: the answer is now derived
+    from how much the property's real narration actually needs to say.
+
+      - scene_count <= 6 (number of categories): takes the first
+        scene_count categories in priority order, one photo each — drops
+        the lowest-priority remaining categories entirely for this video.
+      - scene_count > 6: takes one photo from every category first, then
+        gives ADDITIONAL photos to the highest-priority categories that
+        have more available, in priority order, until scene_count is met.
+
+    Returns the same {"selected": {...}, "gaps": [...]} shape as
+    select_photos(), plus "scene_count_requested" for confirmation.
+    """
+    by_category = {cat: [] for cat in PRIORITY_ORDER}
+    for p in photos:
+        cat = p.get("category")
+        if cat in by_category:
+            by_category[cat].append(p)
+
+    selected = {cat: [] for cat in PRIORITY_ORDER}
+    gaps = []
+    remaining = scene_count
+
+    if scene_count <= len(PRIORITY_ORDER):
+        for cat in PRIORITY_ORDER[:scene_count]:
+            if by_category[cat]:
+                selected[cat] = by_category[cat][:1]
+                remaining -= 1
+            else:
+                gaps.append({"category": cat, "wanted": 1, "found": 0})
+    else:
+        for cat in PRIORITY_ORDER:
+            if by_category[cat]:
+                selected[cat] = by_category[cat][:1]
+                remaining -= 1
+            else:
+                gaps.append({"category": cat, "wanted": 1, "found": 0})
+        while remaining > 0:
+            progress = False
+            for cat in PRIORITY_ORDER:
+                if remaining <= 0:
+                    break
+                already = len(selected[cat])
+                available = by_category[cat]
+                if len(available) > already:
+                    selected[cat].append(available[already])
+                    remaining -= 1
+                    progress = True
+            if not progress:
+                break  # no more photos available anywhere to fill remaining slots
+
+    return {
+        "selected": {cat: photos_list for cat, photos_list in selected.items() if photos_list},
+        "gaps": gaps,
+        "total_selected": sum(len(v) for v in selected.values()),
+        "scene_count_requested": scene_count,
+    }
+
+
 if __name__ == "__main__":
     import sys
     if len(sys.argv) < 2:
@@ -775,8 +834,28 @@ if __name__ == "__main__":
     for cat, count in by_cat.items():
         print(f"  {cat}: {count}")
 
-    print("\n--- Photo selection (default: 1 per category) ---")
-    selection = select_photos(result["photos"])
+    print(f"\nDescription: {result['description'][:100]}...")
+    print(f"Price: {result['price']}")
+    print(f"Address: {result['address']}")
+
+    # NEW ORDER: narration is generated and measured FIRST — scene count
+    # (and therefore how many photos to select) is DERIVED from the real
+    # measured narration length, not decided upfront.
+    print("\n--- Generating natural narration and measuring real TTS duration ---")
+    narration = generate_narration_and_derive_scenes(result["description"], result["address"], result["price"])
+    if not narration["ok"]:
+        print(f"NARRATION GENERATION FAILED: {narration['error']}")
+        sys.exit(1)
+
+    print(f"\nNarration ({narration['tts_calls_used']} TTS call(s) used, "
+          f"speech duration: {narration['speech_duration_secs']:.1f}s"
+          f"{', TRIMMED via fade-out safety net' if narration['was_trimmed'] else ''}):\n")
+    print(narration["narration_text"])
+    print(f"\n--> Derived scene count: {narration['scene_count']} scenes x {SCENE_CLIP_SECS}s "
+          f"= {narration['video_duration_secs']}s video")
+
+    print(f"\n--- Selecting {narration['scene_count']} photos across categories (priority order) ---")
+    selection = select_photos_for_scene_count(result["photos"], narration["scene_count"])
     for cat, photos in selection["selected"].items():
         print(f"  {cat}: {len(photos)} selected")
     if selection["gaps"]:
@@ -798,32 +877,19 @@ if __name__ == "__main__":
         for f in selection["download_failures"]:
             print(f"    {f['category']}: {f['error']}")
 
-    print(f"\nDescription: {result['description'][:100]}...")
-    print(f"Price: {result['price']}")
-    print(f"Address: {result['address']}")
-
-    print("\n--- Generating narration matched to standard 30s video (6 scenes x 5s) ---")
+    print("\n--- Generating on-screen captions for selected categories ---")
     selected_categories = [cat for cat, photos in selection["selected"].items() if photos]
-    narration = generate_narration_matching_duration(
-        result["description"], selected_categories, result["address"], result["price"]
-    )
-    if narration["ok"]:
-        print(f"\nFinal narration ({narration['tts_calls_used']} TTS call(s) used, "
-              f"speech duration: {narration['speech_duration_secs']:.1f}s, hard ceiling: {MAX_SPEECH_SECS}s"
-              f"{', TRIMMED via fade-out safety net' if narration['was_trimmed'] else ''}):\n")
-        print(narration["narration_text"])
-        print("\nPer-scene captions:")
-        for cat, caption in narration["captions"].items():
-            print(f"  {cat}: {caption}")
-        if narration["audio_path"]:
-            print(f"\nFull audio track (1s lead silence + narration + trailing silence, "
-                  f"exactly 30s total): {narration['audio_path']}")
-            print("Listen to this one — it's the exact track that would overlay onto the video.")
+    captions = generate_captions_for_categories(result["description"], selected_categories)
+    for cat, caption in captions.items():
+        print(f"  {cat}: {caption}")
 
-        scenes_config = build_standard_video_scenes_config(selection, narration["captions"])
-        print(f"\n--- scenes_config ready for job creation ({len(scenes_config)} scenes) ---")
-        for s in scenes_config:
-            print(f"  {s['category']}: {s['duration']}s, space_type={s['space_type']}, image={s['local_image_path']}")
-    else:
-        print(f"NARRATION GENERATION FAILED: {narration['error']}")
+    print("\n--- Building final audio track (lead silence + narration + trailing silence) ---")
+    final_audio_path = build_final_audio_track(narration["audio_path"], narration["video_duration_secs"])
+    print(f"Full audio track, exactly {narration['video_duration_secs']}s total: {final_audio_path}")
+    print("Listen to this one — it's the exact track that would overlay onto the video.")
+
+    scenes_config = build_standard_video_scenes_config(selection, captions, clip_duration_secs=SCENE_CLIP_SECS)
+    print(f"\n--- scenes_config ready for job creation ({len(scenes_config)} scenes) ---")
+    for s in scenes_config:
+        print(f"  {s['category']}: {s['duration']}s, space_type={s['space_type']}, image={s['local_image_path']}")
 
