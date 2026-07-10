@@ -1323,7 +1323,33 @@ function addMoreScenes(input) {
 
 function removeScene(i) {
   files.splice(i, 1);
-  delete sceneAnalysis[i];
+  // BUG FIXED: previously only deleted index i's data without shifting
+  // subsequent scenes' data down, so scene i+1's caption/settings stayed
+  // "stuck" under label i+1 even after its photo moved to slot i. Now
+  // properly reindexes every index-keyed structure after a removal.
+  const reindex = (obj) => {
+    const rebuilt = {};
+    Object.keys(obj).map(Number).sort((a, b) => a - b).forEach(idx => {
+      if (idx < i) rebuilt[idx] = obj[idx];
+      else if (idx > i) rebuilt[idx - 1] = obj[idx];
+      // idx === i is dropped - that scene was just removed
+    });
+    Object.keys(obj).forEach(k => delete obj[k]);
+    Object.assign(obj, rebuilt);
+  };
+  reindex(sceneUserData);
+  reindex(sceneAnalysis);
+  const reindexSet = (s) => {
+    const shifted = new Set();
+    s.forEach(idx => {
+      if (idx < i) shifted.add(idx);
+      else if (idx > i) shifted.add(idx - 1);
+    });
+    s.clear();
+    shifted.forEach(idx => s.add(idx));
+  };
+  if (typeof newlyAddedSceneIndices !== 'undefined') reindexSet(newlyAddedSceneIndices);
+  if (typeof durationChangedSceneIndices !== 'undefined') reindexSet(durationChangedSceneIndices);
   renderScenes();
   updateCostEstimate();
 }
