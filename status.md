@@ -168,6 +168,38 @@ Combined, these two fixes cleared **34 stale/orphaned job directories** in produ
 
 ---
 
+## July 10, 2026 — Automated URL workflow + generation bug fixes (batch update)
+
+**Root cause of "stuck at scene 0" found and fixed:** `fal_client.subscribe()` had no timeout on any of its 8 calls in `video_generation.py`. Confirmed via standalone `test_luma.py` run (7m34s wall clock, 5.6s CPU — pure network wait with no escape path). Also confirmed from fal.ai dashboard that some requests were failing instantly with 422 errors (wrong duration format, image too large) but those errors were silently swallowed. Three fixes applied to `video_generation.py`:
+1. **8-minute hard timeout** on all `fal_client.subscribe()` calls via `_subscribe_with_timeout()` — a stalled queue request now fails cleanly instead of polling forever
+2. **Image size cap at 1920×1920** before upload — Luma/Veo reject larger images with a 422 "Image dimensions are too large" error, confirmed from fal.ai dashboard
+3. Both the `premium_veo` inline call and the LTX emergency fallback inline call were also wrapped (different indentation pattern than the others — caught in a second pass)
+
+**URL-to-video automated workflow — Phase 1 UI integration built and deployed (July 10, 2026):** "Automated workflow — Start from a listing URL" section now appears in the UI above "Property details." Paste a listing URL, click "🔗 Avvia da URL," and the full chain runs (scrape → vision QC fallback → photo quality ranking → watermark removal deferred to generation → narration + TTS measurement → scene count derivation → job creation) and auto-populates the existing editor — you review and press "Generate Video" manually (Phase 2 full automation is a later step). Human-in-the-loop by design.
+
+**`/jobs/from-url` endpoint (new, `api_server.py`):** all blocking scraper calls wrapped in `asyncio.to_thread()` — confirmed this was missing initially (caused false "server not responding" maintenance alerts during scraping). Cost estimate now computed correctly using same `estimate_job_cost()` as manual jobs. Real per-photo vision analysis (`analyse_input()`) applied to each scraped photo for space_type/pov_movement, replacing a static category-lookup table. Key field name bugs fixed: was using `analysis.get("space_type")` and `analysis.get("pov_movement")` — real keys are `v7_space_type` and `suggested_movement`. Space type normalization added (`large_interior` → `large`, etc.) to match SPACE_OPTS vocabulary.
+
+**Photo selection bugs fixed (July 10, 2026):**
+- Outdoor category was silently excluded every time `scene_count < 6` — PRIORITY_ORDER[:scene_count] took the first N by list position, not by availability. Fixed: now drops whichever categories have fewest photos, using list position only as tiebreak.
+- Duplicate photo safeguard added: deduplicates candidates by URL before selection.
+- Flexible backfilling: missing categories now draw from surplus categories rather than blocking the workflow.
+
+**Camera movement fix (July 10, 2026):** movement values in `_CATEGORY_TO_POV_MOVEMENT` were entirely invented names (`gentle_arc`, `soft_orbit`, etc.) that matched nothing in MOVEMENT_OPTS. Confirmed via UI inspection: the dropdown always showed the first/starred option regardless of category. Fixed with verified real values from MOVEMENT_OPTS. **Two-layer bug:** even with correct values in the static table, the actual vision analysis results were never applied because wrong key names (`pov_movement` instead of `suggested_movement`) meant `analysis.get()` always returned None.
+
+**UI bugs fixed (July 10, 2026):**
+- `removeScene()` didn't reindex `sceneUserData`/`sceneAnalysis` after deletion — captions stayed "stuck" at their old index positions. Fixed with a proper reindex pass.
+- Cost estimate showed €0 for URL-scraped draft jobs — `updateCostEstimate()` treated any loaded job with `currentJobId` set as a completed rework (charging nothing). Fixed by tracking `currentJobStatus` and only applying the rework-cost logic for genuinely completed jobs. Also added the missing `updateCostEstimate()` call at the end of `editJob()`.
+- "Rifai" rework message showed on fresh draft jobs — fixed with `isFreshDraft` check.
+- URL input section spacing and placeholder text clarified.
+
+**Watermark removal simplified (July 10, 2026):** eager removal during scraping replaced by pre-checking the existing per-scene `remove_watermark` toggle, which handles it at generation time via the same mechanism manual uploads already use. Eliminates unnecessary fal.ai cost on photos that get rejected before generation.
+
+**Narration objectivity confirmed working:** "prestigiosa," "moderna," and similar unjustified promotional adjectives are no longer appearing in generated narrations after the prompt tightening — confirmed via live output comparison.
+
+**Server restart = generation kill — confirmed pattern, not a code bug:** multiple "stuck" jobs this session were caused by `./start.sh` restarting the server while a generation was in flight. The background task dies silently mid-scene, leaving the job frozen. This is why the kill-switch/pre-deploy check feature (backlog item 12) is genuinely urgent, not just nice-to-have.
+
+---
+
 ## Standing safeguards
 
 - Stale browser cache can cause subtle bugs — hard refresh to verify JS changes.
