@@ -1084,7 +1084,10 @@ async function editJob(jobId, baseJobId) {
     renderScenes();
     closeJobPreview();
     document.getElementById('scenes-container').scrollIntoView({behavior:'smooth'});
-    showError(`${scenesConfig.length} scene caricate da ${jobId} — modifica, aggiungi scene o usa ↺ Rifai`);
+    const isFreshDraft = job.status === 'draft' && (!job.scenes || job.scenes.length === 0);
+    showError(isFreshDraft
+      ? `${scenesConfig.length} scene caricate — rivedi le scene e la narrazione, poi premi Genera Video quando sei pronto.`
+      : `${scenesConfig.length} scene caricate da ${jobId} — modifica, aggiungi scene o usa ↺ Rifai`);
   } catch(e) {
     showError(`Errore: ${e.message}`);
   }
