@@ -784,9 +784,9 @@ def generate_video_single(
             veo_dur = _snap_veo_duration(duration)
             try:
                 log.info(f"[VideoGen] Veo 3.1 Standard — {veo_dur} (requested {duration}s)")
-                result = fal_client.subscribe(
+                result = _subscribe_with_timeout(
                     VEO_ENDPOINT,
-                    arguments={
+                    {
                         "image_url": image_url, "prompt": final_prompt,
                         "duration": veo_dur, "resolution": "1080p",
                         "aspect_ratio": "16:9", "enhance_prompt": False,
@@ -821,9 +821,9 @@ def generate_video_single(
         # ── LTX emergency fallback ─────────────────────────────────────────
         if not video_url:
             log.warning("[VideoGen] Primary and secondary failed — LTX emergency fallback")
-            result = fal_client.subscribe(
+            result = _subscribe_with_timeout(
                 LTX_ENDPOINT,
-                arguments={
+                {
                     "image_url": image_url,
                     "prompt":    _LTX_FALLBACK_PROMPT,
                     "duration":  _snap_ltx(duration),
