@@ -133,6 +133,26 @@ Items are ordered by priority. Each entry includes scope, decisions already made
 
 ---
 
+## 12. Generation kill-switch during development/deployment
+
+**Problem, confirmed real during this session's testing:** restarting the server (`./start.sh`) kills the whole uvicorn process, abruptly terminating any in-flight video generation — wasting whatever Luma/Veo cost was already spent on partial clips. No way currently to pause new job generation while a bug fix or new feature is being deployed.
+
+**Scope not yet defined — open questions:**
+- A UI toggle to block new job submissions temporarily, a way to check "is anything currently generating" before restarting, or both?
+- Should in-flight jobs be allowed to finish before a restart, or is a hard stop acceptable as long as it's a deliberate, visible action rather than an accidental one?
+
+---
+
+## 13. Real-time queue/progress visibility
+
+**Problem, confirmed real during this session's testing:** progress display showed something like a static "5s" that "makes no sense" during a generation that was actually stuck for several minutes — no way to tell if a job is genuinely progressing, hung, or waiting on something.
+
+**Scope not yet defined — needs a look at the current progress-polling code first** to know whether this is a display bug (wrong number shown) or a genuine lack of granular status (no visibility into which scene/stage is active, elapsed real time, etc.).
+
+---
+
+## Recently completed (see status.md for full detail)
+
 - **Auto maintenance scheduler** — completed and live-tested July 9, 2026. Tiered per-check frequencies via cron, real bugs fixed in the underlying 7-day job cleanup (two separate issues found and fixed), email alerting with cooldown, UI panel with editable recipient list.
 
 ## Not backlog items — standing watch items (tracked in status.md, not here)

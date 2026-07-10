@@ -885,10 +885,10 @@ async def reassemble_with_narration(job_id: str, background_tasks: BackgroundTas
 @app.post("/jobs/from-url")
 async def create_job_from_url(
     request: Request,
-    url: str = Form(...),
     property_name: str = Form(""),
     voice_id: str = Form(""),
     model_tier: str = Form("luma"),
+    url: str = Form(...),
 ):
     client_ip = request.client.host if request.client else "unknown"
     if not _check_rate_limit(client_ip):
@@ -897,25 +897,35 @@ async def create_job_from_url(
 
     import listing_scraper as scraper
 
-    extraction = scraper.extract_listing(url)
+    # CRITICAL: every one of these does real, slow, blocking I/O (web
+    # fetches, Claude API calls with images, TTS generation, fal.ai object
+    # removal) — wrapped in asyncio.to_thread so this endpoint doesn't
+    # freeze the ENTIRE server's event loop for the 30-90+ seconds this
+    # takes, the way it did before this fix (confirmed: caused a false
+    # "server not responding" alert, since even the health check couldn't
+    # get through while this ran synchronously).
+    extraction = await asyncio.to_thread(scraper.extract_listing, url)
     if not extraction["ok"]:
         raise HTTPException(status_code=400, detail=f"Could not read listing: {extraction['error']}")
-    extraction["photos"] = scraper.resolve_uncategorized_photos(extraction["photos"])
+    extraction["photos"] = await asyncio.to_thread(scraper.resolve_uncategorized_photos, extraction["photos"])
 
-    narration = scraper.generate_narration_and_derive_scenes(
+    narration = await asyncio.to_thread(
+        scraper.generate_narration_and_derive_scenes,
         extraction["description"], extraction["address"], extraction["price"], voice_id or None
     )
     if not narration["ok"]:
         raise HTTPException(status_code=500, detail=f"Narration generation failed: {narration['error']}")
 
-    selection = scraper.select_photos_for_scene_count(extraction["photos"], narration["scene_count"])
+    selection = await asyncio.to_thread(
+        scraper.select_photos_for_scene_count, extraction["photos"], narration["scene_count"]
+    )
 
     job_id = str(uuid.uuid4())[:8]
     job_dir = JOBS_DIR / job_id
     img_dir = job_dir / "images"
     img_dir.mkdir(parents=True)
 
-    selection = scraper.download_selected_photos(selection, img_dir)
+    selection = await asyncio.to_thread(scraper.download_selected_photos, selection, img_dir)
 
     if selection["gaps"]:
         shutil.rmtree(str(job_dir), ignore_errors=True)
@@ -924,9 +934,13 @@ async def create_job_from_url(
                              detail=f"Not enough usable photos for this listing: {gap_desc}. Upload manually instead.")
 
     selected_categories = [cat for cat, photos in selection["selected"].items() if photos]
-    captions = scraper.generate_captions_for_categories(extraction["description"], selected_categories)
+    captions = await asyncio.to_thread(
+        scraper.generate_captions_for_categories, extraction["description"], selected_categories
+    )
 
-    final_audio_path = scraper.build_final_audio_track(narration["audio_path"], narration["video_duration_secs"])
+    final_audio_path = await asyncio.to_thread(
+        scraper.build_final_audio_track, narration["audio_path"], narration["video_duration_secs"]
+    )
     job_narration_path = str(job_dir / "narration.mp3")
     shutil.copy2(final_audio_path, job_narration_path)
 
@@ -948,6 +962,16 @@ async def create_job_from_url(
 
     property_name_final = property_name.strip() or extraction.get("address") or "Property"
 
+    # Cost estimate — was missing entirely before this fix, which is why
+    # the UI's cost box disappeared for jobs created this way. Matches the
+    # same computation every manually-created job already gets.
+    from cost_tracker import estimate_job_cost, format_cost_display
+    rolling_jobs = _get_rolling_monthly_job_count()
+    cost_estimate = estimate_job_cost(
+        scenes_config, do_upscale=True, do_video_upscale=True, do_vision_qc=True,
+        model_tier=model_tier, actual_monthly_jobs=rolling_jobs,
+    )
+
     JOBS[job_id] = {
         "status": "draft",
         "progress": 0,
@@ -967,7 +991,7 @@ async def create_job_from_url(
         "voice_id": voice_id,
         "enhance_images": True,
         "upscale_images": True,
-        "cost_estimate": None,
+        "cost_estimate": format_cost_display(cost_estimate),
         "cost_actual": None,
         "reworks": [],
         "qc_results": [],
@@ -989,6 +1013,7 @@ async def create_job_from_url(
         "scene_count": narration["scene_count"],
         "video_duration_secs": narration["video_duration_secs"],
         "scenes_config": scenes_config,
+        "cost_estimate": format_cost_display(cost_estimate),
         "source_price": extraction.get("price"),
         "source_address": extraction.get("address"),
     }

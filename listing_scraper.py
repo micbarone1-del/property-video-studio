@@ -734,6 +734,22 @@ _CATEGORY_TO_SPACE_TYPE = {
     "bedrooms": "small", "bathrooms": "small",
 }
 
+# BUG FIXED July 9 2026: every scene previously got a hardcoded
+# "walk_in_explore" pov_movement regardless of room type — confirmed via
+# real UI testing that space_type was correctly varying per category but
+# camera movement wasn't, which is exactly this gap. ASSUMPTION FLAGGED:
+# these specific movement-per-category choices are a reasonable first
+# pass, not independently verified against real generation output in this
+# session — worth checking a few real clips before trusting fully.
+_CATEGORY_TO_POV_MOVEMENT = {
+    "exterior": "wide_reveal",     # show the full facade
+    "outdoor": "pullback_arc",     # garden/outdoor space, show breadth
+    "living": "gentle_arc",        # natural room-scanning movement
+    "kitchen": "soft_orbit",       # compact functional space
+    "bedrooms": "static",          # calmer, more intimate — avoid dramatic movement
+    "bathrooms": "static",         # smaller/private space, minimal movement most natural
+}
+
 
 def build_standard_video_scenes_config(selection: dict, captions: dict, clip_duration_secs: int = 5) -> list:
     """
@@ -757,7 +773,7 @@ def build_standard_video_scenes_config(selection: dict, captions: dict, clip_dur
                 "caption": captions.get(category, category),
                 "voiceover": "",  # continuous narration track applied separately, not per-scene
                 "space_type": _CATEGORY_TO_SPACE_TYPE.get(category, "large"),
-                "pov_movement": "walk_in_explore",
+                "pov_movement": _CATEGORY_TO_POV_MOVEMENT.get(category, "gentle_arc"),
                 "duration": clip_duration_secs,
                 "local_image_path": photo.get("local_path"),
                 "category": category,
