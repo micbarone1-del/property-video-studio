@@ -383,6 +383,8 @@ STAY OBJECTIVE AND FACTUAL — this is important, not a minor style note:
 - If the description itself is promotional in tone, you may reflect that tone — but do not ADD MORE embellishment than what's actually there. When in doubt, favor the more neutral, factual phrasing.
 - A calm, clear, informative tone is the goal — not a marketing voiceover.
 
+DO NOT include phone numbers or the price in the spoken narration — phone numbers are not pronounced intelligibly by text-to-speech and neither is needed in the voiceover itself.
+
 Return ONLY the narration text (no JSON, no markdown, no preamble, no quotation marks around it).
 
 Base everything on the actual property description above — don't invent details, features, or qualities not mentioned there.
@@ -401,7 +403,7 @@ Return ONLY a JSON object (no other text, no markdown fences): {{"category_name"
 Base captions on the actual description — don't invent details or qualities not mentioned there.
 """
 
-EXTEND_PROMPT = """The narration below was measured at {actual_secs:.1f} seconds of spoken audio, but should be closer to {target_secs:.0f} seconds. Extend it by about {extra_words} more words, using ONLY additional real detail from the original property description below — do not invent any facts, features, or details not present in the description, and do not add subjective/promotional adjectives (e.g. "prestigioso," "esclusivo") that aren't grounded in the description's own language. Stay factual and objective.
+EXTEND_PROMPT = """The narration below was measured at {actual_secs:.1f} seconds of spoken audio, but should be closer to {target_secs:.0f} seconds. Extend it by about {extra_words} more words, using ONLY additional real detail from the original property description below — do not invent any facts, features, or details not present in the description, and do not add subjective/promotional adjectives (e.g. "prestigioso," "esclusivo") that aren't grounded in the description's own language. Stay factual and objective. Do not include phone numbers or price in the narration.
 
 Original property description:
 ---
@@ -450,16 +452,52 @@ def _measure_tts_duration(text: str, voice_id: str = None) -> dict:
         return {"ok": False, "duration_secs": None, "audio_path": None, "error": str(e)}
 
 
-def _fade_out_and_trim(audio_path: str, target_secs: float, fade_ms: int = 800) -> str:
-    """Last-resort safety net only — trims with a graceful fade-out rather
-    than an abrupt cutoff, if narration still exceeds the absolute max
-    scene count even after one tightening pass."""
+def _fade_out_and_trim(audio_path: str, target_secs: float, search_window_secs: float = 4.0) -> str:
+    """
+    Trims audio at or before target_secs. CHANGED July 9 2026: previously
+    always cut at the exact millisecond mark and applied an 800ms fade —
+    but since that fade lands on ACTUAL SPOKEN WORDS (not silence), it made
+    the last words unintelligible, confirmed by direct listening.
+
+    Now searches for a real pause (detected silence gap) at or shortly
+    before target_secs and cuts there instead — a trim landing IN a
+    natural gap between sentences needs no audible fade at all. Only
+    falls back to a hard cut + short fade if no suitable gap is found
+    nearby, which should now be rare.
+    """
     from pydub import AudioSegment
+    from pydub.silence import detect_silence
+
     audio = AudioSegment.from_file(audio_path)
     target_ms = int(target_secs * 1000)
     if len(audio) <= target_ms:
         return audio_path
-    trimmed = audio[:target_ms].fade_out(fade_ms)
+
+    window_start_ms = max(0, target_ms - int(search_window_secs * 1000))
+    search_region = audio[window_start_ms:target_ms + 500]
+    silence_thresh = audio.dBFS - 16  # quieter than average speech level, relative not absolute
+
+    try:
+        silences = detect_silence(search_region, min_silence_len=200, silence_thresh=silence_thresh)
+    except Exception:
+        silences = []
+
+    if silences:
+        # cut at the MIDDLE of the last detected gap at or before target —
+        # a real pause, so no fade is needed to avoid clipping a word
+        last_gap_start, last_gap_end = silences[-1]
+        cut_point = window_start_ms + (last_gap_start + last_gap_end) // 2
+        cut_point = min(cut_point, target_ms + 500)
+        trimmed = audio[:cut_point]
+        log.info(f"[Scraper] Trimmed at a natural pause ({cut_point / 1000:.1f}s) instead of "
+                 f"mid-speech — no fade needed.")
+    else:
+        # no natural gap found nearby — fall back to a hard cut with a
+        # short fade (worse case, but rarer now that phone/price were
+        # removed from narration, which also shortened it overall)
+        trimmed = audio[:target_ms].fade_out(400)
+        log.warning(f"[Scraper] No natural pause found near {target_secs}s — used a hard cut + short fade.")
+
     trimmed.export(audio_path, format="mp3")
     return audio_path
 
@@ -778,6 +816,7 @@ QUALITY_RANKING_PROMPT = """You are selecting the best photo(s) of a "{category}
 
 Rank them from best to worst based on:
 - NO people visible in the photo — this is a significant penalty, avoid photos with people
+- NO cars or other vehicles visible in the shot — same penalty as people; prefer a clean, uncluttered view of the property itself
 - Clearly shows the defining features of a {category} (e.g. a visible bed for a bedroom, sink/counter/appliances for a kitchen, toilet/shower/sink for a bathroom, a clear building facade for exterior)
 - Natural light present, well-lit rather than dark or harshly artificial
 - The room/space is shown fully and spaciously in frame, not a cramped or heavily cropped angle — a fuller, more complete view is better. This also matters practically: a fuller frame gives the AI video-generation model more real visual information to work with, which reduces the risk of it inventing or distorting details in an ambiguous or heavily-cropped area.

@@ -872,6 +872,125 @@ async def reassemble_with_narration(job_id: str, background_tasks: BackgroundTas
 
 
 
+# ── Automated URL-to-video workflow (Phase 1: human-in-the-loop) ──────────────
+# Runs the full scrape -> narration -> scene-count -> photo-selection chain
+# (listing_scraper.py) and creates a job in "draft" status with everything
+# pre-populated — narration text, scenes_config, downloaded+dewatermarked
+# images already in place in the job's own directory. Deliberately does NOT
+# trigger real video generation automatically — the agent reviews in the UI
+# and presses "Generate Video" manually via the EXISTING /start-generation
+# endpoint, same as any other draft job. Phase 2 (fully automatic, no
+# manual review step) is a later addition, not built yet.
+
+@app.post("/jobs/from-url")
+async def create_job_from_url(
+    request: Request,
+    url: str = Form(...),
+    property_name: str = Form(""),
+    voice_id: str = Form(""),
+    model_tier: str = Form("luma"),
+):
+    client_ip = request.client.host if request.client else "unknown"
+    if not _check_rate_limit(client_ip):
+        raise HTTPException(status_code=429,
+                             detail="Too many requests. Maximum 5 jobs per hour. Please wait before submitting again.")
+
+    import listing_scraper as scraper
+
+    extraction = scraper.extract_listing(url)
+    if not extraction["ok"]:
+        raise HTTPException(status_code=400, detail=f"Could not read listing: {extraction['error']}")
+    extraction["photos"] = scraper.resolve_uncategorized_photos(extraction["photos"])
+
+    narration = scraper.generate_narration_and_derive_scenes(
+        extraction["description"], extraction["address"], extraction["price"], voice_id or None
+    )
+    if not narration["ok"]:
+        raise HTTPException(status_code=500, detail=f"Narration generation failed: {narration['error']}")
+
+    selection = scraper.select_photos_for_scene_count(extraction["photos"], narration["scene_count"])
+
+    job_id = str(uuid.uuid4())[:8]
+    job_dir = JOBS_DIR / job_id
+    img_dir = job_dir / "images"
+    img_dir.mkdir(parents=True)
+
+    selection = scraper.download_selected_photos(selection, img_dir)
+
+    if selection["gaps"]:
+        shutil.rmtree(str(job_dir), ignore_errors=True)
+        gap_desc = ", ".join(f"{g['category']} (wanted {g['wanted']}, found {g['found']})" for g in selection["gaps"])
+        raise HTTPException(status_code=422,
+                             detail=f"Not enough usable photos for this listing: {gap_desc}. Upload manually instead.")
+
+    selected_categories = [cat for cat, photos in selection["selected"].items() if photos]
+    captions = scraper.generate_captions_for_categories(extraction["description"], selected_categories)
+
+    final_audio_path = scraper.build_final_audio_track(narration["audio_path"], narration["video_duration_secs"])
+    job_narration_path = str(job_dir / "narration.mp3")
+    shutil.copy2(final_audio_path, job_narration_path)
+
+    scenes_config = scraper.build_standard_video_scenes_config(selection, captions,
+                                                                 clip_duration_secs=scraper.SCENE_CLIP_SECS)
+    scenes_config = _ensure_scene_ids(scenes_config)
+
+    # Rename downloaded images to the {scene_id}.ext convention the rest of
+    # the pipeline (run_pipeline, run_redo_scene, /start-generation) expects.
+    for scene in scenes_config:
+        src = scene.pop("local_image_path", None)
+        if src and os.path.exists(src):
+            src_path = Path(src)
+            dest = img_dir / f"{scene['scene_id']}{src_path.suffix}"
+            shutil.move(src, str(dest))
+
+    property_name_final = property_name.strip() or extraction.get("address") or "Property"
+
+    JOBS[job_id] = {
+        "status": "draft",
+        "progress": 0,
+        "message": "Creato automaticamente da URL — rivedi e premi Genera Video",
+        "scenes": [],
+        "scenes_config": scenes_config,
+        "output_path": None,
+        "created_at": datetime.utcnow().isoformat(),
+        "property_name": property_name_final,
+        "total_scenes": len(scenes_config),
+        "transition_style": "fade",
+        "enable_vision_qc": True,
+        "do_video_upscale": True,
+        "model_tier": model_tier,
+        "lighting": "bright_natural",
+        "intensity": "natural_pace",
+        "voice_id": voice_id,
+        "enhance_images": True,
+        "upscale_images": True,
+        "cost_estimate": None,
+        "cost_actual": None,
+        "reworks": [],
+        "qc_results": [],
+        "awaiting_scenes": [],
+        "narration_text": narration["narration_text"],
+        "narration_path": job_narration_path,
+        "narration_duration_secs": narration["video_duration_secs"],
+        "source_url": url,
+        "source_price": extraction.get("price"),
+        "source_address": extraction.get("address"),
+    }
+    _save_job(job_id)
+
+    return {
+        "job_id": job_id,
+        "status": "draft",
+        "property_name": property_name_final,
+        "narration_text": narration["narration_text"],
+        "scene_count": narration["scene_count"],
+        "video_duration_secs": narration["video_duration_secs"],
+        "scenes_config": scenes_config,
+        "source_price": extraction.get("price"),
+        "source_address": extraction.get("address"),
+    }
+
+
 # ── Job status & download ──────────────────────────────────────────────────────
 
 
