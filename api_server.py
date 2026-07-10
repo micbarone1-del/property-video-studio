@@ -934,13 +934,16 @@ async def create_job_from_url(
                                                                  clip_duration_secs=scraper.SCENE_CLIP_SECS)
     scenes_config = _ensure_scene_ids(scenes_config)
 
-    # Rename downloaded images to the {scene_id}.ext convention the rest of
-    # the pipeline (run_pipeline, run_redo_scene, /start-generation) expects.
-    for scene in scenes_config:
+    # Rename downloaded images to the scene_NNN.ext convention — this is
+    # what /jobs/{id}/image/{i} (used by the UI's editJob() to populate the
+    # editable form) actually expects, and what /start-generation's fallback
+    # lookup also supports. NOT scene_id-based naming, which editJob's
+    # image-loading loop has no way to resolve (it fetches by index, not ID).
+    for i, scene in enumerate(scenes_config):
         src = scene.pop("local_image_path", None)
         if src and os.path.exists(src):
             src_path = Path(src)
-            dest = img_dir / f"{scene['scene_id']}{src_path.suffix}"
+            dest = img_dir / f"scene_{i:03d}{src_path.suffix}"
             shutil.move(src, str(dest))
 
     property_name_final = property_name.strip() or extraction.get("address") or "Property"
