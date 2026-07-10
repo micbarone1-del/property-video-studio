@@ -92,6 +92,14 @@ Because extraction works by Claude reading the page **semantically** rather than
 
 **NOT YET BUILT:** the actual integration into job creation — there's no `/scrape-listing` API endpoint yet, and no "paste a listing URL" input in `ui.html`. This session produced and tested the extraction/selection engine; wiring it into the live job-creation flow is the next layer, deliberately not started until the engine itself is confirmed solid on all three sites.
 
+**Standard automated video format — decided July 9, 2026:** 6 scenes × 5s = 30s exactly. Important finding behind this: Luma Ray 2 (the default tier) only accepts 5s or 9s clips — nothing else — so a proposed 4s-per-scene or 6s-per-scene format would both actually snap to 5s anyway. 6 scenes × 5s maps 1:1 onto the 6 already-built categories with zero snapping distortion.
+
+**Narration-length adaptation — built** (`generate_narration_matching_duration()` in `listing_scraper.py`): generates narration sized to fit the fixed 30s target, using REAL TTS measurement (not a word-count guess) to confirm — matching the project's existing narration-first philosophy. If too long, asks for a tighter rewrite; if too short, asks for an extension using only real description content (no invented facts) — then closes any remaining small gap with trailing silence rather than further invention. Bounded to at most 2 real TTS calls to control cost. **Not yet tested against a live listing** — this makes real ElevenLabs API calls, so needs a real test run before trusting it.
+
+**`build_standard_video_scenes_config()`** — converts a selection + captions into the exact `scenes_config` format the existing job pipeline expects (caption, empty per-scene voiceover since narration is a continuous track applied at assembly time, space_type, pov_movement, duration, local image path). ASSUMPTION FLAGGED: the category→space_type mapping (exterior/outdoor/living/kitchen→"large", bedrooms/bathrooms→"small") is a reasonable default, not independently re-verified against `video_generation.py`'s full valid space_type vocabulary this session.
+
+**Still not built:** the actual orchestration — a single endpoint that takes a URL and does everything automatically (scrape → select → download/dewatermark → narration-match → create job → trigger real Luma generation → assemble with narration overlay) end to end with no manual steps. This is the next concrete piece once narration-length adaptation is confirmed working on a real test.
+
 
 Built in response to backlog item "Auto maintenance scheduler." Fully deployed, live-tested, and confirmed working — not just written.
 

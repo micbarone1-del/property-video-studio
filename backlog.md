@@ -102,7 +102,22 @@ Items are ordered by priority. Each entry includes scope, decisions already made
 
 ---
 
-## Recently completed (see status.md for full detail)
+## 10. Agency outreach agent — Italy, pilot phase
+
+**Concept:** a separate agentic tool (genuinely agentic — finds targets, acts, adapts — not a fixed script) that targets Italian real estate agencies for business development: finds a real, live listing from a target agency, runs it through the automated URL-to-video pipeline (item 1) to produce a real pilot video from their own actual property, then sends the agency a personalized outreach email showcasing it.
+
+**Scope not yet defined — open questions:**
+- How are target agencies identified — a list you provide, or does the agent search/discover them itself (e.g. via the same immobiliare.it/idealista.it/casa.it sites, browsing agency listing pages)?
+- How is each agency's contact email obtained — scraped from their listing/site, or manually supplied?
+- **Compliance:** Italian/EU anti-spam and GDPR rules apply to unsolicited commercial email — this needs real legal consideration before any automated sending, not just a technical build. At minimum, likely needs a human-approval step before any email actually goes out, not fully automatic sending.
+- Email content/tone — template with the pilot video embedded/linked, or fully custom-written per agency?
+- Volume/pacing — how many outreach emails per day/week is realistic without looking like spam or triggering deliverability problems?
+
+**Dependency:** needs item 1 (automated URL-to-video pipeline) fully working first, since the pilot video is its core hook.
+
+**Priority:** not yet placed — flagged as a distinct future initiative, pilot phase, Italy-only for now.
+
+---
 
 - **Auto maintenance scheduler** — completed and live-tested July 9, 2026. Tiered per-check frequencies via cron, real bugs fixed in the underlying 7-day job cleanup (two separate issues found and fixed), email alerting with cooldown, UI panel with editable recipient list.
 

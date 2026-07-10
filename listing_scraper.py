@@ -440,6 +440,220 @@ def generate_narration_from_description(description: str, selected_categories: l
         return {"ok": False, "continuous_narration": "", "captions": {}, "error": str(e)}
 
 
+# ── Narration-length adaptation for a fixed video duration ─────────────────
+# Standard automated output: 6 scenes x 5s = 30s exactly (5s is Luma Ray 2's
+# native duration, the current default/lowest-hallucination-risk tier — 4s
+# and 6s both snap to 5s on Luma anyway, so there's no finer-grained control
+# available at the video-clip level; the video's TOTAL length is fixed, and
+# narration adapts to fit it, not the other way around).
+#
+# Uses REAL TTS measurement (not a word-count guess) to confirm actual fit,
+# matching this project's existing narration-first philosophy. Bounded to
+# at most 2 real TTS calls to control cost — accepts the closest result
+# after that rather than looping indefinitely.
+
+STANDARD_VIDEO_DURATION_SECS = 30  # 6 scenes x 5s
+DURATION_TOLERANCE_SECS = 2        # accept anything within +/-2s without further adjustment
+WORDS_PER_SECOND_ESTIMATE = 2.3    # rough Italian speaking-pace estimate for the FIRST draft only —
+                                     # every subsequent decision uses real measured TTS duration, not this guess
+
+EXTEND_PROMPT = """The narration below was measured at {actual_secs:.1f} seconds of spoken audio, but the video needs {target_secs} seconds. Extend it by about {extra_words} more words, using ONLY additional real detail from the original property description below — do not invent any facts, features, or details not present in the description.
+
+Original property description:
+---
+{description}
+---
+
+Current narration to extend:
+---
+{narration}
+---
+
+Return ONLY the full extended narration text (no JSON, no markdown, no preamble)."""
+
+SHORTEN_PROMPT = """The narration below was measured at {actual_secs:.1f} seconds of spoken audio, but the video needs {target_secs} seconds. Shorten it to about {target_words} words, keeping the most important property details and the natural flow — don't just cut off the end abruptly.
+
+Current narration to shorten:
+---
+{narration}
+---
+
+Return ONLY the shortened narration text (no JSON, no markdown, no preamble)."""
+
+
+def _measure_tts_duration(text: str, voice_id: str = None) -> dict:
+    """Generates real TTS audio and measures its actual duration — the
+    only reliable way to know how long narration text will actually take
+    to speak, per this project's existing narration-first approach."""
+    import tempfile
+    from voice_generation import generate_speech
+    from pydub import AudioSegment
+
+    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+        tmp_path = f.name
+    try:
+        ok = generate_speech(text, tmp_path, voice_id=voice_id)
+        if not ok or not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
+            return {"ok": False, "duration_secs": None, "audio_path": None}
+        duration_secs = len(AudioSegment.from_file(tmp_path)) / 1000.0
+        return {"ok": True, "duration_secs": duration_secs, "audio_path": tmp_path}
+    except Exception as e:
+        log.error(f"[Scraper] TTS measurement failed: {e}")
+        return {"ok": False, "duration_secs": None, "audio_path": None, "error": str(e)}
+    finally:
+        pass  # caller is responsible for cleaning up audio_path if returned
+
+
+def _pad_audio_with_silence(audio_path: str, extra_secs: float) -> str:
+    """Appends trailing silence to an audio file — used for small gaps
+    where inventing more narration text would be overkill (a couple of
+    seconds of natural pause reads as normal pacing, not dead air)."""
+    from pydub import AudioSegment
+    audio = AudioSegment.from_file(audio_path)
+    silence = AudioSegment.silent(duration=int(extra_secs * 1000))
+    padded = audio + silence
+    padded.export(audio_path, format="mp3")
+    return audio_path
+
+
+def generate_narration_matching_duration(
+    description: str, selected_categories: list, address: str = None, price: str = None,
+    target_duration_secs: float = STANDARD_VIDEO_DURATION_SECS,
+    tolerance_secs: float = DURATION_TOLERANCE_SECS,
+    voice_id: str = None,
+) -> dict:
+    """
+    Generates narration sized to fit a FIXED target video duration (the
+    video length is fixed by scene count x clip duration; narration adapts
+    to it, not the other way around) — using real TTS measurement, not a
+    word-count guess, to confirm the fit.
+
+    Strategy (bounded to at most 2 real TTS calls total):
+      1. Generate an initial narration text, TTS it once, measure real duration.
+      2. If too long: ask for a tighter rewrite, TTS + measure once more.
+      3. If too short: ask for an EXTENDED version using only real detail
+         from the description (no invented facts), TTS + measure once more.
+      4. Whatever gap remains after that (either direction, or if a second
+         TTS call still isn't a perfect match) gets closed with trailing
+         silence padding if short, or accepted as-is if still slightly
+         long — silence is the safe fallback, not further invention.
+
+    Returns:
+      {"ok": bool, "narration_text": str, "audio_path": str | None,
+       "final_duration_secs": float | None, "captions": dict,
+       "tts_calls_used": int, "error": str | None}
+    """
+    base = generate_narration_from_description(description, selected_categories, address, price)
+    if not base["ok"]:
+        return {"ok": False, "narration_text": "", "audio_path": None,
+                "final_duration_secs": None, "captions": {}, "tts_calls_used": 0,
+                "error": f"initial narration generation failed: {base['error']}"}
+
+    narration_text = base["continuous_narration"]
+    captions = base["captions"]
+    tts_calls_used = 0
+
+    measurement = _measure_tts_duration(narration_text, voice_id)
+    tts_calls_used += 1
+    if not measurement["ok"]:
+        return {"ok": False, "narration_text": narration_text, "audio_path": None,
+                "final_duration_secs": None, "captions": captions, "tts_calls_used": tts_calls_used,
+                "error": "TTS measurement failed on initial narration"}
+
+    actual_secs = measurement["duration_secs"]
+    audio_path = measurement["audio_path"]
+    diff = actual_secs - target_duration_secs
+
+    if abs(diff) > tolerance_secs:
+        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        if diff > 0:
+            # too long — shrink
+            target_words = max(20, int(len(narration_text.split()) * (target_duration_secs / actual_secs)))
+            prompt = SHORTEN_PROMPT.format(actual_secs=actual_secs, target_secs=target_duration_secs,
+                                            target_words=target_words, narration=narration_text)
+        else:
+            # too short — extend using only real description content
+            extra_words = int(abs(diff) * WORDS_PER_SECOND_ESTIMATE)
+            prompt = EXTEND_PROMPT.format(actual_secs=actual_secs, target_secs=target_duration_secs,
+                                           extra_words=extra_words, description=description,
+                                           narration=narration_text)
+        try:
+            response = client.messages.create(model=MODEL, max_tokens=2048,
+                                                 messages=[{"role": "user", "content": prompt}])
+            revised = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
+            if revised:
+                # re-measure with real TTS — this is the second and final TTS call
+                remeasure = _measure_tts_duration(revised, voice_id)
+                tts_calls_used += 1
+                if remeasure["ok"]:
+                    narration_text = revised
+                    actual_secs = remeasure["duration_secs"]
+                    audio_path = remeasure["audio_path"]
+                    diff = actual_secs - target_duration_secs
+        except Exception as e:
+            log.warning(f"[Scraper] Narration length-adjustment attempt failed, using original: {e}")
+
+    # Final gap closure: pad with silence if still short (safe — no more
+    # invented content); accept as-is if still slightly long rather than
+    # spending a third paid TTS call chasing an exact match.
+    if diff < -tolerance_secs and audio_path:
+        audio_path = _pad_audio_with_silence(audio_path, abs(diff))
+        actual_secs = target_duration_secs
+
+    return {
+        "ok": True,
+        "narration_text": narration_text,
+        "audio_path": audio_path,
+        "final_duration_secs": actual_secs,
+        "captions": captions,
+        "tts_calls_used": tts_calls_used,
+        "error": None,
+    }
+
+
+# ── Build scenes_config for the standard automated video ───────────────────
+# Converts a selection into the exact format api_server.py's job pipeline
+# expects. Uses a single continuous narration track (applied separately at
+# assembly time, same mechanism as the existing narration-first workflow),
+# so each scene's own "voiceover" is left empty rather than duplicating audio.
+#
+# ASSUMPTION FLAGGED: space_type mapping below (exterior/outdoor/living/
+# kitchen -> "large", bedrooms/bathrooms -> "small") is a reasonable default,
+# not independently re-verified against the full set of valid space_type
+# values in this session — check against real video_generation.py behavior
+# before trusting on a real generation run.
+
+_CATEGORY_TO_SPACE_TYPE = {
+    "exterior": "large", "outdoor": "large", "living": "large", "kitchen": "large",
+    "bedrooms": "small", "bathrooms": "small",
+}
+
+
+def build_standard_video_scenes_config(selection: dict, captions: dict, clip_duration_secs: int = 5) -> list:
+    """
+    Returns a scenes_config list in PRIORITY_ORDER, one scene per category
+    that has a selected photo, ready to hand to the existing job-creation
+    pipeline. Each scene: {scene_id placeholder, caption, voiceover: "",
+    space_type, pov_movement, duration, local_image_path}.
+    """
+    scenes = []
+    for category in PRIORITY_ORDER:
+        photos = selection["selected"].get(category, [])
+        if not photos:
+            continue
+        photo = photos[0]
+        scenes.append({
+            "caption": captions.get(category, category),
+            "voiceover": "",  # continuous narration track applied separately, not per-scene
+            "space_type": _CATEGORY_TO_SPACE_TYPE.get(category, "large"),
+            "pov_movement": "walk_in_explore",
+            "duration": clip_duration_secs,
+            "local_image_path": photo.get("local_path"),
+            "category": category,
+        })
+    return scenes
+
+
 # ── Photo selection: priority order + gap detection ─────────────────────────
 
 def select_photos(photos: list, target_per_category: dict = None) -> dict:
@@ -546,16 +760,25 @@ if __name__ == "__main__":
     print(f"Price: {result['price']}")
     print(f"Address: {result['address']}")
 
-    print("\n--- Generating narration + captions from scraped description ---")
+    print("\n--- Generating narration matched to standard 30s video (6 scenes x 5s) ---")
     selected_categories = [cat for cat, photos in selection["selected"].items() if photos]
-    narration = generate_narration_from_description(
+    narration = generate_narration_matching_duration(
         result["description"], selected_categories, result["address"], result["price"]
     )
     if narration["ok"]:
-        print(f"\nContinuous narration:\n{narration['continuous_narration']}\n")
-        print("Per-scene captions:")
+        print(f"\nFinal narration ({narration['tts_calls_used']} TTS call(s) used, "
+              f"final duration: {narration['final_duration_secs']:.1f}s, target: 30s):\n")
+        print(narration["narration_text"])
+        print("\nPer-scene captions:")
         for cat, caption in narration["captions"].items():
             print(f"  {cat}: {caption}")
+        if narration["audio_path"]:
+            print(f"\nAudio file: {narration['audio_path']} (listen to this to judge quality/pacing)")
+
+        scenes_config = build_standard_video_scenes_config(selection, narration["captions"])
+        print(f"\n--- scenes_config ready for job creation ({len(scenes_config)} scenes) ---")
+        for s in scenes_config:
+            print(f"  {s['category']}: {s['duration']}s, space_type={s['space_type']}, image={s['local_image_path']}")
     else:
         print(f"NARRATION GENERATION FAILED: {narration['error']}")
 
