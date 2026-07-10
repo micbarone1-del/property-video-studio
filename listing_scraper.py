@@ -375,11 +375,17 @@ NARRATION_PROMPT = """You are writing a short, natural-sounding Italian voiceove
 
 Property details: {address}, {price}
 
-Write a single continuous narration script (in Italian) covering this property naturally and completely — warm, professional real estate tone. Do NOT target a specific word count or duration; write however much is naturally needed to cover the property's real features well, neither padded nor rushed. Should flow as ONE continuous piece, no headers, no scene labels.
+Write a single continuous narration script (in Italian) covering this property naturally and completely. Do NOT target a specific word count or duration; write however much is naturally needed to cover the property's real features well, neither padded nor rushed. Should flow as ONE continuous piece, no headers, no scene labels.
+
+STAY OBJECTIVE AND FACTUAL — this is important, not a minor style note:
+- Do NOT add subjective or promotional adjectives that aren't grounded in the description (e.g. don't call a location "prestigious," "esclusivo," "meraviglioso," or similar, unless the description itself uses language like that). A small town is not automatically "prestigious" just because it's in a real estate video.
+- Describe features plainly and factually (size, room count, what's present) rather than editorializing about how impressive they are.
+- If the description itself is promotional in tone, you may reflect that tone — but do not ADD MORE embellishment than what's actually there. When in doubt, favor the more neutral, factual phrasing.
+- A calm, clear, informative tone is the goal — not a marketing voiceover.
 
 Return ONLY the narration text (no JSON, no markdown, no preamble, no quotation marks around it).
 
-Base everything on the actual property description above — don't invent details not mentioned there.
+Base everything on the actual property description above — don't invent details, features, or qualities not mentioned there.
 """
 
 CAPTIONS_PROMPT = """Based on this property description:
@@ -389,11 +395,13 @@ CAPTIONS_PROMPT = """Based on this property description:
 
 Write a short on-screen caption (3-6 words, in Italian) for each of these scenes/categories: {categories}
 
+Stay objective and factual — describe what's actually in the description plainly, don't add promotional or subjective adjectives (e.g. "moderna," "stupendo," "esclusivo") unless the description itself uses that language. A caption like "Cucina abitabile" is better than "Cucina abitabile moderna" if "moderna" isn't actually stated anywhere in the description.
+
 Return ONLY a JSON object (no other text, no markdown fences): {{"category_name": "caption", ...}}
-Base captions on the actual description — don't invent details not mentioned there.
+Base captions on the actual description — don't invent details or qualities not mentioned there.
 """
 
-EXTEND_PROMPT = """The narration below was measured at {actual_secs:.1f} seconds of spoken audio, but should be closer to {target_secs:.0f} seconds. Extend it by about {extra_words} more words, using ONLY additional real detail from the original property description below — do not invent any facts, features, or details not present in the description.
+EXTEND_PROMPT = """The narration below was measured at {actual_secs:.1f} seconds of spoken audio, but should be closer to {target_secs:.0f} seconds. Extend it by about {extra_words} more words, using ONLY additional real detail from the original property description below — do not invent any facts, features, or details not present in the description, and do not add subjective/promotional adjectives (e.g. "prestigioso," "esclusivo") that aren't grounded in the description's own language. Stay factual and objective.
 
 Original property description:
 ---
@@ -409,7 +417,7 @@ Return ONLY the full extended narration text (no JSON, no markdown, no preamble)
 
 SHORTEN_PROMPT = """The narration below was measured at {actual_secs:.1f} seconds of spoken audio, but needs to fit within {target_secs:.0f} seconds — it MUST be shorter than that, not just close to it. Rewrite it at no more than {target_words} words. This is a hard ceiling — err on the side of cutting too much rather than too little.
 
-Keep the most important property details (location, size, standout features) and drop secondary ones first. Keep it flowing naturally.
+Keep the most important property details (location, size, standout features) and drop secondary ones first. Keep it flowing naturally. Stay factual and objective — don't add subjective or promotional adjectives that weren't already justified by the source material.
 
 Current narration to shorten:
 ---
