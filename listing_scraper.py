@@ -615,23 +615,26 @@ def generate_narration_and_derive_scenes(
     scene_count = math.ceil(needed_secs / SCENE_CLIP_SECS)
     scene_count = max(MIN_SCENES, min(MAX_SCENES, scene_count))
 
-    # Avoid excess trailing silence: rounding up to the next scene can leave
-    # far more than TRAIL_SILENCE_SECS of dead air if speech was only just
-    # over the previous boundary (e.g. 27.7s speech needing 30.7s total
-    # rounds all the way up to 35s, leaving 6.3s trailing instead of ~2-3s).
-    # Prefer a small trim to fit the LOWER scene count over accepting a
-    # whole wasted extra scene, as long as that still clears the min.
-    trail_would_be = (scene_count * SCENE_CLIP_SECS) - LEAD_SILENCE_SECS - speech_secs
-    excess_trail = trail_would_be - TRAIL_SILENCE_SECS
-    if excess_trail > 4.0 and (scene_count - 1) >= MIN_SCENES and audio_path:
+    # Always prefer the TIGHTEST-fitting scene count, not just whatever
+    # ceil() lands on — rounding up can otherwise leave far more than
+    # TRAIL_SILENCE_SECS of dead air (e.g. 28.4s speech needing 31.4s
+    # total rounds all the way up to 35s, leaving 5.6s trailing instead of
+    # ~2-3s). Since scene_count is already a ceiling, the trim needed to
+    # drop to one fewer scene is mathematically always LESS than one full
+    # SCENE_CLIP_SECS (i.e. under 5s) — a small, safe edit, not a big cut.
+    # Only kept at the higher scene count if the lower one would be
+    # unreachable (i.e. already at MIN_SCENES).
+    if scene_count > MIN_SCENES and audio_path:
         lower_scene_count = scene_count - 1
         max_speech_for_lower = (lower_scene_count * SCENE_CLIP_SECS) - LEAD_SILENCE_SECS - TRAIL_SILENCE_SECS
-        audio_path = _fade_out_and_trim(audio_path, max_speech_for_lower)
-        speech_secs = max_speech_for_lower
-        scene_count = lower_scene_count
-        was_trimmed = True
-        log.info(f"[Scraper] Trimmed {excess_trail:.1f}s to avoid excess trailing silence "
-                 f"(fit {lower_scene_count} scenes instead of {lower_scene_count + 1})")
+        if speech_secs > max_speech_for_lower:
+            trim_amount = speech_secs - max_speech_for_lower
+            audio_path = _fade_out_and_trim(audio_path, max_speech_for_lower)
+            speech_secs = max_speech_for_lower
+            scene_count = lower_scene_count
+            was_trimmed = True
+            log.info(f"[Scraper] Trimmed {trim_amount:.1f}s to fit {lower_scene_count} scenes "
+                     f"instead of {lower_scene_count + 1} (avoids excess trailing silence)")
 
     video_duration_secs = scene_count * SCENE_CLIP_SECS
 

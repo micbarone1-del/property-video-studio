@@ -21,10 +21,10 @@ Items are ordered by priority. Each entry includes scope, decisions already made
 
 **Concretely remaining:**
 1. Test the same engine against a real idealista.it listing, then a real casa.it listing — need one real URL from each to validate (untested so far).
-2. Verify the image-resolution-upgrade heuristic actually finds higher-res images, not just differently-named same-size ones — now has visibility logging (`resolution_upgraded: true/false` per photo), needs a re-run to check.
-3. Decide how many photos per category a real video actually needs (currently a placeholder default of 1 each) — needs a product decision, not a technical one.
-4. Human-review the auto-generated narration/caption text for quality and accuracy — built and running, not yet quality-checked by a person.
-5. Build the actual integration: a `/scrape-listing` API endpoint + a "paste listing URL" input in the UI, wiring the engine into real job creation.
+2. Photo-count-per-category question — resolved architecturally: now derived from real narration length (5-7 scenes depending on how much the property needs to say), not a fixed placeholder. See status.md.
+3. Human-review the auto-generated narration/caption text for quality and pacing — redesigned twice this session, needs a fresh listen/read.
+4. **UI integration — phased, human-in-the-loop first (decided July 9, 2026):** a box on the initial UI where the agent pastes a listing URL. **Phase 1:** automation runs the full scrape → narration → scene-count chain and auto-populates the existing narration/scene boxes; the agent inspects and presses "Generate Video" manually. **Phase 2 (later):** fully automatic, no manual step, once Phase 1 is trusted.
+5. Optional/deferred: a ~1s fade-to-black buffer at the start/end of the assembled video (`video_assembly.py`), as extra timing safety margin — only if real usage shows it's needed.
 
 **Note:** flagged by the user as needing a full day of focused work — this session covered the core engine; the integration layer above is the remaining work.
 
@@ -116,6 +116,20 @@ Items are ordered by priority. Each entry includes scope, decisions already made
 **Dependency:** needs item 1 (automated URL-to-video pipeline) fully working first, since the pilot video is its core hook.
 
 **Priority:** not yet placed — flagged as a distinct future initiative, pilot phase, Italy-only for now.
+
+---
+
+## 11. Agent-based final video QC (replace or complement Florence-2)
+
+**Concept:** use Claude's vision reasoning to judge finished video scenes against quality criteria — holistic plausibility checks (does this look like a real, physically coherent room; did 3D parallax warp anything impossible) rather than Florence-2's object-detection-style approach. Would reuse the same quality language already built for photo selection (no people, key room elements present, natural light, well-framed), giving one consistent quality standard across the whole pipeline instead of two different models with two different vocabularies.
+
+**Practical shape:** extract a few representative frames per generated clip (e.g. first/middle/last), send as images to Claude with a QC prompt — same pattern as the photo-quality-ranking feature already built.
+
+**Real trade-off, not yet resolved:** Florence-2 is self-hosted — near-zero marginal cost per check. Every Claude-based QC check is a real, ongoing per-scene API cost. Given QC potentially runs on every scene of every video, this recurring cost is different in kind from the one-time per-property scraping costs elsewhere in this project.
+
+**Suggested next step, not started:** run Claude-based QC in parallel with existing Florence-2 QC on a handful of real scenes (including ones Florence-2 has flagged before) to compare actual accuracy before deciding replace vs. complement vs. leave as-is.
+
+**Priority:** not placed — explicitly framed as a future direction for full automation, not immediate.
 
 ---
 
