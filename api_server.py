@@ -972,16 +972,35 @@ async def create_job_from_url(
     # of a simplified stand-in. Falls back to the static table only if
     # analysis fails for a specific photo.
     from vision_analysis import analyse_input
+
+    # BUG FIXED July 10 2026: confirmed via the real /analyse-image response
+    # shape (used by manual uploads) that the actual keys are
+    # "v7_space_type" and "suggested_movement" — NOT "space_type"/
+    # "pov_movement" as originally written here. That meant real per-photo
+    # movement analysis NEVER actually fired even once; the static
+    # category table was silently doing 100% of the work the whole time.
+    # Also normalizes space_type's raw technical values (e.g.
+    # "large_interior", "ground_exterior") to the plain vocabulary
+    # SPACE_OPTS actually uses in the UI dropdown — mirrors the exact
+    # equivalence already used by ui.html's own spaceLabel() function,
+    # rather than inventing a new mapping.
+    _SPACE_TYPE_NORMALIZE = {
+        "large_interior": "large", "medium_interior": "medium", "small_interior": "small",
+        "ground_exterior": "outdoor",
+    }
+
     for i, scene in enumerate(scenes_config):
         dest_path = scene_image_paths[i]
         if not dest_path or not dest_path.exists():
             continue
         try:
             analysis = await asyncio.to_thread(analyse_input, str(dest_path))
-            if analysis.get("space_type"):
-                scene["space_type"] = analysis["space_type"]
-            if analysis.get("pov_movement"):
-                scene["pov_movement"] = analysis["pov_movement"]
+            raw_space = analysis.get("v7_space_type") or analysis.get("space_type")
+            if raw_space:
+                scene["space_type"] = _SPACE_TYPE_NORMALIZE.get(raw_space, raw_space)
+            raw_movement = analysis.get("suggested_movement") or analysis.get("pov_movement")
+            if raw_movement:
+                scene["pov_movement"] = raw_movement
         except Exception as e:
             log.warning(f"[URL workflow] Vision analysis failed for scene {i}, "
                         f"keeping category-based default: {e}")
