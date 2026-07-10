@@ -1475,9 +1475,41 @@ function onSpaceTypeChange(index, value) {
 
 
 // Show/hide video upscale toggle based on tier
+// BUG FIX: sliders previously never adapted to model tier at all - hardcoded
+// min=4 max=20 step=2 regardless of tier, meaning Luma (valid only 5s/9s)
+// kept receiving invalid durations like 4s, 8s, etc. This caused repeated
+// "Input should be '5s' or '9s'" rejections from fal.ai.
+function getDurationRangeForTier(tier) {
+  if (tier === 'luma') return {min: 5, max: 9, step: 4, def: 5, minLabel: '5s', maxLabel: '9s'};
+  if (tier === 'eco')  return {min: 6, max: 20, step: 2, def: 8, minLabel: '6s', maxLabel: '20s'};
+  return {min: 4, max: 8, step: 2, def: 6, minLabel: '4s', maxLabel: '8s'}; // premium/premium_veo/standard (Veo-backed)
+}
+
 function onTierChange(tier) {
   const upscaleRow = document.getElementById('video-upscale-row');
   if (upscaleRow) upscaleRow.style.display = tier === 'eco' ? '' : 'none';
+
+  const range = getDurationRangeForTier(tier);
+  [...scenesCont.querySelectorAll('.sc-duration')].forEach(slider => {
+    slider.min = range.min;
+    slider.max = range.max;
+    slider.step = range.step;
+    const current = parseInt(slider.value, 10) || range.def;
+    const snapped = Math.max(range.min, Math.min(range.max,
+      Math.round((current - range.min) / range.step) * range.step + range.min));
+    slider.value = snapped;
+    const card = slider.closest('.scene-card');
+    const durVal = card ? card.querySelector('.dur-val') : null;
+    if (durVal) durVal.textContent = snapped + 's';
+    const row = slider.closest('.dur-row');
+    if (row) {
+      const spans = row.querySelectorAll('span');
+      if (spans[0]) spans[0].textContent = range.minLabel;
+      if (spans[1]) spans[1].textContent = range.maxLabel;
+    }
+  });
+
+  saveSceneData();
   updateCostEstimate();
 }
 
@@ -1489,7 +1521,7 @@ function saveSceneData() {
     sceneUserData[i] = {
       caption:      card.querySelector('.sc-caption')?.value || '',
       voiceover:    card.querySelector('.sc-voiceover')?.value || '',
-      duration:     card.querySelector('.sc-duration')?.value || '8',
+      duration:     card.querySelector('.sc-duration')?.value || '5',
       space_type:   card.querySelector('.sc-space-type')?.value || 'large',
       pov_movement: card.querySelector('.sc-pov-movement')?.value || 'walk_in_explore',
       remove_watermark: card.querySelector('.sc-remove-watermark')?.checked || false,
@@ -1501,6 +1533,7 @@ function saveSceneData() {
 
 function renderScenes() {
   saveSceneData();
+  const _durRange = getDurationRangeForTier(document.getElementById('model-tier')?.value || 'luma');
   genBtn.disabled = files.length === 0;
   // Show/hide add scene button
   const addBtn = document.getElementById('add-scene-btn');
@@ -1605,12 +1638,12 @@ function renderScenes() {
           <div>
             <label>Durata clip</label>
             <div class="dur-row">
-              <span style="font-size:.75rem;color:var(--muted)">4s</span>
-              <input type="range" class="sc-duration" min="4" max="20" step="2"
-                value="${saved.duration||'8'}"
+              <span style="font-size:.75rem;color:var(--muted)">${_durRange.minLabel}</span>
+              <input type="range" class="sc-duration" min="${_durRange.min}" max="${_durRange.max}" step="${_durRange.step}"
+                value="${saved.duration||_durRange.def}"
                 oninput="onDurationChange(this)" />
-              <span style="font-size:.75rem;color:var(--muted)">20s</span>
-              <span class="dur-val">${saved.duration||'8'}s</span>
+              <span style="font-size:.75rem;color:var(--muted)">${_durRange.maxLabel}</span>
+              <span class="dur-val">${saved.duration||_durRange.def}s</span>
             </div>
           </div>
         </div>
@@ -1927,7 +1960,8 @@ async function updateCostEstimate() {
   }
   // else: no job loaded yet, OR a fresh draft (currentJobStatus === 'draft')
   // - charge for ALL scenes, same as a brand new manual upload, since
-  // nothing has ever been generated for this job yet.
+  // nothing has ever been generated for this job yet.
+
 
 
   // Client-side cost estimate (mirrors cost_tracker.py logic)
