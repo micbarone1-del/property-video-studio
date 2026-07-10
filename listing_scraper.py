@@ -453,7 +453,14 @@ def generate_narration_from_description(description: str, selected_categories: l
 # after that rather than looping indefinitely.
 
 STANDARD_VIDEO_DURATION_SECS = 30  # 6 scenes x 5s
-DURATION_TOLERANCE_SECS = 2        # accept anything within +/-2s without further adjustment
+LEAD_SILENCE_SECS = 1.0    # video starts, THEN narration begins — hard requirement, not optional
+TRAIL_SILENCE_SECS = 2.0   # narration MUST end at least this long before the video ends — HARD MINIMUM,
+                            # not a soft tolerance. Overflow past this is never acceptable; running
+                            # shorter (more trailing silence) is always fine — asymmetric by design.
+MAX_SPEECH_SECS = STANDARD_VIDEO_DURATION_SECS - LEAD_SILENCE_SECS - TRAIL_SILENCE_SECS  # 27.0s hard ceiling
+SAFETY_MARGIN_SECS = 2.0   # target comfortably under the ceiling, not right at the edge
+TARGET_SPEECH_SECS = MAX_SPEECH_SECS - SAFETY_MARGIN_SECS  # 25.0s — what we actually aim for
+MIN_SPEECH_SECS = 15.0     # below this, extend with real content rather than just padding dead silence
 WORDS_PER_SECOND_ESTIMATE = 2.3    # rough Italian speaking-pace estimate for the FIRST draft only —
                                      # every subsequent decision uses real measured TTS duration, not this guess
 
@@ -506,18 +513,6 @@ def _measure_tts_duration(text: str, voice_id: str = None) -> dict:
         pass  # caller is responsible for cleaning up audio_path if returned
 
 
-def _pad_audio_with_silence(audio_path: str, extra_secs: float) -> str:
-    """Appends trailing silence to an audio file — used for small gaps
-    where inventing more narration text would be overkill (a couple of
-    seconds of natural pause reads as normal pacing, not dead air)."""
-    from pydub import AudioSegment
-    audio = AudioSegment.from_file(audio_path)
-    silence = AudioSegment.silent(duration=int(extra_secs * 1000))
-    padded = audio + silence
-    padded.export(audio_path, format="mp3")
-    return audio_path
-
-
 def _fade_out_and_trim(audio_path: str, target_secs: float, fade_ms: int = 800) -> str:
     """Last-resort safety net: if the correction loop still couldn't land
     within tolerance, trim to the target duration with a short fade-out
@@ -535,56 +530,50 @@ def _fade_out_and_trim(audio_path: str, target_secs: float, fade_ms: int = 800) 
 
 def generate_narration_matching_duration(
     description: str, selected_categories: list, address: str = None, price: str = None,
-    target_duration_secs: float = STANDARD_VIDEO_DURATION_SECS,
-    tolerance_secs: float = DURATION_TOLERANCE_SECS,
+    target_video_secs: float = STANDARD_VIDEO_DURATION_SECS,
     voice_id: str = None,
-    max_correction_rounds: int = 2,
+    max_correction_rounds: int = 3,
 ) -> dict:
     """
-    Generates narration sized to fit a FIXED target video duration (the
-    video length is fixed by scene count x clip duration; narration adapts
-    to it, not the other way around) — using real TTS measurement, not a
-    word-count guess, to confirm the fit.
+    Generates narration for a FIXED video duration, with HARD structural
+    requirements — not a soft tolerance:
+      - Video starts, then 1s of silence, THEN narration begins.
+      - Narration must end at least 2s before the video ends — ALWAYS.
+        Overflowing this is never acceptable, no matter how close.
+      - Running SHORTER is always fine — more trailing silence is
+        preferred over any risk of narration overflowing into a still
+        image or getting cut off. Asymmetric by design.
 
-    Strategy:
-      1. Generate an initial narration text, TTS it, measure real duration.
-      2. Loop up to max_correction_rounds times: if too long, ask for a
-         stricter rewrite (hard word ceiling, explicit "cut too much rather
-         than too little" instruction); if too short, ask for an EXTENDED
-         version using only real description content. Re-measure via real
-         TTS after each attempt.
-      3. If still outside tolerance after all rounds: pad with silence if
-         short (safe, invents nothing), or apply a graceful fade-out trim
-         if still long (avoids an abrupt mid-sentence cutoff — this is the
-         genuine safety net, not just accepting a mismatch).
+    The max allowed spoken-narration duration (MAX_SPEECH_SECS) is a hard
+    ceiling, not a target to approach — correction always triggers if
+    exceeded, with zero tolerance for overflow. Correction on the "too
+    short" side is much more lenient, since extra silence is an acceptable
+    outcome, not a failure.
 
-    Bounded to at most (1 + max_correction_rounds) real TTS calls — default
-    3 total — to control cost while prioritizing actually landing within
-    tolerance, since an audio track that's still too long risks getting
-    its ending cut off in the final video.
+    Returns a COMPLETE audio track already containing lead silence +
+    narration + trailing silence, padded to exactly target_video_secs —
+    ready to overlay directly onto the video, not just the bare narration.
 
     Returns:
       {"ok": bool, "narration_text": str, "audio_path": str | None,
-       "final_duration_secs": float | None, "captions": dict,
+       "speech_duration_secs": float | None, "captions": dict,
        "tts_calls_used": int, "was_trimmed": bool, "error": str | None}
     """
     base = generate_narration_from_description(description, selected_categories, address, price)
     if not base["ok"]:
         return {"ok": False, "narration_text": "", "audio_path": None,
-                "final_duration_secs": None, "captions": {}, "tts_calls_used": 0,
+                "speech_duration_secs": None, "captions": {}, "tts_calls_used": 0,
                 "was_trimmed": False, "error": f"initial narration generation failed: {base['error']}"}
 
     narration_text = base["continuous_narration"]
     captions = base["captions"]
     tts_calls_used = 0
-    audio_path = None
-    actual_secs = None
 
     measurement = _measure_tts_duration(narration_text, voice_id)
     tts_calls_used += 1
     if not measurement["ok"]:
         return {"ok": False, "narration_text": narration_text, "audio_path": None,
-                "final_duration_secs": None, "captions": captions, "tts_calls_used": tts_calls_used,
+                "speech_duration_secs": None, "captions": captions, "tts_calls_used": tts_calls_used,
                 "was_trimmed": False, "error": "TTS measurement failed on initial narration"}
 
     actual_secs = measurement["duration_secs"]
@@ -592,23 +581,21 @@ def generate_narration_matching_duration(
 
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
     for _round in range(max_correction_rounds):
-        diff = actual_secs - target_duration_secs
-        if abs(diff) <= tolerance_secs:
-            break  # within tolerance — done, no more correction needed
-
-        if diff > tolerance_secs:
-            # too long — shrink, with an explicit safety margin below the
-            # naive proportional estimate, since models tend to undershoot
-            # how much they actually cut when only given a soft target
-            naive_target_words = len(narration_text.split()) * (target_duration_secs / actual_secs)
-            target_words = max(15, int(naive_target_words * 0.85))  # 15% safety margin
-            prompt = SHORTEN_PROMPT.format(actual_secs=actual_secs, target_secs=target_duration_secs,
+        # HARD ceiling check — zero tolerance for overflow. Being under
+        # MAX_SPEECH_SECS is always acceptable, however far under.
+        if actual_secs > MAX_SPEECH_SECS:
+            naive_target_words = len(narration_text.split()) * (TARGET_SPEECH_SECS / actual_secs)
+            target_words = max(15, int(naive_target_words * 0.85))  # extra safety margin below even the naive estimate
+            prompt = SHORTEN_PROMPT.format(actual_secs=actual_secs, target_secs=MAX_SPEECH_SECS,
                                             target_words=target_words, narration=narration_text)
-        else:
-            extra_words = int(abs(diff) * WORDS_PER_SECOND_ESTIMATE)
-            prompt = EXTEND_PROMPT.format(actual_secs=actual_secs, target_secs=target_duration_secs,
+        elif actual_secs < MIN_SPEECH_SECS:
+            extra_words = int((TARGET_SPEECH_SECS - actual_secs) * WORDS_PER_SECOND_ESTIMATE)
+            prompt = EXTEND_PROMPT.format(actual_secs=actual_secs, target_secs=TARGET_SPEECH_SECS,
                                            extra_words=extra_words, description=description,
                                            narration=narration_text)
+        else:
+            break  # under the hard ceiling and not too sparse — acceptable, done
+
         try:
             response = client.messages.create(model=MODEL, max_tokens=2048,
                                                  messages=[{"role": "user", "content": prompt}])
@@ -627,25 +614,38 @@ def generate_narration_matching_duration(
             break
 
     was_trimmed = False
-    final_diff = actual_secs - target_duration_secs
-    if final_diff < -tolerance_secs and audio_path:
-        audio_path = _pad_audio_with_silence(audio_path, abs(final_diff))
-        actual_secs = target_duration_secs
-    elif final_diff > tolerance_secs and audio_path:
-        # Safety net: correction rounds didn't land it — trim with a
-        # graceful fade-out rather than leaving an uncontrolled overshoot
-        # for the video-assembly step to abruptly cut off mid-sentence.
-        audio_path = _fade_out_and_trim(audio_path, target_duration_secs)
-        actual_secs = target_duration_secs
+    if actual_secs > MAX_SPEECH_SECS and audio_path:
+        # Absolute safety net — correction rounds still didn't get it under
+        # the hard ceiling. Never acceptable to leave as-is: trim with a
+        # graceful fade-out rather than risk ANY overflow past the ceiling.
+        audio_path = _fade_out_and_trim(audio_path, MAX_SPEECH_SECS)
+        actual_secs = MAX_SPEECH_SECS
         was_trimmed = True
-        log.warning(f"[Scraper] Narration still {final_diff:.1f}s over target after "
+        log.warning(f"[Scraper] Narration still over the {MAX_SPEECH_SECS}s hard ceiling after "
                     f"{max_correction_rounds} correction round(s) — applied fade-out trim as safety net.")
+
+    # Build the COMPLETE audio track: lead silence + narration + trailing
+    # silence, padded to exactly target_video_secs. This guarantees the
+    # structural requirement (1s lead, >=2s trail) regardless of exactly
+    # how long the narration ended up within its allowed range.
+    final_audio_path = None
+    if audio_path:
+        from pydub import AudioSegment
+        narration_audio = AudioSegment.from_file(audio_path)
+        lead_silence = AudioSegment.silent(duration=int(LEAD_SILENCE_SECS * 1000))
+        track_so_far_ms = len(lead_silence) + len(narration_audio)
+        target_ms = int(target_video_secs * 1000)
+        trail_ms = max(int(TRAIL_SILENCE_SECS * 1000), target_ms - track_so_far_ms)
+        trail_silence = AudioSegment.silent(duration=trail_ms)
+        full_track = lead_silence + narration_audio + trail_silence
+        final_audio_path = audio_path.replace(".mp3", "_full_track.mp3")
+        full_track.export(final_audio_path, format="mp3")
 
     return {
         "ok": True,
         "narration_text": narration_text,
-        "audio_path": audio_path,
-        "final_duration_secs": actual_secs,
+        "audio_path": final_audio_path,
+        "speech_duration_secs": actual_secs,
         "captions": captions,
         "tts_calls_used": tts_calls_used,
         "was_trimmed": was_trimmed,
@@ -809,14 +809,16 @@ if __name__ == "__main__":
     )
     if narration["ok"]:
         print(f"\nFinal narration ({narration['tts_calls_used']} TTS call(s) used, "
-              f"final duration: {narration['final_duration_secs']:.1f}s, target: 30s"
+              f"speech duration: {narration['speech_duration_secs']:.1f}s, hard ceiling: {MAX_SPEECH_SECS}s"
               f"{', TRIMMED via fade-out safety net' if narration['was_trimmed'] else ''}):\n")
         print(narration["narration_text"])
         print("\nPer-scene captions:")
         for cat, caption in narration["captions"].items():
             print(f"  {cat}: {caption}")
         if narration["audio_path"]:
-            print(f"\nAudio file: {narration['audio_path']} (listen to this to judge quality/pacing)")
+            print(f"\nFull audio track (1s lead silence + narration + trailing silence, "
+                  f"exactly 30s total): {narration['audio_path']}")
+            print("Listen to this one — it's the exact track that would overlay onto the video.")
 
         scenes_config = build_standard_video_scenes_config(selection, narration["captions"])
         print(f"\n--- scenes_config ready for job creation ({len(scenes_config)} scenes) ---")
