@@ -900,15 +900,20 @@ def select_photos_for_scene_count(photos: list, scene_count: int) -> dict:
     was previously just a fixed placeholder: the answer is now derived
     from how much the property's real narration actually needs to say.
 
-      - scene_count <= 6 (number of categories): takes the first
-        scene_count categories in priority order, one photo each — drops
-        the lowest-priority remaining categories entirely for this video.
-      - scene_count > 6: takes one photo from every category first, then
-        gives ADDITIONAL photos to the highest-priority categories that
-        have more available, in priority order, until scene_count is met.
+    FLEXIBLE CATEGORY HANDLING (added per explicit requirement — many real
+    listings skip a category entirely, e.g. no exterior shot at all, and
+    that should never block the whole workflow): if a category has zero
+    candidates, its slot is backfilled from OTHER categories that have
+    surplus photos (a 2nd bedroom, a 2nd bathroom, or worst case another
+    shot of an already-used room) rather than left as a gap. A real,
+    reported gap now only happens if there simply aren't enough USABLE
+    photos across ALL categories combined to fill scene_count — not just
+    because one specific category happens to be missing.
 
-    Returns the same {"selected": {...}, "gaps": [...]} shape as
-    select_photos(), plus "scene_count_requested" for confirmation.
+    Returns the same {"selected": {...}, "gaps": [...]} shape as before,
+    plus "scene_count_requested" for confirmation. "gaps" is now a list of
+    plain-language shortfall descriptions, not per-category dicts, since
+    a missing category alone is no longer treated as the reportable gap.
     """
     by_category = {cat: [] for cat in PRIORITY_ORDER}
     for p in photos:
@@ -923,42 +928,44 @@ def select_photos_for_scene_count(photos: list, scene_count: int) -> dict:
     for cat in by_category:
         by_category[cat] = rank_photos_by_quality(cat, by_category[cat])
 
+    base_categories = PRIORITY_ORDER[:scene_count] if scene_count <= len(PRIORITY_ORDER) else list(PRIORITY_ORDER)
+
     selected = {cat: [] for cat in PRIORITY_ORDER}
-    gaps = []
     remaining = scene_count
 
-    if scene_count <= len(PRIORITY_ORDER):
-        for cat in PRIORITY_ORDER[:scene_count]:
-            if by_category[cat]:
-                selected[cat] = by_category[cat][:1]
-                remaining -= 1
-            else:
-                gaps.append({"category": cat, "wanted": 1, "found": 0})
-    else:
+    # Pass 1: one photo per base category, wherever available
+    for cat in base_categories:
+        if by_category[cat]:
+            selected[cat].append(by_category[cat][0])
+            remaining -= 1
+
+    # Pass 2: backfill remaining slots (missing categories' slots, AND any
+    # extra slots when scene_count > 6) from whichever categories have
+    # surplus, in priority order — this is the actual "double up" behavior.
+    while remaining > 0:
+        progress = False
         for cat in PRIORITY_ORDER:
-            if by_category[cat]:
-                selected[cat] = by_category[cat][:1]
+            if remaining <= 0:
+                break
+            already = len(selected[cat])
+            available = by_category[cat]
+            if len(available) > already:
+                selected[cat].append(available[already])
                 remaining -= 1
-            else:
-                gaps.append({"category": cat, "wanted": 1, "found": 0})
-        while remaining > 0:
-            progress = False
-            for cat in PRIORITY_ORDER:
-                if remaining <= 0:
-                    break
-                already = len(selected[cat])
-                available = by_category[cat]
-                if len(available) > already:
-                    selected[cat].append(available[already])
-                    remaining -= 1
-                    progress = True
-            if not progress:
-                break  # no more photos available anywhere to fill remaining slots
+                progress = True
+        if not progress:
+            break  # truly no more photos available anywhere
+
+    total_selected = sum(len(v) for v in selected.values())
+    gaps = []
+    if total_selected < scene_count:
+        gaps.append(f"Only {total_selected} usable photo(s) found across all categories combined, "
+                    f"needed {scene_count} — this listing may need manual photo upload.")
 
     return {
         "selected": {cat: photos_list for cat, photos_list in selected.items() if photos_list},
         "gaps": gaps,
-        "total_selected": sum(len(v) for v in selected.values()),
+        "total_selected": total_selected,
         "scene_count_requested": scene_count,
     }
 

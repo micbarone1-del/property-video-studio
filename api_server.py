@@ -929,7 +929,7 @@ async def create_job_from_url(
 
     if selection["gaps"]:
         shutil.rmtree(str(job_dir), ignore_errors=True)
-        gap_desc = ", ".join(f"{g['category']} (wanted {g['wanted']}, found {g['found']})" for g in selection["gaps"])
+        gap_desc = "; ".join(selection["gaps"])
         raise HTTPException(status_code=422,
                              detail=f"Not enough usable photos for this listing: {gap_desc}. Upload manually instead.")
 
@@ -953,12 +953,38 @@ async def create_job_from_url(
     # editable form) actually expects, and what /start-generation's fallback
     # lookup also supports. NOT scene_id-based naming, which editJob's
     # image-loading loop has no way to resolve (it fetches by index, not ID).
+    scene_image_paths = []
     for i, scene in enumerate(scenes_config):
         src = scene.pop("local_image_path", None)
+        dest_path = None
         if src and os.path.exists(src):
             src_path = Path(src)
-            dest = img_dir / f"scene_{i:03d}{src_path.suffix}"
-            shutil.move(src, str(dest))
+            dest_path = img_dir / f"scene_{i:03d}{src_path.suffix}"
+            shutil.move(src, str(dest_path))
+        scene_image_paths.append(dest_path)
+
+    # Real per-photo vision analysis — BUG FIXED July 10 2026: scenes were
+    # previously getting space_type/pov_movement from a static category-name
+    # lookup table (e.g. all "bedrooms" always got the same movement),
+    # never actually looking at the photo itself. Manually-uploaded photos
+    # already get real analysis via analyse_input() (the /analyse-image
+    # endpoint) — this brings scraped photos to the same standard instead
+    # of a simplified stand-in. Falls back to the static table only if
+    # analysis fails for a specific photo.
+    from vision_analysis import analyse_input
+    for i, scene in enumerate(scenes_config):
+        dest_path = scene_image_paths[i]
+        if not dest_path or not dest_path.exists():
+            continue
+        try:
+            analysis = await asyncio.to_thread(analyse_input, str(dest_path))
+            if analysis.get("space_type"):
+                scene["space_type"] = analysis["space_type"]
+            if analysis.get("pov_movement"):
+                scene["pov_movement"] = analysis["pov_movement"]
+        except Exception as e:
+            log.warning(f"[URL workflow] Vision analysis failed for scene {i}, "
+                        f"keeping category-based default: {e}")
 
     property_name_final = property_name.strip() or extraction.get("address") or "Property"
 
