@@ -713,20 +713,25 @@ _CATEGORY_TO_SPACE_TYPE = {
     "bedrooms": "small", "bathrooms": "small",
 }
 
-# BUG FIXED July 9 2026: every scene previously got a hardcoded
-# "walk_in_explore" pov_movement regardless of room type — confirmed via
-# real UI testing that space_type was correctly varying per category but
-# camera movement wasn't, which is exactly this gap. ASSUMPTION FLAGGED:
-# these specific movement-per-category choices are a reasonable first
-# pass, not independently verified against real generation output in this
-# session — worth checking a few real clips before trusting fully.
+# BUG FIXED July 10 2026 — the previous version of this table used
+# entirely INVENTED movement names ("wide_reveal", "pullback_arc",
+# "gentle_arc", "soft_orbit") that don't match ANY real option in
+# ui.html's MOVEMENT_OPTS. Since none of those values ever matched a real
+# <option>, the dropdown always fell back to showing its first/starred
+# option ("Entra ed esplora") regardless of category — confirmed via real
+# testing this was the actual cause of "camera movement never changes."
+# Verified against the real MOVEMENT_OPTS list this time before choosing
+# defaults — these ARE real, selectable values:
+#   walk_in_explore, walk_in_gentle, walk_in_turn_left, walk_in_turn_right,
+#   walk_through, stand_look_around, subtle_rotate, approach_reveal,
+#   walk_toward, reveal_pullback, step_out_onto
 _CATEGORY_TO_POV_MOVEMENT = {
-    "exterior": "wide_reveal",     # show the full facade
-    "outdoor": "pullback_arc",     # garden/outdoor space, show breadth
-    "living": "gentle_arc",        # natural room-scanning movement
-    "kitchen": "soft_orbit",       # compact functional space
-    "bedrooms": "static",          # calmer, more intimate — avoid dramatic movement
-    "bathrooms": "static",         # smaller/private space, minimal movement most natural
+    "exterior": "reveal_pullback",   # explicitly labeled for facade/exterior in the UI itself
+    "outdoor": "walk_toward",        # explicitly labeled "per esterni" (for exteriors)
+    "living": "walk_in_explore",     # the app's own starred/recommended default
+    "kitchen": "walk_in_gentle",     # gentle lateral tracking, compact functional space
+    "bedrooms": "stand_look_around", # calm, minimal — avoid dramatic movement in a private room
+    "bathrooms": "subtle_rotate",    # explicitly labeled "per piccoli ambienti" (for small rooms)
 }
 
 
