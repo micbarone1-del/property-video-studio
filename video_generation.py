@@ -34,13 +34,24 @@ import concurrent.futures as _cf
 _FAL_SUBSCRIBE_TIMEOUT_SECS = 480
 
 def _subscribe_with_timeout(endpoint: str, arguments: dict) -> dict:
-    with _cf.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(fal_client.subscribe, endpoint, arguments=arguments)
-        try:
-            return future.result(timeout=_FAL_SUBSCRIBE_TIMEOUT_SECS)
-        except _cf.TimeoutError:
-            log.error(f"[VideoGen] fal_client.subscribe() timed out after {_FAL_SUBSCRIBE_TIMEOUT_SECS}s on {endpoint}")
-            raise TimeoutError(f"fal.ai queue stalled after {_FAL_SUBSCRIBE_TIMEOUT_SECS}s")
+    # BUG FIXED: the previous version used "with ThreadPoolExecutor(...) as executor",
+    # whose __exit__ unconditionally calls shutdown(wait=True) - which blocks the
+    # CALLING thread until the stuck task itself finishes, silently defeating the
+    # entire timeout. Confirmed via py-spy: a job was stuck for HOURS inside this
+    # exact shutdown() call, waiting on the same hung fal.ai request the timeout
+    # was supposed to escape from. Fix: no "with" block, explicit shutdown(wait=False)
+    # so cleanup never blocks - the orphaned worker thread finishes or dies on its
+    # own in the background, harmless since nothing waits on it.
+    executor = _cf.ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(fal_client.subscribe, endpoint, arguments=arguments)
+    try:
+        result = future.result(timeout=_FAL_SUBSCRIBE_TIMEOUT_SECS)
+        executor.shutdown(wait=False)
+        return result
+    except _cf.TimeoutError:
+        log.error(f"[VideoGen] fal_client.subscribe() timed out after {_FAL_SUBSCRIBE_TIMEOUT_SECS}s on {endpoint}")
+        executor.shutdown(wait=False)
+        raise TimeoutError(f"fal.ai queue stalled after {_FAL_SUBSCRIBE_TIMEOUT_SECS}s")
 
 # ── Model endpoints ────────────────────────────────────────────────────────────
 LYRA_ENDPOINT   = "fal-ai/lyra-2/zoom"
