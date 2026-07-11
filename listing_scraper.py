@@ -364,6 +364,8 @@ STAY OBJECTIVE AND FACTUAL — this is important, not a minor style note:
 
 DO NOT include phone numbers or the price in the spoken narration — phone numbers are not pronounced intelligibly by text-to-speech and neither is needed in the voiceover itself.
 
+End the narration with a brief, natural closing line inviting the viewer to contact the agency for more information (e.g. "Contattate l'agenzia per maggiori informazioni" or similar) — do NOT include a phone number or email in this closing line, just a general invitation to get in touch.
+
 Return ONLY the narration text (no JSON, no markdown, no preamble, no quotation marks around it).
 
 Base everything on the actual property description above — don't invent details, features, or qualities not mentioned there.
