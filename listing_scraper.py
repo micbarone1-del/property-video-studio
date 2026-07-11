@@ -1043,7 +1043,7 @@ if __name__ == "__main__":
     if selection["gaps"]:
         print("\n  GAPS DETECTED — manual upload needed for:")
         for gap in selection["gaps"]:
-            print(f"    {gap['category']}: wanted {gap['wanted']}, found {gap['found']}")
+            print(f"    {gap}")
     else:
         print("\n  No gaps — all categories satisfied.")
 
