@@ -1703,6 +1703,21 @@ async def run_redo_scene(job_id: str, scene_id: str):
             if candidate.exists():
                 source_img = candidate
                 break
+        # BUG FIXED: jobs created before the scene_id naming convention store
+        # their images as legacy scene_NNN.ext (index-based) instead of
+        # {scene_id}.ext. Confirmed real: redo always failed with "No source
+        # image found" on any older job. Fall back to the legacy name and
+        # self-heal by copying it to the new name, same pattern already used
+        # correctly in run_reassemble_only for clips/audio.
+        if not source_img:
+            for ext in [".jpg", ".jpeg", ".png", ".webp"]:
+                legacy_candidate = img_dir / f"scene_{scene_idx:03d}{ext}"
+                if legacy_candidate.exists():
+                    new_name = img_dir / f"{scene_id}{ext}"
+                    shutil.copy2(str(legacy_candidate), str(new_name))
+                    source_img = new_name
+                    log.info(f"[Job {job_id}] Migrated legacy image scene_{scene_idx:03d}{ext} → {scene_id}{ext}")
+                    break
         if not source_img:
             raise ValueError(f"No source image found for scene {scene_id}")
 
