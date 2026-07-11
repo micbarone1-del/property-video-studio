@@ -2045,7 +2045,12 @@ genBtn.addEventListener('click', async () => {
   }
 
 
-  if (reworkScenes.length > 0 && currentJobId) {
+  // BUG FIXED: previously routed to rework whenever ANY scene had a
+  // changed duration, even on a fresh draft job that's never been
+  // generated - durationChangedSceneIndices gets populated by the old
+  // narration system's confirmNarrationDurations() regardless of job
+  // status. Now only routes to rework for genuinely completed jobs.
+  if (reworkScenes.length > 0 && currentJobId && currentJobStatus !== 'draft') {
     // Reset rework_open for all submitted scenes before routing
     reworkScenes.forEach(i => {
       if (sceneUserData[i]) sceneUserData[i].rework_open = false;
