@@ -171,6 +171,58 @@ def _overlay_narration_audio(video_path: str, narration_path: str):
 
 
 
+# ── Generation pause / kill-switch ────────────────────────────────────────────
+# Persisted to disk so an accidental restart can't silently unpause and let
+# jobs sneak through before deliberately resumed. Visible in the UI as a
+# banner + toggle, not a hidden admin-only mechanism - the point is that
+# anyone using the app can SEE generation is paused, not be confused by
+# what would otherwise look like a broken submit button.
+GENERATION_PAUSE_FILE = BASE_DIR / "generation_pause.json"
+
+def _get_generation_pause_state() -> dict:
+    if GENERATION_PAUSE_FILE.exists():
+        try:
+            return json.loads(GENERATION_PAUSE_FILE.read_text())
+        except Exception:
+            pass
+    return {"paused": False, "message": "", "paused_at": None}
+
+def _set_generation_pause_state(paused: bool, message: str = "") -> dict:
+    state = {
+        "paused": paused,
+        "message": message,
+        "paused_at": datetime.utcnow().isoformat() if paused else None,
+    }
+    GENERATION_PAUSE_FILE.write_text(json.dumps(state, indent=2))
+    return state
+
+def _raise_if_generation_paused():
+    state = _get_generation_pause_state()
+    if state.get("paused"):
+        raise HTTPException(
+            status_code=423,
+            detail=f"Generazione video in pausa: {state.get('message') or 'manutenzione in corso'}. Riprova più tardi.",
+        )
+
+@app.get("/admin/generation-status")
+async def get_generation_status():
+    state = _get_generation_pause_state()
+    active_count = sum(1 for j in JOBS.values() if j.get("status") in ("running", "queued"))
+    return {**state, "active_jobs": active_count}
+
+@app.post("/admin/pause-generation")
+async def pause_generation(message: str = Form("Manutenzione in corso")):
+    state = _set_generation_pause_state(True, message)
+    log.info(f"[Admin] Generation PAUSED: {message}")
+    return state
+
+@app.post("/admin/resume-generation")
+async def resume_generation():
+    state = _set_generation_pause_state(False)
+    log.info("[Admin] Generation RESUMED")
+    return state
+
+
 # ── Rate limiting ──────────────────────────────────────────────────────────────
 _RATE_LIMIT_WINDOW = 3600   # 1 hour in seconds
 _RATE_LIMIT_MAX    = 5      # max job submissions per IP per hour
@@ -530,6 +582,7 @@ async def create_job(
             detail="Too many requests. Maximum 5 jobs per hour. Please wait before submitting again."
         )
 
+    _raise_if_generation_paused()
 
     # Max images check
     if len(images) > 20:
@@ -670,6 +723,7 @@ async def start_generation_for_draft(job_id: str, background_tasks: BackgroundTa
     """
     if job_id not in JOBS:
         raise HTTPException(status_code=404, detail="Job not found")
+    _raise_if_generation_paused()
     job = JOBS[job_id]
     if job.get("status") != "draft":
         raise HTTPException(status_code=400, detail=f"Job is not in draft state (status: {job.get('status')})")
@@ -894,6 +948,8 @@ async def create_job_from_url(
     if not _check_rate_limit(client_ip):
         raise HTTPException(status_code=429,
                              detail="Too many requests. Maximum 5 jobs per hour. Please wait before submitting again.")
+
+    _raise_if_generation_paused()
 
     import listing_scraper as scraper
 

@@ -272,6 +272,7 @@
   <h1>Property Video Studio</h1>
   <span class="sub">Real Estate · AI Video Generator</span>
   <button id="maint-btn" onclick="openMaintenance()">🔧 Maintenance</button>
+  <button id="pause-gen-btn" onclick="toggleGenerationPause()" style="display:none">⏸ Pause generation</button>
   <span id="credit-dot" onclick="document.getElementById('credit-banner').scrollIntoView({behavior:'smooth'})" title="Credit status"></span>
 </header>
 
@@ -341,6 +342,10 @@
 
 
   <!-- Credit banner -->
+  <div id="generation-pause-banner" style="display:none;margin-bottom:16px;padding:12px 16px;border:1px solid #f5c6c2;border-radius:var(--radius);background:#fdf0ef;color:var(--danger);font-size:.85rem">
+    <strong>🔒 Nuove generazioni in pausa</strong> — <span id="generation-pause-message"></span>
+  </div>
+
   <div id="credit-banner">
     <div class="cb-head">⚠ Low Credits — action needed</div>
     <div class="cb-body" id="credit-body"></div>
@@ -1095,6 +1100,44 @@ async function editJob(jobId, baseJobId) {
   }
 }
 
+
+// ── Generation pause / kill-switch ──────────────────────────────────────────
+async function checkGenerationPauseStatus() {
+  try {
+    const res = await authFetch('/admin/generation-status');
+    const data = await res.json();
+    const banner = document.getElementById('generation-pause-banner');
+    const msgEl  = document.getElementById('generation-pause-message');
+    const btn    = document.getElementById('pause-gen-btn');
+    if (data.paused) {
+      banner.style.display = 'block';
+      msgEl.textContent = `${data.message || 'manutenzione in corso'} (${data.active_jobs} job attivi)`;
+      if (btn) { btn.textContent = '▶ Resume generation'; btn.style.display = ''; }
+    } else {
+      banner.style.display = 'none';
+      if (btn) { btn.textContent = '⏸ Pause generation'; btn.style.display = ''; }
+    }
+    return data;
+  } catch(e) {
+    console.error('checkGenerationPauseStatus error:', e);
+  }
+}
+
+async function toggleGenerationPause() {
+  const status = await checkGenerationPauseStatus();
+  if (status && status.paused) {
+    await authFetch('/admin/resume-generation', { method: 'POST' });
+  } else {
+    const msg = prompt('Motivo della pausa (visibile agli utenti):', 'Manutenzione in corso');
+    if (msg === null) return;  // cancelled
+    const fd = new FormData();
+    fd.append('message', msg);
+    await authFetch('/admin/pause-generation', { method: 'POST', body: fd });
+  }
+  await checkGenerationPauseStatus();
+}
+
+checkGenerationPauseStatus();
 
 // Auto-refresh library count on load
 authFetch('/jobs/').then(r => r.json()).then(d => {
