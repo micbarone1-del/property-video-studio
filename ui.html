@@ -568,6 +568,12 @@ async function stopCurrentJob() {
 let narrationDistribution = null;  // holds the calculated result until confirmed
 let narrationExistsOnServer = false;  // server truth — persists across page loads/job reopens, unlike narrationDistribution which is session-local
 let durationChangedSceneIndices = new Set();  // scenes whose duration actually changed via narration redistribution
+// BUG FIXED: caption/space_type/pov_movement edits had NO equivalent tracking
+// at all - editing these directly (without a separate explicit "mark for
+// rework" action) produced zero signal, so pressing "Genera Video" saw no
+// pending changes, found narration existed, and silently did a cheap
+// reassembly instead - real edits were dropped without any indication.
+let contentChangedSceneIndices = new Set();  // scenes whose caption/space_type/pov_movement changed
 
 
 async function generateNarration() {
@@ -733,6 +739,7 @@ async function confirmNarrationDurations() {
     // the scenes whose duration genuinely changed. If narration redistribution
     // proposes the SAME durations already in place, nothing needs regenerating.
     durationChangedSceneIndices.clear();
+    contentChangedSceneIndices.clear();
     const cards = [...scenesCont.querySelectorAll('.scene-card')];
     narrationDistribution.new_scene_durations.forEach((dur, i) => {
       const card = cards[i];
@@ -1031,6 +1038,7 @@ async function editJob(jobId, baseJobId) {
     files = [];
     newlyAddedSceneIndices.clear();  // fresh job context — no new scenes yet
     durationChangedSceneIndices.clear();
+    contentChangedSceneIndices.clear();
     Object.keys(sceneAnalysis).forEach(k => delete sceneAnalysis[k]);
     Object.keys(sceneUserData).forEach(k => delete sceneUserData[k]);
 
@@ -1518,6 +1526,7 @@ function onSpaceTypeChange(index, value) {
   if (moveSel) {
     moveSel.value = SPACE_DEFAULT_MOVEMENT_MAP[value] || 'walk_in_explore';
   }
+  contentChangedSceneIndices.add(index);
   updateCostEstimate();
 }
 
@@ -1663,7 +1672,8 @@ function renderScenes() {
         <div>
           <label>Didascalia</label>
           <input type="text" class="sc-caption" value="${saved.caption||''}"
-            placeholder="es: Soggiorno, Camera da letto, Balcone…" />
+            placeholder="es: Soggiorno, Camera da letto, Balcone…"
+            oninput="contentChangedSceneIndices.add(${i})" />
         </div>
         <div>
           <label>Testo voiceover <span style="color:var(--muted)">(opzionale)</span></label>
@@ -1681,7 +1691,7 @@ function renderScenes() {
           </div>
           <div>
             <label>Movimento POV</label>
-            <select class="sc-pov-movement">${moveOpts}</select>
+            <select class="sc-pov-movement" onchange="contentChangedSceneIndices.add(${i})">${moveOpts}</select>
           </div>
           <div>
             <label>Durata clip</label>
@@ -1997,6 +2007,7 @@ async function updateCostEstimate() {
     });
     newlyAddedSceneIndices.forEach(i => reworkIndices.add(i));
     durationChangedSceneIndices.forEach(i => reworkIndices.add(i));
+    contentChangedSceneIndices.forEach(i => { if (i < files.length) reworkIndices.add(i); });
     if (reworkIndices.size > 0) {
       isRework = true;
       scenesToCharge = config.filter((_, i) => reworkIndices.has(i));
