@@ -1060,7 +1060,11 @@ if __name__ == "__main__":
 
     print("\n--- Generating on-screen captions for selected categories ---")
     selected_categories = [cat for cat, photos in selection["selected"].items() if photos]
-    captions = generate_captions_for_categories(result["description"], selected_categories)
+    if selected_categories:
+        captions = generate_captions_for_categories(result["description"], selected_categories)
+    else:
+        captions = {}
+        print("\n--- Skipping caption generation - no photos selected ---")
     for cat, caption in captions.items():
         print(f"  {cat}: {caption}")
 

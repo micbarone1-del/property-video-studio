@@ -200,6 +200,30 @@ Combined, these two fixes cleared **34 stale/orphaned job directories** in produ
 
 ---
 
+## July 11, 2026 — Critical generation bug found and fixed, kill-switch built, further scraper testing
+
+**ROOT CAUSE of "stuck at scene 0" finally found and fixed — a real, serious bug in the timeout fix itself:** the `_subscribe_with_timeout()` wrapper added July 10 used `with _cf.ThreadPoolExecutor(...) as executor:` — but `ThreadPoolExecutor.__exit__` unconditionally calls `shutdown(wait=True)`, which blocks the *calling* thread until the original submitted task finishes. Since the underlying fal.ai call was the thing that never returned, `shutdown(wait=True)` just waited forever too, silently defeating the entire timeout. Confirmed via `py-spy` process inspection: a real job was stuck for **hours** inside this exact `shutdown()` call. Fixed by removing the `with` block and calling `executor.shutdown(wait=False)` explicitly, so cleanup never blocks — the orphaned worker thread finishes or dies on its own in the background.
+
+**Separately confirmed: some Luma failures ARE genuinely upstream, not us.** Two real jobs failed after **almost exactly 2402 seconds (~40 min)** with `504 Downstream service unavailable` — too precise to be coincidence, suggesting an internal ~40-min timeout on fal.ai's Luma backend right now. Luma's own status page (status.lumalabs.ai) shows a documented precedent for exactly this failure class ("Dream Machine jobs remained in..." — May 27, 2026, degraded 1 hour) but no active incident was listed as of the last check. Reported to fal.ai support with exact request IDs; auto-refund expected per their policy. **Veo confirmed working reliably** as the practical alternative while this persists.
+
+**Full end-to-end test SUCCESSFUL on Veo (July 11, 2026)** — URL scrape → narration → scene selection → job creation → generation → completed video, entirely clean. First fully successful confirmation of the whole Phase 1 pipeline this session.
+
+**Kill-switch built and deployed:** persistent pause flag (`generation_pause.json`, survives restarts), `/admin/pause-generation` and `/admin/resume-generation` endpoints, `/admin/generation-status` for live state, wired into all three job-start entry points (`create_job`, `start_generation_for_draft`, `create_job_from_url`). Visible UI banner + toggle button next to the Maintenance button — deliberately visible, not hidden admin plumbing, so a paused state never looks like a broken submit button. **Deployment note:** first attempt broke the server entirely (`NameError: name 'app' is not defined` — new code was accidentally inserted before `app = FastAPI(...)`) since `python3 -m py_compile` only checks syntax, not import-time errors. Fixed by moving the block to the correct location and verifying with a real module import before restarting again. **Lesson for future backend changes:** always verify with an actual import test, not just `py_compile`, before restarting.
+
+**Narration/rework false-trigger bug — found and fixed (second occurrence of the same root cause):** `genBtn`'s click handler checked `durationChangedSceneIndices.length > 0 && currentJobId` to decide whether to route to the rework endpoint — true for ANY loaded job with a changed duration, including a fresh draft that's never been generated once. Fixed the same way as the earlier cost-estimate bug: gated on `currentJobStatus !== 'draft'` as well.
+
+**Narration now ends with an invite to contact the agency** — added to `NARRATION_PROMPT`, explicitly without a phone number or email (TTS already excludes those elsewhere in the prompt).
+
+**Confirmed real gap, not yet fixed:** the *manual/general* narration path (`_overlay_narration_audio` in `api_server.py`) has zero protection against narration running longer than the pre-calculated video duration — unlike the scraper's own narration engine, which has a hard ceiling + fade-out safety net. Only handles the "narration shorter" case in its docstring. Flagged, not yet built — deprioritized behind the kill-switch this session.
+
+**idealista.it / casa.it — tested twice each, extraction genuinely does not work yet:** both returned 0 photos on the most recent test (regressed from 1 photo on the first). User's hypothesis: idealista's gallery may require a click to expand, which a static page fetch can't do — plausible but unconfirmed for casa.it's failure specifically. The "GAPS DETECTED — manual upload needed" fallback worked correctly here — this is the safety design working as intended, not a crash. Real fix would likely need finding each site's internal image-loading API rather than parsing the rendered page. Not started — deprioritized behind core pipeline reliability this session.
+
+**Real bug found and fixed:** when a listing has 0 selected photos, caption generation was still running anyway — with no real category list to work from, the LLM invented its own made-up category names instead of returning nothing. Fixed: caption generation is now skipped entirely when there's nothing to caption.
+
+**Real bug found and fixed (unrelated crash, in the test script itself):** `listing_scraper.py`'s `__main__` block still printed gaps using the old dict format (`gap['category']`) after `gaps` was changed to a list of plain strings weeks earlier — crashed instantly whenever a real gap occurred. Fixed.
+
+---
+
 ## Standing safeguards
 
 - Stale browser cache can cause subtle bugs — hard refresh to verify JS changes.

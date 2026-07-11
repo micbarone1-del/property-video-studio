@@ -133,13 +133,11 @@ Items are ordered by priority. Each entry includes scope, decisions already made
 
 ---
 
-## 12. Generation kill-switch during development/deployment
+## 12. Generation kill-switch during development/deployment — ✅ COMPLETED July 11, 2026
 
-**Problem, confirmed real during this session's testing:** restarting the server (`./start.sh`) kills the whole uvicorn process, abruptly terminating any in-flight video generation — wasting whatever Luma/Veo cost was already spent on partial clips. No way currently to pause new job generation while a bug fix or new feature is being deployed.
+**Built:** persistent pause flag (`generation_pause.json`, survives restarts on purpose — an accidental restart can't silently let jobs sneak through), `/admin/pause-generation` + `/admin/resume-generation` endpoints, `/admin/generation-status` for live state + active job count, wired into all three job-start entry points. Visible UI banner + toggle button next to the Maintenance button — deliberately visible so a paused state reads as intentional, not a broken submit button.
 
-**Scope not yet defined — open questions:**
-- A UI toggle to block new job submissions temporarily, a way to check "is anything currently generating" before restarting, or both?
-- Should in-flight jobs be allowed to finish before a restart, or is a hard stop acceptable as long as it's a deliberate, visible action rather than an accidental one?
+**Does NOT do:** true pause/resume of a job already mid-flight waiting on a Luma/Veo API call — that's not technically possible (no way to freeze and resume a live network call). What it actually does: blocks new submissions, and existing jobs can be gracefully stopped (finishes current scene, halts) via the already-working `/stop` mechanism, then resumed after redeploy since stopped jobs retain partial progress.
 
 ---
 
@@ -154,6 +152,24 @@ Items are ordered by priority. Each entry includes scope, decisions already made
 **Problem, confirmed real July 10 2026:** manual per-scene duration sliders move in 4s/6s increments (matching Veo's valid durations), never landing on 5s or 9s — Luma's only two valid clip durations. Any manual duration set via these sliders on the Luma tier gets silently snapped/distorted by the backend, with no indication to the user that their chosen value wasn't actually used.
 
 **Scope not yet defined — needs its own look:** should the slider be dynamic based on the currently selected model tier (5s/9s steps for Luma, 4s/6s/8s for Veo), or should snapping be made visible in the UI instead of silent?
+
+---
+
+## 15. idealista.it / casa.it photo extraction doesn't work yet
+
+**Problem, confirmed via real testing July 11, 2026:** both sites return 0 photos consistently (immobiliare.it works reliably). User's hypothesis: idealista's gallery may require a click to expand, which a static page fetch can't do. Unconfirmed for casa.it specifically — may be a different cause.
+
+**What already works correctly:** the "not enough photos, manual upload needed" fallback fires cleanly — this is the safety design working as intended, not a crash.
+
+**Likely real fix, not started:** find each site's internal image-loading API/endpoint rather than parsing the rendered page — a materially different, site-specific investigation, not a quick patch.
+
+---
+
+## 16. Manual narration path has no overrun protection
+
+**Problem, confirmed via code read July 11, 2026:** `_overlay_narration_audio()` in `api_server.py` (the general/manual narration path, separate from the URL-scraper's own narration engine) has no handling at all for narration running longer than the pre-calculated video duration — only documents the "narration shorter" case. The scraper's own engine has a hard ceiling + fade-out safety net; this path does not.
+
+**Not started** — deprioritized behind core pipeline reliability work this session.
 
 ---
 
