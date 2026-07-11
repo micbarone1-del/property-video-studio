@@ -835,11 +835,24 @@ async def generate_narration(
         n_scenes = len(scenes_config)
         current_durations = [int(s.get("duration", 6)) for s in scenes_config] or [6] * n_scenes
 
+        # BUG FIXED: calculate_scene_durations() previously defaulted to a
+        # tier-blind union [4,5,6,8,9] of Veo+Luma valid values, so it could
+        # (and did) propose "4s" for a Luma job - invalid, Luma only accepts
+        # 5s/9s. Now mirrors the same tier logic already used for the UI
+        # sliders (getDurationRangeForTier in ui.html).
+        _tier = job.get("model_tier", "standard")
+        if _tier == "luma":
+            _valid_durations = [5, 9]
+        elif _tier == "eco":
+            _valid_durations = [6, 8, 10, 12, 14, 16, 18, 20]
+        else:  # premium / premium_veo / standard (all Veo-backed)
+            _valid_durations = [4, 6, 8]
 
         distribution = calculate_scene_durations(
             narration_duration_secs=result["duration_secs"],
             scene_count=n_scenes,
             current_durations=current_durations,
+            valid_durations=_valid_durations,
         )
 
 

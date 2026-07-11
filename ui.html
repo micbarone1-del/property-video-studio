@@ -2029,7 +2029,15 @@ async function updateCostEstimate() {
   const upCost    = upscale ? n * UPSCALE : 0;
   const vidUpCost = videoUpscale
     ? scenesToCharge.reduce((s,sc) => s + (sc.duration * VIDEO_UP_PER_SEC), 0) : 0;
-  const chars     = scenesToCharge.reduce((s,sc) => s + sc.voiceover.length, 0);
+  // BUG FIXED: continuous-narration jobs (scraped jobs, narration-first
+  // flow) keep the narration text in a separate track, not per-scene
+  // voiceover fields - per-scene chars alone was always 0 for these,
+  // silently excluding TTS cost entirely. Now also counts the current
+  // narration textarea's content, since that's the actual source of
+  // truth for what will be synthesized.
+  const perSceneChars  = scenesToCharge.reduce((s,sc) => s + sc.voiceover.length, 0);
+  const narrationChars = document.getElementById('narration-text')?.value.length || 0;
+  const chars     = perSceneChars + narrationChars;
   const ttsCost   = chars * EL_PER_CHAR;
   const visCost   = visionQc ? n * 2 * FLORENCE : 0;
   // Infra cost only applies to a fresh full job — a rework of 1-2 scenes
