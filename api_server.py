@@ -171,6 +171,9 @@ def _overlay_narration_audio(video_path: str, narration_path: str):
 
 
 
+app = FastAPI(title="Real Estate Video Generator", version="3.0.0")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
 # ── Generation pause / kill-switch ────────────────────────────────────────────
 # Persisted to disk so an accidental restart can't silently unpause and let
 # jobs sneak through before deliberately resumed. Visible in the UI as a
@@ -294,9 +297,6 @@ _load_jobs_from_disk()
 
 
 # ── App ────────────────────────────────────────────────────────────────────────
-app = FastAPI(title="Real Estate Video Generator", version="3.0.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
