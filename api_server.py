@@ -995,12 +995,21 @@ async def create_job_from_url(
     img_dir.mkdir(parents=True)
 
     selection = await asyncio.to_thread(scraper.download_selected_photos, selection, img_dir)
-
-    if selection["gaps"]:
+    # BUG FIXED: this check previously only looked at selection["gaps"],
+    # computed BEFORE the download attempt. Confirmed real case: a
+    # listing's entire photo CDN batch returned 404 during download -
+    # the pre-download gaps check passed silently and the job was
+    # created reporting "success" with 0 actual scenes.
+    total_downloaded = sum(len(photos) for photos in selection["selected"].values())
+    if selection["gaps"] or total_downloaded == 0:
         shutil.rmtree(str(job_dir), ignore_errors=True)
-        gap_desc = "; ".join(selection["gaps"])
+        if selection["gaps"]:
+            gap_desc = "; ".join(selection["gaps"])
+        else:
+            n_failed = len(selection.get("download_failures", []))
+            gap_desc = f"All {n_failed} selected photo(s) failed to download - source images may be temporarily unavailable"
         raise HTTPException(status_code=422,
-                             detail=f"Not enough usable photos for this listing: {gap_desc}. Upload manually instead.")
+                             detail=f"Not enough usable photos for this listing: {gap_desc}. Try again in a moment, or upload manually.")
 
     selected_categories = [cat for cat, photos in selection["selected"].items() if photos]
     captions = await asyncio.to_thread(

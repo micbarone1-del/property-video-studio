@@ -364,6 +364,10 @@ STAY OBJECTIVE AND FACTUAL — this is important, not a minor style note:
 
 DO NOT include phone numbers or the price in the spoken narration — phone numbers are not pronounced intelligibly by text-to-speech and neither is needed in the voiceover itself.
 
+AVOID legal/administrative real estate jargon that means nothing to a general viewer or sounds jarring when spoken aloud — for example, do not say "nuda proprietà" (a specific bare-ownership legal structure) or generic filler like "appartamento di proprietà" (just say "appartamento") unless that jargon is actually essential to understanding the listing. Use natural, plain descriptive language a real person would use when showing someone a property.
+
+IMPORTANT: clearly state whether the property is FOR SALE or FOR RENT ("in vendita" or "in affitto") near the beginning of the narration, based on what the listing description actually says — do not leave this ambiguous or assume one over the other.
+
 End the narration with a brief, natural closing line inviting the viewer to contact the agency for more information (e.g. "Contattate l'agenzia per maggiori informazioni" or similar) — do NOT include a phone number or email in this closing line, just a general invitation to get in touch.
 
 Return ONLY the narration text (no JSON, no markdown, no preamble, no quotation marks around it).

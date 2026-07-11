@@ -1082,6 +1082,11 @@ async function editJob(jobId, baseJobId) {
         space_type:   scene.space_type || 'large',
         pov_movement: scene.pov_movement || 'walk_in_explore',
         scene_id:     scene.scene_id || null,  // enables new solid redo path
+        // BUG FIXED: this load-time block never read remove_watermark from
+        // the loaded job's scenes_config, so the checkbox always rendered
+        // unchecked even when the backend (e.g. the URL scraper) had
+        // correctly set it to true - the value just never made it into the UI.
+        remove_watermark: scene.remove_watermark || false,
       };
     }
 
