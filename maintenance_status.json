@@ -1,33 +1,31 @@
 {
-  "timestamp": "2026-07-12T07:40:02.289727",
-  "checks_ran_this_tick": [
-    "service_status"
-  ],
+  "timestamp": "2026-07-12T16:20:01.489667",
+  "checks_ran_this_tick": [],
   "overall": {
-    "status": "ok",
-    "summary": "All systems normal."
+    "status": "red",
+    "summary": "Action needed: Old Job Cleanup"
   },
   "checks": [
     {
       "name": "disk_usage",
       "title": "Storage Space",
       "status": "ok",
-      "summary": "Plenty of storage space available (168 GB free).",
-      "detail": "10.4% used (168 GB free)"
+      "summary": "Plenty of storage space available (174 GB free).",
+      "detail": "7.2% used (174 GB free)"
     },
     {
       "name": "credits",
       "title": "API Credits",
       "status": "ok",
-      "summary": "Credit balances look healthy (fal.ai: \u20ac24.05 remaining).",
-      "detail": "fal.ai: \u20ac24.05 remaining"
+      "summary": "Credit balances look healthy (fal.ai: \u20ac29.69 remaining).",
+      "detail": "fal.ai: \u20ac29.69 remaining"
     },
     {
       "name": "service_status",
       "title": "Server Status",
       "status": "ok",
       "summary": "Server is online and responding normally.",
-      "detail": "HTTP 200: {\"status\":\"ok\",\"time\":\"2026-07-12T07:40:02.284187\"}"
+      "detail": "HTTP 200: {\"status\":\"ok\",\"time\":\"2026-07-12T16:15:02.223228\"}"
     },
     {
       "name": "stuck_jobs",
@@ -40,27 +38,27 @@
       "name": "test_scratch_size",
       "title": "Test Files",
       "status": "ok",
-      "summary": "Test files are at a normal size (10.4 MB).",
-      "detail": "10.4 MB"
+      "summary": "Test files are at a normal size (55.4 MB).",
+      "detail": "55.4 MB"
     },
     {
       "name": "cleanup_verification",
       "title": "Old Job Cleanup",
-      "status": "ok",
-      "summary": "Cleaned up 5 old job(s) automatically.",
-      "detail": "5 job(s) removed this run"
+      "status": "red",
+      "summary": "2 old job(s) should have been cleaned up but weren't \u2014 worth a look.",
+      "detail": "2 job(s) still past retention after triggering cleanup (diagnostics reported 10 cleaned this run): 161dfaf7_rw5a78, 3c4bea30"
     },
     {
       "name": "fallback_rate",
       "title": "Video Generation Reliability",
       "status": "ok",
       "summary": "Video generation is running smoothly, no unusual fallbacks.",
-      "detail": "0 fallback event(s) in last 30 log lines scanned"
+      "detail": "0 fallback event(s) in last 5000 log lines scanned"
     }
   ],
   "job_stats": {
-    "total": 46,
-    "done": 23,
+    "total": 50,
+    "done": 26,
     "failed": 6,
     "running": 0
   },
@@ -68,5 +66,5 @@
     "reclaimed_mb": 0,
     "items_removed": 0
   },
-  "any_red": false
+  "any_red": true
 }

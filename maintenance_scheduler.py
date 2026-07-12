@@ -177,6 +177,9 @@ def check_credits() -> dict:
             parts.append(f"fal.ai: €{fal_bal:.2f} remaining")
         if el_chars is not None:
             parts.append(f"ElevenLabs: {el_chars:,} characters remaining")
+        anth = credits.get("anthropic", {})
+        if anth:
+            parts.append("Claude API: OK" if anth.get("ok") else "Claude API: FAILING")
         detail = ", ".join(parts) if parts else "balances unavailable"
         status = "red" if any_low else "ok"
         summary = ("One or more API credit balances are running low — top up soon to avoid interruptions."
@@ -289,7 +292,20 @@ def check_cleanup_ran() -> dict:
     for job_dir in JOBS_DIR.iterdir():
         if not job_dir.is_dir() or job_dir.name == "_test_scratch":
             continue
-        mtime = datetime.fromtimestamp(job_dir.stat().st_mtime)
+        # BUG FIXED: this used the DIRECTORY mtime, but the real cleanup in
+        # /diagnostics uses job_meta.json mtime (last real state change).
+        # The two disagreed: manually correcting a job status rewrites
+        # job_meta.json (making it recent, so cleanup correctly keeps it)
+        # while the directory mtime stays old (so this check wrongly flagged
+        # it forever). Now both use the same signal.
+        meta = job_dir / "job_meta.json"
+        try:
+            if meta.exists():
+                mtime = datetime.fromtimestamp(meta.stat().st_mtime)
+            else:
+                mtime = datetime.fromtimestamp(job_dir.stat().st_mtime)
+        except Exception:
+            continue
         if mtime < cutoff:
             stale.append(job_dir.name)
 

@@ -101,6 +101,31 @@ def get_elevenlabs_credits() -> dict:
 
 # ── Combined status ────────────────────────────────────────────────────────────
 
+def get_anthropic_status() -> dict:
+    """Anthropic does not expose a credit-balance endpoint the way fal.ai does,
+    so this is a connectivity + key-validity check rather than a balance read.
+    It catches the failure modes that actually matter: expired/invalid key,
+    exhausted credit (surfaces as an API error), or the API being unreachable.
+    Cost of the check itself is negligible (a 1-token call on Haiku).
+    """
+    try:
+        import anthropic
+        key = os.getenv("ANTHROPIC_API_KEY")
+        if not key:
+            return {"ok": False, "reachable": False, "error": "ANTHROPIC_API_KEY not set"}
+        client = anthropic.Anthropic(api_key=key)
+        client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        return {"ok": True, "reachable": True, "error": None}
+    except Exception as e:
+        msg = str(e)
+        low = "credit" in msg.lower() or "quota" in msg.lower() or "billing" in msg.lower()
+        return {"ok": False, "reachable": not low, "error": msg[:200]}
+
+
 def get_all_credits() -> dict:
     """
     Returns a combined status dict for the UI banner and email alerts.
@@ -113,10 +138,12 @@ def get_all_credits() -> dict:
     """
     fal  = get_fal_credits()
     el   = get_elevenlabs_credits()
+    anth = get_anthropic_status()
     return {
         "fal":        fal,
         "elevenlabs": el,
-        "any_low":    not fal["ok"] or not el["ok"],
+        "anthropic":  anth,
+        "any_low":    not fal["ok"] or not el["ok"] or not anth["ok"],
         "checked_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
     }
 
