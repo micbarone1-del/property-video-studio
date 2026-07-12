@@ -196,53 +196,44 @@ Items are ordered by priority. Each entry includes scope, decisions already made
 
 ---
 
-## NEXT MILESTONE - Cost reporting UI (foundation DONE, tested, committed)
+## NEXT MILESTONE — Concurrency + Operator Dashboard
 
-**Status: cost_model.py is built, tested (PASS), and live on the server.** It handles agencies, sales, investment ledger, seller commission (20% of first sale per agency), and per-job / per-agency / enterprise reporting with break-even. Investment imported: EUR 4,046.01. Verified real output: EUR 4,167.21 to break-even, 42 jobs (all currently classified R&D by default).
+**COST REPORTING IS DONE (July 12, 2026).** Built, tested, deployed, live in the UI:
+- cost_model.py: agencies, sales, investment ledger (EUR 4,046.01 imported), seller
+  commission (20% of first sale per agency), per-job/per-agency/enterprise reporting
+- API endpoints: /agencies, /sales, /reports/enterprise, /reports/agencies,
+  /reports/jobs, POST /jobs/{id}/commercial
+- UI: 💰 Costi button -> modal with break-even progress bar, cost breakdown bars,
+  job mix cards, agency table, sales entry forms, per-job classification dropdown
+- Claude API cost tracking: real token usage captured from every Anthropic call in
+  listing_scraper.py (Haiku 4.5 = $1/$5 per MTok, verified), folded into job cost
+- Verified live: EUR 4,167.21 to break-even = 9.3 packages
 
-**What is NOT built yet - this is the next session work, in order:**
+**NEXT: Concurrency + operator dashboard.** Goal: minimise time the operator spends
+at the PC; they intervene only when needed.
 
-1. **API endpoints over cost_model.py** (in api_server.py):
-   - GET/POST  (list, create)
-   - GET/POST/DELETE  (list, create, delete)
-   - GET  -> cost_model.enterprise_report(list(JOBS.values()))
-   - GET    -> cost_model.agency_report(list(JOBS.values()))
-   - POST  (accept an XLS re-upload -> cost_model.set_investment)
-   NOTE: JOBS dict values need  injected - cost_model expects job.get('job_id').
+1. **Job queue with configurable concurrency ceiling.** NOTE: the 5-jobs/hour rate
+   limit in api_server.py is OURS (self-imposed), not a fal.ai limit. Real constraints
+   are fal.ai account concurrency and cost. Within a single job, per-scene generation
+   is currently sequential and could run in parallel - real speedup, but multiplies
+   concurrent fal.ai calls, so it needs the same ceiling.
 
-2. **Job fields**: add  and  (commercial/pilot/rnd) to job
-   creation (, ) and to the UI job form. Without these,
-   every job defaults to 'rnd' and no revenue is ever attributed.
+2. **Dashboard as an INBOX** - show ONLY what needs the operator. Three states that
+   require intervention (confirmed with user):
+   (a) awaiting setup review - scraped, scenes+TTS ready, BEFORE any money is spent
+   (b) QC flagged / rejected
+   (c) failed
+   Everything else runs unattended and is just progress.
 
-3. **Claude API cost tracking** - rates CONFIRMED: Haiku 4.5 = .00/MTok input,
-   .00/MTok output. Currently INVISIBLE in cost estimates. Need to capture
-    /  from every Anthropic call in
-   listing_scraper.py (extraction, photo ranking, narration, captions), sum per
-   job, and add a line to cost_tracker.py.
+3. **Executor profile** (for hiring): junior/VA-level QC reviewer. Needs visual
+   judgment (spot warped walls, phantom mirrors), Italian, real estate literacy.
+   NOT technical. Per-video review fee, not salary.
 
-4. **Three reporting views with visuals** (the user explicitly asked for charts):
-   - Per job: cost breakdown, revenue, margin
-   - Per agency: videos sold vs delivered, revenue, cost, margin
-   - Enterprise: cumulative revenue vs investment, runway to break-even (headline)
-
-5. **Concurrency + operator dashboard** (separate, larger):
-   - Job queue with configurable concurrency ceiling (the 5/hour rate limit in the
-     code is OURS, self-imposed - not a fal.ai limit)
-   - Dashboard as an inbox: show ONLY what needs the operator. The three states
-     that need intervention: (a) awaiting setup review (scraped, scenes+TTS ready,
-     before any money is spent), (b) QC flagged/rejected, (c) failed.
-   - Executor profile: junior/VA-level QC reviewer. Needs visual judgment, Italian,
-     real estate literacy. NOT technical.
-
-**Commercial model (confirmed with the user):**
-- Pricing: EUR450 / 10-video package (= EUR45/video), EUR50 single add-on
-- Revenue entered as a SALE (agency + videos sold + price), separate from jobs,
-  so the commercial model stays fluid while pricing is still being tested
-- Reworks fold their cost into the PARENT job, not as separate jobs
-- Zero-revenue jobs are expected and correct (pilots = sales cost, R&D)
-- Investment = break-even target, NOT amortised per video
-
----
+**STILL OPEN - MAXIMUM PRIORITY (see items 27-29):** QC does not reliably catch
+hallucinations. Florence-2 caption-diffing is the wrong instrument for detecting
+physical implausibility. Luma prompts were tightened July 12 (real anti-hallucination
+constraints added - Luma previously had almost none) but this is probabilistic harm
+reduction, not a fix. Agent-based QC (item 11) is the real answer.
 
 ## Recently completed (see status.md for full detail)
 
