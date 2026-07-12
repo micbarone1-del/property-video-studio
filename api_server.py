@@ -137,21 +137,60 @@ def _get_rolling_monthly_job_count() -> int:
 
 
 
-def _overlay_narration_audio(video_path: str, narration_path: str):
+def _overlay_narration_audio(video_path: str, narration_path: str, transition_style: str = "fade"):
     """
-    Replaces whatever audio is currently on the assembled video with the
-    single continuous narration track. Video runs its full length; if
-    narration is shorter, the video continues in silence after it ends
-    (narration duration was already used to size the video correctly at
-    generation time, so this should rarely trigger in practice — it's a
-    safety net, not the primary timing mechanism).
+    Overlays the continuous narration track onto the assembled video, with
+    blank (black/white) padding at the start and end, and fades between the
+    padding and the real footage.
+
+    The padding absorbs any narration OVERFLOW: if the TTS runs longer than
+    the video, the extra time is covered by blank padding rather than
+    truncating the audio (which silently cut off the final sentences) or
+    freezing on a dead final frame. When there is no overflow, the padding
+    collapses to a minimal, nearly invisible amount.
+
+    Narration starts just after the opening fade and ends shortly before the
+    closing fade, so it sits snugly rather than floating in dead air.
+
+    Padding colour follows the job's transition_style (white if the style
+    mentions white, otherwise black).
     """
-    from moviepy import VideoFileClip, AudioFileClip
+    from moviepy import VideoFileClip, AudioFileClip, ColorClip, concatenate_videoclips
+    from moviepy.video.fx import FadeIn, FadeOut
+
+    LEAD_SECS  = 0.75   # blank before narration starts
+    TRAIL_SECS = 0.75   # blank after narration ends
+    FADE_SECS  = 0.5    # fade into / out of the blank padding
+
+    pad_colour = (255, 255, 255) if "white" in (transition_style or "").lower() else (0, 0, 0)
+
     video = VideoFileClip(video_path)
     narration = AudioFileClip(narration_path)
+    fps = video.fps or 24
 
+    # Time the narration needs in total: lead-in + speech + trail-out
+    needed   = LEAD_SECS + narration.duration + TRAIL_SECS
+    overflow = max(0.0, needed - video.duration)
 
-    final = video.with_audio(narration)
+    lead_pad  = LEAD_SECS
+    trail_pad = TRAIL_SECS + overflow   # trailing padding absorbs the overflow
+
+    lead_clip  = ColorClip(size=video.size, color=pad_colour, duration=lead_pad).with_fps(fps)
+    trail_clip = ColorClip(size=video.size, color=pad_colour, duration=trail_pad).with_fps(fps)
+
+    faded = video.with_effects([FadeIn(FADE_SECS), FadeOut(FADE_SECS)])
+    padded = concatenate_videoclips([lead_clip, faded, trail_clip])
+
+    narration = narration.with_start(lead_pad)
+
+    log.info(
+        f"[Narration] video={video.duration:.1f}s narration={narration.duration:.1f}s "
+        f"lead={lead_pad:.2f}s trail={trail_pad:.2f}s overflow_absorbed={overflow:.2f}s "
+        f"pad={'white' if pad_colour == (255,255,255) else 'black'} "
+        f"final={padded.duration:.1f}s"
+    )
+
+    final = padded.with_audio(narration)
     tmp_output = video_path + ".narration_tmp.mp4"
     final.write_videofile(
         tmp_output,
@@ -1869,7 +1908,7 @@ async def run_reassemble_only(job_id: str):
         narration_path = job.get("narration_path")
         if narration_path and os.path.exists(narration_path):
             update("running", 95, "Applying narration audio…")
-            await asyncio.to_thread(_overlay_narration_audio, output_path, narration_path)
+            await asyncio.to_thread(_overlay_narration_audio, output_path, narration_path, job.get("transition_style", "fade"))
             log.info(f"[Job {job_id}] Narration audio applied: {narration_path}")
 
 
@@ -2298,7 +2337,7 @@ async def run_assembly(job_id: str, job_dir: Path):
         narration_path = job.get("narration_path")
         if narration_path and os.path.exists(narration_path):
             update("running", 95, "Applying narration audio…")
-            await asyncio.to_thread(_overlay_narration_audio, output_path, narration_path)
+            await asyncio.to_thread(_overlay_narration_audio, output_path, narration_path, job.get("transition_style", "fade"))
             log.info(f"[Job {job_id}] Narration audio applied: {narration_path}")
 
 
@@ -2561,7 +2600,7 @@ async def run_rework(rework_id: str, parent_job_id: str, cfg: dict, do_video_ups
         narration_path = parent.get("narration_path")
         if narration_path and os.path.exists(narration_path):
             update("running", 95, "Applying narration audio...")
-            await asyncio.to_thread(_overlay_narration_audio, output_path, narration_path)
+            await asyncio.to_thread(_overlay_narration_audio, output_path, narration_path, parent.get("transition_style", "fade"))
             log.info(f"[Rework {rework_id}] Narration audio applied: {narration_path}")
 
         JOBS[rework_id]["output_path"] = output_path
