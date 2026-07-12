@@ -1067,6 +1067,7 @@ async def create_job_from_url(
     _raise_if_generation_paused()
 
     import listing_scraper as scraper
+    scraper.reset_claude_usage()   # reset token counter for THIS job
 
     # CRITICAL: every one of these does real, slow, blocking I/O (web
     # fetches, Claude API calls with images, TTS generation, fal.ai object
