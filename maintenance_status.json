@@ -1,6 +1,8 @@
 {
-  "timestamp": "2026-07-10T21:10:01.659140",
-  "checks_ran_this_tick": [],
+  "timestamp": "2026-07-12T07:40:02.289727",
+  "checks_ran_this_tick": [
+    "service_status"
+  ],
   "overall": {
     "status": "ok",
     "summary": "All systems normal."
@@ -10,22 +12,22 @@
       "name": "disk_usage",
       "title": "Storage Space",
       "status": "ok",
-      "summary": "Plenty of storage space available (166 GB free).",
-      "detail": "11.4% used (166 GB free)"
+      "summary": "Plenty of storage space available (168 GB free).",
+      "detail": "10.4% used (168 GB free)"
     },
     {
       "name": "credits",
       "title": "API Credits",
       "status": "ok",
-      "summary": "Credit balances look healthy (fal.ai: \u20ac14.73 remaining).",
-      "detail": "fal.ai: \u20ac14.73 remaining"
+      "summary": "Credit balances look healthy (fal.ai: \u20ac24.05 remaining).",
+      "detail": "fal.ai: \u20ac24.05 remaining"
     },
     {
       "name": "service_status",
       "title": "Server Status",
       "status": "ok",
       "summary": "Server is online and responding normally.",
-      "detail": "HTTP 200: {\"status\":\"ok\",\"time\":\"2026-07-10T21:05:02.216657\"}"
+      "detail": "HTTP 200: {\"status\":\"ok\",\"time\":\"2026-07-12T07:40:02.284187\"}"
     },
     {
       "name": "stuck_jobs",
@@ -45,22 +47,22 @@
       "name": "cleanup_verification",
       "title": "Old Job Cleanup",
       "status": "ok",
-      "summary": "Cleaned up 8 old job(s) automatically.",
-      "detail": "8 job(s) removed this run"
+      "summary": "Cleaned up 5 old job(s) automatically.",
+      "detail": "5 job(s) removed this run"
     },
     {
       "name": "fallback_rate",
       "title": "Video Generation Reliability",
       "status": "ok",
       "summary": "Video generation is running smoothly, no unusual fallbacks.",
-      "detail": "0 fallback event(s) in last 5 log lines scanned"
+      "detail": "0 fallback event(s) in last 30 log lines scanned"
     }
   ],
   "job_stats": {
-    "total": 34,
-    "done": 25,
+    "total": 46,
+    "done": 23,
     "failed": 6,
-    "running": 1
+    "running": 0
   },
   "cleanup": {
     "reclaimed_mb": 0,

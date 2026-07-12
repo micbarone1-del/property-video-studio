@@ -307,8 +307,8 @@ _VEO_RULES = (
 # prompts — it does NOT need Veo's extensive anti-hallucination scaffolding.
 # Same movement vocabulary as Veo/Lyra for consistency across tiers.
 _LUMA_MOVEMENT_TOKENS = {
-    "walk_in_explore":    "slow subtle camera movement, gentle push forward into the room, realistic physics",
-    "walk_in_gentle":     "very slow gentle push forward, soft natural motion, realistic physics",
+    "walk_in_explore":    "slow subtle camera movement with gentle depth parallax, minimal forward drift, realistic physics",
+    "walk_in_gentle":     "very slow gentle parallax movement, minimal forward drift, soft natural motion, realistic physics",
     "walk_in_turn_left":  "slow camera movement panning gently left while moving forward, realistic physics",
     "walk_in_turn_right": "slow camera movement panning gently right while moving forward, realistic physics",
     "walk_through":       "slow steady forward camera movement along the space, realistic physics",
@@ -326,7 +326,22 @@ _LUMA_INTENSITY_SUFFIX = {
     "energetic":    "confident and smooth",
 }
 
-_LUMA_RULES = "no people, no text overlays, no camera shake, stable smooth motion"
+# HALLUCINATION FIX: Luma previously had almost no anti-hallucination
+# constraints ("no people, no text overlays, no camera shake") on the
+# assumption its 3D architecture didn't need them. Real-world results
+# disproved this - warping, phantom mirrors, objects falling from ceilings.
+# Luma now gets the same class of constraints Veo has always had.
+_LUMA_RULES = (
+    "no people, no text overlays, no camera shake, stable smooth motion, "
+    "camera stays within the space visible in the source photo, "
+    "do not invent or reveal anything not visible in the original image, "
+    "no new rooms, doorways, corridors or architectural elements, "
+    "no doors or drawers opening, no furniture moving, "
+    "no mirrors or reflective surfaces that were not already present, "
+    "no falling objects, no floating particles, no leaves, "
+    "walls, floors, ceilings and furniture stay solid and unchanged, "
+    "no warping, no morphing, no distortion of any surface"
+)
 
 # Lyra frozen-scene prompt (lighting only — Lyra controls camera via parameters)
 _LYRA_SCENE = (

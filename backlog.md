@@ -173,6 +173,29 @@ Items are ordered by priority. Each entry includes scope, decisions already made
 
 ---
 
+## 30. Depth rendering R&D — REVIVED (potential structural elimination of hallucination)
+
+**Revived July 12, 2026.** Previously paused after `depth_renderer.py` (numpy + opencv pixel-shift reprojection) hit a quality ceiling, and Luma Ray 2 solved the immediate problem more pragmatically. Bringing it back for a strategic reason: **depth-based reprojection cannot hallucinate.** It can only display pixels that exist in the source photograph — it is structurally incapable of inventing a mirror, warping a wall, or dropping leaves from a ceiling. Every prompt-based mitigation (including today's Luma rules tightening) is probabilistic harm reduction; depth rendering is immunity.
+
+**Motivating evidence:** propertyvideo.ai appears to be shipping this successfully, suggesting the earlier failure was an implementation ceiling rather than a fundamental one.
+
+**Likely gap in the original attempt:** raw pixel-shift reprojection produces occlusion holes and stretching at depth discontinuities. Modern approaches pair a much stronger monocular depth estimator (Depth Anything V2, Marigold) with proper inpainting of the disoccluded regions — a materially different technique, not a retry of the same one.
+
+**Not started.** Scope to be defined. Would sit alongside the existing model tiers as a hallucination-free option, not necessarily replacing them.
+
+---
+
+## 31. Claude API (agent) costs and credits not tracked anywhere
+
+**Confirmed gap July 12, 2026.** The URL-scraping workflow makes real, billable Claude API calls — listing extraction, per-photo quality ranking (vision), narration generation, caption generation — and **none of it appears in the cost estimate shown in the UI, the cost tracker, or the maintenance credit monitor.** Only fal.ai and ElevenLabs are tracked.
+
+**Needed:**
+- Add Claude API cost lines to `cost_tracker.py` (per-job estimate + actuals), including the rework case.
+- Add Claude API credit/connectivity checks to `maintenance_scheduler.py`, alongside the existing fal.ai and ElevenLabs checks.
+- Surface both in the UI cost panel and maintenance panel.
+
+---
+
 ## Recently completed (see status.md for full detail)
 
 - **Auto maintenance scheduler** — completed and live-tested July 9, 2026. Tiered per-check frequencies via cron, real bugs fixed in the underlying 7-day job cleanup (two separate issues found and fixed), email alerting with cooldown, UI panel with editable recipient list.

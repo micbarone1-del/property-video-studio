@@ -1777,6 +1777,11 @@ async function redoSceneNew(cardIndex, sceneId) {
 
   const fd = new FormData();
   fd.append('scene_update', JSON.stringify(sceneUpdate));
+  // Send the CURRENT transition selection so it applies to this rework -
+  // previously the transition was frozen at job creation and the dropdown
+  // had no effect on an existing job.
+  const transEl = document.getElementById('transition-style');
+  if (transEl) fd.append('transition_style', transEl.value);
 
 
   try {
@@ -2288,6 +2293,8 @@ async function submitRework(reworkScenes) {
 
   const fd = new FormData();
   fd.append('rework_config', JSON.stringify(cfg));
+  const transEl2 = document.getElementById('transition-style');
+  if (transEl2) fd.append('transition_style', transEl2.value);
 
 
   // CRITICAL: genuinely new scenes have their photo only in browser memory —

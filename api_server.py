@@ -1518,6 +1518,7 @@ async def redo_scene(
     scene_id: str,
     background_tasks: BackgroundTasks,
     scene_update: str = Form(...),   # JSON: {caption, voiceover, space_type, pov_movement}
+    transition_style: str = Form(None),  # optional - update the job's transition if the UI sends one
 ):
     """Regenerates exactly one scene, in place, in the job's own directory.
     No sibling job is created. Uses a lock to prevent concurrent edits.
@@ -1555,6 +1556,11 @@ async def redo_scene(
         "pov_movement": updates.get("pov_movement", scenes_config[scene_idx].get("pov_movement", "walk_in_explore")),
     })
     job["scenes_config"] = scenes_config
+    # BUG FIXED: transition_style was frozen at job creation - the UI dropdown
+    # had no effect on an existing job, so "fade to white" always produced
+    # black padding on any rework. Now the UI's current selection is applied.
+    if transition_style:
+        job["transition_style"] = transition_style
     job["status"] = "running"
     job["message"] = f"Rigenerazione scena in corso…"
     _save_job(job_id)
@@ -1939,10 +1945,13 @@ async def rework_job(
     rework_config: str = Form(...),
     new_images: list[UploadFile] = File(default=[]),
     new_image_indices: list[str] = Form(default=[]),
+    transition_style: str = Form(None),  # optional - update the job's transition if the UI sends one
 ):
     if job_id not in JOBS:
         raise HTTPException(status_code=404, detail="Job not found")
     original = JOBS[job_id]
+    if transition_style:
+        original["transition_style"] = transition_style
     if original["status"] not in ["done", "failed", "awaiting_approval"]:
         raise HTTPException(status_code=400, detail="Job must be completed before rework")
 
@@ -1990,6 +1999,7 @@ async def rework_job(
         "property_name": original["property_name"],
         "total_scenes":  updated_scene_count,
         "cost_actual":   None,
+        "transition_style": original.get("transition_style", "fade"),
     }
 
 
