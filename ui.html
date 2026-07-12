@@ -273,6 +273,7 @@
   <span class="sub">Real Estate · AI Video Generator</span>
   <button id="maint-btn" onclick="openMaintenance()">🔧 Maintenance</button>
   <button id="pause-gen-btn" onclick="toggleGenerationPause()" style="display:none">⏸ Pause generation</button>
+  <button id="cost-btn" onclick="openCostReport()">💰 Costi</button>
   <span id="credit-dot" onclick="document.getElementById('credit-banner').scrollIntoView({behavior:'smooth'})" title="Credit status"></span>
 </header>
 
@@ -344,6 +345,16 @@
   <!-- Credit banner -->
   <div id="generation-pause-banner" style="display:none;margin-bottom:16px;padding:12px 16px;border:1px solid #f5c6c2;border-radius:var(--radius);background:#fdf0ef;color:var(--danger);font-size:.85rem">
     <strong>🔒 Nuove generazioni in pausa</strong> — <span id="generation-pause-message"></span>
+  </div>
+
+  <div id="cost-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1000;overflow:auto;padding:30px">
+    <div style="max-width:900px;margin:0 auto;background:var(--card);border-radius:var(--radius);padding:24px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
+        <h2 style="margin:0;font-size:1.1rem">💰 Report costi e profitto</h2>
+        <button onclick="document.getElementById('cost-modal').style.display='none'" style="background:none;border:none;font-size:1.3rem;cursor:pointer">✕</button>
+      </div>
+      <div id="cost-content">Caricamento…</div>
+    </div>
   </div>
 
   <div id="credit-banner">
@@ -1151,6 +1162,159 @@ async function toggleGenerationPause() {
 }
 
 checkGenerationPauseStatus();
+
+
+// ── Cost & profit reporting ────────────────────────────────────────────────
+async function openCostReport() {
+  const modal = document.getElementById('cost-modal');
+  const el = document.getElementById('cost-content');
+  modal.style.display = 'block';
+  el.innerHTML = 'Caricamento…';
+  try {
+    const [entR, agR, jbR, slR] = await Promise.all([
+      authFetch(`${API_BASE}/reports/enterprise`),
+      authFetch(`${API_BASE}/reports/agencies`),
+      authFetch(`${API_BASE}/reports/jobs`),
+      authFetch(`${API_BASE}/sales`)
+    ]);
+    const ent = await entR.json();
+    const ag  = (await agR.json()).agencies || [];
+    const jb  = (await jbR.json()).jobs || [];
+    const sl  = await slR.json();
+    renderCostReport(ent, ag, jb, sl);
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--danger)">Errore: ${e.message}</div>`;
+  }
+}
+
+function eur(n) { return '€' + (n||0).toLocaleString('it-IT', {minimumFractionDigits:2, maximumFractionDigits:2}); }
+
+function renderCostReport(ent, agencies, jobs, salesData) {
+  const el = document.getElementById('cost-content');
+  const inv = ent.total_investment_eur;
+  const rev = ent.gross_revenue_eur;
+  const pct = inv > 0 ? Math.min(100, (rev / inv) * 100) : 0;
+  const pkgs = (ent.break_even_remaining_eur / 450);
+
+  // Enterprise headline + progress bar to break-even
+  let html = `
+    <div style="background:var(--bg);border:1px solid var(--rule);border-radius:var(--radius);padding:18px;margin-bottom:20px">
+      <div style="font-size:.7rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:10px">Progetto — pareggio</div>
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px">
+        <div style="font-size:1.6rem;font-weight:700;color:${ent.net_position_eur >= 0 ? 'var(--ok)' : 'var(--danger)'}">${eur(ent.break_even_remaining_eur)}</div>
+        <div style="font-size:.8rem;color:var(--muted)">mancanti al pareggio</div>
+      </div>
+      <div style="height:14px;background:var(--rule);border-radius:7px;overflow:hidden;margin-bottom:6px">
+        <div style="height:100%;width:${pct}%;background:linear-gradient(90deg,var(--green),var(--ok));transition:width .4s"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:.75rem;color:var(--muted)">
+        <span>Ricavi ${eur(rev)}</span>
+        <span>${pct.toFixed(1)}%</span>
+        <span>Investimento ${eur(inv)}</span>
+      </div>
+      <div style="margin-top:10px;font-size:.8rem">= <strong>${pkgs.toFixed(1)}</strong> pacchetti da €450 (o ${Math.ceil(ent.break_even_remaining_eur/50)} video singoli)</div>
+    </div>`;
+
+  // Cost breakdown bars
+  const items = [
+    ['Investimento (fisso)', inv, '#b0413e'],
+    ['Costo produzione',     ent.production_cost_eur, '#d9a441'],
+    ['Commissione venditore', ent.seller_commission_eur, '#8e7cc3'],
+    ['Ricavi lordi',         rev, '#4a7c59'],
+  ];
+  const maxV = Math.max(...items.map(i => i[1]), 1);
+  html += `<div style="margin-bottom:20px">
+    <div style="font-size:.7rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:10px">Ripartizione</div>`;
+  items.forEach(([label, val, colour]) => {
+    const w = (val / maxV) * 100;
+    html += `<div style="margin-bottom:8px">
+      <div style="display:flex;justify-content:space-between;font-size:.78rem;margin-bottom:3px">
+        <span>${label}</span><span style="font-weight:600">${eur(val)}</span>
+      </div>
+      <div style="height:8px;background:var(--rule);border-radius:4px;overflow:hidden">
+        <div style="height:100%;width:${w}%;background:${colour}"></div>
+      </div>
+    </div>`;
+  });
+  html += `</div>`;
+
+  // Job mix
+  const mix = [['Commerciali', ent.jobs_commercial, 'var(--ok)'], ['Pilot', ent.jobs_pilot, 'var(--warn)'], ['R&D', ent.jobs_rnd, 'var(--muted)']];
+  html += `<div style="display:flex;gap:10px;margin-bottom:20px">`;
+  mix.forEach(([l, n, c]) => {
+    html += `<div style="flex:1;background:var(--bg);border:1px solid var(--rule);border-radius:var(--radius);padding:12px;text-align:center">
+      <div style="font-size:1.4rem;font-weight:700;color:${c}">${n}</div>
+      <div style="font-size:.72rem;color:var(--muted)">${l}</div>
+    </div>`;
+  });
+  html += `<div style="flex:1;background:var(--bg);border:1px solid var(--rule);border-radius:var(--radius);padding:12px;text-align:center">
+      <div style="font-size:1.4rem;font-weight:700">${ent.jobs_total}</div>
+      <div style="font-size:.72rem;color:var(--muted)">Totale</div>
+    </div></div>`;
+
+  // Agencies
+  html += `<div style="font-size:.7rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:8px">Agenzie</div>`;
+  if (!agencies.length) {
+    html += `<div style="font-size:.8rem;color:var(--muted);margin-bottom:14px">Nessuna agenzia ancora.</div>`;
+  } else {
+    html += `<table style="width:100%;font-size:.78rem;border-collapse:collapse;margin-bottom:14px">
+      <tr style="color:var(--muted);text-align:left"><th style="padding:5px 0">Agenzia</th><th>Venduti</th><th>Consegnati</th><th>Ricavi</th><th>Costo</th><th>Margine</th></tr>`;
+    agencies.forEach(a => {
+      html += `<tr style="border-top:1px solid var(--rule)">
+        <td style="padding:6px 0">${a.name}</td><td>${a.videos_sold}</td><td>${a.videos_delivered}</td>
+        <td>${eur(a.revenue_eur)}</td><td>${eur(a.production_cost_eur)}</td>
+        <td style="color:${a.margin_eur>=0?'var(--ok)':'var(--danger)'};font-weight:600">${eur(a.margin_eur)}</td></tr>`;
+    });
+    html += `</table>`;
+  }
+
+  // Add agency + sale forms
+  const agOpts = agencies.map(a => `<option value="${a.agency_id}">${a.name}</option>`).join('');
+  html += `<div style="background:var(--bg);border:1px solid var(--rule);border-radius:var(--radius);padding:14px;margin-bottom:20px">
+    <div style="display:flex;gap:8px;margin-bottom:10px">
+      <input id="new-agency-name" placeholder="Nome nuova agenzia" style="flex:1;padding:7px;border:1px solid var(--rule);border-radius:6px;font-size:.8rem" />
+      <button class="lib-btn" onclick="addAgency()">+ Agenzia</button>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <select id="sale-agency" style="flex:2;min-width:140px;padding:7px;border:1px solid var(--rule);border-radius:6px;font-size:.8rem">${agOpts}</select>
+      <input id="sale-videos" type="number" placeholder="N video" value="10" style="width:90px;padding:7px;border:1px solid var(--rule);border-radius:6px;font-size:.8rem" />
+      <input id="sale-price" type="number" step="0.01" placeholder="€" value="450" style="width:100px;padding:7px;border:1px solid var(--rule);border-radius:6px;font-size:.8rem" />
+      <button class="lib-btn" onclick="addSale()">+ Vendita</button>
+    </div>
+  </div>`;
+
+  // Recent jobs
+  html += `<div style="font-size:.7rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:8px">Job recenti</div>
+    <table style="width:100%;font-size:.75rem;border-collapse:collapse">
+    <tr style="color:var(--muted);text-align:left"><th style="padding:5px 0">Proprietà</th><th>Tipo</th><th>Costo</th><th>Ricavo</th><th>Margine</th></tr>`;
+  jobs.slice(0, 12).forEach(j => {
+    const cls = {commercial:'Commerciale', pilot:'Pilot', rnd:'R&D'}[j.classification] || j.classification;
+    html += `<tr style="border-top:1px solid var(--rule)">
+      <td style="padding:6px 0;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${j.property_name || j.job_id}</td>
+      <td>${cls}</td><td>${eur(j.cost_eur)}</td><td>${eur(j.revenue_eur)}</td>
+      <td style="color:${j.margin_eur>=0?'var(--ok)':'var(--danger)'}">${eur(j.margin_eur)}</td></tr>`;
+  });
+  html += `</table>`;
+
+  el.innerHTML = html;
+}
+
+async function addAgency() {
+  const name = document.getElementById('new-agency-name').value.trim();
+  if (!name) return;
+  const fd = new FormData(); fd.append('name', name);
+  await authFetch(`${API_BASE}/agencies`, {method:'POST', body:fd});
+  openCostReport();
+}
+
+async function addSale() {
+  const fd = new FormData();
+  fd.append('agency_id', document.getElementById('sale-agency').value);
+  fd.append('videos_sold', document.getElementById('sale-videos').value);
+  fd.append('price_eur', document.getElementById('sale-price').value);
+  await authFetch(`${API_BASE}/sales`, {method:'POST', body:fd});
+  openCostReport();
+}
 
 // Auto-refresh library count on load
 authFetch('/jobs/').then(r => r.json()).then(d => {

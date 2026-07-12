@@ -266,6 +266,69 @@ async def resume_generation():
 
 
 # ── Rate limiting ──────────────────────────────────────────────────────────────
+# ── Cost reporting endpoints ──────────────────────────────────────────────────
+import cost_model
+
+def _jobs_with_ids():
+    out = []
+    for jid, j in JOBS.items():
+        d = dict(j); d['job_id'] = jid; out.append(d)
+    return out
+
+@app.get('/agencies')
+async def list_agencies_ep():
+    return {'agencies': cost_model.list_agencies()}
+
+@app.post('/agencies')
+async def create_agency_ep(name: str = Form(...), notes: str = Form('')):
+    return cost_model.create_agency(name, notes)
+
+@app.get('/sales')
+async def list_sales_ep():
+    return {'sales': cost_model.list_sales(), 'agencies': cost_model.list_agencies()}
+
+@app.post('/sales')
+async def create_sale_ep(agency_id: str = Form(...), videos_sold: int = Form(...), price_eur: float = Form(...), description: str = Form('')):
+    return cost_model.create_sale(agency_id, videos_sold, price_eur, description)
+
+@app.delete('/sales/{sale_id}')
+async def delete_sale_ep(sale_id: str):
+    cost_model.delete_sale(sale_id)
+    return {'deleted': sale_id}
+
+@app.get('/reports/enterprise')
+async def report_enterprise_ep():
+    return cost_model.enterprise_report(_jobs_with_ids())
+
+@app.get('/reports/agencies')
+async def report_agencies_ep():
+    return {'agencies': cost_model.agency_report(_jobs_with_ids())}
+
+@app.get('/reports/jobs')
+async def report_jobs_ep():
+    jobs = _jobs_with_ids()
+    fins = [cost_model.job_financials(j) for j in jobs]
+    by_id = {j['job_id']: j for j in jobs}
+    for f in fins:
+        j = by_id.get(f['job_id'], {})
+        f['property_name'] = j.get('property_name','')
+        f['status'] = j.get('status','')
+        f['created_at'] = j.get('created_at','')
+    fins.sort(key=lambda f: f.get('created_at',''), reverse=True)
+    return {'jobs': fins}
+
+@app.post('/jobs/{job_id}/commercial')
+async def set_job_commercial_ep(job_id: str, classification: str = Form(...), agency_id: str = Form(None)):
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail='Job not found')
+    if classification not in cost_model.JOB_CLASSIFICATIONS:
+        raise HTTPException(status_code=400, detail='bad classification')
+    JOBS[job_id]['classification'] = classification
+    JOBS[job_id]['agency_id'] = agency_id or None
+    _save_job(job_id)
+    return {'job_id': job_id, 'classification': classification, 'agency_id': agency_id}
+
+
 _RATE_LIMIT_WINDOW = 3600   # 1 hour in seconds
 _RATE_LIMIT_MAX    = 5      # max job submissions per IP per hour
 _rate_tracker: dict = defaultdict(list)
