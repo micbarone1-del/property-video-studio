@@ -191,6 +191,38 @@ def calculate_scene_durations(
 
     new_durations = [snap(d) for d in raw_new_durations]
 
+    # BUG FIXED: snapping happens PER SCENE, so each scene independently
+    # rounds to the nearest valid model duration - and the rounding loss is
+    # silently multiplied across every scene, with nothing ever re-checking
+    # the total. Confirmed via test: narration 27.5s -> target_total 30s was
+    # REPORTED to the user, but 5 Luma scenes x snap(6.0)=5s only delivered
+    # 25s of actual video, leaving audio running 2.5s past the video end on
+    # a frozen final frame. Reported number and real scene math were computed
+    # from the same value but never reconciled.
+    #
+    # Fix: after snapping, recompute the ACTUAL achievable total. If it does
+    # not cover the narration, extend (bump scenes to longer valid durations,
+    # or add a scene) until it genuinely does. The video is now structurally
+    # guaranteed to be at least as long as the narration.
+    longest_valid = max(valid_durations)
+    actual_total = sum(new_durations)
+
+    while actual_total < target_total and len(new_durations) <= 20:
+        bumped = False
+        for i, d in enumerate(new_durations):
+            larger = [v for v in valid_durations if v > d]
+            if larger:
+                new_durations[i] = min(larger)
+                actual_total = sum(new_durations)
+                bumped = True
+                break
+        if not bumped:
+            new_durations.append(longest_valid)
+            actual_total = sum(new_durations)
+
+    # Report the TRUTH, not the pre-snapping target.
+    target_total = actual_total
+
     return {
         "narration_duration_secs": round(narration_duration_secs, 1),
         "target_total_secs":       round(target_total, 1),
