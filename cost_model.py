@@ -177,14 +177,20 @@ def job_financials(job):
         revenue_eur = revenue_per_video(agency_id)
 
     revenue_eur += 0.0
+    # Claude API cost (scraping, photo ranking, narration, captions) - real
+    # measured token usage, not an estimate. Invisible before July 2026.
+    claude = job.get("claude_usage") or {}
+    claude_eur = float(claude.get("cost_eur", 0) or 0)
+
     executor = EXECUTOR_FEE_PER_VIDEO
-    total_cost = cost_eur + executor
+    total_cost = cost_eur + executor + claude_eur
 
     return {
         "job_id": job.get("job_id"),
         "classification": classification,
         "agency_id": agency_id,
         "cost_eur": round(total_cost, 3),
+        "claude_eur": round(claude_eur, 4),
         "revenue_eur": round(revenue_eur, 2),
         "margin_eur": round(revenue_eur - total_cost, 2),
     }

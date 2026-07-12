@@ -1291,12 +1291,25 @@ function renderCostReport(ent, agencies, jobs, salesData) {
     const cls = {commercial:'Commerciale', pilot:'Pilot', rnd:'R&D'}[j.classification] || j.classification;
     html += `<tr style="border-top:1px solid var(--rule)">
       <td style="padding:6px 0;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${j.property_name || j.job_id}</td>
-      <td>${cls}</td><td>${eur(j.cost_eur)}</td><td>${eur(j.revenue_eur)}</td>
+      <td><select onchange="setJobClass('${j.job_id}', this.value)" style="font-size:.72rem;padding:2px;border:1px solid var(--rule);border-radius:4px">
+        <option value="rnd" ${j.classification==='rnd'?'selected':''}>R&D</option>
+        <option value="pilot" ${j.classification==='pilot'?'selected':''}>Pilot</option>
+        <option value="commercial" ${j.classification==='commercial'?'selected':''}>Commerciale</option>
+      </select></td><td>${eur(j.cost_eur)}</td><td>${eur(j.revenue_eur)}</td>
       <td style="color:${j.margin_eur>=0?'var(--ok)':'var(--danger)'}">${eur(j.margin_eur)}</td></tr>`;
   });
   html += `</table>`;
 
   el.innerHTML = html;
+}
+
+async function setJobClass(jobId, classification) {
+  const fd = new FormData();
+  fd.append('classification', classification);
+  const sel = document.getElementById('sale-agency');
+  if (classification === 'commercial' && sel && sel.value) fd.append('agency_id', sel.value);
+  await authFetch(`${API_BASE}/jobs/${jobId}/commercial`, {method:'POST', body:fd});
+  openCostReport();
 }
 
 async function addAgency() {

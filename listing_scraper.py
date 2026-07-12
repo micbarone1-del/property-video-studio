@@ -60,6 +60,38 @@ from dotenv import load_dotenv
 load_dotenv()
 log = logging.getLogger(__name__)
 
+# Claude API pricing - Haiku 4.5 (verified against Anthropic pricing, July 2026)
+CLAUDE_INPUT_PER_MTOK  = 1.00   # USD per million input tokens
+CLAUDE_OUTPUT_PER_MTOK = 5.00   # USD per million output tokens
+USD_TO_EUR = 0.93
+
+# Accumulates real token usage across every Anthropic call made while building
+# one job (extraction, photo quality ranking, narration, captions). Reset per
+# job by the caller via reset_claude_usage().
+_claude_usage = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
+
+def reset_claude_usage():
+    _claude_usage.update({"input_tokens": 0, "output_tokens": 0, "calls": 0})
+
+def _track_claude(response):
+    try:
+        u = response.usage
+        _claude_usage["input_tokens"]  += getattr(u, "input_tokens", 0) or 0
+        _claude_usage["output_tokens"] += getattr(u, "output_tokens", 0) or 0
+        _claude_usage["calls"] += 1
+    except Exception:
+        pass
+    return response
+
+def get_claude_cost():
+    """Real Claude API cost for the current job, in EUR."""
+    i = _claude_usage["input_tokens"]; o = _claude_usage["output_tokens"]
+    usd = (i / 1_000_000) * CLAUDE_INPUT_PER_MTOK + (o / 1_000_000) * CLAUDE_OUTPUT_PER_MTOK
+    return {
+        "input_tokens": i, "output_tokens": o, "calls": _claude_usage["calls"],
+        "cost_eur": round(usd * USD_TO_EUR, 4),
+    }
+
 MODEL = "claude-haiku-4-5-20251001"  # cheapest current model; upgrade to
                                        # claude-sonnet-5 if extraction quality
                                        # proves unreliable on tricky listings
@@ -179,13 +211,13 @@ def extract_listing(url: str, attempt_resolution_upgrade: bool = True) -> dict:
     json_str = ""
     try:
         client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-        response = client.messages.create(
+        response = _track_claude(client.messages.create(
             model=MODEL,
             max_tokens=4096,
             tools=[{"type": "web_fetch_20250910", "name": "web_fetch", "max_uses": 1}],
             extra_headers={"anthropic-beta": "web-fetch-2025-09-10"},
             messages=[{"role": "user", "content": EXTRACTION_PROMPT.format(url=url)}],
-        )
+        ))
 
         text_parts = [b.text for b in response.content if getattr(b, "type", None) == "text"]
         raw = "".join(text_parts).strip()
@@ -495,8 +527,8 @@ def generate_captions_for_categories(description: str, categories: list) -> dict
     prompt = CAPTIONS_PROMPT.format(description=description, categories=", ".join(categories))
     try:
         client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-        response = client.messages.create(model=MODEL, max_tokens=1024,
-                                             messages=[{"role": "user", "content": prompt}])
+        response = _track_claude(client.messages.create(model=MODEL, max_tokens=1024,
+                                             messages=[{"role": "user", "content": prompt}]))
         raw = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
         json_str = raw
         fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
@@ -565,8 +597,8 @@ def generate_narration_and_derive_scenes(
                                        price=price or "non specificato")
     try:
         client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-        response = client.messages.create(model=MODEL, max_tokens=2048,
-                                             messages=[{"role": "user", "content": prompt}])
+        response = _track_claude(client.messages.create(model=MODEL, max_tokens=2048,
+                                             messages=[{"role": "user", "content": prompt}]))
         narration_text = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
     except Exception as e:
         return {"ok": False, "narration_text": "", "audio_path": None, "speech_duration_secs": None,
@@ -599,8 +631,8 @@ def generate_narration_and_derive_scenes(
         try:
             shorten_prompt = SHORTEN_PROMPT.format(actual_secs=speech_secs, target_secs=target_speech,
                                                      target_words=target_words, narration=narration_text)
-            response = client.messages.create(model=MODEL, max_tokens=2048,
-                                                 messages=[{"role": "user", "content": shorten_prompt}])
+            response = _track_claude(client.messages.create(model=MODEL, max_tokens=2048,
+                                                 messages=[{"role": "user", "content": shorten_prompt}]))
             revised = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
             if revised:
                 remeasure = _measure_tts_duration(revised, voice_id)
@@ -624,8 +656,8 @@ def generate_narration_and_derive_scenes(
             extend_prompt = EXTEND_PROMPT.format(actual_secs=speech_secs, target_secs=target_speech,
                                                    extra_words=extra_words, description=description,
                                                    narration=narration_text)
-            response = client.messages.create(model=MODEL, max_tokens=2048,
-                                                 messages=[{"role": "user", "content": extend_prompt}])
+            response = _track_claude(client.messages.create(model=MODEL, max_tokens=2048,
+                                                 messages=[{"role": "user", "content": extend_prompt}]))
             revised = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
             if revised:
                 remeasure = _measure_tts_duration(revised, voice_id)
@@ -872,8 +904,8 @@ def rank_photos_by_quality(category: str, candidates: list, max_to_compare: int 
             content.append({"type": "text", "text": f"Photo {i + 1}:"})
             content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}})
 
-        response = client.messages.create(model=MODEL, max_tokens=200,
-                                             messages=[{"role": "user", "content": content}])
+        response = _track_claude(client.messages.create(model=MODEL, max_tokens=200,
+                                             messages=[{"role": "user", "content": content}]))
         raw = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
         order_match = re.search(r"\[[\d,\s]+\]", raw)
         if not order_match:

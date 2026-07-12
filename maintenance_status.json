@@ -1,8 +1,6 @@
 {
-  "timestamp": "2026-07-12T16:35:01.453076",
-  "checks_ran_this_tick": [
-    "service_status"
-  ],
+  "timestamp": "2026-07-12T16:50:01.466791",
+  "checks_ran_this_tick": [],
   "overall": {
     "status": "red",
     "summary": "Action needed: Old Job Cleanup"
@@ -19,15 +17,15 @@
       "name": "credits",
       "title": "API Credits",
       "status": "ok",
-      "summary": "Credit balances look healthy (fal.ai: \u20ac29.69 remaining).",
-      "detail": "fal.ai: \u20ac29.69 remaining"
+      "summary": "Credit balances look healthy (fal.ai: \u20ac29.69 remaining, Claude API: OK).",
+      "detail": "fal.ai: \u20ac29.69 remaining, Claude API: OK"
     },
     {
       "name": "service_status",
       "title": "Server Status",
       "status": "ok",
       "summary": "Server is online and responding normally.",
-      "detail": "HTTP 200: {\"status\":\"ok\",\"time\":\"2026-07-12T16:35:01.449028\"}"
+      "detail": "HTTP 200: {\"status\":\"ok\",\"time\":\"2026-07-12T16:45:01.988754\"}"
     },
     {
       "name": "stuck_jobs",
@@ -55,7 +53,7 @@
       "title": "Video Generation Reliability",
       "status": "ok",
       "summary": "Video generation is running smoothly, no unusual fallbacks.",
-      "detail": "0 fallback event(s) in last 5000 log lines scanned"
+      "detail": "0 fallback event(s) in last 34 log lines scanned"
     }
   ],
   "job_stats": {
