@@ -2553,6 +2553,17 @@ async def run_rework(rework_id: str, parent_job_id: str, cfg: dict, do_video_ups
             raise RuntimeError("Assemblaggio rework fallito")
 
 
+        # BUG FIXED: this legacy rework path was the ONLY one of the three
+        # assembly paths that never applied the continuous narration track -
+        # confirmed real cause of muted rework videos. The other two paths
+        # (run_pipeline, run_reassemble_only) both do this correctly.
+        # Narration lives on the PARENT job, not the rework sibling.
+        narration_path = parent.get("narration_path")
+        if narration_path and os.path.exists(narration_path):
+            update("running", 95, "Applying narration audio...")
+            await asyncio.to_thread(_overlay_narration_audio, output_path, narration_path)
+            log.info(f"[Rework {rework_id}] Narration audio applied: {narration_path}")
+
         JOBS[rework_id]["output_path"] = output_path
         update("done", 100, "Rework video pronto per il download")
 
