@@ -1,6 +1,8 @@
 {
-  "timestamp": "2026-07-12T16:50:01.466791",
-  "checks_ran_this_tick": [],
+  "timestamp": "2026-07-12T16:55:01.712772",
+  "checks_ran_this_tick": [
+    "service_status"
+  ],
   "overall": {
     "status": "red",
     "summary": "Action needed: Old Job Cleanup"
@@ -25,7 +27,7 @@
       "title": "Server Status",
       "status": "ok",
       "summary": "Server is online and responding normally.",
-      "detail": "HTTP 200: {\"status\":\"ok\",\"time\":\"2026-07-12T16:45:01.988754\"}"
+      "detail": "HTTP 200: {\"status\":\"ok\",\"time\":\"2026-07-12T16:55:01.710091\"}"
     },
     {
       "name": "stuck_jobs",

@@ -224,6 +224,28 @@ Combined, these two fixes cleared **34 stale/orphaned job directories** in produ
 
 ---
 
+## July 12, 2026 — Critical fixes + cost reporting shipped
+
+**ROOT CAUSE of jobs hanging for HOURS - found via py-spy, fixed.** The `_subscribe_with_timeout` wrapper used `with ThreadPoolExecutor(...)`, whose `__exit__` calls `shutdown(wait=True)` - which blocks the CALLING thread until the stuck task finishes, silently defeating the entire timeout. A real job was stuck inside that exact shutdown() call for hours. Fixed: no `with` block, explicit `shutdown(wait=False)`.
+
+**Muted rework videos - fixed.** Of the three assembly paths, the LEGACY rework path was the only one that never called `_overlay_narration_audio`. Confirmed cause of silent rework output.
+
+**Redo broken on ALL older jobs - fixed.** `run_redo_scene` only looked for `{scene_id}.jpg`; jobs predating that convention store `scene_NNN.jpg`, so redo always failed "No source image found". Legacy fallback + self-heal added.
+
+**Narration longer than video - fixed (5/5 regression tests).** `calculate_scene_durations` snapped durations PER SCENE, so rounding loss multiplied across scenes and nothing re-checked the total. It REPORTED 30s while delivering 25s. Now recomputes the real achievable total and extends until the video genuinely covers the narration.
+
+**Fade in/out padding - built.** `_overlay_narration_audio` now adds blank (black/white per transition_style) padding at start and end with fades, sized to absorb narration overflow. Previously the audio was silently truncated or ended on a frozen frame.
+
+**Rework edits silently dropped - fixed.** Caption/space_type/pov_movement changes had NO tracking, so pressing "Genera Video" saw no pending changes and did a cheap reassembly instead. Added `contentChangedSceneIndices`.
+
+**Luma anti-hallucination prompts - tightened.** Luma had almost NO constraints ("no people, no text overlays") vs Veo's comprehensive scaffold. Added real constraints (no invented rooms/mirrors/falling objects/warping) and reduced forward camera drift. NOTE: probabilistic harm reduction, not a fix - QC still cannot reliably catch hallucinations.
+
+**Generation kill-switch - built.** Persistent pause flag, admin endpoints, visible UI banner.
+
+**COST REPORTING - shipped end to end.** cost_model.py (agencies, sales, investment ledger, seller commission, break-even), API endpoints, UI dashboard with visuals, real Claude API token cost tracking (Haiku 4.5 = $1/$5 per MTok, verified). Live: EUR 4,046.01 invested, EUR 4,167.21 to break-even = 9.3 packages.
+
+---
+
 ## Standing safeguards
 
 - Stale browser cache can cause subtle bugs — hard refresh to verify JS changes.
