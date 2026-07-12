@@ -1185,6 +1185,11 @@ async def create_job_from_url(
             log.warning(f"[URL workflow] Vision analysis failed for scene {i}, "
                         f"keeping category-based default: {e}")
 
+    claude_usage = scraper.get_claude_cost()
+    log.info(f"[URL workflow] Claude API: {claude_usage['calls']} calls, "
+             f"{claude_usage['input_tokens']} in / {claude_usage['output_tokens']} out tokens, "
+             f"EUR {claude_usage['cost_eur']}")
+
     property_name_final = property_name.strip() or extraction.get("address") or "Property"
 
     # Cost estimate — was missing entirely before this fix, which is why
@@ -1218,6 +1223,7 @@ async def create_job_from_url(
         "upscale_images": True,
         "cost_estimate": format_cost_display(cost_estimate),
         "cost_actual": None,
+        "claude_usage": claude_usage,
         "reworks": [],
         "qc_results": [],
         "awaiting_scenes": [],
