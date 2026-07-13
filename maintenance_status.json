@@ -1,19 +1,21 @@
 {
-  "timestamp": "2026-07-12T16:55:01.712772",
+  "timestamp": "2026-07-13T13:20:06.735102",
   "checks_ran_this_tick": [
-    "service_status"
+    "service_status",
+    "credits",
+    "fallback_rate"
   ],
   "overall": {
-    "status": "red",
-    "summary": "Action needed: Old Job Cleanup"
+    "status": "ok",
+    "summary": "All systems normal."
   },
   "checks": [
     {
       "name": "disk_usage",
       "title": "Storage Space",
       "status": "ok",
-      "summary": "Plenty of storage space available (174 GB free).",
-      "detail": "7.2% used (174 GB free)"
+      "summary": "Plenty of storage space available (175 GB free).",
+      "detail": "6.8% used (175 GB free)"
     },
     {
       "name": "credits",
@@ -27,7 +29,7 @@
       "title": "Server Status",
       "status": "ok",
       "summary": "Server is online and responding normally.",
-      "detail": "HTTP 200: {\"status\":\"ok\",\"time\":\"2026-07-12T16:55:01.710091\"}"
+      "detail": "HTTP 200: {\"status\":\"ok\",\"time\":\"2026-07-13T13:20:01.749815\"}"
     },
     {
       "name": "stuck_jobs",
@@ -46,27 +48,27 @@
     {
       "name": "cleanup_verification",
       "title": "Old Job Cleanup",
-      "status": "red",
-      "summary": "2 old job(s) should have been cleaned up but weren't \u2014 worth a look.",
-      "detail": "2 job(s) still past retention after triggering cleanup (diagnostics reported 10 cleaned this run): 161dfaf7_rw5a78, 3c4bea30"
+      "status": "ok",
+      "summary": "Cleaned up 1 old job(s) automatically.",
+      "detail": "1 job(s) removed this run"
     },
     {
       "name": "fallback_rate",
       "title": "Video Generation Reliability",
       "status": "ok",
       "summary": "Video generation is running smoothly, no unusual fallbacks.",
-      "detail": "0 fallback event(s) in last 34 log lines scanned"
+      "detail": "0 fallback event(s) in last 360 log lines scanned"
     }
   ],
   "job_stats": {
-    "total": 50,
-    "done": 26,
-    "failed": 6,
+    "total": 42,
+    "done": 19,
+    "failed": 5,
     "running": 0
   },
   "cleanup": {
     "reclaimed_mb": 0,
     "items_removed": 0
   },
-  "any_red": true
+  "any_red": false
 }

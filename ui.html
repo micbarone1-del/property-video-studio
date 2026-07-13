@@ -1979,7 +1979,7 @@ async function redoSceneNew(cardIndex, sceneId) {
     activeJobId = currentJobId;  // same job, no sibling — poll the same ID
     progSec.style.display   = 'block';
     resultSec.style.display = 'none';
-    updateProgress(5, 'Rigenerazione scena in corso…');
+    updateProgress(5, 'Rework: rigenerazione scena in corso…');
     startPolling(currentJobId);
   } catch(e) {
     showError(e.message);

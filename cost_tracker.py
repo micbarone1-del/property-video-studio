@@ -212,23 +212,33 @@ def calculate_rework_cost(
     redo_video:     bool = True,
     redo_audio:     bool = False,
     audio_chars:    int  = 0,
+    model_tier:     str  = "premium",
 ) -> dict:
     """
     Calculates the incremental cost of a rework run.
     Only charges for what was actually regenerated.
+
+    Tier-aware pricing mirrors calculate_actual_cost() exactly, so a redo
+    on a Luma/Veo/eco-tier job is priced the same as a fresh clip in that
+    tier would be -- not a flat Lyra frame-rate fallback (2026-07-13 fix;
+    previously this always used Lyra frame pricing regardless of tier).
     """
     n = len(scenes_redone)
 
     video_cost = 0.0
     if redo_video:
         for i, scene in enumerate(scenes_redone):
-            model    = models_used[i] if i < len(models_used) else "lyra-2"
+            model    = models_used[i] if i < len(models_used) else model_tier
             duration = int(scene.get("duration", 8))
-            if "ltx" in model:
+            if "ltx" in str(model):
                 video_cost += LTX_COST_PER_CLIP
-            else:
+            elif "lyra" in str(model) or model_tier == "eco":
                 frames      = _DURATION_TO_FRAMES.get(duration, 81)
                 video_cost += _FRAME_COST.get(frames, LYRA_COST_81_FRAMES)
+                video_cost += duration * TOPAZ_COST_PER_SEC
+            else:
+                clip_rate   = TIER_COST_PER_CLIP.get(model_tier, TIER_COST_PER_CLIP["premium"])
+                video_cost += clip_rate
 
     tts_cost    = (audio_chars * ELEVENLABS_COST_PER_CHAR) if redo_audio else 0.0
     vision_cost = n * FLORENCE_COST_PER_CALL   # output QC only
@@ -236,13 +246,14 @@ def calculate_rework_cost(
     total = video_cost + tts_cost + vision_cost
 
     return {
-        "type":        "rework",
-        "scenes":      n,
-        "video_eur":   round(video_cost,  4),
-        "tts_eur":     round(tts_cost,    4),
-        "vision_eur":  round(vision_cost, 4),
-        "infra_eur":   0.0,
-        "total_eur":   round(total,       3),
+        "type":          "rework",
+        "scenes":        n,
+        "model_tier":    model_tier,
+        "video_eur":     round(video_cost,  4),
+        "tts_eur":       round(tts_cost,    4),
+        "vision_eur":    round(vision_cost, 4),
+        "infra_eur":     0.0,
+        "total_eur":     round(total,       3),
         "calculated_at": datetime.utcnow().isoformat(),
     }
 

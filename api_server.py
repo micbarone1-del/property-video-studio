@@ -1632,7 +1632,7 @@ async def redo_scene(
     if transition_style:
         job["transition_style"] = transition_style
     job["status"] = "running"
-    job["message"] = f"Rigenerazione scena in corso…"
+    job["message"] = f"Rework: rigenerazione scena in corso…"
     _save_job(job_id)
 
 
@@ -1788,7 +1788,7 @@ async def run_redo_scene(job_id: str, scene_id: str):
 
 
         if voiceover:
-            update("running", 15, f"Rigenero voiceover…")
+            update("running", 15, f"Rework: rigenero voiceover…")
             from voice_generation import generate_speech as generate_voice
             ok_audio = await asyncio.to_thread(
                 generate_voice, voiceover, audio_out,
@@ -1840,7 +1840,7 @@ async def run_redo_scene(job_id: str, scene_id: str):
         enhanced_img = enhanced_dir / f"{scene_id}_enhanced.jpg"
         if not enhanced_img.exists():
             from image_enhance import enhance_image
-            update("running", 25, "Miglioro immagine…")
+            update("running", 25, "Rework: miglioro immagine…")
             await asyncio.to_thread(enhance_image, str(source_img), str(enhanced_img), True, True)
         img_for_generation = str(enhanced_img) if enhanced_img.exists() else str(source_img)
 
@@ -1851,7 +1851,7 @@ async def run_redo_scene(job_id: str, scene_id: str):
         clip_out = str(clips_dir / f"{scene_id}.mp4")
 
 
-        update("running", 40, f"Rigenero clip ({actual_duration}s)…")
+        update("running", 40, f"Rework: rigenero clip ({actual_duration}s)…")
         from video_generation import generate_video_single
         ok_video = await asyncio.to_thread(
             generate_video_single,
@@ -1885,6 +1885,34 @@ async def run_redo_scene(job_id: str, scene_id: str):
                 "duration_used": actual_duration, "qc_verdict": "pass",
             })
         job["scenes"] = statuses
+        _save_job(job_id)
+
+        # ── Rework cost tracking ─────────────────────────────────────────
+        # Prices this redo the same way a fresh clip in this job's tier
+        # would be priced, then folds it into a running total alongside
+        # the original job cost (cost_tracker.calculate_rework_cost).
+        from cost_tracker import calculate_rework_cost, format_cost_display
+        pricing_scene = dict(scene)
+        pricing_scene["duration"] = actual_duration
+        rework_cost = calculate_rework_cost(
+            scenes_redone=[pricing_scene],
+            models_used=[model_tier],
+            redo_video=True,
+            redo_audio=bool(voiceover),
+            audio_chars=len(voiceover) if voiceover else 0,
+            model_tier=model_tier,
+        )
+        job.setdefault("reworks", []).append(rework_cost)
+        original_raw = job.get("cost_actual_raw")
+        if original_raw:
+            job["cost_actual"] = format_cost_display(original_raw, previous_reworks=job["reworks"])
+        else:
+            # Job predates cost_actual_raw being stored -- fall back to its
+            # existing formatted total as a single baseline so the rework
+            # still shows a running total instead of silently vanishing.
+            legacy_total = (job.get("cost_actual") or {}).get("grand_total_eur", 0)
+            pseudo_raw = {"type": "actual", "total_eur": legacy_total, "model_tier": model_tier}
+            job["cost_actual"] = format_cost_display(pseudo_raw, previous_reworks=job["reworks"])
         _save_job(job_id)
 
 
@@ -2353,7 +2381,8 @@ async def run_pipeline(
             do_upscale=do_upscale, do_vision_qc=enable_vision_qc,
             model_tier=model_tier,
         )
-        JOBS[job_id]["cost_actual"] = format_cost_display(actual)
+        JOBS[job_id]["cost_actual_raw"] = actual
+        JOBS[job_id]["cost_actual"] = format_cost_display(actual, previous_reworks=JOBS[job_id].get("reworks", []))
         _save_job(job_id)
 
 
