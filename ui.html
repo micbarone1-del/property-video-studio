@@ -605,17 +605,20 @@ async function generateNarration() {
   }
 
 
-  // CORRECT FLOW: if no job exists yet, create one in DRAFT mode first —
-  // photos + scene config saved, ZERO video generation cost — so narration
-  // can be measured and durations calculated BEFORE any expensive step runs.
-  if (!currentJobId) {
-    statusEl.textContent = '⏳ Preparazione scene (nessun costo)…';
-    statusEl.style.color = 'var(--muted)';
-    try {
-      const config = getScenesConfig();
-      const fd = new FormData();
-      files.forEach(f => fd.append('images', f));
-      fd.append('config', JSON.stringify(config));
+  // CORRECT FLOW: create the draft job on the first click; on any later
+  // click, RESYNC it instead of skipping the step entirely, so a scene
+  // added/removed after the draft was created is never silently ignored
+  // (2026-07-13 fix — this sync gap was why the cost panel and the
+  // narration duration distribution could disagree on scene count).
+  statusEl.textContent = '⏳ Preparazione scene (nessun costo)…';
+  statusEl.style.color = 'var(--muted)';
+  try {
+    const config = getScenesConfig();
+    const fd = new FormData();
+    files.forEach(f => fd.append('images', f));
+    fd.append('config', JSON.stringify(config));
+
+    if (!currentJobId) {
       fd.append('property_name', document.getElementById('prop-name')?.value || 'Property');
       fd.append('model_tier', document.getElementById('model-tier').value);
       fd.append('lighting', document.getElementById('lighting').value);
@@ -633,11 +636,19 @@ async function generateNarration() {
       currentJobId = data.job_id;
       completedScenes = [];  // no scenes generated yet — draft only
       console.log(`Draft job created: ${currentJobId}`);
-    } catch(e) {
-      statusEl.textContent = `✗ Errore preparazione scene: ${e.message}`;
-      statusEl.style.color = 'var(--danger)';
-      return;
+    } else {
+      const res = await authFetch(`${API_BASE}/jobs/${currentJobId}/draft/resync`, { method: 'POST', body: fd });
+      if (!res.ok) {
+        let detail = `Errore ${res.status}`;
+        try { const e = await res.json(); detail = e.detail || detail; } catch(_) {}
+        throw new Error(detail);
+      }
+      console.log(`Draft job resynced: ${currentJobId}`);
     }
+  } catch(e) {
+    statusEl.textContent = `✗ Errore preparazione scene: ${e.message}`;
+    statusEl.style.color = 'var(--danger)';
+    return;
   }
 
 

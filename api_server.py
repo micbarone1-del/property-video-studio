@@ -895,6 +895,97 @@ async def start_generation_for_draft(job_id: str, background_tasks: BackgroundTa
 # This prevents ever paying for a wrongly-timed video clip.
 
 
+@app.post("/jobs/{job_id}/draft/resync")
+async def resync_draft(
+    job_id: str,
+    images: list[UploadFile] = File(...),
+    config: str = Form(...),
+):
+    """
+    Re-syncs an existing DRAFT job's scenes_config and images to match
+    whatever is currently in the browser -- needed because generateNarration()
+    only creates the draft job on the FIRST click; if the user adds/removes
+    scenes afterward and clicks "Genera voiceover" again, without this the
+    server-side scenes_config stays frozen at the original count while the
+    UI's live cost panel reflects the new count (2026-07-13 fix: this was the
+    exact cause of the cost panel showing 10 scenes while the narration
+    duration distribution still showed 5).
+
+    Only allowed while status == "draft" -- a job that has moved past draft
+    (generation started or completed) must never have its scenes_config
+    silently overwritten, since scenes/clips would then no longer line up
+    with scenes_config.
+    """
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+    if job.get("status") != "draft":
+        raise HTTPException(status_code=400, detail="Job is no longer in draft status -- cannot resync scenes")
+
+    if len(images) > 20:
+        raise HTTPException(status_code=400, detail="Maximum 20 images per job")
+
+    try:
+        scenes_config = json.loads(config)
+        if not isinstance(scenes_config, list):
+            raise ValueError("config must be a JSON array")
+        scenes_config = _ensure_scene_ids(scenes_config)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid config JSON: {e}")
+
+    if len(images) != len(scenes_config):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Images ({len(images)}) must match scene configs ({len(scenes_config)})"
+        )
+
+    job_dir = JOBS_DIR / job_id
+    img_dir = job_dir / "images"
+    # Safe to wipe and rewrite -- draft jobs have no generated clips/audio
+    # yet that reference these image paths.
+    shutil.rmtree(str(img_dir), ignore_errors=True)
+    img_dir.mkdir(parents=True)
+
+    for i, upload in enumerate(images):
+        content = await upload.read()
+
+        if len(content) > 20 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail=f"Image {i+1} exceeds 20MB limit")
+
+        if not _validate_image_bytes(content):
+            raise HTTPException(status_code=400, detail=f"Image {i+1} is not a valid image file")
+
+        ext = Path(upload.filename).suffix.lower() or ".jpg"
+        if upload.content_type == "image/jpeg": ext = ".jpg"
+        elif upload.content_type == "image/png":  ext = ".png"
+        elif upload.content_type == "image/webp": ext = ".webp"
+
+        dest = img_dir / f"scene_{i:03d}{ext}"
+        with open(dest, "wb") as f:
+            f.write(content)
+
+    from cost_tracker import estimate_job_cost, format_cost_display
+    rolling_jobs = _get_rolling_monthly_job_count()
+    cost_estimate = estimate_job_cost(
+        scenes_config,
+        do_upscale=job.get("upscale_images", True),
+        do_video_upscale=job.get("do_video_upscale", True),
+        do_vision_qc=job.get("enable_vision_qc", True),
+        model_tier=job.get("model_tier", "standard"),
+        actual_monthly_jobs=rolling_jobs,
+    )
+
+    job["scenes_config"] = scenes_config
+    job["total_scenes"]  = len(images)
+    job["cost_estimate"] = format_cost_display(cost_estimate)
+    job["message"] = "Scene aggiornate — pronto per narrazione"
+    _save_job(job_id)
+
+    return {"job_id": job_id, "scenes_config": scenes_config, "total_scenes": len(images)}
+
+
+
+
 @app.post("/jobs/{job_id}/narration")
 async def generate_narration(
     job_id: str,

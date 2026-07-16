@@ -7,3 +7,5 @@ venv/
 *.egg-info/
 .DS_Store
 hardcopy.*
+maintenance_last_run.json
+maintenance_status.json
