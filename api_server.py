@@ -991,6 +991,7 @@ async def generate_narration(
     job_id: str,
     narration_text: str = Form(...),
     voice_id: str = Form(""),
+    extra_secs_needed: float = Form(0),
 ):
     """
     Step A: generates the narration audio ONLY (cheap — ElevenLabs cost
@@ -1013,10 +1014,27 @@ async def generate_narration(
         narration_path = str(job_dir / "narration.mp3")
 
 
-        from narration import generate_narration_audio, calculate_scene_durations
+        from narration import generate_narration_audio, calculate_scene_durations, suggest_pause_padding, SENTENCE_PAUSE_MS
+
+        # Pause-padding persistence (2026-07-16 fix): "Aggiungi pause" used to
+        # just regenerate identical audio with the default pause, so the
+        # "too short" warning could never clear -- nothing connected the
+        # frontend's computed gap to the actual TTS call. Now a boosted
+        # pause value sticks on the job until the narration TEXT changes.
+        if job.get("narration_text") != narration_text:
+            job.pop("sentence_pause_ms", None)
+
+        base_pause_ms = job.get("sentence_pause_ms", SENTENCE_PAUSE_MS)
+        if extra_secs_needed and extra_secs_needed > 0:
+            sentence_pause_ms = suggest_pause_padding(
+                narration_text, extra_secs_needed, sentence_pause_ms=base_pause_ms
+            )
+        else:
+            sentence_pause_ms = base_pause_ms
+
         result = await asyncio.to_thread(
             generate_narration_audio, narration_text, narration_path,
-            voice_id or None
+            voice_id or None, sentence_pause_ms
         )
 
 
@@ -1053,6 +1071,7 @@ async def generate_narration(
         job["narration_path"] = narration_path
         job["narration_duration_secs"] = result["duration_secs"]
         job["narration_sentence_timings"] = result.get("sentence_timings", [])
+        job["sentence_pause_ms"] = sentence_pause_ms
         _save_job(job_id)
 
 

@@ -587,7 +587,7 @@ let durationChangedSceneIndices = new Set();  // scenes whose duration actually 
 let contentChangedSceneIndices = new Set();  // scenes whose caption/space_type/pov_movement changed
 
 
-async function generateNarration() {
+async function generateNarration(extraSecsNeeded = 0) {
   const text = document.getElementById('narration-text').value.trim();
   const statusEl = document.getElementById('narration-status');
   const resultEl = document.getElementById('narration-result');
@@ -660,6 +660,7 @@ async function generateNarration() {
   const fd = new FormData();
   fd.append('narration_text', text);
   fd.append('voice_id', document.getElementById('voice-id')?.value.trim() || '');
+  if (extraSecsNeeded > 0) fd.append('extra_secs_needed', String(extraSecsNeeded));
 
 
   try {
@@ -734,11 +735,11 @@ async function applyPausePadding() {
   const extraSecsNeeded = narrationDistribution.current_total_secs - narrationDistribution.narration_duration_secs;
   document.getElementById('narration-status').textContent =
     `⏳ Ricalcolo con pause estese (+${Math.round(extraSecsNeeded)}s distribuiti tra le frasi)…`;
-  // Re-generate narration is not needed — pause padding only affects
-  // silence gaps, already handled by narration.py's suggest_pause_padding.
-  // For now this re-triggers generation; the server-side pause logic
-  // can be wired to accept a custom pause_ms parameter in a follow-up.
-  await generateNarration();
+  // 2026-07-16 fix: this used to call generateNarration() with no pause
+  // info, regenerating identical audio and never actually clearing the
+  // "too short" warning. Now passes the real gap to fill so the backend
+  // can compute and apply the correct pause duration.
+  await generateNarration(Math.max(0, extraSecsNeeded));
 }
 
 
