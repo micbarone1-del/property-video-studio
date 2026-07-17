@@ -1,6 +1,6 @@
 # Property Video Studio — Backlog
 
-_Last updated: July 9, 2026 — removed "Auto maintenance scheduler" (completed and verified — see status.md), renumbered remaining items._
+_Last updated: July 16-17, 2026 — moved items 14 and 16 to "Recently completed" (confirmed already fixed on inspection, not from this session's work), added items 32-34, updated item 13 with partial progress. Numbering gap between 16 and 30 is a known pre-existing inconsistency from an earlier renumbering, not yet cleaned up — see status.md if it resurfaces._
 
 Items are ordered by priority. Each entry includes scope, decisions already made, and open questions still needing resolution.
 
@@ -147,11 +147,7 @@ Items are ordered by priority. Each entry includes scope, decisions already made
 
 **Scope not yet defined — needs a look at the current progress-polling code first** to know whether this is a display bug (wrong number shown) or a genuine lack of granular status (no visibility into which scene/stage is active, elapsed real time, etc.).
 
-## 14. Duration sliders don't support Luma's actual valid durations
-
-**Problem, confirmed real July 10 2026:** manual per-scene duration sliders move in 4s/6s increments (matching Veo's valid durations), never landing on 5s or 9s — Luma's only two valid clip durations. Any manual duration set via these sliders on the Luma tier gets silently snapped/distorted by the backend, with no indication to the user that their chosen value wasn't actually used.
-
-**Scope not yet defined — needs its own look:** should the slider be dynamic based on the currently selected model tier (5s/9s steps for Luma, 4s/6s/8s for Veo), or should snapping be made visible in the UI instead of silent?
+**Partial progress, July 13, 2026 — does not close this item.** Rework-specific progress messages now say "Rework: ..." instead of generic text, so a rework in progress is at least distinguishable from a stuck/broken job by message content. The underlying ask — genuine stuck-vs-progressing visibility, elapsed time, granular per-scene/stage state for ANY job (not just reworks) — is still unaddressed.
 
 ---
 
@@ -162,14 +158,6 @@ Items are ordered by priority. Each entry includes scope, decisions already made
 **What already works correctly:** the "not enough photos, manual upload needed" fallback fires cleanly — this is the safety design working as intended, not a crash.
 
 **Likely real fix, not started:** find each site's internal image-loading API/endpoint rather than parsing the rendered page — a materially different, site-specific investigation, not a quick patch.
-
----
-
-## 16. Manual narration path has no overrun protection
-
-**Problem, confirmed via code read July 11, 2026:** `_overlay_narration_audio()` in `api_server.py` (the general/manual narration path, separate from the URL-scraper's own narration engine) has no handling at all for narration running longer than the pre-calculated video duration — only documents the "narration shorter" case. The scraper's own engine has a hard ceiling + fade-out safety net; this path does not.
-
-**Not started** — deprioritized behind core pipeline reliability work this session.
 
 ---
 
@@ -193,6 +181,31 @@ Items are ordered by priority. Each entry includes scope, decisions already made
 - Add Claude API cost lines to `cost_tracker.py` (per-job estimate + actuals), including the rework case.
 - Add Claude API credit/connectivity checks to `maintenance_scheduler.py`, alongside the existing fal.ai and ElevenLabs checks.
 - Surface both in the UI cost panel and maintenance panel.
+
+---
+
+## 32. Old-job cleanup false negative — 2 jobs stuck past retention
+
+**Confirmed real, July 16, 2026** (maintenance alert): jobs `161dfaf7_rw5a78` and `3c4bea30` are past the 7-day retention cutoff and should have been cleaned up but weren't, despite the same maintenance run reporting 10 other jobs successfully cleaned.
+
+**Investigated, not yet confirmed/fixed.** Both jobs' `job_meta.json` mtime showed only ~2.3 days old — suspiciously close to the last server restart. Working hypothesis: `_load_jobs_from_disk()` may call `_save_job()` for every job on every startup (including ours from an unrelated import test), which would reset the exact mtime the retention check relies on, letting these two jobs' clocks silently reset on every restart regardless of real age. Not yet verified against `_load_jobs_from_disk()`'s actual body — next step before attempting a fix.
+
+---
+
+## 33. Cost reporting UI — confirm + edit for new client/revenue entries
+
+**Requested July 16, 2026.** Add a confirmation popup when adding a new client or revenue entry in the cost reporting UI, and allow editing that info after it's been added (currently, entries appear to be add-only with no confirm step). Not scoped further yet — needs a look at the existing agency/sales entry forms in the 💰 Costi modal first.
+
+---
+
+## 34. Safeguard against destructive commands — CRITICAL, incident-driven
+
+**Incident, July 16, 2026:** a wildcard `rm -rf jobs/*/` was included in a terminal test block, followed by a correction telling the user not to run it — but the correction came *after* the destructive line in the same message, so the whole block had already been copy-pasted as one unit before the correction could be seen. Deleted all job directories except one — roughly 32 property jobs' images/clips/audio/finished videos permanently lost (some finished MP4s survived because they'd already been downloaded locally, outside the repo).
+
+**Required safeguard, before this pattern is allowed again:**
+- A destructive/wildcard filesystem command must never appear in the same message as a correction retracting it — the correction must come *before* any pasteable block, never after.
+- Prefer move-to-a-dated-backup-folder over hard delete for any bulk `jobs/` cleanup.
+- Any command matching `rm -rf` touching `jobs/` needs its own isolated, explicitly-confirmed message — never bundled inside a larger test/patch script.
 
 ---
 
@@ -238,6 +251,12 @@ reduction, not a fix. Agent-based QC (item 11) is the real answer.
 ## Recently completed (see status.md for full detail)
 
 - **Auto maintenance scheduler** — completed and live-tested July 9, 2026. Tiered per-check frequencies via cron, real bugs fixed in the underlying 7-day job cleanup (two separate issues found and fixed), email alerting with cooldown, UI panel with editable recipient list.
+- **Duration sliders don't support Luma's actual valid durations (was item 14)** — checked July 16, 2026 and found already fixed: `getDurationRangeForTier()` already returns Luma's real 5s/9s steps, and `onTierChange()` correctly re-ranges and re-snaps existing sliders when the tier dropdown changes. The original bug report predates this fix; no longer reproducible.
+- **Manual narration path has no overrun protection (was item 16)** — checked July 16, 2026 and found already fixed: `_overlay_narration_audio()` already computes narration overflow and extends the trailing pad (with fade) to absorb it. The original bug report predates this fix; no longer reproducible.
+- **Rework cost tracking + rework progress labeling** — fixed July 13, 2026. See status.md for full detail (tier-aware pricing bug, running-total display, "Rework:" message prefix).
+- **Draft scene-count desync** — fixed July 13, 2026. New `/jobs/{id}/draft/resync` endpoint, gated to draft-status jobs only. See status.md.
+- **"Aggiungi pause" no-op bug** — fixed July 16, 2026. See status.md for full detail (suggest_pause_padding() wiring, per-job pause persistence).
+- **Legacy rework-endpoint migration** — new `POST /jobs/{id}/scenes/redo-batch` replaces the legacy sibling-directory `/rework` call from the main "Genera video" button's auto-rework path. Deployed July 16-17, 2026; integration test in progress as of this update — see status.md for exact verification status before relying on this for a real client job.
 
 ## Not backlog items — standing watch items (tracked in status.md, not here)
 
