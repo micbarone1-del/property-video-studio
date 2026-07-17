@@ -2141,6 +2141,261 @@ async def run_reassemble_only(job_id: str):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Batch redo (NEW SOLID JOB MODEL) — multiple scenes, one locked operation,
+# one reassembly. Replaces the legacy /rework endpoint below for the main
+# "Genera video" button's rework path (2026-07-16 migration). Duplicates
+# run_redo_scene's per-scene steps rather than sharing code with it, so the
+# already-tested single-scene redo path can't regress from this change.
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@app.post("/jobs/{job_id}/scenes/redo-batch")
+async def redo_scenes_batch(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    scenes_config: str = Form(...),
+    redo_scene_ids: str = Form(...),
+    new_images: list[UploadFile] = File(default=[]),
+    new_image_indices: list[str] = Form(default=[]),
+    transition_style: str = Form(None),
+):
+    """
+    Batches multiple scene redos into ONE locked operation with ONE final
+    reassembly, and persists the FULL current scene list (captions/voiceover
+    for every scene, not just the ones being redone) -- matching what the
+    legacy endpoint did, but in-place in this job's own directory with no
+    sibling job ever created.
+    """
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+
+    try:
+        new_scenes_config = json.loads(scenes_config)
+        redo_ids = json.loads(redo_scene_ids)
+        if not isinstance(new_scenes_config, list) or not isinstance(redo_ids, list):
+            raise ValueError("scenes_config and redo_scene_ids must be JSON arrays")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid payload: {e}")
+
+    if not _acquire_job_lock(job_id, f"batch redo {len(redo_ids)} scene(s)"):
+        lock = _job_lock_status(job_id)
+        raise HTTPException(
+            status_code=409,
+            detail=f"Job is currently being modified ({lock.get('operation')}) — please wait and try again."
+        )
+
+    try:
+        new_scenes_config = _ensure_scene_ids(new_scenes_config)
+
+        job_dir = JOBS_DIR / job_id
+        img_dir = job_dir / "images"
+        img_dir.mkdir(parents=True, exist_ok=True)
+
+        for upload, idx_str in zip(new_images, new_image_indices):
+            try:
+                idx = int(idx_str)
+                if idx >= len(new_scenes_config):
+                    continue
+                content = await upload.read()
+                if len(content) > 20 * 1024 * 1024:
+                    log.warning(f"[BatchRedo] New image at index {idx} exceeds 20MB, skipping")
+                    continue
+                if not _validate_image_bytes(content):
+                    log.warning(f"[BatchRedo] New image at index {idx} failed validation, skipping")
+                    continue
+                new_scene_id = new_scenes_config[idx]["scene_id"]
+                ext = Path(upload.filename).suffix.lower() or ".jpg"
+                if upload.content_type == "image/jpeg": ext = ".jpg"
+                elif upload.content_type == "image/png":  ext = ".png"
+                elif upload.content_type == "image/webp": ext = ".webp"
+                dest = img_dir / f"{new_scene_id}{ext}"
+                with open(dest, "wb") as f:
+                    f.write(content)
+                if new_scene_id not in redo_ids:
+                    redo_ids.append(new_scene_id)
+            except Exception as e:
+                log.error(f"[BatchRedo] Failed to save new image at index {idx_str}: {e}")
+
+        valid_ids = {s.get("scene_id") for s in new_scenes_config}
+        redo_ids = [rid for rid in redo_ids if rid in valid_ids]
+
+        if transition_style:
+            job["transition_style"] = transition_style
+
+        job["scenes_config"] = new_scenes_config
+        job["total_scenes"]  = len(new_scenes_config)
+        job["status"]  = "running"
+        job["message"] = f"Rework: rigenerazione di {len(redo_ids)} scena/e in corso…"
+        _save_job(job_id)
+    except Exception:
+        _release_job_lock(job_id)
+        raise
+
+    background_tasks.add_task(run_redo_scenes_batch, job_id=job_id, scene_ids=redo_ids)
+    return {"job_id": job_id, "status": "running", "scenes_to_redo": redo_ids}
+
+
+async def run_redo_scenes_batch(job_id: str, scene_ids: list):
+    """Regenerates MULTIPLE scenes in one locked operation, then reassembles
+    once at the end. See redo_scenes_batch() above for context.
+    """
+    def update(status, progress, message):
+        JOBS[job_id].update({"status": status, "progress": progress, "message": message})
+        _save_job(job_id)
+        log.info(f"[Job {job_id}] {progress}% — {message}")
+
+    try:
+        job = JOBS[job_id]
+        job_dir = JOBS_DIR / job_id
+        scenes_config = job.get("scenes_config", [])
+        lighting  = job.get("lighting", "bright_natural")
+        intensity = job.get("intensity", "natural_pace")
+        model_tier = job.get("model_tier", "premium")
+        do_video_upscale = job.get("do_video_upscale", True)
+
+        n = max(len(scene_ids), 1)
+        redone_results = []
+        statuses = job.get("scenes", [])
+
+        for idx, scene_id in enumerate(scene_ids):
+            scene_idx = next((i for i, s in enumerate(scenes_config) if s.get("scene_id") == scene_id), None)
+            if scene_idx is None:
+                log.warning(f"[Job {job_id}] Batch redo: scene {scene_id} not found, skipping")
+                continue
+            scene = scenes_config[scene_idx]
+
+            voiceover = scene.get("voiceover", "").strip()
+            user_duration = int(scene.get("duration", 10))
+            actual_duration = user_duration
+
+            audio_dir = job_dir / "audio"
+            audio_dir.mkdir(exist_ok=True)
+            audio_out = str(audio_dir / f"{scene_id}.mp3")
+
+            if voiceover:
+                update("running", int(5 + (idx/n)*80), f"Rework: rigenero voiceover ({idx+1}/{n})…")
+                from voice_generation import generate_speech as generate_voice
+                ok_audio = await asyncio.to_thread(
+                    generate_voice, voiceover, audio_out,
+                    voice_id=os.getenv("DEFAULT_VOICE_ID") or None
+                )
+                if ok_audio and Path(audio_out).exists():
+                    try:
+                        from pydub import AudioSegment
+                        seg = AudioSegment.from_file(audio_out)
+                        audio_secs = len(seg) / 1000.0
+                        buffered   = audio_secs + 2.0
+                        actual_duration = max(4, min(8, int(((buffered + 1.99) // 2) * 2)))
+                    except Exception as e:
+                        log.warning(f"[Job {job_id}] Could not measure audio for {scene_id}: {e}")
+
+            img_dir = job_dir / "images"
+            enhanced_dir = job_dir / "enhanced"
+            enhanced_dir.mkdir(exist_ok=True)
+
+            source_img = None
+            for ext in [".jpg", ".jpeg", ".png", ".webp"]:
+                candidate = img_dir / f"{scene_id}{ext}"
+                if candidate.exists():
+                    source_img = candidate
+                    break
+            if not source_img:
+                for ext in [".jpg", ".jpeg", ".png", ".webp"]:
+                    legacy_candidate = img_dir / f"scene_{scene_idx:03d}{ext}"
+                    if legacy_candidate.exists():
+                        new_name = img_dir / f"{scene_id}{ext}"
+                        shutil.copy2(str(legacy_candidate), str(new_name))
+                        source_img = new_name
+                        break
+            if not source_img:
+                log.error(f"[Job {job_id}] Batch redo: no source image for scene {scene_id}, skipping")
+                continue
+
+            enhanced_img = enhanced_dir / f"{scene_id}_enhanced.jpg"
+            if not enhanced_img.exists():
+                from image_enhance import enhance_image
+                update("running", int(10 + (idx/n)*80), f"Rework: miglioro immagine ({idx+1}/{n})…")
+                await asyncio.to_thread(enhance_image, str(source_img), str(enhanced_img), True, True)
+            img_for_generation = str(enhanced_img) if enhanced_img.exists() else str(source_img)
+
+            clips_dir = job_dir / "clips"
+            clips_dir.mkdir(exist_ok=True)
+            clip_out = str(clips_dir / f"{scene_id}.mp4")
+
+            update("running", int(15 + (idx/n)*80), f"Rework: rigenero clip {idx+1}/{n} ({actual_duration}s)…")
+            from video_generation import generate_video_single
+            ok_video = await asyncio.to_thread(
+                generate_video_single,
+                img_for_generation, actual_duration, clip_out,
+                space_type=scene.get("space_type", "large"),
+                pov_movement=scene.get("pov_movement", "walk_in_explore"),
+                lighting=lighting,
+                intensity=intensity,
+                model_tier=model_tier,
+                do_video_upscale=do_video_upscale,
+            )
+            if not ok_video:
+                log.error(f"[Job {job_id}] Batch redo: video generation failed for scene {scene_id}")
+                continue
+
+            found = False
+            for s in statuses:
+                if s.get("scene_id") == scene_id:
+                    s.update({"video": "ok", "audio": "ok" if voiceover else "skipped", "duration_used": actual_duration})
+                    found = True
+                    break
+            if not found:
+                statuses.append({
+                    "scene_id": scene_id, "index": scene_idx,
+                    "caption": scene.get("caption", ""), "video": "ok",
+                    "audio": "ok" if voiceover else "skipped",
+                    "duration_used": actual_duration, "qc_verdict": "pass",
+                })
+
+            redone_results.append({
+                "duration": actual_duration,
+                "had_voiceover": bool(voiceover),
+                "voiceover_chars": len(voiceover) if voiceover else 0,
+            })
+
+        job["scenes"] = statuses
+        _save_job(job_id)
+
+        if redone_results:
+            from cost_tracker import calculate_rework_cost, format_cost_display
+            pricing_scenes = [{"duration": r["duration"]} for r in redone_results]
+            total_voiceover_chars = sum(r["voiceover_chars"] for r in redone_results)
+            any_voiceover = any(r["had_voiceover"] for r in redone_results)
+            rework_cost = calculate_rework_cost(
+                scenes_redone=pricing_scenes,
+                models_used=[model_tier] * len(pricing_scenes),
+                redo_video=True,
+                redo_audio=any_voiceover,
+                audio_chars=total_voiceover_chars,
+                model_tier=model_tier,
+            )
+            job.setdefault("reworks", []).append(rework_cost)
+            original_raw = job.get("cost_actual_raw")
+            if original_raw:
+                job["cost_actual"] = format_cost_display(original_raw, previous_reworks=job["reworks"])
+            else:
+                legacy_total = (job.get("cost_actual") or {}).get("grand_total_eur", 0)
+                pseudo_raw = {"type": "actual", "total_eur": legacy_total, "model_tier": model_tier}
+                job["cost_actual"] = format_cost_display(pseudo_raw, previous_reworks=job["reworks"])
+            _save_job(job_id)
+
+        await run_reassemble_only(job_id)
+
+    except Exception as e:
+        log.error(f"[Job {job_id}] batch redo failed: {e}", exc_info=True)
+        JOBS[job_id].update({"status": "failed", "message": f"Errore: {str(e)[:200]}"})
+        _save_job(job_id)
+    finally:
+        _release_job_lock(job_id)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # LEGACY sibling-directory rework model — kept only for any old in-flight jobs.
 # Do not build new features on this. Use the endpoints above instead.
 # ══════════════════════════════════════════════════════════════════════════════

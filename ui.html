@@ -1840,6 +1840,7 @@ function renderScenes() {
     const card = document.createElement('div');
     card.className = `scene-card${scStatus ? (scStatus.video==='ok' ? ' qc-pass' : ' qc-fail') : ''}`;
     card.dataset.index = i;
+    card.dataset.sceneId = sceneIdForThis || '';
     card.setAttribute('ondragover', `onDragOver(event,${i})`);
     card.setAttribute('ondrop', `onDrop(event,${i})`);
     card.setAttribute('ondragleave', 'onDragLeave(event)');
@@ -2169,6 +2170,7 @@ function getScenesConfig() {
     space_type:   card.querySelector('.sc-space-type').value,
     pov_movement: card.querySelector('.sc-pov-movement').value,
     remove_watermark: card.querySelector('.sc-remove-watermark')?.checked || false,
+    scene_id:     card.dataset.sceneId || null,
   }));
 }
 
@@ -2467,21 +2469,23 @@ async function submitRework(reworkScenes) {
 
   const updatedScenes = getScenesConfig();
 
+  // 2026-07-16 migration: was POSTing to the legacy /rework endpoint
+  // (sibling-directory model). Now maps flagged indices to their stable
+  // scene_id and calls the current single-directory batch endpoint --
+  // no sibling job is ever created, and every scene's caption/voiceover
+  // is persisted, not just the ones being redone.
+  const redoSceneIds = [];
+  reworkScenes.forEach(idx => {
+    const sid = updatedScenes[idx]?.scene_id;
+    if (sid) redoSceneIds.push(sid);
+  });
 
-  // Always redo both audio and video — video is generated AFTER audio to get correct duration
-  const cfg = {
-    scenes:         reworkScenes,
-    redo_video:     true,
-    redo_audio:     true,
-    updated_scenes: updatedScenes,
-  };
-
-
-  console.log(`Rework: job ${currentJobId}, scenes ${reworkScenes}`);
+  console.log(`Rework: job ${currentJobId}, scenes ${reworkScenes}, scene_ids ${redoSceneIds}`);
 
 
   const fd = new FormData();
-  fd.append('rework_config', JSON.stringify(cfg));
+  fd.append('scenes_config', JSON.stringify(updatedScenes));
+  fd.append('redo_scene_ids', JSON.stringify(redoSceneIds));
   const transEl2 = document.getElementById('transition-style');
   if (transEl2) fd.append('transition_style', transEl2.value);
 
@@ -2501,14 +2505,14 @@ async function submitRework(reworkScenes) {
 
 
   try {
-    const res = await authFetch(`${API_BASE}/jobs/${targetJobId}/rework`, { method:'POST', body:fd });
+    const res = await authFetch(`${API_BASE}/jobs/${targetJobId}/scenes/redo-batch`, { method:'POST', body:fd });
     if (!res.ok) {
       let detail = `Server error ${res.status}`;
       try { const e = await res.json(); detail = e.detail || detail; } catch(_) {}
       throw new Error(detail);
     }
     const { job_id } = await res.json();
-    activeJobId = job_id;  // track rework job for polling — currentJobId stays as original
+    activeJobId = job_id;  // same job_id now -- no more sibling jobs, ever
     // Clear new-scene tracking for submitted indices — they're processed now
     reworkScenes.forEach(idx => newlyAddedSceneIndices.delete(idx));
     genBtn.textContent = 'Rework in corso…';
