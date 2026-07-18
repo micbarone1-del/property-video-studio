@@ -198,14 +198,30 @@ Items are ordered by priority. Each entry includes scope, decisions already made
 
 ---
 
-## 34. Safeguard against destructive commands — CRITICAL, incident-driven
+## 34. Safeguard against destructive commands — ✅ ADDRESSED July 17, 2026
 
 **Incident, July 16, 2026:** a wildcard `rm -rf jobs/*/` was included in a terminal test block, followed by a correction telling the user not to run it — but the correction came *after* the destructive line in the same message, so the whole block had already been copy-pasted as one unit before the correction could be seen. Deleted all job directories except one — roughly 32 property jobs' images/clips/audio/finished videos permanently lost (some finished MP4s survived because they'd already been downloaded locally, outside the repo).
 
-**Required safeguard, before this pattern is allowed again:**
-- A destructive/wildcard filesystem command must never appear in the same message as a correction retracting it — the correction must come *before* any pasteable block, never after.
-- Prefer move-to-a-dated-backup-folder over hard delete for any bulk `jobs/` cleanup.
-- Any command matching `rm -rf` touching `jobs/` needs its own isolated, explicitly-confirmed message — never bundled inside a larger test/patch script.
+**Built, July 17, 2026:**
+- **Absolute behavioral rule** (also saved to Claude's persistent memory for this project, and should be added to the Project's custom instructions — see status.md): Claude never writes a command that deletes anything under `jobs/`, in any message, ever — no exceptions, no same-message retractions. Deletion requests get named as a path for the user to run themselves.
+- **Independent nightly backup** — `backup_jobs.sh`, deployed to `/var/backups/pvs_jobs/` (deliberately outside the git repo and outside `/var/www/property-video-studio` entirely), cron'd daily at 3am. Creates a timestamped, immutable tarball snapshot (not a live mirror — a mirrored `rsync --delete`-style backup would propagate a future deletion mistake into the backup too). 30-day retention (181GB free vs. 645MB current `jobs/` size — trivial overhead). The only deletions this script ever performs are of its own old backup files, matching an exact naming pattern, inside its own directory — never the live `jobs/` directory.
+
+**Still open — a related but separate concern:** this protects against a repeat of the July 16 incident (destructive terminal command), but does NOT yet cover accidental *manual* deletion via the UI (e.g., the scene-removal "✕" button, which currently has no confirmation prompt) or make the app's own automated 7-day cleanup non-destructive (still a hard delete, not move-to-recovery-folder). Scoping that next.
+
+---
+
+## 35. Auto-scraping for 1-minute videos on premium properties
+
+**Requested July 17, 2026.** Some premium properties should get a longer (~1 minute) auto-scraped video instead of the standard ~30s format.
+
+**Not scoped yet — open questions:**
+- What defines "premium" for this purpose — price threshold, an explicit per-listing flag, agency tier, something else?
+- Does this replace the existing 5-7 scene / 25-35s standard format for qualifying properties, or run as a second, separate video alongside it?
+- Photo count: a 1-minute video needs roughly double the scenes (or longer per-scene durations) — does the existing photo-selection/category logic extend cleanly, or does a property need meaningfully more source photos to fill a minute without repetition/padding?
+- Narration length scales with video length — does the existing "write naturally, then derive scene count from real TTS duration" approach (see status.md, July 9) just work unmodified at a longer target, or does a longer narration need different pacing/structure to avoid feeling padded?
+- Cost: roughly double the clips = roughly double the Luma/Veo cost per video — does this change the classification/pricing shown to the client for premium properties?
+
+**Dependency:** builds on item 1 (automated URL-scraping pipeline) — same engine, different target length.
 
 ---
 
