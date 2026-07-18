@@ -256,7 +256,7 @@ reduction, not a fix. Agent-based QC (item 11) is the real answer.
 - **Rework cost tracking + rework progress labeling** — fixed July 13, 2026. See status.md for full detail (tier-aware pricing bug, running-total display, "Rework:" message prefix).
 - **Draft scene-count desync** — fixed July 13, 2026. New `/jobs/{id}/draft/resync` endpoint, gated to draft-status jobs only. See status.md.
 - **"Aggiungi pause" no-op bug** — fixed July 16, 2026. See status.md for full detail (suggest_pause_padding() wiring, per-job pause persistence).
-- **Legacy rework-endpoint migration** — new `POST /jobs/{id}/scenes/redo-batch` replaces the legacy sibling-directory `/rework` call from the main "Genera video" button's auto-rework path. Deployed July 16-17, 2026; integration test in progress as of this update — see status.md for exact verification status before relying on this for a real client job.
+- **Legacy rework-endpoint migration** — new `POST /jobs/{id}/scenes/redo-batch` replaces the legacy sibling-directory `/rework` call from the main "Genera video" button's auto-rework path. Deployed and **confirmed working end-to-end via real integration test, July 17, 2026** — see status.md for full verification detail.
 
 ## Not backlog items — standing watch items (tracked in status.md, not here)
 
