@@ -1035,6 +1035,8 @@ async def resync_draft(
     shutil.rmtree(str(img_dir), ignore_errors=True)
     img_dir.mkdir(parents=True)
 
+    # ── Pass 1: validate + read every photo ──────────────────────────────
+    validated = []
     for i, upload in enumerate(images):
         content = await upload.read()
 
@@ -1049,6 +1051,18 @@ async def resync_draft(
         elif upload.content_type == "image/png":  ext = ".png"
         elif upload.content_type == "image/webp": ext = ".webp"
 
+        validated.append((content, ext))
+
+    # 2026-07-17: re-decide the job's format from the current full photo
+    # set -- this is still pre-generation, so re-voting is correct here
+    # (unlike add_scene/redo_scenes_batch, which inherit an already-locked
+    # format from a job that's already generated).
+    job_format = _decide_job_format_from_bytes([c for c, _ in validated])
+    job["output_format"] = job_format
+
+    # ── Pass 2: normalize + save ──────────────────────────────────────────
+    for i, (content, ext) in enumerate(validated):
+        content = _normalize_photo_to_format(content, job_format)
         dest = img_dir / f"scene_{i:03d}{ext}"
         with open(dest, "wb") as f:
             f.write(content)
@@ -1880,6 +1894,9 @@ async def add_scene(
         _release_job_lock(job_id)
         raise HTTPException(status_code=400, detail="Invalid image file")
 
+    # 2026-07-17: normalize to the job's already-established output_format
+    # -- inherit, don't re-vote, since this job's canvas is already locked in
+    content = _normalize_photo_to_format(content, job.get("output_format", "landscape"))
 
     scene_id = _new_scene_id()
     new_scene = {
@@ -2307,6 +2324,10 @@ async def redo_scenes_batch(
                 if not _validate_image_bytes(content):
                     log.warning(f"[BatchRedo] New image at index {idx} failed validation, skipping")
                     continue
+                # 2026-07-17: normalize to the job's already-established
+                # output_format -- inherit, don't re-vote, since this job
+                # already has generated scenes locked to a specific canvas
+                content = _normalize_photo_to_format(content, job.get("output_format", "landscape"))
                 new_scene_id = new_scenes_config[idx]["scene_id"]
                 ext = Path(upload.filename).suffix.lower() or ".jpg"
                 if upload.content_type == "image/jpeg": ext = ".jpg"
