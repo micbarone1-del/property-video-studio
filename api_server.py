@@ -418,7 +418,7 @@ def _normalize_photo_to_format(image_bytes: bytes, target_format: str) -> bytes:
 
     if current_ratio < target_ratio:
         new_h = min(int(w / target_ratio), h)
-        top = int(h * 0.15)
+        top = int((h - new_h) * 0.26)  # 2026-07-17: proportional to actual crop amount, not a fixed % of original height
         top = max(0, min(top, h - new_h))
         cropped = img.crop((0, top, w, top + new_h))
     else:
