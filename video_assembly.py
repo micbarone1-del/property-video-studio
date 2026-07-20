@@ -423,7 +423,7 @@ if __name__ == "__main__":
         if final_path:
             print(f"\nProcess completed successfully. Final video at: {final_path}")
 
-def assemble_property_video(scenes_config, video_clip_paths, audio_paths, image_paths, output_path, property_name, transition_style="fade"):
+def assemble_property_video(scenes_config, video_clip_paths, audio_paths, image_paths, output_path, property_name, transition_style="fade", output_format="landscape"):
     """Assembles the final property video with the selected transition style.
     Supports: cut, fade, slide_left, slide_right.
     """
@@ -436,7 +436,14 @@ def assemble_property_video(scenes_config, video_clip_paths, audio_paths, image_
         import os, math
 
         TRANSITION_DURATION = 0.5  # seconds of overlap for fade/slide
-        TARGET_W, TARGET_H = 1920, 1080
+        # 2026-07-17: canvas now depends on the job's chosen output format
+        # (exactly two supported: landscape or portrait) instead of always
+        # being hardcoded landscape -- see api_server.py's
+        # _decide_job_format_from_bytes()/_normalize_photo_to_format().
+        if output_format == "portrait":
+            TARGET_W, TARGET_H = 1080, 1920
+        else:
+            TARGET_W, TARGET_H = 1920, 1080
         FPS = 24
 
         # --- Load and prepare each scene clip ---

@@ -355,6 +355,82 @@ _IMAGE_SIGNATURES = {
 }
 
 
+def _get_image_dimensions(content: bytes):
+    from PIL import Image
+    import io
+    img = Image.open(io.BytesIO(content))
+    return img.size
+
+
+def _decide_job_format_from_bytes(contents: list) -> str:
+    """
+    Majority vote across a job's photos: 'landscape' or 'portrait'
+    (2026-07-17, per explicit product decision). Exactly two canonical
+    output formats -- not one-per-photo-ratio -- so a mixed-orientation
+    property still gets one consistent video canvas. Ties, or any photo
+    that fails to read, default to landscape.
+    """
+    landscape_count = 0
+    portrait_count = 0
+    for c in contents:
+        try:
+            w, h = _get_image_dimensions(c)
+            if w >= h:
+                landscape_count += 1
+            else:
+                portrait_count += 1
+        except Exception:
+            landscape_count += 1
+    return "portrait" if portrait_count > landscape_count else "landscape"
+
+
+def _normalize_photo_to_format(image_bytes: bytes, target_format: str) -> bytes:
+    """
+    Crops a photo to match the job's chosen canonical output format --
+    "landscape" (16:9) or "portrait" (9:16) -- so every photo in a job
+    ends up exactly the same shape before generation, and video_assembly.py
+    can use one fixed canvas per job matching that format (2026-07-17,
+    per explicit product decision after a real client portrait-photo
+    distortion issue -- forcing every clip through a hardcoded 16:9
+    canvas was stretching portrait footage).
+
+    Crop direction depends on which way the source differs from target:
+      - Source is taller/narrower than target (needs height cropped,
+        e.g. a portrait photo going into a landscape job): TOP-BIASED
+        crop, not centered -- confirmed via a real side-by-side test
+        against an actual client photo that starting the crop window
+        ~15% down from the top keeps more of the informative ceiling/
+        window content real estate portrait shots are usually framed
+        for, cropping more from the floor instead.
+      - Source is wider than target (needs width cropped, e.g. a
+        landscape photo going into a portrait job): plain CENTER crop --
+        no equivalent left/right framing bias for typical room photos.
+    """
+    from PIL import Image
+    import io
+    img = Image.open(io.BytesIO(image_bytes))
+    w, h = img.size
+    target_ratio = (16 / 9) if target_format == "landscape" else (9 / 16)
+    current_ratio = w / h
+
+    if abs(current_ratio - target_ratio) / target_ratio < 0.02:
+        return image_bytes  # already an effective match, don't bother cropping
+
+    if current_ratio < target_ratio:
+        new_h = min(int(w / target_ratio), h)
+        top = int(h * 0.15)
+        top = max(0, min(top, h - new_h))
+        cropped = img.crop((0, top, w, top + new_h))
+    else:
+        new_w = min(int(h * target_ratio), w)
+        left = (w - new_w) // 2
+        cropped = img.crop((left, 0, left + new_w, h))
+
+    buf = io.BytesIO()
+    cropped.save(buf, format='JPEG', quality=95)
+    return buf.getvalue()
+
+
 def _validate_image_bytes(data: bytes) -> bool:
     for sig in _IMAGE_SIGNATURES:
         if data[:len(sig)] == sig:
@@ -677,6 +753,7 @@ async def create_job(
     lighting: str = Form("bright_natural"),   # property-level lighting
     intensity: str = Form("natural_pace"),    # property-level motion intensity
     start_generation: bool = Form(True),      # False = draft mode, no video cost yet
+    output_format: str = Form(None),          # 2026-07-17: "landscape"/"portrait" override, or None to auto-detect
 ):
     # Rate limit check
     client_ip = request.client.host if request.client else "unknown"
@@ -715,29 +792,38 @@ async def create_job(
     img_dir.mkdir(parents=True)
 
 
-    saved_images = []
+    # ── Pass 1: validate + read every photo, before deciding anything ────
+    validated = []
     for i, upload in enumerate(images):
         content = await upload.read()
 
-
-        # Size check per image
         if len(content) > 20 * 1024 * 1024:
             shutil.rmtree(str(job_dir), ignore_errors=True)
             raise HTTPException(status_code=400, detail=f"Image {i+1} exceeds 20MB limit")
 
-
-        # Type check by magic bytes
         if not _validate_image_bytes(content):
             shutil.rmtree(str(job_dir), ignore_errors=True)
             raise HTTPException(status_code=400, detail=f"Image {i+1} is not a valid image file")
-
 
         ext = Path(upload.filename).suffix.lower() or ".jpg"
         if upload.content_type == "image/jpeg": ext = ".jpg"
         elif upload.content_type == "image/png":  ext = ".png"
         elif upload.content_type == "image/webp": ext = ".webp"
 
+        validated.append((content, ext))
 
+    # ── Decide the job's canonical output format (2026-07-17): exactly
+    # two formats, landscape or portrait -- majority vote across the real
+    # photos, unless the caller explicitly overrode it. ──
+    if output_format in ("landscape", "portrait"):
+        job_format = output_format
+    else:
+        job_format = _decide_job_format_from_bytes([c for c, _ in validated])
+
+    # ── Pass 2: normalize every photo to match job_format, then save ─────
+    saved_images = []
+    for i, (content, ext) in enumerate(validated):
+        content = _normalize_photo_to_format(content, job_format)
         dest = img_dir / f"scene_{i:03d}{ext}"
         with open(dest, "wb") as f:
             f.write(content)
@@ -765,6 +851,7 @@ async def create_job(
         "scenes":           [],
         "scenes_config":    scenes_config,  # needed by narration endpoints even in draft mode
         "output_path":      None,
+        "output_format":    job_format,
         "created_at":       datetime.utcnow().isoformat(),
         "property_name":    property_name,
         "total_scenes":     len(images),
@@ -2112,6 +2199,7 @@ async def run_reassemble_only(job_id: str):
             output_path=output_path,
             property_name=job.get("property_name", "Property"),
             transition_style=job.get("transition_style", "fade"),
+            output_format=job.get("output_format", "landscape"),
         )
         if not ok:
             raise RuntimeError("Assemblaggio fallito")
@@ -2810,6 +2898,7 @@ async def run_assembly(job_id: str, job_dir: Path):
             output_path=output_path,
             property_name=property_name,
             transition_style=transition_style,
+            output_format=job.get("output_format", "landscape"),
         )
 
 
@@ -3074,6 +3163,7 @@ async def run_rework(rework_id: str, parent_job_id: str, cfg: dict, do_video_ups
             image_paths=[str(p) for p in clip_paths],
             output_path=output_path,
             property_name=parent["property_name"],
+            output_format=parent.get("output_format", "landscape"),
         )
 
 
