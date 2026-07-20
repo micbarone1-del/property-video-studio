@@ -634,9 +634,23 @@ async function generateNarration(extraSecsNeeded = 0) {
       }
       const data = await res.json();
       currentJobId = data.job_id;
+      currentJobStatus = 'draft';  // 2026-07-17 fix: was never set for a
+      // freshly-created job (only editJob() set it, for jobs loaded from
+      // the library) -- left null forever otherwise, which made
+      // `currentJobStatus !== 'draft'` incorrectly read true and misroute
+      // a brand-new job's narration-triggered duration change into a
+      // rework call instead of normal first-time generation.
       completedScenes = [];  // no scenes generated yet — draft only
       console.log(`Draft job created: ${currentJobId}`);
-    } else {
+    } else if (currentJobStatus === 'draft') {
+      // 2026-07-17 fix: this used to be a plain `else`, meaning it ran
+      // for ANY existing job, not just a still-draft one -- so generating
+      // narration on an ALREADY-GENERATED job called /draft/resync and
+      // got correctly rejected ("Job is no longer in draft status"),
+      // blocking narration regeneration on a finished job entirely. Now
+      // resync only fires for a job that's genuinely still a draft; for
+      // an already-generated job this block is simply skipped and
+      // execution falls through straight to the /narration call below.
       const res = await authFetch(`${API_BASE}/jobs/${currentJobId}/draft/resync`, { method: 'POST', body: fd });
       if (!res.ok) {
         let detail = `Errore ${res.status}`;
@@ -2081,11 +2095,11 @@ function checkNarrationDurationMatch() {
   const sliders = [...scenesCont.querySelectorAll('.sc-duration')];
   const currentTotal = sliders.reduce((sum, s) => sum + parseInt(s.value || 0), 0);
   const narrationSecs = narrationDistribution.narration_duration_secs;
-  const targetTotal = narrationSecs + 2.5; // END_BUFFER_SECS, matches narration.py
+  const targetTotal = narrationSecs + 1.5; // NARRATION_PADDING_SECS, matches narration.py (2026-07-17 unification)
 
 
   const statusEl = document.getElementById('narration-status');
-  const tooShort = (currentTotal - narrationSecs) > (4.0 + 2.5); // TOO_SHORT_THRESHOLD + buffer
+  const tooShort = (currentTotal - narrationSecs) > (4.0 + 1.5); // TOO_SHORT_THRESHOLD + NARRATION_PADDING_SECS (2026-07-17 unification)
   const needsExtension = targetTotal > currentTotal;
 
 

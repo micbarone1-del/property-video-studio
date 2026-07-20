@@ -157,9 +157,11 @@ def _overlay_narration_audio(video_path: str, narration_path: str, transition_st
     """
     from moviepy import VideoFileClip, AudioFileClip, ColorClip, concatenate_videoclips
     from moviepy.video.fx import FadeIn, FadeOut
+    from narration import LEAD_SECS, TRAIL_SECS  # 2026-07-17: single source of
+    # truth shared with calculate_scene_durations()'s target_total math --
+    # was two independent hardcoded values (1.5s here vs 2.5s there) that
+    # could silently drift apart. See narration.py for detail.
 
-    LEAD_SECS  = 0.75   # blank before narration starts
-    TRAIL_SECS = 0.75   # blank after narration ends
     FADE_SECS  = 0.5    # fade into / out of the blank padding
 
     pad_colour = (255, 255, 255) if "white" in (transition_style or "").lower() else (0, 0, 0)
@@ -2169,6 +2171,19 @@ async def redo_scenes_batch(
     if job_id not in JOBS:
         raise HTTPException(status_code=404, detail="Job not found")
     job = JOBS[job_id]
+
+    # SAFETY NET (2026-07-17 fix): the frontend has a known pre-existing gap
+    # where a freshly-created draft job's currentJobStatus can incorrectly
+    # read as not-draft, misrouting a narration-triggered duration change
+    # into a rework call for a job that was never actually generated. The
+    # legacy /rework endpoint always caught this with a clear error; this
+    # endpoint didn't, and would silently misprocess a draft job as if it
+    # were a rework. Restoring that same guard here.
+    if job.get("status") not in ("done", "failed", "awaiting_approval"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job must be completed before rework (current status: {job.get('status')})"
+        )
 
     try:
         new_scenes_config = json.loads(scenes_config)

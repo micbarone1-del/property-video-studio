@@ -27,9 +27,18 @@ log = logging.getLogger(__name__)
 # since ElevenLabs' Italian voice does not reliably pause at "." alone.
 SENTENCE_PAUSE_MS = 380
 
-# Buffer after narration ends before video ends (seconds) — matches the
-# "TTS finishes a couple of seconds before video ends" requirement.
-END_BUFFER_SECS = 2.5
+# Unified padding constants (2026-07-17 fix): these are the SAME values
+# _overlay_narration_audio() in api_server.py uses for its real lead-in/
+# trail-out blank padding at assembly time. Previously this file had its
+# own separate END_BUFFER_SECS=2.5 for the scene-duration target
+# calculation, disconnected from the real 1.5s (0.75+0.75) padding
+# actually applied later -- meaning scenes could be generated (and paid
+# for) slightly longer than genuinely needed, and the "video will be
+# extended to Xs" message shown to the user didn't match the real final
+# video length. Both stages now read from these same two numbers.
+LEAD_SECS  = 0.75   # blank before narration starts
+TRAIL_SECS = 0.75   # blank after narration ends
+NARRATION_PADDING_SECS = LEAD_SECS + TRAIL_SECS   # = 1.5s total
 
 # Threshold below which narration is considered "too short" for the
 # current total video duration, triggering the red warning + fix options.
@@ -167,12 +176,12 @@ def calculate_scene_durations(
     if valid_durations is None:
         valid_durations = [4, 5, 6, 8, 9]  # union of Veo (4/6/8) and Luma (5/9) valid values
 
-    target_total = narration_duration_secs + END_BUFFER_SECS
+    target_total = narration_duration_secs + NARRATION_PADDING_SECS
 
     current_total = sum(current_durations) if current_durations else scene_count * 6
 
     too_short = narration_duration_secs > 0 and (
-        current_total - narration_duration_secs > TOO_SHORT_THRESHOLD_SECS + END_BUFFER_SECS
+        current_total - narration_duration_secs > TOO_SHORT_THRESHOLD_SECS + NARRATION_PADDING_SECS
     )
     needs_extension = target_total > current_total
 
