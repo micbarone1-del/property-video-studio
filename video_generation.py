@@ -517,7 +517,32 @@ def _snap_veo_duration(duration: int) -> str:
         return "8s"
 
 
-def _generate_veo(image_url: str, prompt: str, duration: int) -> str | None:
+def _detect_aspect_ratio(width: int, height: int, model: str = "luma") -> str:
+    """
+    Maps an image's real pixel dimensions to the closest aspect ratio the
+    target model actually supports (2026-07-17 fix). Previously every
+    call hardcoded "16:9" regardless of input orientation -- confirmed
+    cause of warped/hallucinated output on portrait client photos, since
+    a portrait image forced into a 16:9 frame has to be stretched or have
+    its missing width invented by the model.
+
+    Luma Ray 2 genuinely supports 6 presets (confirmed via fal.ai docs,
+    2026-07-17): 16:9, 9:16, 4:3, 3:4, 21:9, 9:21.
+    Veo 3.1 only supports 16:9 or 9:16 -- "auto" (its own documented
+    smart default) is used directly at the call site instead of this
+    function for Veo, since it's simpler and more robust than guessing.
+    """
+    if not width or not height:
+        return "16:9"  # safe fallback if dimensions couldn't be read
+    ratio = width / height
+    if model == "luma":
+        options = {"21:9": 21/9, "16:9": 16/9, "4:3": 4/3, "3:4": 3/4, "9:16": 9/16, "9:21": 9/21}
+    else:
+        options = {"16:9": 16/9, "9:16": 9/16}
+    return min(options, key=lambda k: abs(options[k] - ratio))
+
+
+def _generate_veo(image_url: str, prompt: str, duration: int, aspect_ratio: str = "16:9") -> str | None:
     """Submits to Veo 3.1 Fast at 1080p. Returns video URL or None.
     1080p costs the same as 720p on fal.ai — always use 1080p.
     CRITICAL: Veo's duration parameter is called "duration" (not "duration_secs")
@@ -532,7 +557,7 @@ def _generate_veo(image_url: str, prompt: str, duration: int) -> str | None:
                 "prompt":         prompt,
                 "duration":       veo_dur,          # correct param name + string format
                 "resolution":     "1080p",      # same price as 720p — always use 1080p
-                "aspect_ratio":   "16:9",
+                "aspect_ratio":   aspect_ratio,   # 2026-07-17: was hardcoded "16:9", now matches the real input orientation
                 "enhance_prompt": False,         # we control the prompt, no AI rewriting
                 "generate_audio": False,         # ElevenLabs handles audio separately
                 "fast_mode":      True,
@@ -555,7 +580,7 @@ def _snap_luma_duration(duration: int) -> str:
     return "5s" if duration <= 6 else "9s"
 
 
-def _generate_luma(image_url: str, prompt: str, duration: int) -> str | None:
+def _generate_luma(image_url: str, prompt: str, duration: int, aspect_ratio: str = "16:9") -> str | None:
     """Submits to Luma Ray 2 at 1080p. Returns video URL or None.
     Confirmed via real testing: genuine 3D parallax, no warping, no
     hallucination on a photo that consistently caused problems with Veo.
@@ -571,7 +596,7 @@ def _generate_luma(image_url: str, prompt: str, duration: int) -> str | None:
                 "prompt":     prompt,
                 "duration":   luma_dur,
                 "resolution": "1080p",
-                "aspect_ratio": "16:9",
+                "aspect_ratio": aspect_ratio,   # 2026-07-17: was hardcoded "16:9", now matches the real input orientation
                 "loop":       False,
             }
         )
@@ -775,6 +800,7 @@ def generate_video_single(
                 image_data = f.read()
 
         log.info(f"[VideoGen] Image: {'cropped 85%' if model_tier=='eco' else 'full'} → uploading")
+        _w, _h = None, None
         try:
             from PIL import Image as _PIL_Image
             import io as _io
@@ -790,6 +816,13 @@ def generate_video_single(
             log.warning(f"[VideoGen] Image resize failed, uploading as-is: {_resize_err}")
         image_url = _upload_bytes(image_data)
 
+        # 2026-07-17 fix: detect the real input orientation once here,
+        # instead of every call hardcoding "16:9" -- see _detect_aspect_ratio().
+        luma_aspect_ratio = _detect_aspect_ratio(_w, _h, model="luma")
+        veo_aspect_ratio  = "auto"  # Veo's own documented smart default
+        if _w and _h:
+            log.info(f"[VideoGen] Input image {_w}x{_h} -> Luma aspect_ratio={luma_aspect_ratio}")
+
         # ── Route to correct model ─────────────────────────────────────────
         video_url  = None
         used_model = None
@@ -798,11 +831,11 @@ def generate_video_single(
             # Luma Ray 2 — confirmed via real testing: genuine 3D parallax,
             # no warping, no hallucination, on the same photo that caused
             # persistent problems with Veo. New default recommendation.
-            video_url  = _generate_luma(image_url, final_prompt, duration)
+            video_url  = _generate_luma(image_url, final_prompt, duration, aspect_ratio=luma_aspect_ratio)
             used_model = "luma-ray-2"
             if not video_url:
                 log.warning("[VideoGen] Luma failed — falling back to Veo Fast")
-                video_url  = _generate_veo(image_url, final_prompt, duration)
+                video_url  = _generate_veo(image_url, final_prompt, duration, aspect_ratio=veo_aspect_ratio)
                 used_model = "veo-3.1-fallback"
 
         elif model_tier == "premium_veo":
@@ -815,7 +848,7 @@ def generate_video_single(
                     {
                         "image_url": image_url, "prompt": final_prompt,
                         "duration": veo_dur, "resolution": "1080p",
-                        "aspect_ratio": "16:9", "enhance_prompt": False,
+                        "aspect_ratio": veo_aspect_ratio, "enhance_prompt": False,
                         "generate_audio": False, "fast_mode": False,
                     }
                 )
