@@ -332,7 +332,7 @@ _LUMA_INTENSITY_SUFFIX = {
 # disproved this - warping, phantom mirrors, objects falling from ceilings.
 # Luma now gets the same class of constraints Veo has always had.
 _LUMA_RULES = (
-    "no people, no text overlays, no camera shake, stable smooth motion, "
+    "no people, no human shadows or silhouettes, no text overlays, no camera shake, stable smooth motion, "
     "camera stays within the space visible in the source photo, "
     "do not invent or reveal anything not visible in the original image, "
     "no new rooms, doorways, corridors or architectural elements, "
