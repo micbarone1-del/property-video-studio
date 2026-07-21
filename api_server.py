@@ -1737,22 +1737,31 @@ async def approve_job(
 
 
     if redo_scenes:
-        # Mark job as needing rework for rejected scenes
-        JOBS[job_id]["status"]  = "queued"
-        JOBS[job_id]["message"] = f"Rework queued for {len(redo_scenes)} scene(s)"
-        # Trigger rework for just the rejected scenes
-        background_tasks.add_task(
-            run_rework,
-            rework_id=job_id,
-            parent_job_id=job_id,
-            cfg={
-                "scenes":          redo_scenes,
-                "redo_video":      True,
-                "redo_audio":      False,
-                "updated_scenes":  job.get("scenes_config", []),
-                "then_assemble":   True,
-            },
-        )
+        # 2026-07-21 migration: this was the ONE remaining live call into
+        # the legacy run_rework() (sibling-directory model) -- and it's hit
+        # by ordinary, common usage (any first-time generation where QC
+        # flags a scene), meaning every such job was silently missing this
+        # session's cost tracking, locking, and single-directory-model
+        # guarantees, without anyone realizing it. Now uses the same batch
+        # redo mechanism as the manual "Rifai questa scena" button.
+        scenes_config_now = job.get("scenes_config", [])
+        redo_scene_ids = []
+        for idx in redo_scenes:
+            if 0 <= idx < len(scenes_config_now):
+                sid = scenes_config_now[idx].get("scene_id")
+                if sid:
+                    redo_scene_ids.append(sid)
+
+        if not _acquire_job_lock(job_id, f"QC redo {len(redo_scene_ids)} scene(s)"):
+            lock = _job_lock_status(job_id)
+            raise HTTPException(
+                status_code=409,
+                detail=f"Job is currently being modified ({lock.get('operation')}) — please wait and try again."
+            )
+
+        JOBS[job_id]["status"]  = "running"
+        JOBS[job_id]["message"] = f"Rework: rigenerazione di {len(redo_scene_ids)} scena/e in corso…"
+        background_tasks.add_task(run_redo_scenes_batch, job_id=job_id, scene_ids=redo_scene_ids)
     else:
         # All approved — proceed to assembly
         JOBS[job_id]["status"]  = "running"
