@@ -79,13 +79,47 @@ _FRAME_COST = {
 
 # ── Cost estimation (before generation) ───────────────────────────────────────
 
-# Per-clip cost by model tier (8s clip)
+# Per-clip cost by model tier (8s clip) -- kept as a fallback for any
+# tier not in VIDEO_COST_PER_SEC_EUR below (e.g. "standard"/Kling, which
+# is dead code per status.md, not worth pricing precisely).
 TIER_COST_PER_CLIP = {
     "eco":      LYRA_COST_81_FRAMES + (8 * TOPAZ_COST_PER_SEC),  # Lyra + Topaz
     "standard": 0.56,   # Kling 2.5 Turbo Pro (kept for backward compat)
-    "luma":     0.46,   # Luma Ray 2 — new default, confirmed reliable via testing
-    "premium":  0.80,   # Veo 3.1 Fast
+    "luma":     0.46,   # Luma Ray 2 — SUPERSEDED, see VIDEO_COST_PER_SEC_EUR below
+    "premium":  0.80,   # Veo 3.1 Fast — SUPERSEDED, see VIDEO_COST_PER_SEC_EUR below
 }
+
+# Real per-second fal.ai rates (2026-07-20 fix, verified against fal.ai's
+# own published pricing -- not yet cross-checked against a real invoice
+# line-by-line, treat as a well-evidenced estimate pending that check).
+# Audio is always off in our calls (ElevenLabs handles narration
+# separately), and we always request 1080p resolution.
+#   Luma Ray 2: 1080p costs 4x the BASE (540p) rate of $0.50/5s -- our old
+#     flat €0.46/clip never applied this multiplier at all. Confirmed this
+#     exactly explains a real reported case: a 10-clip video estimated at
+#     ~€5 actually invoiced at ~$20 from fal.ai (10 x $2.00 = $20).
+#   Veo 3.1 Fast / Standard: NO resolution multiplier (confirmed same
+#     price at 720p or 1080p) -- old flat rates were already correct for
+#     an exact 8s clip, just didn't scale down for the valid 4s/6s options.
+USD_TO_EUR = 0.92  # matches the rate already used for VPS_MONTHLY_EUR
+
+VIDEO_COST_PER_SEC_EUR = {
+    "luma":        (0.50 / 5) * 4 * USD_TO_EUR,   # ~0.368 EUR/s at 1080p
+    "premium":     0.10 * USD_TO_EUR,              # ~0.092 EUR/s, Veo 3.1 Fast, no audio
+    "premium_veo": 0.20 * USD_TO_EUR,              # ~0.184 EUR/s, Veo 3.1 Standard, no audio
+}
+
+
+def video_cost_for_clip(model_tier: str, duration_secs) -> float:
+    """
+    Real per-clip video cost, scaled by actual clip duration -- replaces
+    the flat TIER_COST_PER_CLIP lookup for tiers fal.ai genuinely bills
+    per-second (Luma, Veo). Falls back to the flat rate for any tier not
+    in VIDEO_COST_PER_SEC_EUR.
+    """
+    if model_tier in VIDEO_COST_PER_SEC_EUR:
+        return duration_secs * VIDEO_COST_PER_SEC_EUR[model_tier]
+    return TIER_COST_PER_CLIP.get(model_tier, TIER_COST_PER_CLIP["premium"])
 
 
 def estimate_job_cost(
@@ -103,9 +137,10 @@ def estimate_job_cost(
     """
     n = len(scenes)
 
-    # Video generation cost — tier-aware
-    clip_rate = TIER_COST_PER_CLIP.get(model_tier, TIER_COST_PER_CLIP["premium"])
-    video_cost = n * clip_rate
+    # Video generation cost — tier-aware, duration-aware for Luma/Veo
+    # (2026-07-20 fix: was a flat per-clip rate, ignoring both actual
+    # per-scene duration and Luma's real resolution-based cost multiplier)
+    video_cost = sum(video_cost_for_clip(model_tier, int(s.get("duration", 8))) for s in scenes)
 
     # Topaz upscale only applies to eco tier
     video_upscale_cost = 0.0
@@ -172,9 +207,8 @@ def calculate_actual_cost(
             video_cost += duration * TOPAZ_COST_PER_SEC
             lyra_clips += 1
         else:
-            # Veo or Kling — per-second billing
-            clip_rate   = TIER_COST_PER_CLIP.get(model_tier, TIER_COST_PER_CLIP["premium"])
-            video_cost += clip_rate
+            # Veo or Luma — real per-second billing (2026-07-20 fix)
+            video_cost += video_cost_for_clip(model_tier, duration)
             veo_clips  += 1
 
     upscale_cost = (UPSCALE_COST_PER_IMAGE * n) if do_upscale else 0.0
@@ -237,8 +271,7 @@ def calculate_rework_cost(
                 video_cost += _FRAME_COST.get(frames, LYRA_COST_81_FRAMES)
                 video_cost += duration * TOPAZ_COST_PER_SEC
             else:
-                clip_rate   = TIER_COST_PER_CLIP.get(model_tier, TIER_COST_PER_CLIP["premium"])
-                video_cost += clip_rate
+                video_cost += video_cost_for_clip(model_tier, duration)
 
     tts_cost    = (audio_chars * ELEVENLABS_COST_PER_CHAR) if redo_audio else 0.0
     vision_cost = n * FLORENCE_COST_PER_CALL   # output QC only
