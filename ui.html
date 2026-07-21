@@ -621,6 +621,7 @@ async function generateNarration(extraSecsNeeded = 0) {
   statusEl.textContent = '⏳ Preparazione scene (nessun costo)…';
   statusEl.style.color = 'var(--muted)';
   try {
+    console.log('[DEBUG generateNarration]', 'currentJobId=', currentJobId, 'currentJobStatus=', JSON.stringify(currentJobStatus));
     const config = getScenesConfig();
     const fd = new FormData();
     files.forEach(f => fd.append('images', f));
@@ -1853,10 +1854,19 @@ function renderScenes() {
 
 
     const sceneIdForThis = saved.scene_id || null;
+    // 2026-07-21 fix: both branches used to differ -- modern scenes (with
+    // scene_id) called redoSceneNew() directly, which submits IMMEDIATELY
+    // and locks the job right away; legacy scenes opened a staging panel
+    // instead, letting you select several scenes before submitting them
+    // all together via "Genera video". This meant redoing more than one
+    // scene only worked on legacy jobs -- on a modern job, redoing the
+    // first scene immediately locked the job before a second or third
+    // scene could be selected. Both branches now open the same staging
+    // panel; redoSceneNew() and the singular /scenes/{id}/redo endpoint
+    // are no longer called from here (left in the codebase, just unused
+    // from this button) -- everything now goes through the batch endpoint.
     const reworkBtn = scStatus
-      ? (sceneIdForThis
-          ? `<button class="btn-rework-toggle" onclick="redoSceneNew(${i}, '${sceneIdForThis}')" id="rw-btn-${i}">↺ Rifai questa scena</button>`
-          : `<button class="btn-rework-toggle" onclick="openReworkPanel(${i}, this)" id="rw-btn-${i}">↺ Rifai questa scena (legacy)</button>`)
+      ? `<button class="btn-rework-toggle" onclick="openReworkPanel(${i}, this)" id="rw-btn-${i}">↺ Rifai questa scena</button>`
       : '';
 
 
