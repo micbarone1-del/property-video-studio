@@ -395,9 +395,9 @@
           <label>Video quality tier</label>
           <select id="model-tier" onchange="onTierChange(this.value)">
             <option value="eco">Eco — Lyra 2.0 + upscale (~€0.05/clip) · budget</option>
-            <option value="luma" selected>⭐ Luma Ray 2 (~€0.46/clip) · consigliato — 3D reale, no warping</option>
-            <option value="premium">Veo 3.1 Fast (~€0.80/clip)</option>
-            <option value="premium_veo">Veo 3.1 Standard (~€1.60/clip) · no circular wipe</option>
+            <option value="luma" selected>⭐ Luma Ray 2 (~€1.84/5s clip) · consigliato — 3D reale, no warping</option>
+            <option value="premium">Veo 3.1 Fast (~€0.74/8s clip)</option>
+            <option value="premium_veo">Veo 3.1 Standard (~€1.47/8s clip) · no circular wipe</option>
           </select>
         </div>
         <div>
@@ -2114,11 +2114,11 @@ function checkNarrationDurationMatch() {
   const sliders = [...scenesCont.querySelectorAll('.sc-duration')];
   const currentTotal = sliders.reduce((sum, s) => sum + parseInt(s.value || 0), 0);
   const narrationSecs = narrationDistribution.narration_duration_secs;
-  const targetTotal = narrationSecs + 1.5; // NARRATION_PADDING_SECS, matches narration.py (2026-07-17 unification)
+  const targetTotal = narrationSecs + 2.0; // NARRATION_PADDING_SECS, matches narration.py (2026-07-21: widened 1.5 -> 2.0 for the WhatsApp-trimming buffer increase)
 
 
   const statusEl = document.getElementById('narration-status');
-  const tooShort = (currentTotal - narrationSecs) > (4.0 + 1.5); // TOO_SHORT_THRESHOLD + NARRATION_PADDING_SECS (2026-07-17 unification)
+  const tooShort = (currentTotal - narrationSecs) > (4.0 + 2.0); // TOO_SHORT_THRESHOLD + NARRATION_PADDING_SECS (2026-07-21: widened 1.5 -> 2.0)
   const needsExtension = targetTotal > currentTotal;
 
 
@@ -2259,9 +2259,16 @@ async function updateCostEstimate() {
   const visionQc     = document.getElementById('do-vision-qc').checked;
 
 
-  // Cost per 8s clip by tier
-  const TIER_COST    = { eco: 0.05, luma: 0.46, premium: 0.80, premium_veo: 1.60 };
-  const CLIP_COST    = TIER_COST[tier] || 0.46;
+  // Real per-second rates (2026-07-21 fix: mirrors cost_tracker.py's
+  // VIDEO_COST_PER_SEC_EUR exactly -- this was a flat per-clip rate that
+  // ignored both actual scene duration and Luma's real resolution-based
+  // cost multiplier (fal.ai charges 4x its base rate for 1080p, which we
+  // always request). Same class of bug as the narration-buffer constant
+  // duplication found earlier this session -- a third, disconnected copy
+  // of pricing logic living only in the frontend, never touched when the
+  // backend was fixed.
+  const ECO_CLIP_COST          = 0.05;  // eco tier keeps its own separate flat approximation
+  const VIDEO_COST_PER_SEC_EUR = { luma: 0.368, premium: 0.092, premium_veo: 0.184 };
   const UPSCALE      = 0.030;
   const VIDEO_UP_PER_SEC = 0.02;
   const EL_PER_CHAR  = 0.0003;
@@ -2270,7 +2277,11 @@ async function updateCostEstimate() {
 
 
   const n         = scenesToCharge.length;
-  const videoCost = scenesToCharge.reduce((s,sc) => s + CLIP_COST, 0);
+  const videoCost = scenesToCharge.reduce((s,sc) => {
+    if (tier === 'eco') return s + ECO_CLIP_COST;
+    const rate = VIDEO_COST_PER_SEC_EUR[tier] || VIDEO_COST_PER_SEC_EUR.premium;
+    return s + ((sc.duration || 8) * rate);
+  }, 0);
   const upCost    = upscale ? n * UPSCALE : 0;
   const vidUpCost = videoUpscale
     ? scenesToCharge.reduce((s,sc) => s + (sc.duration * VIDEO_UP_PER_SEC), 0) : 0;
