@@ -1779,14 +1779,11 @@ async def approve_job(
         background_tasks.add_task(run_redo_scenes_batch, job_id=job_id, scene_ids=redo_scene_ids)
     else:
         # All approved — proceed to assembly
+        # 2026-07-21 consolidation: was run_assembly(), now the single
+        # unified assembly implementation (see run_pipeline for detail).
         JOBS[job_id]["status"]  = "running"
         JOBS[job_id]["message"] = "Assembling final video…"
-        job_dir = JOBS_DIR / job_id
-        background_tasks.add_task(
-            run_assembly,
-            job_id=job_id,
-            job_dir=job_dir,
-        )
+        background_tasks.add_task(run_reassemble_only, job_id=job_id)
 
 
     _save_job(job_id)
@@ -2884,7 +2881,11 @@ async def run_pipeline(
         JOBS[job_id]["video_clip_paths"] = video_clip_paths
         JOBS[job_id]["audio_paths"]      = audio_paths
         JOBS[job_id]["enhanced_paths"]   = enhanced_paths
-        await run_assembly(job_id, job_dir)
+        # 2026-07-21 consolidation: run_assembly() and run_reassemble_only()
+        # were near-duplicate "assemble the final video" implementations --
+        # this one lacked the legacy-clip self-heal fallback the other had.
+        # Now uses the single, more robust implementation everywhere.
+        await run_reassemble_only(job_id)
 
 
         # ── Actual cost ───────────────────────────────────────────────────
@@ -2910,71 +2911,13 @@ async def run_pipeline(
 
 
 
-# ── Assembly step (called from pipeline and from /approve) ────────────────────
-
-
-async def run_assembly(job_id: str, job_dir: Path):
-    def update(status, progress, message):
-        JOBS[job_id].update({"status": status, "progress": progress, "message": message})
-        log.info(f"[Job {job_id}] {progress}% — {message}")
-
-
-    try:
-        job              = JOBS[job_id]
-        scenes_config    = job.get("scenes_config", [])
-        video_clip_paths = job.get("video_clip_paths", [])
-        audio_paths      = job.get("audio_paths", [])
-        enhanced_paths   = job.get("enhanced_paths", [])
-        property_name    = job.get("property_name", "Property")
-        transition_style = job.get("transition_style", "fade")
-
-
-        update("running", 82, "Assembling final video…")
-        output_path = str(job_dir / f"{property_name.replace(' ','_')}_final.mp4")
-
-
-        from video_assembly import assemble_property_video
-        ok = await asyncio.to_thread(
-            assemble_property_video,
-            scenes_config=scenes_config,
-            video_clip_paths=video_clip_paths,
-            audio_paths=audio_paths,
-            image_paths=enhanced_paths,
-            output_path=output_path,
-            property_name=property_name,
-            transition_style=transition_style,
-            output_format=job.get("output_format", "landscape"),
-        )
-
-
-        if not ok:
-            raise RuntimeError("Assembly returned failure")
-
-
-        # If a single continuous narration was generated (new decoupled
-        # narration system), overlay it onto the finished video now — this
-        # REPLACES any per-scene audio that assembly may have added, since
-        # the new system is one continuous track, not per-scene snippets.
-        # Done as a separate step so we never need to touch the existing
-        # per-scene assembly logic in video_assembly.py.
-        narration_path = job.get("narration_path")
-        if narration_path and os.path.exists(narration_path):
-            update("running", 95, "Applying narration audio…")
-            await asyncio.to_thread(_overlay_narration_audio, output_path, narration_path, job.get("transition_style", "fade"))
-            log.info(f"[Job {job_id}] Narration audio applied: {narration_path}")
-
-
-        JOBS[job_id]["output_path"] = output_path
-        update("done", 100, "Video ready for download")
-        _save_job(job_id)
-
-
-    except Exception as e:
-        log.error(f"[Assembly {job_id}] Failed: {e}", exc_info=True)
-        JOBS[job_id].update({"status": "failed", "message": f"Assembly error: {str(e)}"})
-        _save_job(job_id)
-
-
+# ── Assembly: run_assembly() removed 2026-07-21 -- was a near-duplicate of
+# run_reassemble_only() (see that function, above run_pipeline), which is
+# now the single implementation used by run_pipeline, /approve, and every
+# redo/rework path. Removed rather than left unused, per an explicit
+# decision to keep the architecture simple -- no duplicate paths unless
+# strictly necessary, and this one wasn't. Rollback: git revert to commit
+# af826498c462729d0b5b1e31c8a3661ad5145b62 if this causes a real problem.
 
 
 # ── Rework runner ──────────────────────────────────────────────────────────────
