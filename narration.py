@@ -36,9 +36,9 @@ SENTENCE_PAUSE_MS = 380
 # for) slightly longer than genuinely needed, and the "video will be
 # extended to Xs" message shown to the user didn't match the real final
 # video length. Both stages now read from these same two numbers.
-LEAD_SECS  = 0.75   # blank before narration starts
-TRAIL_SECS = 0.75   # blank after narration ends
-NARRATION_PADDING_SECS = LEAD_SECS + TRAIL_SECS   # = 1.5s total
+LEAD_SECS  = 1.0    # blank before narration starts (2026-07-21: was 0.75 -- WhatsApp confirmed cutting the first ~1s off video previews, eating into real speech; wider buffer absorbs that trim instead of clipping actual narration)
+TRAIL_SECS = 1.0    # blank after narration ends (2026-07-21: same reasoning, protects the outro from the same class of platform-side trimming)
+NARRATION_PADDING_SECS = LEAD_SECS + TRAIL_SECS   # = 2.0s total (2026-07-21: was 1.5s before the WhatsApp-trimming buffer increase)
 
 # Threshold below which narration is considered "too short" for the
 # current total video duration, triggering the red warning + fix options.
