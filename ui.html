@@ -2571,13 +2571,29 @@ function log(msg) { console.log(`[PVS] ${msg}`); }
 
 
 // ── Polling ────────────────────────────────────────────────────────────────────
+let pollEpoch = 0;  // 2026-07-21 fix: guards against a stale poll cycle
+// (e.g. from an earlier narration/reassembly action) resolving AFTER a
+// newer action has already started -- without this, an old in-flight
+// request can still call showResult() and silently wipe out scenes the
+// user had since marked for redo (showResult() resets all rework_open
+// flags), even though clearInterval() was already called for the old
+// timer -- clearInterval only stops FUTURE ticks, not an already-in-
+// flight async callback that's mid-execution when superseded. Confirmed
+// real-world case: marking 3 scenes for a batch redo, waiting a few
+// minutes, then clicking "Genera video" silently produced a plain
+// narration reassembly instead -- no batch redo call was ever made,
+// because the rework markings had been wiped by a stale poll in between.
 function startPolling(jobId) {
   clearInterval(pollTimer);
+  const myEpoch = ++pollEpoch;
   pollTimer = setInterval(async () => {
+    if (myEpoch !== pollEpoch) { clearInterval(pollTimer); return; }
     try {
       const res = await authFetch(`${API_BASE}/jobs/${jobId}`);
+      if (myEpoch !== pollEpoch) return;  // superseded while the request was in flight
       if (!res.ok) return;
       const job = await res.json();
+      if (myEpoch !== pollEpoch) return;  // superseded while parsing the response
 
 
       updateProgress(job.progress, job.message);
