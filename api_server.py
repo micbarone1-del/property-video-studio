@@ -1357,6 +1357,20 @@ async def create_job_from_url(
             shutil.move(src, str(dest_path))
         scene_image_paths.append(dest_path)
 
+    # 2026-07-21 fix: apply the same landscape/portrait format detection
+    # and normalization that manually-uploaded jobs get via create_job() --
+    # this was a known architecture gap (assessment item 3): scraped jobs
+    # never went through _normalize_photo_to_format() at all, meaning a
+    # portrait source photo here would still hit the exact distortion
+    # issue manual uploads had before that fix was built.
+    valid_img_paths = [p for p in scene_image_paths if p and p.exists()]
+    if valid_img_paths:
+        job_format = _decide_job_format_from_bytes([p.read_bytes() for p in valid_img_paths])
+        for p in valid_img_paths:
+            p.write_bytes(_normalize_photo_to_format(p.read_bytes(), job_format))
+    else:
+        job_format = "landscape"
+
     # Real per-photo vision analysis — BUG FIXED July 10 2026: scenes were
     # previously getting space_type/pov_movement from a static category-name
     # lookup table (e.g. all "bedrooms" always got the same movement),
@@ -1419,6 +1433,7 @@ async def create_job_from_url(
     JOBS[job_id] = {
         "status": "draft",
         "progress": 0,
+        "output_format": job_format,
         "message": "Creato automaticamente da URL — rivedi e premi Genera Video",
         "scenes": [],
         "scenes_config": scenes_config,
