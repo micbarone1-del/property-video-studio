@@ -410,6 +410,14 @@
             <option value="cut">Hard cut</option>
           </select>
         </div>
+        <div>
+          <label>Output format</label>
+          <select id="output-format">
+            <option value="" selected>Auto (rileva da foto)</option>
+            <option value="landscape">Landscape (16:9)</option>
+            <option value="portrait">Portrait (9:16)</option>
+          </select>
+        </div>
       </div>
       <div class="row2" style="margin-top:12px">
         <div>
@@ -623,6 +631,7 @@ async function generateNarration(extraSecsNeeded = 0) {
       fd.append('model_tier', document.getElementById('model-tier').value);
       fd.append('lighting', document.getElementById('lighting').value);
       fd.append('intensity', document.getElementById('intensity').value);
+      fd.append('output_format', document.getElementById('output-format')?.value || '');
       fd.append('start_generation', 'false');  // draft mode — no cost yet
 
 
@@ -2448,6 +2457,7 @@ genBtn.addEventListener('click', async () => {
   fd.append('model_tier',        document.getElementById('model-tier').value);
   fd.append('lighting',          document.getElementById('lighting').value);
   fd.append('intensity',         document.getElementById('intensity').value);
+  fd.append('output_format',     document.getElementById('output-format')?.value || '');
 
 
   try {
