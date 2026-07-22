@@ -1298,7 +1298,6 @@ async function populateAgencyDropdowns() {
     console.warn('[Agencies] Could not load client list:', e.message);
   }
 }
-populateAgencyDropdowns();
 
 
 // 2026-07-22: lets a new client be created directly from either
@@ -1600,6 +1599,7 @@ async function submitLogin() {
 
 function showApp() {
   document.getElementById('login-screen').classList.remove('visible');
+  populateAgencyDropdowns();
 }
 
 
