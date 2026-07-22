@@ -1,6 +1,6 @@
 # Property Video Studio — Backlog
 
-_Last updated: July 16-17, 2026 — moved items 14 and 16 to "Recently completed" (confirmed already fixed on inspection, not from this session's work), added items 32-34, updated item 13 with partial progress. Numbering gap between 16 and 30 is a known pre-existing inconsistency from an earlier renumbering, not yet cleaned up — see status.md if it resurfaces._
+_Last updated: July 21, 2026 — added items 36-41 (portrait/landscape format normalization gap closed, Luma camera-movement quality issue, architecture consolidation project with items 1-4 done, library reorganization by client/property/job, remaining dead-code cleanup, maintenance credit-check retry). Numbering gap between 16 and 30 is a known pre-existing inconsistency from an earlier renumbering, not yet cleaned up._
 
 Items are ordered by priority. Each entry includes scope, decisions already made, and open questions still needing resolution.
 
@@ -15,18 +15,12 @@ Items are ordered by priority. Each entry includes scope, decisions already made
 - When scraped photos are insufficient for a category, surface the gap explicitly and require manual upload rather than silently degrading quality or skipping the scene.
 - Source sites: start with immobiliare.it, idealista.it, casa.it — plus a "request a new site" workflow for anything else (implemented — see status.md).
 - Photo categorization: prefer the site's own image captions/labels; AI vision classification (reusing existing `vision_analysis.py`) as fallback for anything unlabeled/ambiguous.
-- Narration/captions: yes, auto-generate from the scraped listing description text (not yet built — see below).
-
-**Real progress (see status.md for full detail):** core extraction engine (`listing_scraper.py`) built and confirmed working end-to-end on a real immobiliare.it listing — photos, labels, categories, description, price, address all correct. Had to solve a real IP-blocking problem (immobiliare.it blocks this VPS's direct requests) by routing the fetch through the Claude API instead of a direct HTTP call.
+- Narration/captions: yes, auto-generate from the scraped listing description text (built — see status.md and item 6 below on its architectural separation from the manual workflow).
 
 **Concretely remaining:**
-1. Test the same engine against a real idealista.it listing, then a real casa.it listing — need one real URL from each to validate (untested so far).
-2. Photo-count-per-category question — resolved architecturally: now derived from real narration length (5-7 scenes depending on how much the property needs to say), not a fixed placeholder. See status.md.
-3. Human-review the auto-generated narration/caption text for quality and pacing — redesigned twice this session, needs a fresh listen/read.
-4. **UI integration — phased, human-in-the-loop first (decided July 9, 2026):** a box on the initial UI where the agent pastes a listing URL. **Phase 1:** automation runs the full scrape → narration → scene-count chain and auto-populates the existing narration/scene boxes; the agent inspects and presses "Generate Video" manually. **Phase 2 (later):** fully automatic, no manual step, once Phase 1 is trusted.
-5. Optional/deferred: a ~1s fade-to-black buffer at the start/end of the assembled video (`video_assembly.py`), as extra timing safety margin — only if real usage shows it's needed.
-
-**Note:** flagged by the user as needing a full day of focused work — this session covered the core engine; the integration layer above is the remaining work.
+1. Test the same engine against a real idealista.it listing, then a real casa.it listing (see item 15 — still confirmed broken, not started).
+2. Human-review the auto-generated narration/caption text for quality and pacing.
+3. Phase 2 automation (currently Phase 1: auto-populates the editor, human presses "Generate Video" manually).
 
 ---
 
@@ -39,18 +33,18 @@ Items are ordered by priority. Each entry includes scope, decisions already made
 
 ---
 
-## 3. Portrait/vertical format support
+## 3. Portrait/vertical format support — ✅ COMPLETED July 21, 2026
 
-**Open questions:**
-- Blocked on confirming which of the four video-generation tiers actually support vertical/portrait output natively.
-- Two possible implementation approaches were discussed previously; neither has been decided.
+**Was:** blocked on confirming which tiers support portrait output natively, two possible approaches undecided.
+
+**Now built and confirmed working end-to-end** (see status.md, "Portrait/landscape format support" section, for the full real-bug chain this was built in response to): exactly two canonical output formats (landscape/portrait), auto-selected by majority vote across a job's photos with a manual override, wired into every image-upload path including the URL-scraper. Real Luma camera-movement quality issue for portrait clips specifically remains — see item 37.
 
 ---
 
 ## 4. Human characters
 
 **Open questions:**
-- None of the current four tiers are validated for realistic human characters. Would conceptually need a Kling-style model added as a fifth tier, but this hasn't been scoped beyond that observation.
+- None of the current tiers are validated for realistic human characters. Would conceptually need a Kling-style model added as a fifth tier, but this hasn't been scoped beyond that observation.
 
 ---
 
@@ -81,7 +75,7 @@ Items are ordered by priority. Each entry includes scope, decisions already made
 - Format validation: multi-format accepted, but any upload without an alpha channel is rejected with a clear error.
 - Compositing: single `CompositeVideoClip` addition in `video_assembly.py`'s `assemble_property_video()`.
 - Confirmed distinct from `watermark_removal.py` (removes source-site watermarks; this adds the agency's own logo).
-- Confirmed via full repo audit: no existing "client/agency" entity in the job model — this requires a new field/dropdown, not an extension of something existing. `video_editor.py`'s legacy path has its own separate logo-overlay code, not directly reusable.
+- **Note July 21, 2026:** should be scoped together with item 39 (client/property data model work), since both need a real "client" concept beyond the existing cost-reporting `agency_id`.
 
 ---
 
@@ -107,174 +101,183 @@ Items are ordered by priority. Each entry includes scope, decisions already made
 **Concept:** a separate agentic tool (genuinely agentic — finds targets, acts, adapts — not a fixed script) that targets Italian real estate agencies for business development: finds a real, live listing from a target agency, runs it through the automated URL-to-video pipeline (item 1) to produce a real pilot video from their own actual property, then sends the agency a personalized outreach email showcasing it.
 
 **Scope not yet defined — open questions:**
-- How are target agencies identified — a list you provide, or does the agent search/discover them itself (e.g. via the same immobiliare.it/idealista.it/casa.it sites, browsing agency listing pages)?
-- How is each agency's contact email obtained — scraped from their listing/site, or manually supplied?
-- **Compliance:** Italian/EU anti-spam and GDPR rules apply to unsolicited commercial email — this needs real legal consideration before any automated sending, not just a technical build. At minimum, likely needs a human-approval step before any email actually goes out, not fully automatic sending.
-- Email content/tone — template with the pilot video embedded/linked, or fully custom-written per agency?
-- Volume/pacing — how many outreach emails per day/week is realistic without looking like spam or triggering deliverability problems?
+- How are target agencies identified — a list you provide, or does the agent search/discover them itself?
+- How is each agency's contact email obtained?
+- **Compliance:** Italian/EU anti-spam and GDPR rules apply to unsolicited commercial email — needs real legal consideration, likely a human-approval step before any email actually goes out.
+- Email content/tone, volume/pacing not decided.
 
-**Dependency:** needs item 1 (automated URL-to-video pipeline) fully working first, since the pilot video is its core hook.
-
-**Priority:** not yet placed — flagged as a distinct future initiative, pilot phase, Italy-only for now.
+**Dependency:** needs item 1 fully working first.
 
 ---
 
 ## 11. Agent-based final video QC (replace or complement Florence-2)
 
-**Concept:** use Claude's vision reasoning to judge finished video scenes against quality criteria — holistic plausibility checks (does this look like a real, physically coherent room; did 3D parallax warp anything impossible) rather than Florence-2's object-detection-style approach. Would reuse the same quality language already built for photo selection (no people, key room elements present, natural light, well-framed), giving one consistent quality standard across the whole pipeline instead of two different models with two different vocabularies.
+**Concept:** use Claude's vision reasoning to judge finished video scenes against quality criteria — holistic plausibility checks rather than Florence-2's object-detection-style approach.
 
-**Practical shape:** extract a few representative frames per generated clip (e.g. first/middle/last), send as images to Claude with a QC prompt — same pattern as the photo-quality-ranking feature already built.
+**Real trade-off, not yet resolved:** Florence-2 is self-hosted, near-zero marginal cost. Every Claude-based QC check is a real, ongoing per-scene API cost.
 
-**Real trade-off, not yet resolved:** Florence-2 is self-hosted — near-zero marginal cost per check. Every Claude-based QC check is a real, ongoing per-scene API cost. Given QC potentially runs on every scene of every video, this recurring cost is different in kind from the one-time per-property scraping costs elsewhere in this project.
-
-**Suggested next step, not started:** run Claude-based QC in parallel with existing Florence-2 QC on a handful of real scenes (including ones Florence-2 has flagged before) to compare actual accuracy before deciding replace vs. complement vs. leave as-is.
-
-**Priority:** not placed — explicitly framed as a future direction for full automation, not immediate.
+**Priority:** not placed — framed as a future direction for full automation, not immediate. This remains the real, structural answer to hallucination detection — every prompt-level mitigation (including the July 21 human-shadow fix) is probabilistic harm reduction, not detection.
 
 ---
 
 ## 12. Generation kill-switch during development/deployment — ✅ COMPLETED July 11, 2026
 
-**Built:** persistent pause flag (`generation_pause.json`, survives restarts on purpose — an accidental restart can't silently let jobs sneak through), `/admin/pause-generation` + `/admin/resume-generation` endpoints, `/admin/generation-status` for live state + active job count, wired into all three job-start entry points. Visible UI banner + toggle button next to the Maintenance button — deliberately visible so a paused state reads as intentional, not a broken submit button.
-
-**Does NOT do:** true pause/resume of a job already mid-flight waiting on a Luma/Veo API call — that's not technically possible (no way to freeze and resume a live network call). What it actually does: blocks new submissions, and existing jobs can be gracefully stopped (finishes current scene, halts) via the already-working `/stop` mechanism, then resumed after redeploy since stopped jobs retain partial progress.
+**Built:** persistent pause flag, admin endpoints, visible UI banner. See status.md for full detail.
 
 ---
 
 ## 13. Real-time queue/progress visibility
 
-**Problem, confirmed real during this session's testing:** progress display showed something like a static "5s" that "makes no sense" during a generation that was actually stuck for several minutes — no way to tell if a job is genuinely progressing, hung, or waiting on something.
+**Problem, confirmed real:** progress display can look static/stuck with no way to tell if a job is genuinely progressing, hung, or waiting.
 
-**Scope not yet defined — needs a look at the current progress-polling code first** to know whether this is a display bug (wrong number shown) or a genuine lack of granular status (no visibility into which scene/stage is active, elapsed real time, etc.).
-
-**Partial progress, July 13, 2026 — does not close this item.** Rework-specific progress messages now say "Rework: ..." instead of generic text, so a rework in progress is at least distinguishable from a stuck/broken job by message content. The underlying ask — genuine stuck-vs-progressing visibility, elapsed time, granular per-scene/stage state for ANY job (not just reworks) — is still unaddressed.
+**Partial progress only (July 13, 2026):** rework-specific progress messages say "Rework: ..." so a rework in progress is at least distinguishable by message content. The underlying ask — genuine stuck-vs-progressing visibility, elapsed time, granular per-scene/stage state for ANY job — is still unaddressed.
 
 ---
 
 ## 15. idealista.it / casa.it photo extraction doesn't work yet
 
-**Problem, confirmed via real testing July 11, 2026:** both sites return 0 photos consistently (immobiliare.it works reliably). User's hypothesis: idealista's gallery may require a click to expand, which a static page fetch can't do. Unconfirmed for casa.it specifically — may be a different cause.
+**Problem, confirmed via real testing:** both sites return 0 photos consistently (immobiliare.it works reliably).
 
-**What already works correctly:** the "not enough photos, manual upload needed" fallback fires cleanly — this is the safety design working as intended, not a crash.
-
-**Likely real fix, not started:** find each site's internal image-loading API/endpoint rather than parsing the rendered page — a materially different, site-specific investigation, not a quick patch.
+**Likely real fix, not started:** find each site's internal image-loading API/endpoint rather than parsing the rendered page.
 
 ---
 
 ## 30. Depth rendering R&D — REVIVED (potential structural elimination of hallucination)
 
-**Revived July 12, 2026.** Previously paused after `depth_renderer.py` (numpy + opencv pixel-shift reprojection) hit a quality ceiling, and Luma Ray 2 solved the immediate problem more pragmatically. Bringing it back for a strategic reason: **depth-based reprojection cannot hallucinate.** It can only display pixels that exist in the source photograph — it is structurally incapable of inventing a mirror, warping a wall, or dropping leaves from a ceiling. Every prompt-based mitigation (including today's Luma rules tightening) is probabilistic harm reduction; depth rendering is immunity.
+**Concept:** depth-based reprojection cannot hallucinate — structurally incapable of inventing content not in the source photo. Every prompt-based mitigation (including the July 21 human-shadow fix) is probabilistic harm reduction; depth rendering would be immunity.
 
-**Motivating evidence:** propertyvideo.ai appears to be shipping this successfully, suggesting the earlier failure was an implementation ceiling rather than a fundamental one.
-
-**Likely gap in the original attempt:** raw pixel-shift reprojection produces occlusion holes and stretching at depth discontinuities. Modern approaches pair a much stronger monocular depth estimator (Depth Anything V2, Marigold) with proper inpainting of the disoccluded regions — a materially different technique, not a retry of the same one.
-
-**Not started.** Scope to be defined. Would sit alongside the existing model tiers as a hallucination-free option, not necessarily replacing them.
+**Not started.** Scope to be defined. Would sit alongside the existing model tiers as a hallucination-free option.
 
 ---
 
 ## 31. Claude API (agent) costs and credits not tracked anywhere
 
-**Confirmed gap July 12, 2026.** The URL-scraping workflow makes real, billable Claude API calls — listing extraction, per-photo quality ranking (vision), narration generation, caption generation — and **none of it appears in the cost estimate shown in the UI, the cost tracker, or the maintenance credit monitor.** Only fal.ai and ElevenLabs are tracked.
-
-**Needed:**
-- Add Claude API cost lines to `cost_tracker.py` (per-job estimate + actuals), including the rework case.
-- Add Claude API credit/connectivity checks to `maintenance_scheduler.py`, alongside the existing fal.ai and ElevenLabs checks.
-- Surface both in the UI cost panel and maintenance panel.
+**Confirmed gap.** The URL-scraping workflow makes real, billable Claude API calls not reflected in the cost estimate, cost tracker, or maintenance credit monitor. Only fal.ai and ElevenLabs are tracked at the per-job level (the maintenance credit *monitor* does now check Claude API connectivity, per status.md — this item is about per-job cost attribution specifically, a separate thing).
 
 ---
 
 ## 32. Old-job cleanup false negative — 2 jobs stuck past retention
 
-**Confirmed real, July 16, 2026** (maintenance alert): jobs `161dfaf7_rw5a78` and `3c4bea30` are past the 7-day retention cutoff and should have been cleaned up but weren't, despite the same maintenance run reporting 10 other jobs successfully cleaned.
+**Confirmed real** (maintenance alert): two jobs past the 7-day retention cutoff weren't cleaned up.
 
-**Investigated, not yet confirmed/fixed.** Both jobs' `job_meta.json` mtime showed only ~2.3 days old — suspiciously close to the last server restart. Working hypothesis: `_load_jobs_from_disk()` may call `_save_job()` for every job on every startup (including ours from an unrelated import test), which would reset the exact mtime the retention check relies on, letting these two jobs' clocks silently reset on every restart regardless of real age. Not yet verified against `_load_jobs_from_disk()`'s actual body — next step before attempting a fix.
+**Investigated, not yet confirmed/fixed.** Working hypothesis: `_load_jobs_from_disk()` may reset the mtime the retention check relies on, on every server restart. Not yet verified against that function's actual body.
 
 ---
 
 ## 33. Cost reporting UI — confirm + edit for new client/revenue entries
 
-**Requested July 16, 2026.** Add a confirmation popup when adding a new client or revenue entry in the cost reporting UI, and allow editing that info after it's been added (currently, entries appear to be add-only with no confirm step). Not scoped further yet — needs a look at the existing agency/sales entry forms in the 💰 Costi modal first.
+**Requested.** Add a confirmation popup when adding a new client or revenue entry in the cost reporting UI, and allow editing after. Not scoped further yet.
 
 ---
 
 ## 34. Safeguard against destructive commands — ✅ ADDRESSED July 17, 2026
 
-**Incident, July 16, 2026:** a wildcard `rm -rf jobs/*/` was included in a terminal test block, followed by a correction telling the user not to run it — but the correction came *after* the destructive line in the same message, so the whole block had already been copy-pasted as one unit before the correction could be seen. Deleted all job directories except one — roughly 32 property jobs' images/clips/audio/finished videos permanently lost (some finished MP4s survived because they'd already been downloaded locally, outside the repo).
+**Built:** absolute behavioral rule (Claude's persistent memory + should be in Project custom instructions), independent nightly backup (`backup_jobs.sh`, outside the repo, 30-day retention, immutable timestamped snapshots).
 
-**Built, July 17, 2026:**
-- **Absolute behavioral rule** (also saved to Claude's persistent memory for this project, and should be added to the Project's custom instructions — see status.md): Claude never writes a command that deletes anything under `jobs/`, in any message, ever — no exceptions, no same-message retractions. Deletion requests get named as a path for the user to run themselves.
-- **Independent nightly backup** — `backup_jobs.sh`, deployed to `/var/backups/pvs_jobs/` (deliberately outside the git repo and outside `/var/www/property-video-studio` entirely), cron'd daily at 3am. Creates a timestamped, immutable tarball snapshot (not a live mirror — a mirrored `rsync --delete`-style backup would propagate a future deletion mistake into the backup too). 30-day retention (181GB free vs. 645MB current `jobs/` size — trivial overhead). The only deletions this script ever performs are of its own old backup files, matching an exact naming pattern, inside its own directory — never the live `jobs/` directory.
-
-**Still open — a related but separate concern:** this protects against a repeat of the July 16 incident (destructive terminal command), but does NOT yet cover accidental *manual* deletion via the UI (e.g., the scene-removal "✕" button, which currently has no confirmation prompt) or make the app's own automated 7-day cleanup non-destructive (still a hard delete, not move-to-recovery-folder). Scoping that next.
+**Still open — a related but separate concern:** doesn't cover accidental *manual* deletion via the UI (scene-removal button has no confirmation prompt), or make the app's own automated 7-day cleanup non-destructive (still a hard delete, not move-to-recovery-folder).
 
 ---
 
 ## 35. Auto-scraping for 1-minute videos on premium properties
 
-**Requested July 17, 2026.** Some premium properties should get a longer (~1 minute) auto-scraped video instead of the standard ~30s format.
+**Requested.** Some premium properties should get a longer (~1 minute) auto-scraped video instead of the standard ~30s format.
 
-**Not scoped yet — open questions:**
-- What defines "premium" for this purpose — price threshold, an explicit per-listing flag, agency tier, something else?
-- Does this replace the existing 5-7 scene / 25-35s standard format for qualifying properties, or run as a second, separate video alongside it?
-- Photo count: a 1-minute video needs roughly double the scenes (or longer per-scene durations) — does the existing photo-selection/category logic extend cleanly, or does a property need meaningfully more source photos to fill a minute without repetition/padding?
-- Narration length scales with video length — does the existing "write naturally, then derive scene count from real TTS duration" approach (see status.md, July 9) just work unmodified at a longer target, or does a longer narration need different pacing/structure to avoid feeling padded?
-- Cost: roughly double the clips = roughly double the Luma/Veo cost per video — does this change the classification/pricing shown to the client for premium properties?
+**Not scoped yet — open questions:** what defines "premium," does this replace or supplement the standard format, photo-count implications, narration pacing at longer length, cost/pricing implications.
 
-**Dependency:** builds on item 1 (automated URL-scraping pipeline) — same engine, different target length.
+**Dependency:** builds on item 1 — same engine, different target length.
+
+---
+
+## 36. Format detection/normalization gaps in other upload paths — ✅ COMPLETED July 21, 2026
+
+**Was:** the landscape/portrait crop-normalization built for the main manual upload path (`create_job`) didn't cover `add_scene`, `resync_draft`, `redo_scenes_batch`'s new-image handling, or `create_job_from_url` (the URL-scraper).
+
+**Now fixed, all five paths covered.** `add_scene`/`redo_scenes_batch` inherit the job's already-decided format (correct — the job's canvas is already locked in); `resync_draft` re-decides via majority vote each time (correct — still pre-generation); `create_job_from_url` now normalizes right after the scraper downloads and places images, before vision analysis runs. See status.md for full detail.
+
+---
+
+## 37. Luma camera movement — wobbly/exaggerated, and worse specifically in portrait
+
+**Reported July 21, 2026.** Two related but distinct issues:
+
+1. **General:** Luma's POV movement tends to be wobbly, with exaggerated manual-camera-style movement/steps simulating a person walking in, rather than a smooth dolly-in. Not yet investigated or fixed. Needs a look at `_LUMA_MOVEMENT_TOKENS`' actual prompt language and likely a rewrite toward explicit "smooth dolly" phrasing.
+2. **Portrait-specific, root cause understood (see status.md):** a 9:16 frame has roughly a third the horizontal field of view of 16:9 for the same shot, so identical movement settings consume proportionally more of the real photographed content before the model has to invent what's beyond the edge — confirmed on a real client photo even at the gentlest available intensity. Luma's prompt system has no numeric degree value to simply reduce (unlike Veo's `_VEO_MOVEMENT_TOKENS`, which does have explicit "maximum X degrees"). Likely direction: add an explicit portrait-specific caution phrase to the prompt when the job's `output_format` is portrait. Needs empirical tuning against real photos — a probabilistic prompt-level mitigation, same caveat as the rest of `_LUMA_RULES`, not a guaranteed fix.
+
+Both deserve a dedicated pass rather than a quick patch — treating as a real, multi-iteration piece of work.
+
+---
+
+## 38. Architecture consolidation — full assessment delivered, items 1-4 done, 5-6 remaining
+
+**Context:** a full architecture assessment (delivered as `architecture_assessment.md`, July 21, 2026) found this codebase has real, recurring duplication along two fault lines — manual vs. URL-scraper workflows, and legacy vs. new rework model — after three separate bugs this week were each caused by exactly this pattern (buffer constant, cost calculation, redo-button routing).
+
+**Done:**
+1. `/approve`'s QC-rejection redo path migrated off the legacy `run_rework()` onto the batch redo mechanism.
+2. `listing_scraper.py`'s own lead/trail buffer checked against the new WhatsApp-trim-fix values — confirmed already safe, no fix needed.
+3. Format-detection/normalization wired into `create_job_from_url()` (see item 36).
+4. `run_assembly()` and `run_reassemble_only()` (near-duplicate "assemble the video" implementations) fully consolidated into one function, `run_assembly()` deleted, confirmed via a real end-to-end generation test.
+
+**Not yet done:**
+5. **Two confirmed UI-orphaned legacy paths, not yet deleted:** `POST /jobs/{id}/scenes/{scene_id}/redo` (the endpoint specifically — its underlying function `run_redo_scene` is still genuinely needed by `add_scene` and must stay) and `POST /jobs/{id}/rework` (confirmed via direct grep: zero references anywhere in `ui.html`). Both are safe deletion candidates, ready for a future session.
+6. **The real, larger project:** `listing_scraper.py`'s narration/scene-duration derivation is a fully separate implementation from `narration.py`'s, sharing no code. Genuinely unifying these is the biggest, most valuable remaining piece — should be scoped as its own dedicated effort, not squeezed in alongside other work.
+
+---
+
+## 39. Library reorganization — by client / property / job, not "main job + reworks"
+
+**Requested July 21, 2026.** The job-history/library UI's old grouping (main job + sibling rework entries) no longer applies now that reworks happen in-place on the same job (see item 38). User wants it reorganized around clients → properties → jobs instead, in line with how cost reporting already thinks about agencies.
+
+**Real context gathered, not yet scoped into a build plan:**
+- An `agency_id`/`agencies.json` concept already exists (built for cost reporting — `cost_model.py`), so "client" has a real foundation.
+- **No "property" entity exists anywhere in the data model.** A property is currently just an implicit `property_name` string on each job — there's no way to link multiple jobs (e.g. an original video plus a later rework, or the same property re-shot months later) to one property record.
+- This is a real data-model addition (a new `properties.json`-style entity, presumably), not a UI-only reorganization. Needs proper scoping: does a job get explicitly assigned to a property at creation time, or inferred/matched somehow? Can a property have multiple clients over time (e.g. re-listed with a different agency)? Should item 7 (client logo) and this share the same client concept?
+
+---
+
+## 40. Retire remaining dead legacy redo/rework code
+
+**Confirmed safe candidates, not yet executed (see item 38, point 5):** `POST /jobs/{id}/scenes/{scene_id}/redo` endpoint (function stays, endpoint doesn't need to) and `POST /jobs/{id}/rework` + its `run_rework()` function, both confirmed to have zero remaining callers in `ui.html`. Low-risk cleanup, ready whenever there's a session to spend on it.
+
+---
+
+## 41. Maintenance credit-check retry logic — low priority
+
+**Context, July 21, 2026:** a maintenance alert reported "Claude API: FAILING" despite a confirmed-healthy account ($18 balance, and the exact same check passed cleanly when re-run moments later). The check (`credit_monitor.py`'s `get_anthropic_status()`) makes a real API call with no retry — a single transient network/API blip at the exact check interval produces a false alert indistinguishable from a real problem.
+
+**Proposed, not built:** retry once before declaring failure. Low priority — this specific instance is confirmed resolved with no code change; only worth doing if false alerts become a recurring nuisance.
 
 ---
 
 ## NEXT MILESTONE — Concurrency + Operator Dashboard
 
-**COST REPORTING IS DONE (July 12, 2026).** Built, tested, deployed, live in the UI:
-- cost_model.py: agencies, sales, investment ledger (EUR 4,046.01 imported), seller
-  commission (20% of first sale per agency), per-job/per-agency/enterprise reporting
-- API endpoints: /agencies, /sales, /reports/enterprise, /reports/agencies,
-  /reports/jobs, POST /jobs/{id}/commercial
-- UI: 💰 Costi button -> modal with break-even progress bar, cost breakdown bars,
-  job mix cards, agency table, sales entry forms, per-job classification dropdown
-- Claude API cost tracking: real token usage captured from every Anthropic call in
-  listing_scraper.py (Haiku 4.5 = $1/$5 per MTok, verified), folded into job cost
-- Verified live: EUR 4,167.21 to break-even = 9.3 packages
+**COST REPORTING IS DONE (July 12, 2026).** Built, tested, deployed, live in the UI — see status.md for full detail. **Cost model itself was significantly corrected July 21, 2026** (real per-second, resolution-aware Luma/Veo pricing, replacing a flat rate that undercharged Luma by ~4x) — see status.md.
 
-**NEXT: Concurrency + operator dashboard.** Goal: minimise time the operator spends
-at the PC; they intervene only when needed.
+**NEXT: Concurrency + operator dashboard.** Goal: minimise time the operator spends at the PC; they intervene only when needed.
 
-1. **Job queue with configurable concurrency ceiling.** NOTE: the 5-jobs/hour rate
-   limit in api_server.py is OURS (self-imposed), not a fal.ai limit. Real constraints
-   are fal.ai account concurrency and cost. Within a single job, per-scene generation
-   is currently sequential and could run in parallel - real speedup, but multiplies
-   concurrent fal.ai calls, so it needs the same ceiling.
+1. **Job queue with configurable concurrency ceiling.** The 5-jobs/hour rate limit in api_server.py is OURS (self-imposed), not a fal.ai limit. Real constraints are fal.ai account concurrency and cost.
 
-2. **Dashboard as an INBOX** - show ONLY what needs the operator. Three states that
-   require intervention (confirmed with user):
-   (a) awaiting setup review - scraped, scenes+TTS ready, BEFORE any money is spent
-   (b) QC flagged / rejected
-   (c) failed
-   Everything else runs unattended and is just progress.
+2. **Dashboard as an INBOX** — show ONLY what needs the operator: (a) awaiting setup review before any money is spent, (b) QC flagged/rejected, (c) failed. Everything else runs unattended.
 
-3. **Executor profile** (for hiring): junior/VA-level QC reviewer. Needs visual
-   judgment (spot warped walls, phantom mirrors), Italian, real estate literacy.
-   NOT technical. Per-video review fee, not salary.
+3. **Executor profile** (for hiring): junior/VA-level QC reviewer. Visual judgment, Italian, real estate literacy. NOT technical. Per-video review fee, not salary.
 
-**STILL OPEN - MAXIMUM PRIORITY (see items 27-29):** QC does not reliably catch
-hallucinations. Florence-2 caption-diffing is the wrong instrument for detecting
-physical implausibility. Luma prompts were tightened July 12 (real anti-hallucination
-constraints added - Luma previously had almost none) but this is probabilistic harm
-reduction, not a fix. Agent-based QC (item 11) is the real answer.
+**STILL OPEN — MAXIMUM PRIORITY:** QC does not reliably catch hallucinations. Agent-based QC (item 11) is the real answer; every prompt-level mitigation built so far (including the July 21 human-shadow fix) is harm reduction, not detection.
 
 ## Recently completed (see status.md for full detail)
 
-- **Auto maintenance scheduler** — completed and live-tested July 9, 2026. Tiered per-check frequencies via cron, real bugs fixed in the underlying 7-day job cleanup (two separate issues found and fixed), email alerting with cooldown, UI panel with editable recipient list.
-- **Duration sliders don't support Luma's actual valid durations (was item 14)** — checked July 16, 2026 and found already fixed: `getDurationRangeForTier()` already returns Luma's real 5s/9s steps, and `onTierChange()` correctly re-ranges and re-snaps existing sliders when the tier dropdown changes. The original bug report predates this fix; no longer reproducible.
-- **Manual narration path has no overrun protection (was item 16)** — checked July 16, 2026 and found already fixed: `_overlay_narration_audio()` already computes narration overflow and extends the trailing pad (with fade) to absorb it. The original bug report predates this fix; no longer reproducible.
-- **Rework cost tracking + rework progress labeling** — fixed July 13, 2026. See status.md for full detail (tier-aware pricing bug, running-total display, "Rework:" message prefix).
-- **Draft scene-count desync** — fixed July 13, 2026. New `/jobs/{id}/draft/resync` endpoint, gated to draft-status jobs only. See status.md.
-- **"Aggiungi pause" no-op bug** — fixed July 16, 2026. See status.md for full detail (suggest_pause_padding() wiring, per-job pause persistence).
-- **Legacy rework-endpoint migration** — new `POST /jobs/{id}/scenes/redo-batch` replaces the legacy sibling-directory `/rework` call from the main "Genera video" button's auto-rework path. Deployed and **confirmed working end-to-end via real integration test, July 17, 2026** — see status.md for full verification detail.
+- **Auto maintenance scheduler** — July 9, 2026.
+- **Rework cost tracking + rework progress labeling** — July 13, 2026.
+- **Draft scene-count desync** — July 13, 2026.
+- **"Aggiungi pause" no-op bug** — July 16, 2026.
+- **Legacy rework-endpoint migration (manual "Rifai" button)** — July 16-17, 2026.
+- **Narration buffer constant unified across 3 duplicated locations** — July 17, 2026.
+- **Real safeguard against destructive commands (backup + absolute rule)** — July 17, 2026.
+- **Portrait/landscape format support, full pipeline** — July 21, 2026. See item 3 and status.md.
+- **Cost model corrected (real per-second, resolution-aware Luma/Veo pricing)** — July 21, 2026. See status.md.
+- **Redo-workflow reliability: button routing unified, stale-poll race condition fixed** — July 21, 2026. See status.md.
+- **Architecture consolidation, items 1-4** — July 21, 2026. See item 38.
+- **Human shadow/silhouette Luma prompt fix** — July 21, 2026. See item 37 for the remaining, unfixed general camera-movement issue.
 
 ## Not backlog items — standing watch items (tracked in status.md, not here)
 
 - Rework edge cases that may surface in specific use cases (no confirmed repro yet).
-- Maintenance scheduler tiering behavior — pending one more log confirmation (`tail /tmp/maintenance.log`) after a paste error interrupted the last check.
+- Maintenance scheduler tiering behavior — pending log confirmation.
