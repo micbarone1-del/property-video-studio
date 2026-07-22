@@ -320,15 +320,37 @@ async def report_jobs_ep():
     return {'jobs': fins}
 
 @app.post('/jobs/{job_id}/commercial')
-async def set_job_commercial_ep(job_id: str, classification: str = Form(...), agency_id: str = Form(None)):
+async def set_job_commercial_ep(job_id: str, classification: str = Form(...), agency_id: str = Form(None), property_name: str = Form(None)):
+    """2026-07-22 (backlog item 39): also accepts an optional property_name
+    to assign/reassign this job's Property link post-creation -- "assign at
+    creation, still editable after" per explicit product decision.
+    Idempotent create-or-match, same as at job creation."""
     if job_id not in JOBS:
         raise HTTPException(status_code=404, detail='Job not found')
     if classification not in cost_model.JOB_CLASSIFICATIONS:
         raise HTTPException(status_code=400, detail='bad classification')
     JOBS[job_id]['classification'] = classification
     JOBS[job_id]['agency_id'] = agency_id or None
+    if property_name:
+        prop = cost_model.create_property(property_name, agency_id=agency_id or None)
+        JOBS[job_id]['property_id'] = prop['property_id']
     _save_job(job_id)
-    return {'job_id': job_id, 'classification': classification, 'agency_id': agency_id}
+    return {'job_id': job_id, 'classification': classification, 'agency_id': agency_id, 'property_id': JOBS[job_id].get('property_id')}
+
+
+@app.get('/properties')
+async def list_properties_ep():
+    return {'properties': cost_model.list_properties()}
+
+
+@app.post('/properties')
+async def create_property_ep(name: str = Form(...), agency_id: str = Form(None)):
+    return cost_model.create_property(name, agency_id)
+
+
+@app.get('/reports/properties')
+async def report_properties_ep():
+    return {'properties': cost_model.property_report(_jobs_with_ids())}
 
 
 _RATE_LIMIT_WINDOW = 3600   # 1 hour in seconds
@@ -782,6 +804,7 @@ async def create_job(
     intensity: str = Form("natural_pace"),    # property-level motion intensity
     start_generation: bool = Form(True),      # False = draft mode, no video cost yet
     output_format: str = Form(None),          # 2026-07-17: "landscape"/"portrait" override, or None to auto-detect
+    agency_id: str = Form(None),              # 2026-07-22: client this job belongs to (backlog item 39), optional
 ):
     # Rate limit check
     client_ip = request.client.host if request.client else "unknown"
@@ -872,6 +895,16 @@ async def create_job(
     )
 
 
+    # 2026-07-22 (backlog item 39): link this job to a Property record --
+    # shared entity with cost reporting, single data model per the
+    # architecture-discipline principle (no separate "library-only"
+    # property concept). Reuses the SAME property_name value already
+    # captured above for display purposes, rather than adding a second,
+    # redundant form field. create_property() is idempotent per
+    # (name, agency_id), so repeated jobs for the same property+client
+    # correctly link to one shared record instead of duplicating it.
+    _prop = cost_model.create_property(property_name, agency_id=agency_id)
+
     JOBS[job_id] = {
         "status":           "draft" if not start_generation else "queued",
         "progress":         0,
@@ -882,6 +915,8 @@ async def create_job(
         "output_format":    job_format,
         "created_at":       datetime.utcnow().isoformat(),
         "property_name":    property_name,
+        "agency_id":        agency_id,
+        "property_id":      _prop["property_id"],
         "total_scenes":     len(images),
         "transition_style": transition_style,
         "enable_vision_qc": enable_vision_qc,
@@ -1299,6 +1334,7 @@ async def create_job_from_url(
     voice_id: str = Form(""),
     model_tier: str = Form("luma"),
     url: str = Form(...),
+    agency_id: str = Form(None),   # 2026-07-22: client this job belongs to (backlog item 39), optional
 ):
     client_ip = request.client.host if request.client else "unknown"
     if not _check_rate_limit(client_ip):
@@ -1453,6 +1489,11 @@ async def create_job_from_url(
 
     property_name_final = property_name.strip() or extraction.get("address") or "Property"
 
+    # 2026-07-22 (backlog item 39): same Property-linking treatment as
+    # create_job() -- single shared data model, reusing property_name_final
+    # (already computed above) rather than a separate field.
+    _prop = cost_model.create_property(property_name_final, agency_id=agency_id)
+
     # Cost estimate — was missing entirely before this fix, which is why
     # the UI's cost box disappeared for jobs created this way. Matches the
     # same computation every manually-created job already gets.
@@ -1474,6 +1515,8 @@ async def create_job_from_url(
         "output_path": None,
         "created_at": datetime.utcnow().isoformat(),
         "property_name": property_name_final,
+        "agency_id": agency_id,
+        "property_id": _prop["property_id"],
         "total_scenes": len(scenes_config),
         "transition_style": "fade",
         "enable_vision_qc": True,
