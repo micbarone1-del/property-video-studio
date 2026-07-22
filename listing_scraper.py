@@ -554,8 +554,22 @@ def generate_captions_for_categories(description: str, categories: list) -> dict
 # arbitrary pre-decided box.
 
 SCENE_CLIP_SECS = 5        # Luma Ray 2's native duration — zero snapping distortion
-LEAD_SILENCE_SECS = 1.0    # video starts, THEN narration begins — hard requirement
-TRAIL_SILENCE_SECS = 2.0   # narration MUST end at least this long before the video ends — hard minimum
+
+# 2026-07-21 unification (architecture assessment item 6): these now ALIAS
+# the single shared source of truth in narration.py, instead of being an
+# independent hardcoded pair. This file previously baked its own lead/trail
+# silence directly into the narration audio (build_final_audio_track()),
+# and assembly's _overlay_narration_audio() then added its OWN separate
+# lead/trail blank-video padding on top -- confirmed real double-padding
+# on every scraped job. Real padding now only ever applies ONCE, at
+# assembly time, for both manual and scraped jobs (see create_job_from_url()
+# in api_server.py). Kept as aliases, not removed, so every calculation
+# below and build_final_audio_track() (now only used by this file's own
+# standalone __main__ test block, not the live pipeline) keep working
+# unchanged -- only the VALUES are now shared, not independently redefined.
+from narration import LEAD_SECS, TRAIL_SECS
+LEAD_SILENCE_SECS  = LEAD_SECS    # was an independent 1.0 -- now the same 1.0 as narration.py
+TRAIL_SILENCE_SECS = TRAIL_SECS   # was an independent 2.0 -- now the same 1.0 (the WhatsApp-trim evidence behind narration.py's value applies equally to scraped videos)
 MIN_SCENES = 5             # 25s — tightened from an earlier 4-8 range per explicit requirement to
 MAX_SCENES = 7             # 35s — stay "roughly 30s", not drift as wide as 20-40s
 TARGET_SCENES = 6          # 30s — the anchor; derived scene count should land here in the common case

@@ -1332,11 +1332,16 @@ async def create_job_from_url(
         scraper.generate_captions_for_categories, extraction["description"], selected_categories
     )
 
-    final_audio_path = await asyncio.to_thread(
-        scraper.build_final_audio_track, narration["audio_path"], narration["video_duration_secs"]
-    )
+    # 2026-07-21 unification fix (architecture assessment item 6): this
+    # used to bake lead/trail silence directly into the audio via
+    # scraper.build_final_audio_track(), and assembly's
+    # _overlay_narration_audio() then added its OWN separate lead/trail
+    # blank-video padding on top -- confirmed real double-padding on
+    # every scraped job. Now stores the bare narration audio, exactly
+    # like manual jobs, so the one shared assembly-time function applies
+    # padding once, uniformly, for both workflows.
     job_narration_path = str(job_dir / "narration.mp3")
-    shutil.copy2(final_audio_path, job_narration_path)
+    shutil.copy2(narration["audio_path"], job_narration_path)
 
     scenes_config = scraper.build_standard_video_scenes_config(selection, captions,
                                                                  clip_duration_secs=scraper.SCENE_CLIP_SECS)
