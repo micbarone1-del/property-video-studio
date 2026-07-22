@@ -331,6 +331,14 @@
           <input type="text" id="url-workflow-property-name" placeholder="Lasciare vuoto per usare l'indirizzo dell'annuncio">
         </div>
       </div>
+      <div class="row2" style="margin-top:12px">
+        <div>
+          <label>Cliente <span style="color:var(--muted)">(opzionale, assegnabile anche dopo)</span></label>
+          <select id="url-workflow-agency-select">
+            <option value="">— Nessun cliente —</option>
+          </select>
+        </div>
+      </div>
       <div style="margin-top:12px;display:flex;align-items:center;gap:12px">
         <button class="btn-primary" onclick="startFromUrl()" id="url-workflow-btn">🔗 Avvia da URL</button>
         <span id="url-workflow-status" style="font-size:.8rem;color:var(--muted)"></span>
@@ -375,6 +383,14 @@
         <div>
           <label>ElevenLabs voice ID <span style="color:var(--muted)">(optional)</span></label>
           <input type="text" id="voice-id" placeholder="Leave blank for default" />
+        </div>
+      </div>
+      <div class="row2" style="margin-top:14px">
+        <div>
+          <label>Cliente <span style="color:var(--muted)">(opzionale, assegnabile anche dopo)</span></label>
+          <select id="job-agency-select">
+            <option value="">— Nessun cliente —</option>
+          </select>
         </div>
       </div>
       <div class="toggle-row" style="margin-top:14px">
@@ -629,6 +645,7 @@ async function generateNarration(extraSecsNeeded = 0) {
 
     if (!currentJobId) {
       fd.append('property_name', document.getElementById('prop-name')?.value || 'Property');
+      fd.append('agency_id', document.getElementById('job-agency-select')?.value || '');
       fd.append('model_tier', document.getElementById('model-tier').value);
       fd.append('lighting', document.getElementById('lighting').value);
       fd.append('intensity', document.getElementById('intensity').value);
@@ -1035,6 +1052,7 @@ async function startFromUrl() {
     const formData = new FormData();
     formData.append('url', url);
     if (nameInput.value.trim()) formData.append('property_name', nameInput.value.trim());
+    formData.append('agency_id', document.getElementById('url-workflow-agency-select')?.value || '');
 
     const res = await authFetch(`${API_BASE}/jobs/from-url`, { method: 'POST', body: formData });
     const data = await res.json();
@@ -1201,6 +1219,30 @@ checkGenerationPauseStatus();
 
 
 // ── Cost & profit reporting ────────────────────────────────────────────────
+// 2026-07-22 (backlog item 39): populates both job-creation Client
+// dropdowns (manual form + URL-scrape form) from the SAME /agencies
+// endpoint the cost modal already uses -- one fetch, one shared list,
+// no duplicate agency-fetching logic. Called once at load (no
+// DOMContentLoaded listener exists in this file -- the script already
+// runs inline after the DOM is parsed, matching the existing pattern).
+async function populateAgencyDropdowns() {
+  try {
+    const res = await authFetch(`${API_BASE}/agencies`);
+    const data = await res.json();
+    const agencies = data.agencies || [];
+    const opts = '<option value="">— Nessun cliente —</option>' +
+      agencies.map(a => `<option value="${a.agency_id}">${a.name}</option>`).join('');
+    const sel1 = document.getElementById('job-agency-select');
+    const sel2 = document.getElementById('url-workflow-agency-select');
+    if (sel1) sel1.innerHTML = opts;
+    if (sel2) sel2.innerHTML = opts;
+  } catch (e) {
+    console.warn('[Agencies] Could not load client list:', e.message);
+  }
+}
+populateAgencyDropdowns();
+
+
 async function openCostReport() {
   const modal = document.getElementById('cost-modal');
   const el = document.getElementById('cost-content');
@@ -2469,6 +2511,7 @@ genBtn.addEventListener('click', async () => {
   files.forEach(f => fd.append('images', f));
   fd.append('config',           JSON.stringify(config));
   fd.append('property_name',    document.getElementById('prop-name').value || 'Property');
+  fd.append('agency_id',        document.getElementById('job-agency-select')?.value || '');
   fd.append('voice_id',         document.getElementById('voice-id').value.trim());
   fd.append('enhance_images',    document.getElementById('do-lighting').checked);
   fd.append('upscale_images',    document.getElementById('do-upscale').checked);
