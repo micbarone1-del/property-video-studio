@@ -32,6 +32,7 @@ from datetime import datetime
 BASE_DIR = Path(__file__).parent
 
 AGENCIES_FILE   = BASE_DIR / "agencies.json"
+PROPERTIES_FILE = BASE_DIR / "properties.json"
 SALES_FILE      = BASE_DIR / "sales.json"
 INVESTMENT_FILE = BASE_DIR / "investment.json"
 
@@ -73,6 +74,10 @@ def create_agency(name, notes=""):
         "name": name.strip(),
         "notes": notes,
         "created_at": datetime.utcnow().isoformat(),
+        "logo_path": None,  # 2026-07-22: reserved for backlog item 7 (client
+        # logo overlay on videos) -- field only, upload/overlay mechanism not
+        # built yet. Read with .get("logo_path") since agencies created
+        # before this change won't have the key at all.
     }
     agencies.append(agency)
     _save(AGENCIES_FILE, agencies)
@@ -81,6 +86,65 @@ def create_agency(name, notes=""):
 
 def get_agency(agency_id):
     return next((a for a in list_agencies() if a["agency_id"] == agency_id), None)
+
+
+# ── Properties ────────────────────────────────────────────────────────
+# Shared entity with the media library, same pattern as Agencies above
+# (2026-07-22, backlog item 39). One property can have multiple
+# independent jobs over time -- an original video plus a completely
+# separate reshoot months later, not just in-place reworks of the same
+# job (which already don't need a new job entry at all -- see the
+# single-directory job model). A property's agency_id is its
+# CURRENT/default client; an individual JOB's own agency_id can differ
+# if that specific job was actually commissioned by a different agency
+# (e.g. the property gets re-listed with a new agent) -- job_financials()
+# always uses the job's own agency_id, never the property's, so this
+# stays accurate even when they diverge.
+
+def list_properties():
+    return _load(PROPERTIES_FILE, [])
+
+
+def create_property(name, agency_id=None, notes=""):
+    """Idempotent within the same agency -- matches create_agency()'s
+    existing pattern, so re-submitting the same property name for the
+    same client returns the existing record instead of duplicating it.
+    A different agency_id with the same name is treated as a distinct
+    property (e.g. two different agencies both listing a "Via Roma 15"
+    would be two separate records, which is correct -- they are not
+    necessarily the same physical property)."""
+    properties = list_properties()
+    for p in properties:
+        if p["name"].strip().lower() == name.strip().lower() and p.get("agency_id") == agency_id:
+            return p
+    prop = {
+        "property_id": f"prop_{uuid.uuid4().hex[:8]}",
+        "name": name.strip(),
+        "agency_id": agency_id,
+        "notes": notes,
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    properties.append(prop)
+    _save(PROPERTIES_FILE, properties)
+    return prop
+
+
+def get_property(property_id):
+    return next((p for p in list_properties() if p["property_id"] == property_id), None)
+
+
+def update_property_agency(property_id, agency_id):
+    """Reassigns a property to a different current/default client (e.g.
+    re-listed with a new agent). Does NOT retroactively change agency_id
+    on jobs already linked to this property -- each job's own agency_id
+    reflects who actually commissioned that specific job, which must stay
+    historically accurate for cost/revenue reporting."""
+    properties = list_properties()
+    for p in properties:
+        if p["property_id"] == property_id:
+            p["agency_id"] = agency_id
+    _save(PROPERTIES_FILE, properties)
+    return get_property(property_id)
 
 
 # ── Sales ─────────────────────────────────────────────────────────────────
@@ -262,5 +326,33 @@ def agency_report(jobs):
             "seller_commission_eur": round(commission, 2),
             "production_cost_eur": round(cost, 2),
             "margin_eur": round(revenue - commission - cost, 2),
+        })
+    return out
+
+
+def property_report(jobs):
+    """Per-property cost rollup (2026-07-22, backlog item 39) -- the
+    concrete link between "cost" and "library": shows total production
+    cost across every job linked to a property, useful once a property
+    has more than one job (an original video plus a later reshoot, for
+    instance). Revenue is NOT attributed per-property -- revenue is a
+    per-agency sales-package concept (list_sales()), not tied to
+    individual properties -- so this reports cost only, plus which
+    agency currently owns the property for display purposes.
+    """
+    out = []
+    for prop in list_properties():
+        pid = prop["property_id"]
+        p_jobs = [j for j in jobs if j.get("property_id") == pid]
+        fins = [job_financials(j) for j in p_jobs]
+        cost = sum(f["cost_eur"] for f in fins)
+        agency = get_agency(prop.get("agency_id")) if prop.get("agency_id") else None
+        out.append({
+            "property_id": pid,
+            "name": prop["name"],
+            "agency_id": prop.get("agency_id"),
+            "agency_name": agency["name"] if agency else None,
+            "jobs_total": len(p_jobs),
+            "production_cost_eur": round(cost, 2),
         })
     return out
