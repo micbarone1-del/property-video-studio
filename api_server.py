@@ -612,6 +612,34 @@ def diagnostics():
                 JOBS.pop(job_id, None)
                 cleaned  += 1
                 freed_mb += size_mb
+            elif meta.exists():
+                # 2026-07-21 diagnostic (backlog item 32): a real incident
+                # (July 16 2026) found two jobs whose mtime-based
+                # last_activity looked suspiciously recent relative to
+                # their real age, delaying (not permanently blocking)
+                # cleanup. Root cause was never confirmed -- the original
+                # hypothesis (that _load_jobs_from_disk() resaves every
+                # job on startup) was checked directly and is FALSE, that
+                # function is read-only. Flags any job whose own
+                # created_at is meaningfully older than its file's mtime,
+                # so a recurrence leaves real evidence instead of having
+                # to be reconstructed after the fact.
+                try:
+                    with open(meta) as f:
+                        job_data = json.load(f)
+                    created_str = job_data.get("created_at", "")
+                    if created_str:
+                        created_at = datetime.fromisoformat(created_str)
+                        gap_days = (last_activity - created_at).total_seconds() / 86400
+                        age_days = (datetime.utcnow() - last_activity).total_seconds() / 86400
+                        if gap_days > 3 and age_days < 7:
+                            log.warning(
+                                f"[Cleanup] Job {job_dir.name}: created_at is {gap_days:.1f} days "
+                                f"before its file mtime, and mtime is only {age_days:.1f} days old -- "
+                                f"possible stale-mtime pattern (backlog item 32), watching for recurrence."
+                            )
+                except Exception:
+                    pass
         except Exception:
             pass
 
