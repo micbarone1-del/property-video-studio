@@ -1571,6 +1571,8 @@ def list_jobs():
             "is_rework":    is_rework,
             "parent_job_id": job.get("parent_job_id"),
             "property_name": job.get("property_name", "Property"),
+            "agency_id":    job.get("agency_id"),
+            "property_id":  job.get("property_id"),
             "status":       job.get("status", "unknown"),
             "progress":     job.get("progress", 0),
             "total_scenes": job.get("total_scenes", 0),
