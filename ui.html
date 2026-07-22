@@ -1415,6 +1415,11 @@ function renderCostReport(ent, agencies, jobs, salesData) {
       <input id="sale-price" type="number" step="0.01" placeholder="€" value="450" style="width:100px;padding:7px;border:1px solid var(--rule);border-radius:6px;font-size:.8rem" />
       <button class="lib-btn" onclick="addSale()">+ Vendita</button>
     </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;align-items:center">
+      <select id="logo-agency-select" style="flex:1;min-width:140px;padding:7px;border:1px solid var(--rule);border-radius:6px;font-size:.8rem">${agOpts}</select>
+      <input id="logo-file-input" type="file" accept="image/png" style="flex:1;min-width:140px;font-size:.75rem" />
+      <button class="lib-btn" onclick="uploadAgencyLogo()">📎 Logo cliente</button>
+    </div>
   </div>`;
 
   // Recent jobs
@@ -1461,6 +1466,33 @@ async function addSale() {
   fd.append('price_eur', document.getElementById('sale-price').value);
   await authFetch(`${API_BASE}/sales`, {method:'POST', body:fd});
   openCostReport();
+}
+
+// 2026-07-22 (backlog item 7): uploads a client logo for video overlay.
+// Requires a PNG with an alpha channel -- the backend validates this and
+// returns a clear error otherwise, surfaced directly to the user.
+async function uploadAgencyLogo() {
+  const agencyId = document.getElementById('logo-agency-select')?.value;
+  const fileInput = document.getElementById('logo-file-input');
+  const file = fileInput?.files[0];
+  if (agencyId === undefined || agencyId === '' || !file) {
+    alert('Seleziona un agenzia e un file PNG con sfondo trasparente.');
+    return;
+  }
+  const fd = new FormData();
+  fd.append('logo', file);
+  try {
+    const res = await authFetch(`${API_BASE}/agencies/${agencyId}/logo`, { method: 'POST', body: fd });
+    const data = await res.json();
+    if (res.ok === false) {
+      alert(`Errore: ${data.detail || 'upload fallito'}`);
+      return;
+    }
+    alert('Logo caricato con successo.');
+    fileInput.value = '';
+  } catch(e) {
+    alert(`Errore: ${e.message}`);
+  }
 }
 
 // Auto-refresh library count on load
