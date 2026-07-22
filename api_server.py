@@ -285,6 +285,12 @@ async def list_agencies_ep():
 async def create_agency_ep(name: str = Form(...), notes: str = Form('')):
     return cost_model.create_agency(name, notes)
 
+@app.post('/agencies/{agency_id}')
+async def update_agency_ep(agency_id: str, name: str = Form(None), notes: str = Form(None)):
+    if not cost_model.get_agency(agency_id):
+        raise HTTPException(status_code=404, detail='Agency not found')
+    return cost_model.update_agency(agency_id, name=name, notes=notes)
+
 @app.get('/sales')
 async def list_sales_ep():
     return {'sales': cost_model.list_sales(), 'agencies': cost_model.list_agencies()}
@@ -297,6 +303,13 @@ async def create_sale_ep(agency_id: str = Form(...), videos_sold: int = Form(...
 async def delete_sale_ep(sale_id: str):
     cost_model.delete_sale(sale_id)
     return {'deleted': sale_id}
+
+@app.post('/sales/{sale_id}')
+async def update_sale_ep(sale_id: str, videos_sold: int = Form(None), price_eur: float = Form(None), description: str = Form(None)):
+    updated = cost_model.update_sale(sale_id, videos_sold=videos_sold, price_eur=price_eur, description=description)
+    if updated is None:
+        raise HTTPException(status_code=404, detail='Sale not found')
+    return updated
 
 @app.get('/reports/enterprise')
 async def report_enterprise_ep():

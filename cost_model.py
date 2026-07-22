@@ -88,6 +88,21 @@ def get_agency(agency_id):
     return next((a for a in list_agencies() if a["agency_id"] == agency_id), None)
 
 
+def update_agency(agency_id, name=None, notes=None):
+    """2026-07-22 (backlog item 33): edits an existing agency's name
+    and/or notes. Only touches fields explicitly passed (None = leave
+    unchanged), so a partial edit never wipes out other fields."""
+    agencies = list_agencies()
+    for a in agencies:
+        if a["agency_id"] == agency_id:
+            if name is not None and name.strip():
+                a["name"] = name.strip()
+            if notes is not None:
+                a["notes"] = notes
+    _save(AGENCIES_FILE, agencies)
+    return get_agency(agency_id)
+
+
 def set_agency_logo(agency_id, logo_path):
     """2026-07-22 (backlog item 7): persists the on-disk path to an
     agency's uploaded logo, for video overlay at assembly time."""
@@ -182,6 +197,24 @@ def create_sale(agency_id, videos_sold, price_eur, description=""):
 def delete_sale(sale_id):
     sales = [s for s in list_sales() if s["sale_id"] != sale_id]
     _save(SALES_FILE, sales)
+
+
+def update_sale(sale_id, videos_sold=None, price_eur=None, description=None):
+    """2026-07-22 (backlog item 33): edits an existing sale entry.
+    Only touches fields explicitly passed (None = leave unchanged)."""
+    sales = list_sales()
+    updated = None
+    for s in sales:
+        if s["sale_id"] == sale_id:
+            if videos_sold is not None:
+                s["videos_sold"] = int(videos_sold)
+            if price_eur is not None:
+                s["price_eur"] = float(price_eur)
+            if description is not None:
+                s["description"] = description
+            updated = s
+    _save(SALES_FILE, sales)
+    return updated
 
 
 def revenue_per_video(agency_id):
