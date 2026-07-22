@@ -334,7 +334,7 @@
       <div class="row2" style="margin-top:12px">
         <div>
           <label>Cliente <span style="color:var(--muted)">(opzionale, assegnabile anche dopo)</span></label>
-          <select id="url-workflow-agency-select">
+          <select id="url-workflow-agency-select" onchange="handleAgencySelectChange(this)">
             <option value="">— Nessun cliente —</option>
           </select>
         </div>
@@ -388,9 +388,10 @@
       <div class="row2" style="margin-top:14px">
         <div>
           <label>Cliente <span style="color:var(--muted)">(opzionale, assegnabile anche dopo)</span></label>
-          <select id="job-agency-select">
+          <select id="job-agency-select" onchange="handleAgencySelectChange(this)">
             <option value="">— Nessun cliente —</option>
           </select>
+          <input type="file" id="inline-logo-file-input" accept="image/png" style="display:none" onchange="handleInlineLogoSelected(this)" />
         </div>
       </div>
       <div class="toggle-row" style="margin-top:14px">
@@ -1287,7 +1288,8 @@ async function populateAgencyDropdowns() {
     const data = await res.json();
     const agencies = data.agencies || [];
     const opts = '<option value="">— Nessun cliente —</option>' +
-      agencies.map(a => `<option value="${a.agency_id}">${a.name}</option>`).join('');
+      agencies.map(a => `<option value="${a.agency_id}">${a.name}</option>`).join('') +
+      '<option value="__new_client__">+ Nuovo cliente...</option>';
     const sel1 = document.getElementById('job-agency-select');
     const sel2 = document.getElementById('url-workflow-agency-select');
     if (sel1) sel1.innerHTML = opts;
@@ -1297,6 +1299,60 @@ async function populateAgencyDropdowns() {
   }
 }
 populateAgencyDropdowns();
+
+
+// 2026-07-22: lets a new client be created directly from either
+// job-creation form's Client dropdown, without leaving the page to open
+// the cost modal -- selecting "+ Nuovo cliente..." prompts for a name,
+// creates it via the existing POST /agencies, re-selects it in whichever
+// dropdown triggered this, and optionally offers to upload a logo right
+// away via the existing POST /agencies/{id}/logo (same endpoints the
+// cost modal already uses, no duplicate logic).
+async function handleAgencySelectChange(selectEl) {
+  if (selectEl.value !== '__new_client__') return;
+  const name = prompt('Nome del nuovo cliente:');
+  if (name === null || name.trim() === '') {
+    selectEl.value = '';
+    return;
+  }
+  try {
+    const fd = new FormData();
+    fd.append('name', name.trim());
+    const res = await authFetch(`${API_BASE}/agencies`, { method: 'POST', body: fd });
+    const agency = await res.json();
+    await populateAgencyDropdowns();
+    selectEl.value = agency.agency_id;
+    const wantsLogo = confirm('Cliente creato. Vuoi caricare subito un logo (PNG con sfondo trasparente)?');
+    if (wantsLogo) {
+      window._pendingLogoAgencyId = agency.agency_id;
+      document.getElementById('inline-logo-file-input').click();
+    }
+  } catch (e) {
+    alert(`Errore creazione cliente: ${e.message}`);
+    selectEl.value = '';
+  }
+}
+
+async function handleInlineLogoSelected(fileInput) {
+  const file = fileInput.files[0];
+  const agencyId = window._pendingLogoAgencyId;
+  if (file === undefined || agencyId === undefined || agencyId === null) return;
+  const fd = new FormData();
+  fd.append('logo', file);
+  try {
+    const res = await authFetch(`${API_BASE}/agencies/${agencyId}/logo`, { method: 'POST', body: fd });
+    const data = await res.json();
+    if (res.ok === false) {
+      alert(`Errore: ${data.detail || 'upload logo fallito'}`);
+    } else {
+      alert('Logo caricato con successo.');
+    }
+  } catch (e) {
+    alert(`Errore: ${e.message}`);
+  }
+  fileInput.value = '';
+  window._pendingLogoAgencyId = null;
+}
 
 
 async function openCostReport() {
