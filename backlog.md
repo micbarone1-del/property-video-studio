@@ -159,9 +159,9 @@ Items are ordered by priority. Each entry includes scope, decisions already made
 
 ---
 
-## 33. Cost reporting UI — confirm + edit for new client/revenue entries
+## 33. Cost reporting UI — confirm + edit for new client/revenue entries — ✅ COMPLETED July 22, 2026
 
-**Requested.** Add a confirmation popup when adding a new client or revenue entry in the cost reporting UI, and allow editing after. Not scoped further yet.
+**Fully built.** `cost_model.py` adds `update_agency()`/`update_sale()` (partial-update, only touches fields explicitly passed). New `POST /agencies/{id}`/`POST /sales/{id}` endpoints. UI: adding a client or sale now asks for confirmation before submitting; agencies get an edit button (prompt-based, matching the lightweight pattern used for inline client creation); a new individual Sales list was added (previously sales were only shown aggregated per-agency, with no way to see or edit a single entry at all) with edit/delete controls. Verified with real functional tests (agency notes edit + revert, a temporary test sale created/updated/deleted cleanly).
 
 ---
 
@@ -277,6 +277,8 @@ Items are ordered by priority. Each entry includes scope, decisions already made
 - **Claude API cost folded into displayed cost total** — July 22, 2026. See item 31.
 - **Full client/property/job library reorganization** — July 22, 2026. See item 39.
 - **Client logo overlay, full end-to-end feature** — July 22, 2026. See item 7.
+- **Cost reporting UI confirm+edit for clients/sales** — July 22, 2026. See item 33.
+- **Real bug fixed: Client dropdown never actually populated in the browser** (script-order/temporal-dead-zone bug, invisible to all backend-level testing) — July 22, 2026.
 
 ## Not backlog items — standing watch items (tracked in status.md, not here)
 
