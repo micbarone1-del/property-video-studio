@@ -842,13 +842,28 @@ async function toggleLibrary() {
 }
 
 
+// 2026-07-22 rewrite (backlog item 39): replaces the old "group by
+// stripping _rw suffix" logic, which was built for the legacy sibling-
+// directory rework model and is now stale -- reworks happen in-place on
+// the same job, so there are no more sibling entries to group. Now
+// organizes by Client -> Property -> Job, reading agency_id/property_id
+// (added to GET /jobs/ for exactly this purpose) plus /agencies and
+// /properties for display names -- the SAME shared entities cost
+// reporting already uses, not a separate library-only concept. Legacy
+// jobs predating this feature (no property_id at all) land in a
+// "Senza proprieta" bucket rather than being hidden or erroring.
 async function loadLibrary() {
   const list = document.getElementById('library-list');
   list.innerHTML = '<div class="lib-empty">Caricamento…</div>';
   try {
-    const res  = await authFetch('/jobs/');
-    const data = await res.json();
-    const jobs = data.jobs || [];
+    const [jobsRes, agRes, propRes] = await Promise.all([
+      authFetch('/jobs/'),
+      authFetch('/agencies'),
+      authFetch('/properties'),
+    ]);
+    const jobs       = (await jobsRes.json()).jobs || [];
+    const agencies    = (await agRes.json()).agencies || [];
+    const properties  = (await propRes.json()).properties || [];
 
 
     document.getElementById('lib-count').textContent = jobs.length;
@@ -860,21 +875,10 @@ async function loadLibrary() {
     }
 
 
-    // Group jobs by base property (original job_id, stripping _rw suffix)
-    const groups = {};
-    jobs.forEach(j => {
-      const baseId = j.job_id.split('_rw')[0];
-      if (!groups[baseId]) groups[baseId] = [];
-      groups[baseId].push(j);
-    });
-
-
-    // For each group, sort by created_at descending — newest first
-    const groupList = Object.entries(groups).map(([baseId, versions]) => {
-      versions.sort((a,b) => (b.created_at || '').localeCompare(a.created_at || ''));
-      return { baseId, versions, latest: versions[0] };
-    });
-    groupList.sort((a,b) => (b.latest.created_at || '').localeCompare(a.latest.created_at || ''));
+    const agencyById = {};
+    agencies.forEach(a => agencyById[a.agency_id] = a);
+    const propertyById = {};
+    properties.forEach(p => propertyById[p.property_id] = p);
 
 
     const statusMap = {
@@ -883,61 +887,113 @@ async function loadLibrary() {
       running:            { icon: '⏳', cls: 'lib-running', label: 'In corso' },
       awaiting_approval:  { icon: '⚠', cls: 'lib-review',  label: 'Revisione QC' },
       queued:             { icon: '○', cls: 'lib-queued',  label: 'In coda' },
+      draft:              { icon: '✎', cls: 'lib-queued',  label: 'Bozza' },
     };
 
 
-    list.innerHTML = groupList.map(g => {
-      const j       = g.latest;
-      const date    = j.created_at ? new Date(j.created_at).toLocaleDateString('it-IT', {day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}) : '';
-      const tier    = {eco:'Eco',premium:'Veo Fast',premium_veo:'Veo Std'}[j.model_tier] || j.model_tier;
-      const scenes  = j.total_scenes ? `${j.total_scenes} scene` : '';
-      const st      = statusMap[j.status] || { icon: '?', cls: 'lib-queued', label: j.status };
-      const versionLabel = g.versions.length > 1 ? ` · v${g.versions.length} (più recente)` : '';
+    // ── Group jobs by property_id ──
+    const jobsByProperty = {};
+    jobs.forEach(j => {
+      const pid = j.property_id || '__none__';
+      if (!jobsByProperty[pid]) jobsByProperty[pid] = [];
+      jobsByProperty[pid].push(j);
+    });
 
 
-      const dlBtn   = j.has_video
+    // ── Group properties by agency_id ──
+    const propGroupsByAgency = {};
+    Object.entries(jobsByProperty).forEach(([pid, pjobs]) => {
+      pjobs.sort((a,b) => (b.created_at || '').localeCompare(a.created_at || ''));
+      const prop = propertyById[pid];
+      const aid  = prop?.agency_id || '__none__';
+      if (!propGroupsByAgency[aid]) propGroupsByAgency[aid] = [];
+      propGroupsByAgency[aid].push({
+        propertyId: pid,
+        name: prop?.name || (pid === '__none__' ? 'Senza proprietà' : (pjobs[0].property_name || 'Proprietà')),
+        jobs: pjobs,
+        latest: pjobs[0],
+      });
+    });
+
+
+    Object.values(propGroupsByAgency).forEach(props => {
+      props.sort((a,b) => (b.latest.created_at || '').localeCompare(a.latest.created_at || ''));
+    });
+
+
+    const clientEntries = Object.entries(propGroupsByAgency).map(([aid, props]) => ({
+      agencyId: aid,
+      name: agencyById[aid] ? agencyById[aid].name : 'Nessun cliente',
+      props,
+      latestDate: props[0]?.latest.created_at || '',
+    }));
+    clientEntries.sort((a,b) => {
+      if (a.agencyId === '__none__') return 1;
+      if (b.agencyId === '__none__') return -1;
+      return (b.latestDate || '').localeCompare(a.latestDate || '');
+    });
+
+
+    function renderJobRow(j) {
+      const date   = j.created_at ? new Date(j.created_at).toLocaleDateString('it-IT', {day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}) : '';
+      const tier   = {eco:'Eco',luma:'Luma',premium:'Veo Fast',premium_veo:'Veo Std'}[j.model_tier] || j.model_tier;
+      const scenes = j.total_scenes ? `${j.total_scenes} scene` : '';
+      const st     = statusMap[j.status] || { icon: '?', cls: 'lib-queued', label: j.status };
+      const dlBtn  = j.has_video
         ? `<a class="lib-btn lib-primary" href="/jobs/${j.job_id}/download" download>⬇</a>`
         : '';
       const loadBtn = `<button class="lib-btn" onclick="loadJobIntoUI('${j.job_id}')">Apri</button>`;
-      const histBtn = g.versions.length > 1
-        ? `<button class="lib-btn" onclick="toggleHistory('${g.baseId}')" id="hist-btn-${g.baseId}">🕐 ${g.versions.length}</button>`
-        : '';
-
-
-      const historyRows = g.versions.slice(1).map(v => {
-        const vdate = v.created_at ? new Date(v.created_at).toLocaleDateString('it-IT', {day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '';
-        const vst   = statusMap[v.status] || { icon: '?', label: v.status };
-        return `<div class="lib-job" style="margin-left:20px;opacity:.75;padding:8px 14px">
-          <div class="lib-info">
-            <div class="lib-name" style="font-size:.78rem">${vst.icon} ${vdate}</div>
-            <div class="lib-meta">${v.job_id}</div>
-          </div>
-          <div class="lib-actions">
-            ${v.has_video ? `<a class="lib-btn" href="/jobs/${v.job_id}/download" download>⬇</a>` : ''}
-            <button class="lib-btn" onclick="loadJobIntoUI('${v.job_id}')">Apri questa versione</button>
-          </div>
-        </div>`;
-      }).join('');
-
-
-      return `<div class="lib-job ${st.cls}">
+      return `<div class="lib-job ${st.cls}" style="margin-left:16px">
         <div class="lib-info">
-          <div class="lib-name">${st.icon} ${j.property_name}${versionLabel}</div>
-          <div class="lib-meta">${date} · ${tier} · ${scenes} · ${j.job_id}</div>
+          <div class="lib-name">${st.icon} ${date}</div>
+          <div class="lib-meta">${tier} · ${scenes} · ${j.job_id}</div>
         </div>
-        <div class="lib-actions">${dlBtn}${histBtn}${loadBtn}</div>
-      </div>
-      <div id="hist-${g.baseId}" style="display:none;flex-direction:column;gap:6px;margin-top:4px">${historyRows}</div>`;
-    }).join('');
+        <div class="lib-actions">${dlBtn}${loadBtn}</div>
+      </div>`;
+    }
+
+
+    function renderProperty(prop, agSafeId) {
+      const propSafeId = `${agSafeId}-${prop.propertyId}`.replace(/[^a-zA-Z0-9_-]/g, '');
+      const jobRows = prop.jobs.map(renderJobRow).join('');
+      return `<div style="margin-left:14px;margin-top:6px">
+        <div class="lib-job" style="cursor:pointer;background:var(--bg)" onclick="toggleLibNode('prop-${propSafeId}')">
+          <div class="lib-info">
+            <div class="lib-name">🏠 ${prop.name}</div>
+            <div class="lib-meta">${prop.jobs.length} video</div>
+          </div>
+        </div>
+        <div id="prop-${propSafeId}" style="display:none;flex-direction:column;gap:4px;margin-top:4px">${jobRows}</div>
+      </div>`;
+    }
+
+
+    function renderClient(client) {
+      const agSafeId = client.agencyId.replace(/[^a-zA-Z0-9_-]/g, '');
+      const propRows = client.props.map(p => renderProperty(p, agSafeId)).join('');
+      const totalJobs = client.props.reduce((s,p) => s + p.jobs.length, 0);
+      return `<div style="margin-bottom:10px">
+        <div class="lib-job" style="cursor:pointer;font-weight:600" onclick="toggleLibNode('client-${agSafeId}')">
+          <div class="lib-info">
+            <div class="lib-name">👤 ${client.name}</div>
+            <div class="lib-meta">${client.props.length} proprietà · ${totalJobs} video</div>
+          </div>
+        </div>
+        <div id="client-${agSafeId}" style="display:none;flex-direction:column;gap:2px">${propRows}</div>
+      </div>`;
+    }
+
+
+    list.innerHTML = clientEntries.map(renderClient).join('');
   } catch(e) {
     list.innerHTML = `<div class="lib-empty">Errore caricamento: ${e.message}</div>`;
   }
 }
 
 
-function toggleHistory(baseId) {
-  const hist = document.getElementById(`hist-${baseId}`);
-  if (hist) hist.style.display = hist.style.display === 'none' ? 'flex' : 'none';
+function toggleLibNode(id) {
+  const el = document.getElementById(id);
+  if (el) el.style.display = el.style.display === 'none' ? 'flex' : 'none';
 }
 
 
