@@ -129,11 +129,18 @@ def estimate_job_cost(
     do_vision_qc:        bool = True,
     model_tier:          str  = "premium",
     actual_monthly_jobs: int  = None,
+    claude_cost_eur:     float = 0.0,
 ) -> dict:
     """Estimates the total cost of a job before generation starts.
     actual_monthly_jobs: real rolling count of jobs completed in the last
     30 days, passed from api_server.py — used to calculate the true
     per-video infrastructure share rather than a static guess.
+    claude_cost_eur: real Claude API cost for URL-scraped jobs (listing
+    extraction, narration writing, photo quality ranking, vision
+    analysis) -- 2026-07-21 fix (architecture assessment item 31): this
+    was captured (scraper.get_claude_cost()) and stored on the job dict,
+    but never actually folded into the displayed cost estimate/actual --
+    0.0 for manual jobs, which never call Claude at all.
     """
     n = len(scenes)
 
@@ -155,7 +162,7 @@ def estimate_job_cost(
     vision_calls = (n * 2) if do_vision_qc else 0
     vision_cost  = vision_calls * FLORENCE_COST_PER_CALL
     infra_cost   = get_infra_cost_per_job(actual_monthly_jobs)
-    total = video_cost + upscale_cost + video_upscale_cost + tts_cost + vision_cost + infra_cost
+    total = video_cost + upscale_cost + video_upscale_cost + tts_cost + vision_cost + infra_cost + claude_cost_eur
 
     return {
         "type":               "estimate",
@@ -169,6 +176,7 @@ def estimate_job_cost(
         "vision_eur":         round(vision_cost,         4),
         "vision_calls":       vision_calls,
         "infra_eur":          round(infra_cost,          4),
+        "claude_eur":         round(claude_cost_eur,      4),
         "total_eur":          round(total,               3),
         "calculated_at":      datetime.utcnow().isoformat(),
     }
@@ -183,8 +191,12 @@ def calculate_actual_cost(
     do_upscale:       bool = True,
     do_vision_qc:     bool = True,
     model_tier:       str  = "premium",
+    claude_cost_eur:  float = 0.0,
 ) -> dict:
-    """Calculates the actual cost after generation completes."""
+    """Calculates the actual cost after generation completes.
+    claude_cost_eur: see estimate_job_cost() docstring -- same real,
+    previously-uncounted Claude API cost, for scraped jobs (2026-07-21 fix).
+    """
     n = len(scenes_generated)
 
     # Video — tier-aware pricing
@@ -217,7 +229,7 @@ def calculate_actual_cost(
     vision_calls = (n * 2) if do_vision_qc else 0
     vision_cost  = vision_calls * FLORENCE_COST_PER_CALL
     infra_cost   = INFRA_COST_PER_JOB
-    total = video_cost + upscale_cost + tts_cost + vision_cost + infra_cost
+    total = video_cost + upscale_cost + tts_cost + vision_cost + infra_cost + claude_cost_eur
 
     return {
         "type":          "actual",
@@ -233,6 +245,7 @@ def calculate_actual_cost(
         "vision_eur":    round(vision_cost,  4),
         "vision_calls":  vision_calls,
         "infra_eur":     round(infra_cost,   4),
+        "claude_eur":    round(claude_cost_eur, 4),
         "total_eur":     round(total,        3),
         "calculated_at": datetime.utcnow().isoformat(),
     }
@@ -338,6 +351,11 @@ def format_cost_display(cost: dict, previous_reworks: list = None) -> dict:
         lines.append({
             "label": "Infrastructure share",
             "value": f"€{cost['infra_eur']:.2f}"
+        })
+    if cost.get("claude_eur", 0) > 0:
+        lines.append({
+            "label": "Claude API (scraping, narrazione, analisi foto)",
+            "value": f"€{cost['claude_eur']:.4f}"
         })
     if rework_total > 0:
         lines.append({

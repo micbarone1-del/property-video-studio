@@ -1433,6 +1433,7 @@ async def create_job_from_url(
     cost_estimate = estimate_job_cost(
         scenes_config, do_upscale=True, do_video_upscale=True, do_vision_qc=True,
         model_tier=model_tier, actual_monthly_jobs=rolling_jobs,
+        claude_cost_eur=claude_usage.get("cost_eur", 0.0),
     )
 
     JOBS[job_id] = {
@@ -2770,11 +2771,17 @@ async def run_pipeline(
 
 
         # ── Actual cost ───────────────────────────────────────────────────
+        # 2026-07-21 fix (architecture assessment item 31): fold in real
+        # Claude API cost for scraped jobs (stored on the job dict at
+        # creation time by create_job_from_url) -- was captured but never
+        # actually counted in the displayed total. Absent/0 for manual
+        # jobs, which never call Claude at all.
+        claude_cost_eur = JOBS[job_id].get("claude_usage", {}).get("cost_eur", 0.0)
         from cost_tracker import calculate_actual_cost, format_cost_display
         actual = calculate_actual_cost(
             scenes_config, models_used, audio_chars,
             do_upscale=do_upscale, do_vision_qc=enable_vision_qc,
-            model_tier=model_tier,
+            model_tier=model_tier, claude_cost_eur=claude_cost_eur,
         )
         JOBS[job_id]["cost_actual_raw"] = actual
         JOBS[job_id]["cost_actual"] = format_cost_display(actual, previous_reworks=JOBS[job_id].get("reworks", []))
