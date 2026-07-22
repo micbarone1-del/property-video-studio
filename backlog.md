@@ -66,15 +66,11 @@ Items are ordered by priority. Each entry includes scope, decisions already made
 
 ---
 
-## 7. Client logo superimposition — LOW PRIORITY
+## 7. Client logo superimposition — ✅ COMPLETED July 22, 2026
 
-**Scope — fully defined, ready to build:**
-- Position: bottom-right corner. Duration: full video. Opacity: solid.
-- Storage: one logo per agency client. **Update July 22, 2026:** `cost_model.py`'s `create_agency()` now reserves a `logo_path: None` field on every agency record (backlog item 39 work) — the data-model piece this item needs is already in place; only the actual upload UI + `CompositeVideoClip` overlay logic remain to be built. No separate `clients.json`/`client_slug` needed anymore — this shares the SAME `agencies.json`/`agency_id` entity item 39 built, per the architecture-discipline principle.
-- Job creation already has a Client dropdown (built for item 39) — no further UI needed there, just read `job["agency_id"]` at assembly time to look up the logo.
-- Format validation: multi-format accepted, but any upload without an alpha channel is rejected with a clear error.
-- Compositing: single `CompositeVideoClip` addition in `video_assembly.py`'s `assemble_property_video()`.
-- Confirmed distinct from `watermark_removal.py` (removes source-site watermarks; this adds the agency's own logo).
+**Fully built end to end.** `cost_model.py`: `set_agency_logo()`. New `POST /agencies/{id}/logo` endpoint validates the upload has an alpha channel (clear error if not) and saves it under `clients/{agency_id}/logo.png`. `assemble_property_video()` in `video_assembly.py` accepts an optional `logo_path`, composites bottom-right at full video duration, solid opacity, when present — non-fatal on failure (logs and continues without it, never breaks a delivery). `run_reassemble_only()` resolves the logo automatically from the job's existing `agency_id` (item 39) — no separate per-job field needed. UI: a logo-upload control (client select + PNG file input) added to the cost modal's existing agency-management section. Verified with a real transparent-PNG upload test (alpha detection, persistence, file-on-disk all confirmed).
+
+**Not yet done:** no real client logo has actually been uploaded and tested through a real video generation yet — the plumbing is confirmed correct end-to-end at the code level, but the visual result (does it look right, positioned well, right size) hasn't been eyeballed on a real output video.
 
 ---
 
@@ -280,6 +276,7 @@ Items are ordered by priority. Each entry includes scope, decisions already made
 - **Luma general camera-movement wobble fix** — July 22, 2026. See item 37 (portrait-specific issue remains open).
 - **Claude API cost folded into displayed cost total** — July 22, 2026. See item 31.
 - **Full client/property/job library reorganization** — July 22, 2026. See item 39.
+- **Client logo overlay, full end-to-end feature** — July 22, 2026. See item 7.
 
 ## Not backlog items — standing watch items (tracked in status.md, not here)
 
