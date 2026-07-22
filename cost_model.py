@@ -88,6 +88,17 @@ def get_agency(agency_id):
     return next((a for a in list_agencies() if a["agency_id"] == agency_id), None)
 
 
+def set_agency_logo(agency_id, logo_path):
+    """2026-07-22 (backlog item 7): persists the on-disk path to an
+    agency's uploaded logo, for video overlay at assembly time."""
+    agencies = list_agencies()
+    for a in agencies:
+        if a["agency_id"] == agency_id:
+            a["logo_path"] = logo_path
+    _save(AGENCIES_FILE, agencies)
+    return get_agency(agency_id)
+
+
 # ── Properties ────────────────────────────────────────────────────────
 # Shared entity with the media library, same pattern as Agencies above
 # (2026-07-22, backlog item 39). One property can have multiple

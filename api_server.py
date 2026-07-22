@@ -353,6 +353,31 @@ async def report_properties_ep():
     return {'properties': cost_model.property_report(_jobs_with_ids())}
 
 
+@app.post('/agencies/{agency_id}/logo')
+async def upload_agency_logo_ep(agency_id: str, logo: UploadFile = File(...)):
+    """2026-07-22 (backlog item 7): uploads a logo for client-video
+    overlay. Requires an alpha channel (transparent background) --
+    rejected with a clear error otherwise, since this composites as a
+    subtle bottom-right brand mark, not an opaque box over the video."""
+    agency = cost_model.get_agency(agency_id)
+    if not agency:
+        raise HTTPException(status_code=404, detail='Agency not found')
+    content = await logo.read()
+    if not _validate_image_bytes(content):
+        raise HTTPException(status_code=400, detail='Invalid image file')
+    from PIL import Image
+    import io
+    img = Image.open(io.BytesIO(content))
+    if img.mode not in ('RGBA', 'LA') and 'transparency' not in img.info:
+        raise HTTPException(status_code=400, detail='Logo must have an alpha channel (transparent background) -- upload a PNG with transparency')
+    logos_dir = BASE_DIR / 'clients' / agency_id
+    logos_dir.mkdir(parents=True, exist_ok=True)
+    logo_path = logos_dir / 'logo.png'
+    img.convert('RGBA').save(logo_path, format='PNG')
+    cost_model.set_agency_logo(agency_id, str(logo_path))
+    return {'agency_id': agency_id, 'logo_path': str(logo_path)}
+
+
 _RATE_LIMIT_WINDOW = 3600   # 1 hour in seconds
 _RATE_LIMIT_MAX    = 5      # max job submissions per IP per hour
 _rate_tracker: dict = defaultdict(list)
@@ -2250,6 +2275,16 @@ async def run_reassemble_only(job_id: str):
 
 
         output_path = str(job_dir / f"{job.get('property_name','Property').replace(' ','_')}_final.mp4")
+        # 2026-07-22 (backlog item 7): resolve this job's client logo, if
+        # any, from the shared agency record -- reads job["agency_id"]
+        # (already set at creation, see backlog item 39), no separate
+        # per-job logo field needed.
+        _logo_path = None
+        _job_agency_id = job.get("agency_id")
+        if _job_agency_id:
+            _agency = cost_model.get_agency(_job_agency_id)
+            if _agency and _agency.get("logo_path") and os.path.exists(_agency["logo_path"]):
+                _logo_path = _agency["logo_path"]
         from video_assembly import assemble_property_video
         ok = await asyncio.to_thread(
             assemble_property_video,
@@ -2261,6 +2296,7 @@ async def run_reassemble_only(job_id: str):
             property_name=job.get("property_name", "Property"),
             transition_style=job.get("transition_style", "fade"),
             output_format=job.get("output_format", "landscape"),
+            logo_path=_logo_path,
         )
         if not ok:
             raise RuntimeError("Assemblaggio fallito")

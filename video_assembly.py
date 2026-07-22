@@ -423,7 +423,7 @@ if __name__ == "__main__":
         if final_path:
             print(f"\nProcess completed successfully. Final video at: {final_path}")
 
-def assemble_property_video(scenes_config, video_clip_paths, audio_paths, image_paths, output_path, property_name, transition_style="fade", output_format="landscape"):
+def assemble_property_video(scenes_config, video_clip_paths, audio_paths, image_paths, output_path, property_name, transition_style="fade", output_format="landscape", logo_path=None):
     """Assembles the final property video with the selected transition style.
     Supports: cut, fade, slide_left, slide_right.
     """
@@ -529,6 +529,22 @@ def assemble_property_video(scenes_config, video_clip_paths, audio_paths, image_
         else:
             final = concatenate_videoclips(clips, method="compose")
 
+        # 2026-07-22 (backlog item 7): client logo overlay -- bottom-right,
+        # full video duration, solid opacity. Requires an alpha channel,
+        # validated at upload time (see /agencies/{id}/logo), so this
+        # composites as a subtle brand mark rather than an opaque box.
+        # Any failure here is non-fatal -- logs and continues without the
+        # logo rather than breaking a real client delivery over it.
+        if logo_path and os.path.exists(logo_path):
+            try:
+                logo_clip = ImageClip(logo_path).with_duration(final.duration)
+                target_logo_w = int(TARGET_W * 0.12)
+                logo_clip = logo_clip.resized(width=target_logo_w)
+                margin = int(TARGET_W * 0.02)
+                logo_clip = logo_clip.with_position((TARGET_W - logo_clip.w - margin, TARGET_H - logo_clip.h - margin))
+                final = CompositeVideoClip([final, logo_clip])
+            except Exception as e:
+                print(f'[Assemble] Logo overlay failed, continuing without it: {e}')
         # Attach all TTS audio tracks positioned correctly on the final timeline
         if audio_segments:
             positioned = [ac.with_start(t) for ac, t in audio_segments]
