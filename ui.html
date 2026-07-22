@@ -1447,12 +1447,38 @@ function renderCostReport(ent, agencies, jobs, salesData) {
     html += `<div style="font-size:.8rem;color:var(--muted);margin-bottom:14px">Nessuna agenzia ancora.</div>`;
   } else {
     html += `<table style="width:100%;font-size:.78rem;border-collapse:collapse;margin-bottom:14px">
-      <tr style="color:var(--muted);text-align:left"><th style="padding:5px 0">Agenzia</th><th>Venduti</th><th>Consegnati</th><th>Ricavi</th><th>Costo</th><th>Margine</th></tr>`;
+      <tr style="color:var(--muted);text-align:left"><th style="padding:5px 0">Agenzia</th><th>Venduti</th><th>Consegnati</th><th>Ricavi</th><th>Costo</th><th>Margine</th><th></th></tr>`;
     agencies.forEach(a => {
+      const safeName = a.name.replace(/'/g, "\\'");
       html += `<tr style="border-top:1px solid var(--rule)">
         <td style="padding:6px 0">${a.name}</td><td>${a.videos_sold}</td><td>${a.videos_delivered}</td>
         <td>${eur(a.revenue_eur)}</td><td>${eur(a.production_cost_eur)}</td>
-        <td style="color:${a.margin_eur>=0?'var(--ok)':'var(--danger)'};font-weight:600">${eur(a.margin_eur)}</td></tr>`;
+        <td style="color:${a.margin_eur>=0?'var(--ok)':'var(--danger)'};font-weight:600">${eur(a.margin_eur)}</td>
+        <td><button class="lib-btn" onclick="editAgency('${a.agency_id}', '${safeName}')" style="padding:3px 8px;font-size:.72rem">&#9998;</button></td></tr>`;
+    });
+    html += `</table>`;
+  }
+
+  // Sales list (2026-07-22, backlog item 33) -- individual sale entries
+  // with edit/delete, so a mistake can be corrected without delete +
+  // recreate. Was previously only aggregated per-agency, with no way to
+  // see or touch an individual sale at all.
+  const salesList = salesData.sales || [];
+  html += `<div style="font-size:.7rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:8px">Vendite</div>`;
+  if (!salesList.length) {
+    html += `<div style="font-size:.8rem;color:var(--muted);margin-bottom:14px">Nessuna vendita ancora.</div>`;
+  } else {
+    html += `<table style="width:100%;font-size:.78rem;border-collapse:collapse;margin-bottom:14px">
+      <tr style="color:var(--muted);text-align:left"><th style="padding:5px 0">Agenzia</th><th>Video</th><th>Prezzo</th><th></th></tr>`;
+    salesList.forEach(s => {
+      const ag = agencies.find(a => a.agency_id === s.agency_id);
+      const agName = ag ? ag.name : s.agency_id;
+      html += `<tr style="border-top:1px solid var(--rule)">
+        <td style="padding:6px 0">${agName}</td><td>${s.videos_sold}</td><td>${eur(s.price_eur)}</td>
+        <td style="text-align:right;white-space:nowrap">
+          <button class="lib-btn" onclick="editSale('${s.sale_id}', ${s.videos_sold}, ${s.price_eur})" style="padding:3px 8px;font-size:.72rem">&#9998;</button>
+          <button class="lib-btn" onclick="removeSale('${s.sale_id}')" style="padding:3px 8px;font-size:.72rem">&#128465;</button>
+        </td></tr>`;
     });
     html += `</table>`;
   }
@@ -1509,17 +1535,59 @@ async function setJobClass(jobId, classification) {
 async function addAgency() {
   const name = document.getElementById('new-agency-name').value.trim();
   if (!name) return;
+  if (!confirm(`Aggiungere il cliente "${name}"?`)) return;
   const fd = new FormData(); fd.append('name', name);
   await authFetch(`${API_BASE}/agencies`, {method:'POST', body:fd});
   openCostReport();
 }
 
 async function addSale() {
+  const agencySelect = document.getElementById('sale-agency');
+  const agencyName = agencySelect.options[agencySelect.selectedIndex] ? agencySelect.options[agencySelect.selectedIndex].text : '';
+  const videos = document.getElementById('sale-videos').value;
+  const price = document.getElementById('sale-price').value;
+  if (!confirm(`Registrare la vendita di ${videos} video a "${agencyName}" per €${price}?`)) return;
   const fd = new FormData();
-  fd.append('agency_id', document.getElementById('sale-agency').value);
-  fd.append('videos_sold', document.getElementById('sale-videos').value);
-  fd.append('price_eur', document.getElementById('sale-price').value);
+  fd.append('agency_id', agencySelect.value);
+  fd.append('videos_sold', videos);
+  fd.append('price_eur', price);
   await authFetch(`${API_BASE}/sales`, {method:'POST', body:fd});
+  openCostReport();
+}
+
+// 2026-07-22 (backlog item 33): edit an existing agency's name via a
+// simple prompt (pre-filled with the current name), matching the same
+// lightweight pattern used for inline client creation -- no separate
+// edit-form UI needed.
+async function editAgency(agencyId, currentName) {
+  const newName = prompt('Nuovo nome agenzia:', currentName);
+  if (newName === null) return;
+  const trimmed = newName.trim();
+  if (trimmed === '' || trimmed === currentName) return;
+  if (!confirm(`Rinominare "${currentName}" in "${trimmed}"?`)) return;
+  const fd = new FormData();
+  fd.append('name', trimmed);
+  await authFetch(`${API_BASE}/agencies/${agencyId}`, {method:'POST', body:fd});
+  openCostReport();
+}
+
+// 2026-07-22 (backlog item 33): edit or remove an existing sale entry.
+async function editSale(saleId, currentVideos, currentPrice) {
+  const newVideosStr = prompt('Numero video venduti:', currentVideos);
+  if (newVideosStr === null) return;
+  const newPriceStr = prompt('Prezzo totale (EUR):', currentPrice);
+  if (newPriceStr === null) return;
+  if (!confirm('Confermare la modifica di questa vendita?')) return;
+  const fd = new FormData();
+  fd.append('videos_sold', newVideosStr);
+  fd.append('price_eur', newPriceStr);
+  await authFetch(`${API_BASE}/sales/${saleId}`, {method:'POST', body:fd});
+  openCostReport();
+}
+
+async function removeSale(saleId) {
+  if (!confirm('Eliminare questa vendita? Non puo essere annullato.')) return;
+  await authFetch(`${API_BASE}/sales/${saleId}`, {method:'DELETE'});
   openCostReport();
 }
 
