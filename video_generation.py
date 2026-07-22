@@ -306,18 +306,31 @@ _VEO_RULES = (
 # genuine parallax with realistic physics from short, cinematography-style
 # prompts — it does NOT need Veo's extensive anti-hallucination scaffolding.
 # Same movement vocabulary as Veo/Lyra for consistency across tiers.
+# 2026-07-21 rewrite (backlog item 37): reported as wobbly, with
+# exaggerated manual-camera-style movement/steps simulating a person
+# walking in, rather than a smooth dolly-in. Compared directly against
+# _VEO_MOVEMENT_TOKENS above (which does NOT have this problem) and
+# adopted the same two ingredients that were missing here: explicit
+# "3D dolly" terminology (a specific cinematography term implying smooth
+# linear translation, vs. generic "camera movement" which the model can
+# interpret many ways) and explicit foreground/background parallax
+# framing, plus a direct negative instruction against the exact reported
+# artifact (stepping/bobbing) and degree limits (Luma had none at all
+# before this). Same caveat as every other Luma prompt constraint in this
+# file: probabilistic improvement, not a guarantee -- needs a real
+# generation test to confirm, not just a plausible rewrite.
 _LUMA_MOVEMENT_TOKENS = {
-    "walk_in_explore":    "slow subtle camera movement with gentle depth parallax, minimal forward drift, realistic physics",
-    "walk_in_gentle":     "very slow gentle parallax movement, minimal forward drift, soft natural motion, realistic physics",
-    "walk_in_turn_left":  "slow camera movement panning gently left while moving forward, realistic physics",
-    "walk_in_turn_right": "slow camera movement panning gently right while moving forward, realistic physics",
-    "walk_through":       "slow steady forward camera movement along the space, realistic physics",
-    "stand_look_around":  "slow subtle camera pan, gentle look around the space, realistic physics",
-    "subtle_rotate":      "extremely subtle camera movement, almost static, gentle realistic physics",
-    "approach_reveal":    "slow gentle camera movement toward the space, subtle realistic physics",
-    "walk_toward":        "slow camera movement approaching the building, realistic physics",
-    "step_out_onto":      "slow gentle camera pan across the outdoor space, realistic physics",
-    "reveal_pullback":    "slow camera movement with gentle depth, natural realistic physics",
+    "walk_in_explore":    "slow 3D dolly shot moving through the room, foreground elements moving faster than the background walls for natural depth parallax, smooth continuous motion, no stepping or bobbing, realistic physics",
+    "walk_in_gentle":     "very slow lateral 3D dolly shot, foreground elements moving faster than the background wall for gentle depth parallax, smooth continuous motion, no stepping or bobbing, realistic physics",
+    "walk_in_turn_left":  "slow 3D dolly panning gently left, foreground arcing faster than the background for depth parallax, maximum 20 degrees, smooth continuous motion, realistic physics",
+    "walk_in_turn_right": "slow 3D dolly panning gently right, foreground arcing faster than the background for depth parallax, maximum 20 degrees, smooth continuous motion, realistic physics",
+    "walk_through":       "slow steady forward 3D dolly along the space, walls and surfaces moving outward in perspective as the camera advances, strong depth parallax, smooth continuous motion, realistic physics",
+    "stand_look_around":  "slow 3D pan with depth parallax, foreground arcing faster than background, maximum 20 degrees, smooth continuous motion, no stepping or bobbing, realistic physics",
+    "subtle_rotate":      "almost static shot with imperceptibly subtle 3D micro-parallax, maximum 10 degrees, smooth continuous motion, realistic physics",
+    "approach_reveal":    "slow subtle 3D dolly toward the space, foreground slightly faster than background for minimal depth parallax, smooth continuous motion, realistic physics",
+    "walk_toward":        "slow 3D forward dolly approaching the building, foreground ground moving faster than the facade for depth parallax, smooth continuous motion, realistic physics",
+    "step_out_onto":      "slow 3D pan across the outdoor space, foreground railing or plants moving faster than the distant view for depth parallax, maximum 40 degrees, smooth continuous motion, realistic physics",
+    "reveal_pullback":    "reverse 3D dolly shot, camera slowly moving backward as foreground elements slide past the frame edges, natural depth parallax throughout, smooth continuous motion, realistic physics",
 }
 
 _LUMA_INTENSITY_SUFFIX = {
