@@ -197,3 +197,40 @@ Twice, a `git pull` reported "Already up to date" when a just-delivered file upd
 - **When checking whether a function is called anywhere, `grep` for the bare name, not `name(`** — functions passed by reference (`asyncio.to_thread(some_function, ...)`) have no literal `some_function(` substring and will be silently missed.
 - **GitHub can serve stale content from its own upload/serving path even after a genuine re-upload and browser hard-refresh** (July 22, 2026) — distinct from browser cache or Claude's own fetch cache. Verify against the live server directly before assuming a fresh re-upload didn't take.
 - **A `git pull` reporting "Already up to date" when a new file was just uploaded usually means the GitHub-side upload/commit step didn't actually happen (or the wrong file version was uploaded)** — not a technical bug. Diagnose with `git fetch origin` then compare `git rev-parse HEAD` against `git rev-parse refs/remotes/origin/main` directly, and sanity-check the real commit's line-change count against what the pending patch should contain.
+
+## July 22-23, 2026 (continued) — Per-scene audio buffer, investment ledger management, audio-only rework, and a real process lesson
+
+### Real bug: per-scene voiceover audio had zero lead-in silence
+
+**Reported by the user, confirmed real:** the first fraction of a second of speech was getting cut when a video was forwarded through a messaging app -- the same class of problem as the earlier (July 17) WhatsApp-trim fix, but a genuinely different, previously-unaddressed mechanism. That earlier fix only touched `narration.py`'s LEAD_SECS/TRAIL_SECS, used by `_overlay_narration_audio()` for the continuous-narration-track workflow. Per-scene voiceover audio (used by older-style, non-narration-first jobs) is positioned in `video_assembly.py`'s `assemble_property_video()` via a completely separate code path, which started each scene's audio at the exact instant the scene began, with no buffer at all.
+
+**Fixed:** added `SCENE_AUDIO_LEAD_SECS`/`SCENE_AUDIO_TRAIL_SECS` (0.5s each -- deliberately smaller than narration.py's 1.0s, since a per-scene clip has a much tighter, fixed time budget of 5-10s that cannot be extended the way a full video's total length can). The image-fallback branch (no real generated video, built from a static photo) extends its own clip duration to fit the buffer; the real-video branch fits available speech into a smaller window (clip.duration - lead - trail) since that clip's duration is fixed and can never change. Whether 0.5s is sufficient for real-world cross-platform re-encoding behavior (not just the pure AAC-encoder-priming mechanism, which is much smaller) is not yet confirmed by a real test -- see the new audio-only rework feature below, built specifically to let this be tested cheaply.
+
+**A genuinely difficult patch to land:** two earlier attempts failed before reaching the live file -- one hit a missed blank line in the anchor text (a recurring class of issue this project has hit before), the other hit base64 transfer corruption in the terminal. Both were caught by direct verification (checking the actual file content, not trusting a script's own success message) before either reached the deployed file.
+
+### Investment ledger management (backlog item 33 follow-on)
+
+**User request:** track the real cost of this Claude Pro subscription (€21.96/month) as part of the project's overall investment tracking, not just the URL-scraper's per-job Claude API usage (already fixed, item 31).
+
+**Found:** an investment ledger already existed (`cost_model.py`'s `investment.json`, driving the "Investimento (fisso)" figure in the cost report), but had zero way to add a single entry -- only a full-ledger replace (`set_investment()`), apparently intended for an XLS re-upload workflow that was never actually built.
+
+**Built:** `add_investment_entry()`/`delete_investment_entry()` in `cost_model.py` (append/remove one entry without disturbing the rest -- correctly reuses the existing "note" field name the original XLS-imported entry already used, not a second, inconsistent field). New `GET`/`POST /investment`, `DELETE /investment/{index}` endpoints. UI: a new Investment section in the cost modal (same lightweight style as the Sales section), with an add-entry form. The real Claude Pro entry (€21.96) was added to the ledger -- its note text explicitly flags that a new entry should be added each billing cycle to keep this current, since there's no automatic recurring-cost mechanism.
+
+### Audio-only rework (new capability)
+
+**User request, directly motivated by wanting to test the new audio buffer without paying for video regeneration:** can TTS be reworked on an existing video without redoing the (expensive) video generation too?
+
+**Confirmed gap:** the existing redo-batch mechanism (`run_redo_scenes_batch`) always regenerates video for any marked scene -- there was no way to regenerate just the audio.
+
+**Built:** `run_redo_audio_only()` in `api_server.py`, mirroring the relevant slice of `run_redo_scenes_batch()` but skipping every video-generation step entirely -- regenerates TTS for marked scenes using their existing voiceover text, reuses their existing video clips completely untouched, and reassembles via the same shared `run_reassemble_only()` every other path uses (no separate assembly logic). New `POST /jobs/{id}/scenes/redo-audio-only` endpoint. Cost tracking correctly reflects this as audio-only (`redo_video=False`), so it only ever incurs the cheap ElevenLabs charge, never a Luma/Veo one. UI: a new "Rigenera solo audio" button next to the main Generate button, active whenever scenes are marked for rework, calling the new endpoint via a function that mirrors `submitRework()`'s scene-collection logic exactly.
+
+**Not yet done:** a real end-to-end test (mark a scene, click the new button, confirm audio changes and video doesn't, confirm cost tracking shows only the ElevenLabs charge) has not yet been run by the user.
+
+### A real process lesson this session: forgetting to commit
+
+**What happened:** the investment-ledger backend (cost_model.py, api_server.py, the real Claude Pro entry, and a backlog.md update) was applied and tested directly on the server, but never committed to git before moving on to the TTS-buffer and audio-only-rework conversation. When the user later uploaded a fresh `api_server.py` (containing the audio-only-rework feature) to GitHub and the server tried to `git pull` it, git correctly refused: "Your local changes... would be overwritten by merge."
+
+**Fixed cleanly:** committed the pending local changes first, then `git pull --no-rebase` merged the two independent sets of changes with zero real conflict (they touched different parts of the same file), verified both sides survived the merge (both the investment endpoints and the audio-only-rework endpoint present and working), then pushed.
+
+**Lesson, now a standing practice:** after applying any change directly on the server via terminal, commit it before starting a new, unrelated task -- even when the immediate conversation moves on to something else first. An uncommitted change sitting on the server is invisible until it collides with the next upload.
+- **After applying any change directly on the server via terminal, commit it before starting a new, unrelated task** (July 23, 2026) -- an uncommitted local change is invisible until it collides with the next upload/pull, producing a real merge conflict.

@@ -259,6 +259,32 @@ Items are ordered by priority. Each entry includes scope, decisions already made
 
 **STILL OPEN — MAXIMUM PRIORITY:** QC does not reliably catch hallucinations. Agent-based QC (item 11) is the real answer; every prompt-level mitigation built so far is harm reduction, not detection.
 
+## 42. Per-scene audio lead/trail buffer -- ✅ COMPLETED July 23, 2026 (untested end-to-end)
+
+**Reported.** Per-scene voiceover audio started with zero lead-in silence, cutting the first fraction of a second of speech when a video was forwarded through a messaging app -- a genuinely different, previously-unaddressed mechanism from the July 17 continuous-narration WhatsApp-trim fix.
+
+**Fixed:** `SCENE_AUDIO_LEAD_SECS`/`SCENE_AUDIO_TRAIL_SECS` (0.5s each, deliberately smaller than narration.py's 1.0s given a per-scene clip's tighter fixed time budget) in `video_assembly.py`. See status.md for full detail.
+
+**Open question, not yet resolved:** whether 0.5s is actually sufficient for real-world cross-platform re-encoding behavior (WhatsApp/YouTube/email) has not been confirmed by a real test -- only the theoretical AAC-encoder-priming mechanism (much smaller, ~20-25ms) is well understood. See item 43 (audio-only rework) for the cheap way to test this.
+
+---
+
+## 43. Audio-only rework -- ✅ COMPLETED July 23, 2026 (untested end-to-end)
+
+**Requested**, directly motivated by wanting to test item 42's buffer without paying for video regeneration. **Confirmed gap:** the existing redo-batch mechanism always regenerates video for any marked scene -- no way to redo just the audio.
+
+**Built:** `run_redo_audio_only()` in `api_server.py` (mirrors the relevant slice of `run_redo_scenes_batch()` but skips every video-generation step, reuses existing video clips untouched, reassembles via the same shared `run_reassemble_only()`). New `POST /jobs/{id}/scenes/redo-audio-only` endpoint. Cost tracking correctly reflects audio-only (no Luma/Veo charge, only the cheap ElevenLabs one). UI: new "Rigenera solo audio" button next to the main Generate button. See status.md for full detail.
+
+**Not yet done:** a real end-to-end test (mark a scene, click the button, confirm audio changes and video doesn't, confirm cost tracking is correct) has not yet been run.
+
+---
+
+## 44. Investment ledger single-entry management -- ✅ COMPLETED July 23, 2026
+
+**Requested** (track this Claude Pro subscription, €21.96/month, as part of overall investment tracking). **Found:** the investment ledger (`cost_model.py`'s `investment.json`, driving the "Investimento (fisso)" figure) had no way to add a single entry -- only a full-ledger replace, apparently meant for an XLS re-upload workflow that was never built.
+
+**Built:** `add_investment_entry()`/`delete_investment_entry()`, new `GET`/`POST /investment`, `DELETE /investment/{index}` endpoints, a new Investment section in the cost modal. The real Claude Pro entry was added -- its note flags that a new entry is needed each billing cycle to stay current, since there's no automatic recurring-cost mechanism. See status.md for full detail.
+
 ## Recently completed (see status.md for full detail)
 
 - **Auto maintenance scheduler** — July 9, 2026.
@@ -279,6 +305,9 @@ Items are ordered by priority. Each entry includes scope, decisions already made
 - **Client logo overlay, full end-to-end feature** — July 22, 2026. See item 7.
 - **Cost reporting UI confirm+edit for clients/sales** — July 22, 2026. See item 33.
 - **Real bug fixed: Client dropdown never actually populated in the browser** (script-order/temporal-dead-zone bug, invisible to all backend-level testing) — July 22, 2026.
+- **Per-scene audio lead/trail buffer** — July 23, 2026. See item 42 (real-world sufficiency of 0.5s not yet confirmed).
+- **Audio-only rework capability** — July 23, 2026. See item 43 (not yet tested end-to-end).
+- **Investment ledger single-entry management, real Claude Pro entry added** — July 23, 2026. See item 44.
 
 ## Not backlog items — standing watch items (tracked in status.md, not here)
 
