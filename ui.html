@@ -1360,17 +1360,19 @@ async function openCostReport() {
   modal.style.display = 'block';
   el.innerHTML = 'Caricamento…';
   try {
-    const [entR, agR, jbR, slR] = await Promise.all([
+    const [entR, agR, jbR, slR, invR] = await Promise.all([
       authFetch(`${API_BASE}/reports/enterprise`),
       authFetch(`${API_BASE}/reports/agencies`),
       authFetch(`${API_BASE}/reports/jobs`),
-      authFetch(`${API_BASE}/sales`)
+      authFetch(`${API_BASE}/sales`),
+      authFetch(`${API_BASE}/investment`)
     ]);
     const ent = await entR.json();
     const ag  = (await agR.json()).agencies || [];
     const jb  = (await jbR.json()).jobs || [];
     const sl  = await slR.json();
-    renderCostReport(ent, ag, jb, sl);
+    const inv = await invR.json();
+    renderCostReport(ent, ag, jb, sl, inv);
   } catch(e) {
     el.innerHTML = `<div style="color:var(--danger)">Errore: ${e.message}</div>`;
   }
@@ -1378,7 +1380,7 @@ async function openCostReport() {
 
 function eur(n) { return '€' + (n||0).toLocaleString('it-IT', {minimumFractionDigits:2, maximumFractionDigits:2}); }
 
-function renderCostReport(ent, agencies, jobs, salesData) {
+function renderCostReport(ent, agencies, jobs, salesData, investmentData) {
   const el = document.getElementById('cost-content');
   const inv = ent.total_investment_eur;
   const rev = ent.gross_revenue_eur;
@@ -1442,6 +1444,34 @@ function renderCostReport(ent, agencies, jobs, salesData) {
     </div></div>`;
 
   // Agencies
+  // Investment ledger (2026-07-22): the "Investimento (fisso)" figure
+  // shown at the top comes from this ledger (cost_model.py's
+  // investment.json), which previously had no way to add an entry at
+  // all except a full-ledger XLS re-upload with no UI. Now a single new
+  // cost -- e.g. this very Claude Pro subscription, or any other
+  // one-off/recurring expense -- can be added directly here.
+  const invEntries = investmentData.entries || [];
+  html += `<div style="font-size:.7rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:8px">Investimento</div>`;
+  if (!invEntries.length) {
+    html += `<div style="font-size:.8rem;color:var(--muted);margin-bottom:14px">Nessuna voce ancora.</div>`;
+  } else {
+    html += `<table style="width:100%;font-size:.78rem;border-collapse:collapse;margin-bottom:14px">
+      <tr style="color:var(--muted);text-align:left"><th style="padding:5px 0">Voce</th><th>Importo</th><th></th></tr>`;
+    invEntries.forEach((e, idx) => {
+      html += `<tr style="border-top:1px solid var(--rule)">
+        <td style="padding:6px 0">${e.note || ''}</td><td>${eur(e.amount_eur)}</td>
+        <td style="text-align:right"><button class="lib-btn" onclick="removeInvestmentEntry(${idx})" style="padding:3px 8px;font-size:.72rem">&#128465;</button></td></tr>`;
+    });
+    html += `</table>`;
+  }
+  html += `<div style="background:var(--bg);border:1px solid var(--rule);border-radius:var(--radius);padding:14px;margin-bottom:20px">
+    <div style="display:flex;gap:8px">
+      <input id="new-investment-note" placeholder="es. Abbonamento Claude Pro (mensile)" style="flex:2;padding:7px;border:1px solid var(--rule);border-radius:6px;font-size:.8rem" />
+      <input id="new-investment-amount" type="number" step="0.01" placeholder="EUR" style="width:100px;padding:7px;border:1px solid var(--rule);border-radius:6px;font-size:.8rem" />
+      <button class="lib-btn" onclick="addInvestmentEntry()">+ Voce</button>
+    </div>
+  </div>`;
+
   html += `<div style="font-size:.7rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:8px">Agenzie</div>`;
   if (!agencies.length) {
     html += `<div style="font-size:.8rem;color:var(--muted);margin-bottom:14px">Nessuna agenzia ancora.</div>`;
@@ -1588,6 +1618,27 @@ async function editSale(saleId, currentVideos, currentPrice) {
 async function removeSale(saleId) {
   if (!confirm('Eliminare questa vendita? Non puo essere annullato.')) return;
   await authFetch(`${API_BASE}/sales/${saleId}`, {method:'DELETE'});
+  openCostReport();
+}
+
+// 2026-07-22: add or remove a single investment-ledger entry (e.g. the
+// Claude Pro subscription, or any other one-off/recurring cost) without
+// needing a full XLS re-upload of the whole ledger.
+async function addInvestmentEntry() {
+  const note = document.getElementById('new-investment-note').value.trim();
+  const amount = document.getElementById('new-investment-amount').value;
+  if (!note || !amount) return;
+  if (!confirm(`Aggiungere "${note}" per €${amount}?`)) return;
+  const fd = new FormData();
+  fd.append('note', note);
+  fd.append('amount_eur', amount);
+  await authFetch(`${API_BASE}/investment`, {method:'POST', body:fd});
+  openCostReport();
+}
+
+async function removeInvestmentEntry(index) {
+  if (!confirm('Eliminare questa voce di investimento?')) return;
+  await authFetch(`${API_BASE}/investment/${index}`, {method:'DELETE'});
   openCostReport();
 }
 
