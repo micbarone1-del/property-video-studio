@@ -3,8 +3,13 @@
     {
       "amount_eur": 4046.01,
       "note": "Imported from Report_Finale_AI_Video_Aggiornato.xlsx (2026-07-12)"
+    },
+    {
+      "note": "Claude Pro subscription (monthly, added 2026-07-23 -- add a new entry each billing cycle to keep this current)",
+      "amount_eur": 21.96,
+      "created_at": "2026-07-23T15:01:59.103142"
     }
   ],
-  "total_eur": 4046.01,
-  "updated_at": "2026-07-12T14:13:46.945476"
+  "total_eur": 4067.97,
+  "updated_at": "2026-07-23T15:01:59.103158"
 }

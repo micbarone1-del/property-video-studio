@@ -175,11 +175,11 @@ Items are ordered by priority. Each entry includes scope, decisions already made
 
 ## 35. Auto-scraping for 1-minute videos on premium properties
 
-**Requested.** Some premium properties should get a longer (~1 minute) auto-scraped video instead of the standard ~30s format.
+**Requested, reaffirmed July 22, 2026.** A dedicated scraping TEMPLATE for premium properties, producing a longer (~1 minute) auto-scraped video instead of the standard ~30s format -- distinct enough from the standard flow to warrant its own template/preset, not just a longer duration on the same one.
 
-**Not scoped yet — open questions:** what defines "premium," does this replace or supplement the standard format, photo-count implications, narration pacing at longer length, cost/pricing implications.
+**Not scoped yet — open questions:** what defines "premium" (manual flag at job creation? price threshold from the scraped listing? agency-level default?), does this replace or supplement the standard format, photo-count implications (a 1-min video needs meaningfully more scenes/photos than the current ~30s format supports), narration pacing/scene-count-band implications at longer length (the scraper's existing 5-7 scene band -- see item 38 point 6 -- would need a different band for this length), cost/pricing implications (a 1-min video costs meaningfully more in video-generation credits per delivery).
 
-**Dependency:** builds on item 1 — same engine, different target length.
+**Dependency:** builds on item 1 — same engine, different target length and template.
 
 ---
 

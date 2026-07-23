@@ -315,6 +315,21 @@ async def update_sale_ep(sale_id: str, videos_sold: int = Form(None), price_eur:
 async def report_enterprise_ep():
     return cost_model.enterprise_report(_jobs_with_ids())
 
+
+@app.get('/investment')
+async def get_investment_ep():
+    return cost_model.get_investment()
+
+
+@app.post('/investment')
+async def add_investment_entry_ep(note: str = Form(...), amount_eur: float = Form(...)):
+    return cost_model.add_investment_entry(note, amount_eur)
+
+
+@app.delete('/investment/{index}')
+async def delete_investment_entry_ep(index: int):
+    return cost_model.delete_investment_entry(index)
+
 @app.get('/reports/agencies')
 async def report_agencies_ep():
     return {'agencies': cost_model.agency_report(_jobs_with_ids())}

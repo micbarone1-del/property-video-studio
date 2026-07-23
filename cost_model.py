@@ -246,6 +246,33 @@ def set_investment(entries):
     return data
 
 
+def add_investment_entry(note, amount_eur):
+    """2026-07-22: appends one entry to the existing ledger rather than
+    replacing it wholesale (set_investment() above is for a full XLS
+    re-upload; this is for adding a single new cost -- e.g. a monthly
+    Claude Pro subscription charge, or any other one-off/recurring cost
+    -- without disturbing entries already recorded). Uses the SAME
+    "note" field name the existing (XLS-imported) entry already uses,
+    not a second, inconsistent field name."""
+    current = get_investment()
+    entries = current.get("entries", [])
+    entries.append({
+        "note": note,
+        "amount_eur": float(amount_eur),
+        "created_at": datetime.utcnow().isoformat(),
+    })
+    return set_investment(entries)
+
+
+def delete_investment_entry(index):
+    """2026-07-22: removes one entry by its position in the list."""
+    current = get_investment()
+    entries = current.get("entries", [])
+    if 0 <= index < len(entries):
+        entries.pop(index)
+    return set_investment(entries)
+
+
 # ── Labour ────────────────────────────────────────────────────────────────
 
 def seller_commission_for_agency(agency_id):
