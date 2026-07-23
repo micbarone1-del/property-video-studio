@@ -445,6 +445,22 @@ def assemble_property_video(scenes_config, video_clip_paths, audio_paths, image_
         else:
             TARGET_W, TARGET_H = 1920, 1080
         FPS = 24
+        # 2026-07-22: per-scene voiceover audio previously started at the
+        # exact instant its scene began, with zero lead-in silence -- a
+        # genuinely different mechanism from the continuous-narration
+        # track (narration.py's LEAD_SECS/TRAIL_SECS, applied later at
+        # assembly via _overlay_narration_audio) fixed earlier this
+        # session, and never touched by that fix. Confirmed real: the
+        # first fraction of a second of speech was getting cut when a
+        # video was forwarded through a messaging app, same class of
+        # problem as the earlier WhatsApp-trim issue, just a different
+        # code path. Uses smaller values than narration.py's 1.0s/1.0s
+        # deliberately -- a per-scene clip has a genuinely tighter, fixed
+        # time budget (5-10s) that cannot be extended the way a full
+        # video's total length can, so a full 1.0s+1.0s here would eat
+        # too deeply into real speech room on short scenes.
+        SCENE_AUDIO_LEAD_SECS  = 0.5
+        SCENE_AUDIO_TRAIL_SECS = 0.5
 
         # --- Load and prepare each scene clip ---
         clips = []
@@ -459,23 +475,24 @@ def assemble_property_video(scenes_config, video_clip_paths, audio_paths, image_
             if not video_path or not os.path.exists(str(video_path)):
                 if image_path and os.path.exists(str(image_path)):
                     ac = AudioFileClip(str(audio_path)) if audio_path and os.path.exists(str(audio_path)) else None
-                    dur = ac.duration if ac else 5.0
+                    dur = (ac.duration + SCENE_AUDIO_LEAD_SECS + SCENE_AUDIO_TRAIL_SECS) if ac else 5.0
                     clip = ImageClip(str(image_path)).with_duration(dur)
                     if ac:
-                        audio_segments.append((ac, timeline_cursor))
+                        audio_segments.append((ac, timeline_cursor + SCENE_AUDIO_LEAD_SECS))
                 else:
                     continue
             else:
                 clip = VideoFileClip(str(video_path)).without_audio()  # strip fal.ai ambient audio
                 if audio_path and os.path.exists(str(audio_path)):
                     ac = AudioFileClip(str(audio_path))
-                    if ac.duration > clip.duration:
+                    available = max(0.5, clip.duration - SCENE_AUDIO_LEAD_SECS - SCENE_AUDIO_TRAIL_SECS)
+                    if ac.duration > available:
                         # Trim audio to clip duration — never loop the video
-                        ac = ac.subclipped(0, clip.duration)
+                        ac = ac.subclipped(0, available)
                     # Trim audio to clip duration if audio is longer
                     # Never trim the clip — clip always runs its full duration
                     # timeline_cursor must advance by clip.duration not audio duration
-                    audio_segments.append((ac, timeline_cursor))
+                    audio_segments.append((ac, timeline_cursor + SCENE_AUDIO_LEAD_SECS))
 
             if clip.size != (TARGET_W, TARGET_H):
                 clip = clip.resized((TARGET_W, TARGET_H))
