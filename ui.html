@@ -512,6 +512,7 @@
   <!-- ④ Generate -->
   <section>
     <button class="btn-primary" id="generate-btn" disabled>Generate Video</button>
+    <button class="lib-btn" id="audio-only-rework-btn" style="margin-left:8px" onclick="submitAudioOnlyRework()" title="Rigenera solo il voiceover delle scene selezionate per il rework, riusando il video esistente -- nessun costo Luma/Veo">&#128264; Rigenera solo audio</button>
     <div id="error-msg"></div>
   </section>
 
@@ -2883,6 +2884,66 @@ async function submitRework(reworkScenes) {
   }
 }
 
+
+// 2026-07-23: regenerates ONLY the TTS audio for scenes currently marked
+// for rework, reusing their existing video clips untouched -- no
+// Luma/Veo cost, just the cheap ElevenLabs charge. For fixing or testing
+// audio timing (e.g. the per-scene lead/trail buffer) without paying to
+// regenerate video that was already fine. Mirrors submitRework()'s scene
+// collection logic exactly, just posts to the audio-only endpoint.
+async function submitAudioOnlyRework() {
+  const reworkScenes = [];
+  [...scenesCont.querySelectorAll('.rework-panel.open')].forEach(panel => {
+    const i = parseInt(panel.id.replace('rw-panel-',''));
+    if (!isNaN(i)) reworkScenes.push(i);
+  });
+  if (reworkScenes.length === 0) {
+    alert('Seleziona almeno una scena da rigenerare (apri il pannello rework di una scena) prima di usare questo pulsante.');
+    return;
+  }
+  if (!currentJobId || currentJobStatus === 'draft') {
+    alert('Questa funzione richiede un job gia generato.');
+    return;
+  }
+  const updatedScenes = getScenesConfig();
+  const redoSceneIds = [];
+  reworkScenes.forEach(idx => {
+    const sid = updatedScenes[idx]?.scene_id;
+    if (sid) redoSceneIds.push(sid);
+  });
+  if (!confirm(`Rigenerare solo l'audio per ${redoSceneIds.length} scena/e? Il video esistente non verra toccato.`)) return;
+
+  const btn = document.getElementById('audio-only-rework-btn');
+  btn.disabled = true;
+  btn.textContent = 'Invio...';
+  progSec.style.display   = 'block';
+  resultSec.style.display = 'none';
+  qcSec.style.display     = 'none';
+  updateProgress(0, `Rework audio: ${redoSceneIds.length} scena/e selezionata/e...`);
+
+  const fd = new FormData();
+  fd.append('scene_ids', JSON.stringify(redoSceneIds));
+  const targetJobId = currentJobId;
+  try {
+    const res = await authFetch(`${API_BASE}/jobs/${targetJobId}/scenes/redo-audio-only`, { method:'POST', body:fd });
+    if (!res.ok) {
+      let detail = `Server error ${res.status}`;
+      try { const e = await res.json(); detail = e.detail || detail; } catch(_) {}
+      throw new Error(detail);
+    }
+    const { job_id } = await res.json();
+    activeJobId = job_id;
+    reworkScenes.forEach(idx => {
+      if (sceneUserData[idx]) sceneUserData[idx].rework_open = false;
+    });
+    btn.textContent = 'Rework audio in corso...';
+    startPolling(job_id);
+  } catch(e) {
+    showError(e.message);
+    btn.disabled = false;
+    btn.textContent = 'Rigenera solo audio';
+  }
+}
 
 function log(msg) { console.log(`[PVS] ${msg}`); }
 
