@@ -2349,6 +2349,49 @@ async def run_reassemble_only(job_id: str):
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+@app.post("/jobs/{job_id}/scenes/redo-audio-only")
+async def redo_audio_only(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    scene_ids: str = Form(...),
+):
+    """2026-07-23: regenerates ONLY the TTS audio for the given scenes,
+    reusing their existing video clips untouched -- no Luma/Veo cost at
+    all, just the cheap ElevenLabs charge. Built for fixing or testing
+    audio timing (e.g. the lead/trail buffer) without paying to
+    regenerate video that was already fine."""
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+
+    if job.get("status") not in ("done", "failed", "awaiting_approval"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job must be completed before an audio-only rework (current status: {job.get('status')})"
+        )
+
+    try:
+        ids = json.loads(scene_ids)
+        if not isinstance(ids, list):
+            raise ValueError("scene_ids must be a JSON array")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid payload: {e}")
+
+    if not _acquire_job_lock(job_id, f"audio-only redo {len(ids)} scene(s)"):
+        lock = _job_lock_status(job_id)
+        raise HTTPException(
+            status_code=409,
+            detail=f"Job is currently being modified ({lock.get('operation')}) -- please wait and try again."
+        )
+
+    job["status"]  = "running"
+    job["message"] = f"Rework audio: rigenerazione di {len(ids)} scena/e in corso..."
+    _save_job(job_id)
+
+    background_tasks.add_task(run_redo_audio_only, job_id=job_id, scene_ids=ids)
+    return {"job_id": job_id, "status": "running", "scenes_to_redo": ids}
+
+
 @app.post("/jobs/{job_id}/scenes/redo-batch")
 async def redo_scenes_batch(
     job_id: str,
@@ -2606,6 +2649,104 @@ async def run_redo_scenes_batch(job_id: str, scene_ids: list):
 
     except Exception as e:
         log.error(f"[Job {job_id}] batch redo failed: {e}", exc_info=True)
+        JOBS[job_id].update({"status": "failed", "message": f"Errore: {str(e)[:200]}"})
+        _save_job(job_id)
+    finally:
+        _release_job_lock(job_id)
+
+
+async def run_redo_audio_only(job_id: str, scene_ids: list):
+    """2026-07-23: regenerates ONLY the TTS audio for the given scenes,
+    reusing their EXISTING video clips untouched -- no Luma/Veo cost at
+    all, just the cheap ElevenLabs TTS charge. Mirrors the relevant slice
+    of run_redo_scenes_batch() above but skips every video-generation
+    step entirely, and reassembles via the SAME shared
+    run_reassemble_only() every other path uses -- no separate assembly
+    logic, per the architecture-discipline principle.
+    """
+    def update(status, progress, message):
+        JOBS[job_id].update({"status": status, "progress": progress, "message": message})
+        _save_job(job_id)
+        log.info(f"[Job {job_id}] {progress}% -- {message}")
+
+    try:
+        job = JOBS[job_id]
+        job_dir = JOBS_DIR / job_id
+        scenes_config = job.get("scenes_config", [])
+        statuses = job.get("scenes", [])
+
+        n = max(len(scene_ids), 1)
+        redone_results = []
+
+        for idx, scene_id in enumerate(scene_ids):
+            scene_idx = next((i for i, s in enumerate(scenes_config) if s.get("scene_id") == scene_id), None)
+            if scene_idx is None:
+                log.warning(f"[Job {job_id}] Audio-only redo: scene {scene_id} not found, skipping")
+                continue
+            scene = scenes_config[scene_idx]
+            voiceover = scene.get("voiceover", "").strip()
+
+            if not voiceover:
+                log.warning(f"[Job {job_id}] Audio-only redo: scene {scene_id} has no voiceover text, nothing to regenerate, skipping")
+                continue
+
+            audio_dir = job_dir / "audio"
+            audio_dir.mkdir(exist_ok=True)
+            audio_out = str(audio_dir / f"{scene_id}.mp3")
+
+            update("running", int(10 + (idx/n)*80), f"Rework audio: rigenero voiceover ({idx+1}/{n})...")
+            from voice_generation import generate_speech as generate_voice
+            ok_audio = await asyncio.to_thread(
+                generate_voice, voiceover, audio_out,
+                voice_id=os.getenv("DEFAULT_VOICE_ID") or None
+            )
+            if not ok_audio or not Path(audio_out).exists():
+                log.error(f"[Job {job_id}] Audio-only redo: TTS generation failed for scene {scene_id}")
+                continue
+
+            found = False
+            for s in statuses:
+                if s.get("scene_id") == scene_id:
+                    s["audio"] = "ok"
+                    found = True
+                    break
+            if not found:
+                statuses.append({
+                    "scene_id": scene_id, "index": scene_idx,
+                    "caption": scene.get("caption", ""), "video": "ok",
+                    "audio": "ok", "qc_verdict": "pass",
+                })
+
+            redone_results.append({"voiceover_chars": len(voiceover)})
+
+        job["scenes"] = statuses
+        _save_job(job_id)
+
+        if redone_results:
+            from cost_tracker import calculate_rework_cost, format_cost_display
+            total_voiceover_chars = sum(r["voiceover_chars"] for r in redone_results)
+            rework_cost = calculate_rework_cost(
+                scenes_redone=[],
+                models_used=[],
+                redo_video=False,
+                redo_audio=True,
+                audio_chars=total_voiceover_chars,
+                model_tier=job.get("model_tier", "premium"),
+            )
+            job.setdefault("reworks", []).append(rework_cost)
+            original_raw = job.get("cost_actual_raw")
+            if original_raw:
+                job["cost_actual"] = format_cost_display(original_raw, previous_reworks=job["reworks"])
+            else:
+                legacy_total = (job.get("cost_actual") or {}).get("grand_total_eur", 0)
+                pseudo_raw = {"type": "actual", "total_eur": legacy_total, "model_tier": job.get("model_tier", "premium")}
+                job["cost_actual"] = format_cost_display(pseudo_raw, previous_reworks=job["reworks"])
+            _save_job(job_id)
+
+        await run_reassemble_only(job_id)
+
+    except Exception as e:
+        log.error(f"[Job {job_id}] audio-only redo failed: {e}", exc_info=True)
         JOBS[job_id].update({"status": "failed", "message": f"Errore: {str(e)[:200]}"})
         _save_job(job_id)
     finally:
