@@ -155,7 +155,7 @@ def _overlay_narration_audio(video_path: str, narration_path: str, transition_st
     Padding colour follows the job's transition_style (white if the style
     mentions white, otherwise black).
     """
-    from moviepy import VideoFileClip, AudioFileClip, ColorClip, concatenate_videoclips
+    from moviepy import VideoFileClip, AudioFileClip, ColorClip, CompositeAudioClip, concatenate_videoclips
     from moviepy.video.fx import FadeIn, FadeOut
     from narration import LEAD_SECS, TRAIL_SECS  # 2026-07-17: single source of
     # truth shared with calculate_scene_durations()'s target_total math --
@@ -192,7 +192,13 @@ def _overlay_narration_audio(video_path: str, narration_path: str, transition_st
         f"final={padded.duration:.1f}s"
     )
 
-    final = padded.with_audio(narration)
+    # 2026-07-23: .with_audio() ignores an audio clip's own .start offset
+    # unless that clip is wrapped in a CompositeAudioClip -- confirmed via
+    # an isolated moviepy test (a shifted clip attached directly played
+    # from t=0, completely ignoring with_start()). This was a REAL bug:
+    # the lead/trail buffer above was computed correctly and logged
+    # correctly, but never actually took effect in the rendered file.
+    final = padded.with_audio(CompositeAudioClip([narration]))
     tmp_output = video_path + ".narration_tmp.mp4"
     final.write_videofile(
         tmp_output,

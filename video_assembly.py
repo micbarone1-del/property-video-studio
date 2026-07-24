@@ -565,7 +565,14 @@ def assemble_property_video(scenes_config, video_clip_paths, audio_paths, image_
         # Attach all TTS audio tracks positioned correctly on the final timeline
         if audio_segments:
             positioned = [ac.with_start(t) for ac, t in audio_segments]
-            combined_audio = CompositeAudioClip(positioned) if len(positioned) > 1 else positioned[0]
+            # 2026-07-23: ALWAYS wrap in CompositeAudioClip, even for a
+            # single segment -- .with_audio() ignores an audio clip's own
+            # .start offset unless it's wrapped in a composite, confirmed
+            # via an isolated moviepy test. The len(positioned) > 1 else
+            # positioned[0] shortcut silently broke the SCENE_AUDIO_LEAD_SECS
+            # buffer (added earlier this session) for any job with only
+            # one scene carrying audio -- the single most common case.
+            combined_audio = CompositeAudioClip(positioned)
             final = final.with_audio(combined_audio)
 
         print(f"[Assemble] transition_style={transition_style!r}, clips={len(clips)}, output={output_path}")
