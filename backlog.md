@@ -259,23 +259,43 @@ Items are ordered by priority. Each entry includes scope, decisions already made
 
 **STILL OPEN — MAXIMUM PRIORITY:** QC does not reliably catch hallucinations. Agent-based QC (item 11) is the real answer; every prompt-level mitigation built so far is harm reduction, not detection.
 
-## 42. Per-scene audio lead/trail buffer -- ✅ COMPLETED July 23, 2026 (untested end-to-end)
+## 42. Per-scene audio lead/trail buffer -- ✅ COMPLETED AND CONFIRMED July 23-24, 2026
 
-**Reported.** Per-scene voiceover audio started with zero lead-in silence, cutting the first fraction of a second of speech when a video was forwarded through a messaging app -- a genuinely different, previously-unaddressed mechanism from the July 17 continuous-narration WhatsApp-trim fix.
+**Reported.** Per-scene voiceover audio started with zero lead-in silence, cutting the first fraction of a second of speech when a video was forwarded through a messaging app.
 
-**Fixed:** `SCENE_AUDIO_LEAD_SECS`/`SCENE_AUDIO_TRAIL_SECS` (0.5s each, deliberately smaller than narration.py's 1.0s given a per-scene clip's tighter fixed time budget) in `video_assembly.py`. See status.md for full detail.
+**Fixed, in two passes:** first added `SCENE_AUDIO_LEAD_SECS`/`SCENE_AUDIO_TRAIL_SECS` (0.5s each) in `video_assembly.py`, then discovered and fixed a much deeper root cause -- moviepy's `.with_audio()` silently ignores an audio clip's `.with_start()` offset unless wrapped in `CompositeAudioClip`, which meant this buffer (and the separate continuous-narration one) was being computed correctly but never actually reaching the rendered file. See item 45 and status.md for the full root-cause writeup.
 
-**Open question, not yet resolved:** whether 0.5s is actually sufficient for real-world cross-platform re-encoding behavior (WhatsApp/YouTube/email) has not been confirmed by a real test -- only the theoretical AAC-encoder-priming mechanism (much smaller, ~20-25ms) is well understood. See item 43 (audio-only rework) for the cheap way to test this.
+**Confirmed working in the real world, July 24, 2026:** user confirmed the buffer holds even after the video is sent via email and forwarded through WhatsApp -- the original real-world symptom this item started from.
 
 ---
 
-## 43. Audio-only rework -- ✅ COMPLETED July 23, 2026 (untested end-to-end)
+## 43. Audio-only rework -- ✅ COMPLETED AND USED July 23-24, 2026
 
-**Requested**, directly motivated by wanting to test item 42's buffer without paying for video regeneration. **Confirmed gap:** the existing redo-batch mechanism always regenerates video for any marked scene -- no way to redo just the audio.
+**Requested**, directly motivated by wanting to test item 42's buffer without paying for video regeneration.
 
-**Built:** `run_redo_audio_only()` in `api_server.py` (mirrors the relevant slice of `run_redo_scenes_batch()` but skips every video-generation step, reuses existing video clips untouched, reassembles via the same shared `run_reassemble_only()`). New `POST /jobs/{id}/scenes/redo-audio-only` endpoint. Cost tracking correctly reflects audio-only (no Luma/Veo charge, only the cheap ElevenLabs one). UI: new "Rigenera solo audio" button next to the main Generate button. See status.md for full detail.
+**Built:** `run_redo_audio_only()` in `api_server.py`, new `POST /jobs/{id}/scenes/redo-audio-only` endpoint, new "Rigenera solo audio" UI button. See status.md for full detail.
 
-**Not yet done:** a real end-to-end test (mark a scene, click the button, confirm audio changes and video doesn't, confirm cost tracking is correct) has not yet been run.
+**Confirmed working:** this real capability is what let item 42's buffer be re-tested and root-caused at zero additional Luma/Veo cost on a real job.
+
+---
+
+## 45. Real root-cause bug: moviepy .with_audio() ignores .with_start() without CompositeAudioClip -- ✅ FIXED July 24, 2026
+
+**Discovered while investigating item 42's real-world report.** Confirmed via an isolated moviepy test: a shifted audio clip attached directly to a video via `.with_audio()` completely ignores its own `.with_start(t)` offset, playing from t=0 regardless. Wrapping the SAME clip in `CompositeAudioClip([clip])`, even alone, correctly respects the offset.
+
+**Real impact:** this silently broke BOTH of this session's lead/trail buffer fixes -- `_overlay_narration_audio()` in `api_server.py` (the continuous-narration track) computed and logged the correct values every time but never applied them, and `video_assembly.py`'s per-scene audio positioning had the identical bug specifically for any job with only one audio-carrying scene (the single most common case), via a `CompositeAudioClip(positioned) if len(positioned) > 1 else positioned[0]` shortcut that bypassed the composite wrapper.
+
+**Fixed** in both locations by always wrapping in `CompositeAudioClip`, regardless of clip count. Verified directly on the real problem job via real audio-volume measurements at 0.1s intervals, and later confirmed by the user in the real world (sent via email, forwarded through WhatsApp, buffer intact).
+
+---
+
+## 46. Real cost-tracking gap: narration regeneration never recorded its own cost -- ✅ FIXED July 24, 2026
+
+**Reported:** "still missing TTS cost estimation when I run a rework."
+
+**Confirmed:** `/jobs/{id}/narration` makes a real, billable ElevenLabs TTS call every time it runs, but never recorded that cost anywhere in `cost_actual`.
+
+**Fixed:** reuses the existing `calculate_rework_cost()`/`format_cost_display()` pattern (same one used for scene reworks and item 43's audio-only rework) rather than a new, parallel calculation. Verified the cost math in isolation without triggering a real, billable call.
 
 ---
 
@@ -308,6 +328,8 @@ Items are ordered by priority. Each entry includes scope, decisions already made
 - **Per-scene audio lead/trail buffer** — July 23, 2026. See item 42 (real-world sufficiency of 0.5s not yet confirmed).
 - **Audio-only rework capability** — July 23, 2026. See item 43 (not yet tested end-to-end).
 - **Investment ledger single-entry management, real Claude Pro entry added** — July 23, 2026. See item 44.
+- **Real root-cause bug fixed: moviepy CompositeAudioClip requirement, breaking both audio buffer fixes** — July 24, 2026. See item 45. Confirmed working in the real world (email + WhatsApp forward).
+- **Real cost-tracking gap fixed: narration regeneration cost** — July 24, 2026. See item 46.
 
 ## Not backlog items — standing watch items (tracked in status.md, not here)
 

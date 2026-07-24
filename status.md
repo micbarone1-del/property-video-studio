@@ -234,3 +234,40 @@ Twice, a `git pull` reported "Already up to date" when a just-delivered file upd
 
 **Lesson, now a standing practice:** after applying any change directly on the server via terminal, commit it before starting a new, unrelated task -- even when the immediate conversation moves on to something else first. An uncommitted change sitting on the server is invisible until it collides with the next upload.
 - **After applying any change directly on the server via terminal, commit it before starting a new, unrelated task** (July 23, 2026) -- an uncommitted local change is invisible until it collides with the next upload/pull, producing a real merge conflict.
+
+
+## July 23-24, 2026 (continued) — Three real bugs found via real-world testing: a moviepy audio bug, a stale scene-count display, and a TTS cost-tracking gap
+
+This entire stretch was prompted directly by the user actually using the app on a real job (07079eed) and reporting what they saw, rather than trusting either function's own logged output. All three were caught this way, not through code review.
+
+### Major root-cause bug: moviepy's `.with_audio()` silently ignores `.with_start()` unless wrapped in `CompositeAudioClip`
+
+**Reported:** after generating new narration and reworking a scene, the voiceover still started at time 0 with no lead-in buffer — despite both of this session's earlier buffer fixes (the continuous-narration one and the per-scene one).
+
+**Root cause, confirmed via an isolated moviepy test:** `videoclip.with_audio(audioclip.with_start(t))` completely ignores the audio clip's `.start` offset when the clip is attached directly — a 2-second test tone shifted with `.with_start(1.0)` played from t=0 exactly as if no offset existed, going silent at t=2.0. Wrapped in `CompositeAudioClip([tone])` instead, the same clip correctly played from t=1.0. This single moviepy behavior meant:
+1. `_overlay_narration_audio()` in `api_server.py` computed and *logged* the correct `lead=1.00s trail=1.00s` every single time, but the value never actually reached the rendered file — the continuous-narration buffer fixed earlier this session had been completely ineffective the entire time.
+2. `video_assembly.py`'s `audio_segments` handling had the identical bug for any job with only one audio-carrying scene (`CompositeAudioClip(positioned) if len(positioned) > 1 else positioned[0]` bypassed the composite wrapper for exactly the single-clip case) — silently breaking this session's per-scene `SCENE_AUDIO_LEAD_SECS` fix for a one-scene job, the single most common case.
+
+**Fixed:** always wrap in `CompositeAudioClip`, even for one clip, in both locations. **Verified directly on the real problem job**, at no cost (reused the existing narration.mp3 and video clip): real audio-volume measurements at 0.1s intervals confirmed silence from 0-0.9s, speech exactly from 1.0s, and silence again after 3.6s — matching the intended 1.0s lead + 2.6s narration + trail exactly.
+
+**User-confirmed in the real world:** the buffer now survives being sent via email and forwarded through WhatsApp without the first fraction of a second being cut — the original, real-world symptom this whole investigation started from.
+
+### Real bug: stale scene-count display after a rework
+
+**Reported:** the job preview header showed "14 scenes" when opening the job for rework, then "2 scenes" after initiating a narration-only rework — for a job whose real scene count was 1 the entire time.
+
+**Root cause, confirmed:** `showResult()` computed the displayed scene count from `job["scenes"]` — a per-scene video/audio/QC status-tracking array that only ever gets appended to or updated by `scene_id`, and is never trimmed down when scenes are actually removed from a job — instead of from `scenes_config` (the authoritative, current scene list). Confirmed directly on the real job: its status array carried an orphaned legacy entry with no `scene_id` at all, alongside the one real, current entry — exactly 2 entries for a 1-scene job.
+
+**Fixed:** `scenes_config.length` is now passed through to `showResult()` and used as the primary source, falling back to the old (imperfect) logic only if genuinely unavailable. This is the same class of issue as several other bugs fixed this session — two different values both claiming to answer "how many scenes does this job have," free to drift apart over the job's lifetime. The earlier "14" was not fully traced to a specific line of code — the one place that specific header text originates from doesn't display a count at all, so it likely reflects a different, harder-to-reproduce moment; if it recurs, the exact click sequence beforehand would help pin it down.
+
+### Real cost-tracking gap: narration regeneration never recorded its own cost
+
+**Reported:** "still missing TTS cost estimation when I run a rework."
+
+**Confirmed:** `/jobs/{id}/narration` (regenerating the continuous narration track) makes a real, billable ElevenLabs TTS call every time it runs, but had never recorded that cost anywhere in the job's `cost_actual` — a rework involving narration regeneration would show no TTS cost for that step at all, independent of whatever scene-redo costs were separately tracked.
+
+**Fixed:** reuses the exact same `calculate_rework_cost()`/`format_cost_display()` pattern already used for scene reworks and the audio-only-rework feature (`redo_video=False`, `redo_audio=True`, `audio_chars=len(narration_text)`), rather than inventing a second, parallel cost calculation. Verified the underlying math in isolation (an 80-character sample correctly produced €0.024, with video/vision costs correctly at zero) without triggering a real, billable TTS call just to confirm it.
+
+### A note on how these were found
+
+All three bugs were only discoverable by watching the real, rendered output of a real job the user was actually working on — none were visible from code review, from the functions' own log output (which was, in the audio bug's case, actively misleading — it logged the *intended* values, not what actually happened), or from any of this session's earlier backend-level verification (curl calls, direct Python function tests). This reinforces a standing lesson from earlier tonight: a function's own success message or log line is not proof of the real, physical result — direct measurement of the actual output (audio volume levels, file duration, on-disk byte content) is what actually confirms a fix works.
