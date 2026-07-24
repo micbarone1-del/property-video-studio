@@ -2980,7 +2980,7 @@ function startPolling(jobId) {
 
       if (job.status === 'done') {
         clearInterval(pollTimer);
-        showResult(jobId, job.property_name || 'Property', job.scenes || []);
+        showResult(jobId, job.property_name || 'Property', job.scenes || [], job.scenes_config ? job.scenes_config.length : null);
         notifyJobComplete(job.property_name || 'Property', true);
         genBtn.disabled    = false;
         genBtn.textContent = 'Genera video';
@@ -3143,7 +3143,17 @@ function renderSceneProgress(scenes) {
 }
 
 
-function showResult(jobId, propName, scenes) {
+function showResult(jobId, propName, scenes, realSceneCount) {
+  // 2026-07-23: real bug -- the displayed scene count previously came
+  // from the scenes STATUS array (per-scene video/audio/qc tracking,
+  // appended-to over time and never trimmed when scenes are removed),
+  // not from scenes_config (the actual, authoritative current scene
+  // list). A job whose scene count changed over its lifetime (e.g.
+  // trimmed down to 1 scene) could show a stale, wrong count here --
+  // confirmed real case: a 1-scene job displaying '2 scenes' because its
+  // status array still carried an orphaned legacy entry alongside the
+  // current one. Now uses the real, current count when available,
+  // falling back to the old (imperfect) logic only if it truly isn't.
   // CRITICAL: Reset ALL rework panel open states before re-rendering.
   // Without this, stale rework_open=true causes next "Genera video" to redo everything.
   Object.keys(sceneUserData).forEach(i => {
@@ -3158,7 +3168,7 @@ function showResult(jobId, propName, scenes) {
   document.getElementById('download-link').href   = dlUrl;
   document.getElementById('download-link').download = `${propName.replace(/\s+/g,'_')}_${jobId}.mp4`;
   document.getElementById('actual-cost').innerHTML = '';
-  const scenesCount = scenes && scenes.length ? scenes.length : (completedScenes.length || '?');
+  const scenesCount = realSceneCount != null ? realSceneCount : (scenes && scenes.length ? scenes.length : (completedScenes.length || '?'));
   document.getElementById('job-id-display').innerHTML =
     `📁 <strong>${propName}</strong> — ID: <code>${jobId}</code> — ${scenesCount} scene`;
   resultSec.style.display = 'block';
