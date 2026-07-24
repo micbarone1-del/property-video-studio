@@ -1297,6 +1297,33 @@ async def generate_narration(
         job["narration_duration_secs"] = result["duration_secs"]
         job["narration_sentence_timings"] = result.get("sentence_timings", [])
         job["sentence_pause_ms"] = sentence_pause_ms
+
+        # 2026-07-24: real cost-tracking gap -- this endpoint makes a real,
+        # billable ElevenLabs TTS call every time it runs, but never
+        # recorded that cost anywhere. A rework that regenerated narration
+        # (a real, ongoing cost every time the user tweaks the text) showed
+        # no TTS cost at all in the job's cost_actual. Reuses the SAME
+        # rework-cost pattern (calculate_rework_cost + format_cost_display)
+        # already used for scene reworks and the audio-only-rework feature,
+        # rather than a separate, parallel cost calculation.
+        from cost_tracker import calculate_rework_cost, format_cost_display
+        narration_cost = calculate_rework_cost(
+            scenes_redone=[],
+            models_used=[],
+            redo_video=False,
+            redo_audio=True,
+            audio_chars=len(narration_text),
+            model_tier=job.get("model_tier", "premium"),
+        )
+        job.setdefault("reworks", []).append(narration_cost)
+        original_raw = job.get("cost_actual_raw")
+        if original_raw:
+            job["cost_actual"] = format_cost_display(original_raw, previous_reworks=job["reworks"])
+        else:
+            legacy_total = (job.get("cost_actual") or {}).get("grand_total_eur", 0)
+            pseudo_raw = {"type": "actual", "total_eur": legacy_total, "model_tier": job.get("model_tier", "premium")}
+            job["cost_actual"] = format_cost_display(pseudo_raw, previous_reworks=job["reworks"])
+
         _save_job(job_id)
 
 
