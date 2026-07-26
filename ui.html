@@ -338,6 +338,13 @@
             <option value="">— Nessun cliente —</option>
           </select>
         </div>
+        <div>
+          <label>&nbsp;</label>
+          <div class="toggle-row" style="margin-top:8px">
+            <label class="toggle"><input type="checkbox" id="url-workflow-premium" /><span class="tog-sl"></span></label>
+            <span>Premium (video ~1 min) <span style="color:var(--muted);font-size:.75rem">(URL scrape, sequenza estesa)</span></span>
+          </div>
+        </div>
       </div>
       <div style="margin-top:12px;display:flex;align-items:center;gap:12px">
         <button class="btn-primary" onclick="startFromUrl()" id="url-workflow-btn">🔗 Avvia da URL</button>
@@ -1111,6 +1118,7 @@ async function startFromUrl() {
     formData.append('url', url);
     if (nameInput.value.trim()) formData.append('property_name', nameInput.value.trim());
     formData.append('agency_id', document.getElementById('url-workflow-agency-select')?.value || '');
+    formData.append('premium', document.getElementById('url-workflow-premium')?.checked ? 'true' : 'false');
 
     const res = await authFetch(`${API_BASE}/jobs/from-url`, { method: 'POST', body: formData });
     const data = await res.json();
