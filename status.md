@@ -271,3 +271,36 @@ This entire stretch was prompted directly by the user actually using the app on 
 ### A note on how these were found
 
 All three bugs were only discoverable by watching the real, rendered output of a real job the user was actually working on — none were visible from code review, from the functions' own log output (which was, in the audio bug's case, actively misleading — it logged the *intended* values, not what actually happened), or from any of this session's earlier backend-level verification (curl calls, direct Python function tests). This reinforces a standing lesson from earlier tonight: a function's own success message or log line is not proof of the real, physical result — direct measurement of the actual output (audio volume levels, file duration, on-disk byte content) is what actually confirms a fix works.
+
+
+## July 24-26, 2026 — Backlog item 35: premium ~1-minute video template (URL-scrape only)
+
+**Fully scoped and built, function-level tested, not yet confirmed via a real live scrape** (deferred by explicit user choice — the isolated logic tests were judged sufficient for now).
+
+### Scope, as explicitly decided through discussion (not assumed)
+
+- **Manual toggle at job creation**, not automatic/price-based, not a per-client default. Applies to the **URL-scrape workflow only** — the manual upload form is untouched.
+- **Extended taxonomy**, not just "more scenes of the same 6 categories": a "main" + expanded-instance structure per room type (e.g. multiple bedrooms/bathrooms/outdoor spaces shown, not just one), reusing `rank_photos_by_quality()`'s existing best-first ordering as the "main vs small" signal — no new quality mechanism was needed, since that ranking already combines pure visual quality with content representativeness ("clearly shows a visible bed for a bedroom"), exactly matching what the user separately asked for on the quality dimension.
+- **Outdoor placed twice**: once right after the facade (early), once again at the closing — an explicit videography/storytelling decision, not a technical default.
+- **Two new optional categories added to the extraction prompt**: `laundry` (previously lumped into `bathrooms`), `office`, `garage` — used only when premium and only when actually present in a listing.
+- **Explicit three-tier fallback when a category is sparse**, in this exact priority order, confirmed and kept as specified (not changed after review): (1) expand instances in other large-room/outdoor categories that have surplus, prioritizing outdoor and large rooms, (2) add categories not in the base template (laundry/office/garage) if present, (3) last resort — reuse additional photos of the same room/space. **Real, confirmed behavior worth knowing:** tier 1 is exhausted fully before tier 2 ever runs — a photo-rich listing with plenty of core-category surplus will not necessarily include a laundry/office/garage shot even if one exists, since expanding existing large rooms/outdoor takes strict priority. This is the literal, explicitly-confirmed priority order, not an oversight.
+- **If the full 3-tier cascade still can't fill the sequence:** a clear error is returned suggesting the standard ~30s format or manual upload — an explicit product decision, not a silent degradation.
+
+### What was built
+
+- `EXTRACTION_PROMPT` extended to recognize `laundry`/`office`/`garage` as their own categories (previously `laundry` was silently folded into `bathrooms`).
+- `MIN_SCENES_PREMIUM`/`MAX_SCENES_PREMIUM` (11-13, ~55-65s) and the matching speech-range constants, computed the same way as the existing standard-format ones.
+- `generate_narration_and_derive_scenes()` gained an optional `premium` parameter, switching between the standard and premium range constants rather than duplicating the whole shorten/extend/scene-count-derivation block.
+- `select_photos_for_scene_count_premium()` — a new, dedicated function (kept separate from the standard one since the sequencing logic is genuinely different, not just a wider number range): splits the outdoor category into `outdoor_early`/`outdoor_late` pseudo-categories up front, then runs the four-pass selection (core categories → tier-1 expand → tier-2 new categories → tier-3 last-resort reuse).
+- `build_premium_video_scenes_config()` — the premium counterpart to the existing scene-config builder, mapping the pseudo-categories back to their real category names for caption/space-type/pov-movement lookups.
+- **A real architecture-discipline catch mid-build, per explicit reminder:** the categorize-and-rank-photos setup step was initially duplicated identically between the standard and premium selection functions. Extracted into a shared `_categorize_and_rank_photos()` helper before deployment, used by both. Also found and deleted a genuinely dead, zero-caller function (`select_photos()`, an older, unused selection mechanism predating `select_photos_for_scene_count()`) discovered during this same pass.
+- `api_server.py`'s `create_job_from_url()`: new `premium: bool = Form(False)` parameter, branching to the premium functions above when true, an `is_premium` flag stored on the job for classification/reporting, and the gap-message fallback suggestion (standard format / manual upload) when premium's photos aren't sufficient.
+- UI: new "Premium (video ~1 min)" checkbox on the URL-scrape form.
+
+### Verification performed (zero cost, isolated function-level tests)
+
+- `select_photos_for_scene_count_premium()`: a rich-listing scenario (plenty of every category) correctly hit the 12-scene target with outdoor appearing in both early and late positions with genuinely different photos; a sparse-bathroom-but-rich-outdoor scenario correctly expanded outdoor to fill the gap; a genuinely-too-few-photos scenario correctly reported a gap rather than silently under-delivering. Re-verified after the dedup refactor — identical results.
+- `select_photos_for_scene_count()` (standard, unchanged behavior): re-verified still correct after the refactor.
+- `generate_narration_and_derive_scenes()`: confirmed the premium/standard branching produces the correct scene-count range in each mode (28s speech → 5 scenes standard; 58s speech → 11 scenes premium) using a real, temporary audio file so the existing "prefer tightest fit" trimming logic could run for real, with Claude/TTS calls mocked to avoid any actual cost.
+
+**Not yet done:** a real, live scrape of an actual listing (real extraction, real narration text, real photo categorization from a real site) has not been run — the user explicitly declined this for now, judging the isolated tests sufficient. Worth running before fully trusting this in production, given the standard-format equivalent of this feature has a much longer track record of real use.

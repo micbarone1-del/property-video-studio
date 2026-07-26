@@ -173,13 +173,15 @@ Items are ordered by priority. Each entry includes scope, decisions already made
 
 ---
 
-## 35. Auto-scraping for 1-minute videos on premium properties
+## 35. Premium ~1-minute video template — ✅ COMPLETED July 24-26, 2026 (function-level tested, live scrape not yet run)
 
-**Requested, reaffirmed July 22, 2026.** A dedicated scraping TEMPLATE for premium properties, producing a longer (~1 minute) auto-scraped video instead of the standard ~30s format -- distinct enough from the standard flow to warrant its own template/preset, not just a longer duration on the same one.
+**Fully scoped and built.** Manual per-job toggle, URL-scrape only (not the manual upload form). Extended taxonomy with a "main" + expanded-instance structure per room type (not just more of the same 6 categories), outdoor placed both after the facade and at the closing, explicit three-tier fallback (expand large/outdoor rooms -> add new categories like laundry/office/garage -> reuse photos of the same space, in that strict priority order), photo quality/representativeness reusing the existing Claude-vision ranking mechanism unchanged (it already covered both dimensions). See status.md for the complete scope writeup and a real, worth-knowing behavioral note (tier 1 fully exhausts before tier 2 ever runs).
 
-**Not scoped yet — open questions:** what defines "premium" (manual flag at job creation? price threshold from the scraped listing? agency-level default?), does this replace or supplement the standard format, photo-count implications (a 1-min video needs meaningfully more scenes/photos than the current ~30s format supports), narration pacing/scene-count-band implications at longer length (the scraper's existing 5-7 scene band -- see item 38 point 6 -- would need a different band for this length), cost/pricing implications (a 1-min video costs meaningfully more in video-generation credits per delivery).
+**Built:** extended `EXTRACTION_PROMPT`, `MIN/MAX_SCENES_PREMIUM` constants, `generate_narration_and_derive_scenes()` gained a `premium` parameter, new `select_photos_for_scene_count_premium()` and `build_premium_video_scenes_config()`, `create_job_from_url()` gained a `premium` parameter and `is_premium` job flag, new UI checkbox. A real duplicate-setup-code catch was found and fixed mid-build (shared `_categorize_and_rank_photos()` helper extracted, plus a genuinely dead, zero-caller legacy function deleted).
 
-**Dependency:** builds on item 1 — same engine, different target length and template.
+**Verified:** isolated, zero-cost function-level tests for both the premium selection algorithm (rich/sparse/too-few-photos scenarios) and the premium/standard scene-count range branching, all confirmed correct, including after the dedup refactor.
+
+**Not yet done:** a real, live scrape of an actual listing has not been run -- explicitly deferred by the user, who judged the isolated tests sufficient for now. Worth doing before fully trusting this in production.
 
 ---
 
@@ -330,6 +332,7 @@ Items are ordered by priority. Each entry includes scope, decisions already made
 - **Investment ledger single-entry management, real Claude Pro entry added** — July 23, 2026. See item 44.
 - **Real root-cause bug fixed: moviepy CompositeAudioClip requirement, breaking both audio buffer fixes** — July 24, 2026. See item 45. Confirmed working in the real world (email + WhatsApp forward).
 - **Real cost-tracking gap fixed: narration regeneration cost** — July 24, 2026. See item 46.
+- **Premium ~1-minute video template, full scope** — July 24-26, 2026. See item 35 (live scrape test not yet run, deferred by explicit user choice).
 
 ## Not backlog items — standing watch items (tracked in status.md, not here)
 
