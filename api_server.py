@@ -1421,6 +1421,7 @@ async def create_job_from_url(
     model_tier: str = Form("luma"),
     url: str = Form(...),
     agency_id: str = Form(None),   # 2026-07-22: client this job belongs to (backlog item 39), optional
+    premium: bool = Form(False),   # 2026-07-24: premium ~1-min template (backlog item 35), URL-scrape only, manual per-job toggle
 ):
     client_ip = request.client.host if request.client else "unknown"
     if not _check_rate_limit(client_ip):
@@ -1446,14 +1447,26 @@ async def create_job_from_url(
 
     narration = await asyncio.to_thread(
         scraper.generate_narration_and_derive_scenes,
-        extraction["description"], extraction["address"], extraction["price"], voice_id or None
+        extraction["description"], extraction["address"], extraction["price"], voice_id or None,
+        premium,
     )
     if not narration["ok"]:
         raise HTTPException(status_code=500, detail=f"Narration generation failed: {narration['error']}")
 
-    selection = await asyncio.to_thread(
-        scraper.select_photos_for_scene_count, extraction["photos"], narration["scene_count"]
-    )
+    # 2026-07-24 (backlog item 35): premium uses a dedicated selection
+    # function (wider scene-count target, expanded taxonomy including
+    # laundry/office/garage, outdoor split across an early + closing
+    # slot) -- kept separate rather than branching deeply inside the
+    # existing one, since the sequencing logic is genuinely different,
+    # not just a wider number range.
+    if premium:
+        selection = await asyncio.to_thread(
+            scraper.select_photos_for_scene_count_premium, extraction["photos"], narration["scene_count"]
+        )
+    else:
+        selection = await asyncio.to_thread(
+            scraper.select_photos_for_scene_count, extraction["photos"], narration["scene_count"]
+        )
 
     job_id = str(uuid.uuid4())[:8]
     job_dir = JOBS_DIR / job_id
@@ -1474,10 +1487,27 @@ async def create_job_from_url(
         else:
             n_failed = len(selection.get("download_failures", []))
             gap_desc = f"All {n_failed} selected photo(s) failed to download - source images may be temporarily unavailable"
+        # 2026-07-24: explicit product decision -- if premium's full
+        # 3-tier fallback still can't fill the sequence, suggest the
+        # concrete alternatives (standard format, or manual upload)
+        # rather than a bare failure message.
+        suggestion = (" This listing may not have enough photos for the premium template -- "
+                      "try the standard ~30s format, or upload manually."
+                      if premium else " Try again in a moment, or upload manually.")
         raise HTTPException(status_code=422,
-                             detail=f"Not enough usable photos for this listing: {gap_desc}. Try again in a moment, or upload manually.")
+                             detail=f"Not enough usable photos for this listing: {gap_desc}.{suggestion}")
 
-    selected_categories = [cat for cat, photos in selection["selected"].items() if photos]
+    # 2026-07-24: premium's selected dict has outdoor_early/outdoor_late
+    # pseudo-category keys (see select_photos_for_scene_count_premium),
+    # not real categories -- map back to "outdoor" before requesting
+    # captions, which are keyed by real category name.
+    if premium:
+        selected_categories = list({
+            ("outdoor" if cat in ("outdoor_early", "outdoor_late") else cat)
+            for cat, photos in selection["selected"].items() if photos
+        })
+    else:
+        selected_categories = [cat for cat, photos in selection["selected"].items() if photos]
     captions = await asyncio.to_thread(
         scraper.generate_captions_for_categories, extraction["description"], selected_categories
     )
@@ -1493,8 +1523,12 @@ async def create_job_from_url(
     job_narration_path = str(job_dir / "narration.mp3")
     shutil.copy2(narration["audio_path"], job_narration_path)
 
-    scenes_config = scraper.build_standard_video_scenes_config(selection, captions,
-                                                                 clip_duration_secs=scraper.SCENE_CLIP_SECS)
+    if premium:
+        scenes_config = scraper.build_premium_video_scenes_config(selection, captions,
+                                                                    clip_duration_secs=scraper.SCENE_CLIP_SECS)
+    else:
+        scenes_config = scraper.build_standard_video_scenes_config(selection, captions,
+                                                                     clip_duration_secs=scraper.SCENE_CLIP_SECS)
     scenes_config = _ensure_scene_ids(scenes_config)
 
     # Rename downloaded images to the scene_NNN.ext convention — this is
@@ -1602,6 +1636,7 @@ async def create_job_from_url(
         "created_at": datetime.utcnow().isoformat(),
         "property_name": property_name_final,
         "agency_id": agency_id,
+        "is_premium": premium,   # 2026-07-24 (backlog item 35): premium ~1-min template flag, for classification/reporting
         "property_id": _prop["property_id"],
         "total_scenes": len(scenes_config),
         "transition_style": "fade",

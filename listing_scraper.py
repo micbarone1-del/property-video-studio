@@ -111,7 +111,7 @@ Extract and return ONLY a JSON object (no other text, no markdown code fences) w
 
 {{
   "photos": [
-    {{"url": "...", "label_it": "...", "category": "one of: exterior, living, kitchen, bedrooms, bathrooms, outdoor, uncategorized"}}
+    {{"url": "...", "label_it": "...", "category": "one of: exterior, living, kitchen, bedrooms, bathrooms, outdoor, laundry, office, garage, uncategorized"}}
   ],
   "description": "...",
   "price": "...",
@@ -121,7 +121,7 @@ Extract and return ONLY a JSON object (no other text, no markdown code fences) w
 Rules:
 - Only include real property photos in "photos" — EXCLUDE floor plan diagrams and any agent/agency headshot or logo images.
 - "label_it" is the photo's own caption/label as shown on the page, in whatever language the site uses.
-- Map each photo's label to exactly one category: exterior (building facade, outdoor view of the property itself), living (living room, dining room, study, hallway, stairs), kitchen, bedrooms, bathrooms (including laundry/utility rooms), outdoor (garden, terrace, courtyard, parking area, land/terrain). If a label doesn't clearly fit any of these, use "uncategorized".
+- Map each photo's label to exactly one category: exterior (building facade, outdoor view of the property itself), living (living room, dining room, study, hallway, stairs), kitchen, bedrooms, bathrooms, outdoor (garden, terrace, courtyard, parking area, land/terrain), laundry (laundry/utility room -- 2026-07-24: previously lumped into bathrooms, now its own category so it can appear as an extra scene when a longer video needs it), office (study/home office, distinct from a general living-area study), garage (garage, carport, covered parking specifically -- distinct from general outdoor parking). If a label doesn't clearly fit any of these, use "uncategorized".
 - If the page provides a larger/original-resolution version of each photo (e.g. via a lightbox, srcset, or a "view full size" link), use that URL instead of a thumbnail/compressed variant.
 - "description" is the full property description text from the listing (not a shortened meta/preview version).
 - "price" and "address" as shown on the page.
@@ -576,9 +576,37 @@ TARGET_SCENES = 6          # 30s — the anchor; derived scene count should land
 MIN_SPEECH_SECS_FOR_RANGE = (MIN_SCENES * SCENE_CLIP_SECS) - LEAD_SILENCE_SECS - TRAIL_SILENCE_SECS  # 22s
 MAX_SPEECH_SECS_FOR_RANGE = (MAX_SCENES * SCENE_CLIP_SECS) - LEAD_SILENCE_SECS - TRAIL_SILENCE_SECS  # 32s
 
+# 2026-07-24 (backlog item 35): premium ~1-minute template. Same
+# tightened-band mechanism as the standard format, just a wider target --
+# a manual per-job toggle, URL-scrape only per explicit product decision.
+MIN_SCENES_PREMIUM = 11    # ~55s
+MAX_SCENES_PREMIUM = 13    # ~65s
+MIN_SPEECH_SECS_FOR_RANGE_PREMIUM = (MIN_SCENES_PREMIUM * SCENE_CLIP_SECS) - LEAD_SILENCE_SECS - TRAIL_SILENCE_SECS
+MAX_SPEECH_SECS_FOR_RANGE_PREMIUM = (MAX_SCENES_PREMIUM * SCENE_CLIP_SECS) - LEAD_SILENCE_SECS - TRAIL_SILENCE_SECS
+
+# Premium sequence: outdoor appears twice -- once right after the facade,
+# once again at the closing, per explicit product decision. Represented
+# as two distinct pseudo-category keys (outdoor_early/outdoor_late) rather
+# than a single "outdoor" entry, since build_standard_video_scenes_config()'s
+# existing pattern groups ALL of one category's photos together and has
+# no way to split them across two sequence positions -- this reuses that
+# same "iterate an ordered category list, group by key" pattern rather
+# than inventing a parallel one, just with outdoor pre-split into two keys.
+PREMIUM_PRIORITY_ORDER = [
+    "exterior", "outdoor_early", "living", "kitchen", "bedrooms",
+    "bathrooms", "laundry", "office", "garage", "outdoor_late",
+]
+# Categories eligible for "expand instances" (fallback tier 1) --
+# prioritizes outdoor and large rooms per explicit product decision.
+_PREMIUM_EXPAND_PRIORITY = ["outdoor_early", "outdoor_late", "bedrooms", "living", "bathrooms", "kitchen"]
+# New-to-the-template categories (fallback tier 2) -- only used if the
+# listing actually has photos in them.
+_PREMIUM_EXTRA_CATEGORIES = ["laundry", "office", "garage"]
+
 
 def generate_narration_and_derive_scenes(
     description: str, address: str = None, price: str = None, voice_id: str = None,
+    premium: bool = False,
 ) -> dict:
     """
     Writes ONE natural narration (no artificial length target), measures
@@ -638,8 +666,13 @@ def generate_narration_and_derive_scenes(
 
     # Single correction pass if outside the tightened band — symmetric:
     # both directions are actively corrected, not just clamped.
-    if speech_secs > MAX_SPEECH_SECS_FOR_RANGE:
-        target_speech = MAX_SPEECH_SECS_FOR_RANGE - 2.0  # margin under the ceiling, not right at the edge
+    _min_speech = MIN_SPEECH_SECS_FOR_RANGE_PREMIUM if premium else MIN_SPEECH_SECS_FOR_RANGE
+    _max_speech = MAX_SPEECH_SECS_FOR_RANGE_PREMIUM if premium else MAX_SPEECH_SECS_FOR_RANGE
+    _min_scenes = MIN_SCENES_PREMIUM if premium else MIN_SCENES
+    _max_scenes = MAX_SCENES_PREMIUM if premium else MAX_SCENES
+
+    if speech_secs > _max_speech:
+        target_speech = _max_speech - 2.0  # margin under the ceiling, not right at the edge
         naive_target_words = len(narration_text.split()) * (target_speech / speech_secs)
         target_words = max(15, int(naive_target_words * 0.85))  # models tend to undershoot cuts
         try:
@@ -656,15 +689,15 @@ def generate_narration_and_derive_scenes(
         except Exception as e:
             log.warning(f"[Scraper] Shorten pass failed, proceeding as-is: {e}")
 
-        if speech_secs > MAX_SPEECH_SECS_FOR_RANGE and audio_path:
+        if speech_secs > _max_speech and audio_path:
             # still over after one pass — hard cap and fade-trim rather
             # than build an ever-longer video
-            audio_path = _fade_out_and_trim(audio_path, MAX_SPEECH_SECS_FOR_RANGE)
-            speech_secs = MAX_SPEECH_SECS_FOR_RANGE
+            audio_path = _fade_out_and_trim(audio_path, _max_speech)
+            speech_secs = _max_speech
             was_trimmed = True
 
-    elif speech_secs < MIN_SPEECH_SECS_FOR_RANGE:
-        target_speech = MIN_SPEECH_SECS_FOR_RANGE + 3.0  # margin above the floor
+    elif speech_secs < _min_speech:
+        target_speech = _min_speech + 3.0  # margin above the floor
         extra_words = int((target_speech - speech_secs) * WORDS_PER_SECOND_ESTIMATE)
         try:
             extend_prompt = EXTEND_PROMPT.format(actual_secs=speech_secs, target_secs=target_speech,
@@ -690,7 +723,7 @@ def generate_narration_and_derive_scenes(
 
     needed_secs = speech_secs + LEAD_SILENCE_SECS + TRAIL_SILENCE_SECS
     scene_count = math.ceil(needed_secs / SCENE_CLIP_SECS)
-    scene_count = max(MIN_SCENES, min(MAX_SCENES, scene_count))
+    scene_count = max(_min_scenes, min(_max_scenes, scene_count))
 
     # Always prefer the TIGHTEST-fitting scene count, not just whatever
     # ceil() lands on — rounding up can otherwise leave far more than
@@ -701,7 +734,7 @@ def generate_narration_and_derive_scenes(
     # SCENE_CLIP_SECS (i.e. under 5s) — a small, safe edit, not a big cut.
     # Only kept at the higher scene count if the lower one would be
     # unreachable (i.e. already at MIN_SCENES).
-    if scene_count > MIN_SCENES and audio_path:
+    if scene_count > _min_scenes and audio_path:
         lower_scene_count = scene_count - 1
         max_speech_for_lower = (lower_scene_count * SCENE_CLIP_SECS) - LEAD_SILENCE_SECS - TRAIL_SILENCE_SECS
         if speech_secs > max_speech_for_lower:
@@ -826,49 +859,35 @@ def build_standard_video_scenes_config(selection: dict, captions: dict, clip_dur
 
 # ── Photo selection: priority order + gap detection ─────────────────────────
 
-def select_photos(photos: list, target_per_category: dict = None) -> dict:
+def _categorize_and_rank_photos(photos: list, categories: list) -> dict:
     """
-    Selects photos per category following PRIORITY_ORDER, per the agreed
-    rule: surface gaps and require manual upload rather than silently
-    degrading (e.g. reusing exterior shots to pad out a missing kitchen
-    category).
+    Shared setup step used by every photo-selection function: groups
+    photos by category (deduplicating by URL as a hard safeguard against
+    the same photo ever being selected twice), then ranks each
+    category's candidates by real quality via rank_photos_by_quality().
 
-    target_per_category: e.g. {"exterior": 1, "living": 2, "kitchen": 1,
-    "bedrooms": 2, "bathrooms": 1, "outdoor": 1} — defaults to 1 each if not
-    specified; this default is a placeholder and should be confirmed against
-    real product requirements (how many total scenes does a typical video
-    need?) rather than treated as final.
-
-    Returns:
-      {
-        "selected": {category: [photo, ...], ...},
-        "gaps": [category, ...],   # categories with fewer photos than requested
-        "total_selected": int,
-      }
+    Extracted 2026-07-24 -- this exact categorize+rank logic was
+    duplicated identically between select_photos_for_scene_count() and
+    select_photos_for_scene_count_premium(); this is the one shared
+    place it lives now.
     """
-    if target_per_category is None:
-        target_per_category = {cat: 1 for cat in PRIORITY_ORDER}
-
-    by_category = {cat: [] for cat in PRIORITY_ORDER}
+    by_category = {cat: [] for cat in categories}
+    seen_urls = set()
     for p in photos:
         cat = p.get("category")
-        if cat in by_category:
+        url = p.get("url")
+        if cat in by_category and url not in seen_urls:
             by_category[cat].append(p)
+            seen_urls.add(url)
 
-    selected = {}
-    gaps = []
-    for cat in PRIORITY_ORDER:
-        wanted = target_per_category.get(cat, 1)
-        available = by_category[cat]
-        selected[cat] = available[:wanted]
-        if len(available) < wanted:
-            gaps.append({"category": cat, "wanted": wanted, "found": len(available)})
+    # Rank each category's candidates by real quality (no people, key room
+    # elements present, natural light, spacious framing) BEFORE selecting —
+    # only categories with more than one candidate incur the extra vision
+    # call, and rank_photos_by_quality() itself skips the work for len<=1.
+    for cat in by_category:
+        by_category[cat] = rank_photos_by_quality(cat, by_category[cat])
 
-    return {
-        "selected": selected,
-        "gaps": gaps,
-        "total_selected": sum(len(v) for v in selected.values()),
-    }
+    return by_category
 
 
 QUALITY_RANKING_PROMPT = """You are selecting the best photo(s) of a "{category}" for a real estate video. You'll see {n} candidate photos, labeled Photo 1 through Photo {n}.
@@ -965,21 +984,7 @@ def select_photos_for_scene_count(photos: list, scene_count: int) -> dict:
     Returns the same {"selected": {...}, "gaps": [...]} shape as before,
     plus "scene_count_requested" for confirmation.
     """
-    by_category = {cat: [] for cat in PRIORITY_ORDER}
-    seen_urls = set()
-    for p in photos:
-        cat = p.get("category")
-        url = p.get("url")
-        if cat in by_category and url not in seen_urls:
-            by_category[cat].append(p)
-            seen_urls.add(url)
-
-    # Rank each category's candidates by real quality (no people, key room
-    # elements present, natural light, spacious framing) BEFORE selecting —
-    # only categories with more than one candidate incur the extra vision
-    # call, and rank_photos_by_quality() itself skips the work for len<=1.
-    for cat in by_category:
-        by_category[cat] = rank_photos_by_quality(cat, by_category[cat])
+    by_category = _categorize_and_rank_photos(photos, PRIORITY_ORDER)
 
     if scene_count >= len(PRIORITY_ORDER):
         base_categories = list(PRIORITY_ORDER)
@@ -1032,6 +1037,137 @@ def select_photos_for_scene_count(photos: list, scene_count: int) -> dict:
         "total_selected": total_selected,
         "scene_count_requested": scene_count,
     }
+
+
+def select_photos_for_scene_count_premium(photos: list, scene_count: int) -> dict:
+    """
+    2026-07-24 (backlog item 35): premium ~1-minute template selection.
+
+    Explicit product decisions this implements:
+    - Sequence includes a taxonomy of "main" + expanded instances per room
+      type (e.g. multiple bedrooms/bathrooms/outdoor spaces), not just one
+      photo per category -- built by reusing rank_photos_by_quality()'s
+      existing best-first ordering: the first selected photo in a
+      category is implicitly "main", any additional ones are "small"/
+      "small_2" etc (no new quality mechanism needed -- that ranking
+      already combines visual quality with content representativeness,
+      e.g. "clearly shows a visible bed for a bedroom").
+    - Outdoor appears both early (right after the facade) and again at
+      the closing, via the two pseudo-category keys defined in
+      PREMIUM_PRIORITY_ORDER.
+    - Three-tier fallback when a category is sparse, in this exact
+      order: (1) expand instances in OTHER large-room/outdoor categories
+      that do have surplus, (2) add categories not in the base template
+      (laundry/office/garage) if the listing has them, (3) last resort --
+      reuse additional photos of the SAME room/space, same as the
+      standard format's existing backfill.
+    """
+    real_categories = ["exterior", "outdoor", "living", "kitchen", "bedrooms", "bathrooms"] + _PREMIUM_EXTRA_CATEGORIES
+    by_category = _categorize_and_rank_photos(photos, real_categories)
+
+    # Split outdoor's ranked list into two pseudo-categories up front --
+    # the best-ranked photo goes early (right after the facade), the
+    # second-best (if it exists) is reserved for the closing.
+    outdoor_ranked = by_category.pop("outdoor")
+    by_category["outdoor_early"] = outdoor_ranked[:1]
+    by_category["outdoor_late"] = outdoor_ranked[1:2]
+    _outdoor_overflow = outdoor_ranked[2:]  # any additional outdoor photos beyond the two reserved slots
+
+    selected = {cat: [] for cat in PREMIUM_PRIORITY_ORDER}
+    remaining = scene_count
+
+    # Pass 1: one slot each for the six core categories (outdoor's two
+    # slots both count as "core" here, not fallback expansion).
+    for cat in ["exterior", "outdoor_early", "living", "kitchen", "bedrooms", "bathrooms", "outdoor_late"]:
+        if by_category.get(cat) and remaining > 0:
+            selected[cat].append(by_category[cat][0])
+            remaining -= 1
+
+    # Pass 2 (Tier 1 -- expand instances, prioritizing large rooms/outdoor).
+    # Includes the outdoor overflow pool so a photo-rich outdoor category
+    # can still contribute a 3rd/4th shot here, not just its two reserved
+    # early/late slots.
+    _expand_pool = dict(by_category)
+    _expand_pool["outdoor_early"] = by_category["outdoor_early"] + _outdoor_overflow
+    while remaining > 0:
+        progress = False
+        for cat in _PREMIUM_EXPAND_PRIORITY:
+            if remaining <= 0:
+                break
+            already = len(selected[cat])
+            available = _expand_pool.get(cat, [])
+            if len(available) > already:
+                selected[cat].append(available[already])
+                remaining -= 1
+                progress = True
+        if not progress:
+            break
+
+    # Pass 3 (Tier 2 -- add categories not in the base template, only if
+    # the listing actually has photos there).
+    for cat in _PREMIUM_EXTRA_CATEGORIES:
+        if remaining <= 0:
+            break
+        if by_category.get(cat):
+            selected[cat].append(by_category[cat][0])
+            remaining -= 1
+
+    # Pass 4 (Tier 3 -- last resort: reuse any remaining surplus photo,
+    # anywhere, same room shown from a different angle).
+    while remaining > 0:
+        progress = False
+        for cat in PREMIUM_PRIORITY_ORDER:
+            if remaining <= 0:
+                break
+            already = len(selected[cat])
+            available = _expand_pool.get(cat, by_category.get(cat, []))
+            if len(available) > already:
+                selected[cat].append(available[already])
+                remaining -= 1
+                progress = True
+        if not progress:
+            break  # truly no more photos available anywhere
+
+    total_selected = sum(len(v) for v in selected.values())
+    gaps = []
+    if total_selected < scene_count:
+        gaps.append(f"Only {total_selected} usable premium photo(s) found across all categories combined, "
+                    f"needed {scene_count} -- this listing may not have enough photos for the premium template.")
+
+    return {
+        "selected": {cat: v for cat, v in selected.items() if v},
+        "gaps": gaps,
+        "total_selected": total_selected,
+        "scene_count_requested": scene_count,
+    }
+
+
+def build_premium_video_scenes_config(selection: dict, captions: dict, clip_duration_secs: int = 5) -> list:
+    """
+    Premium counterpart to build_standard_video_scenes_config() -- same
+    "one scene per selected photo" pattern, but iterates
+    PREMIUM_PRIORITY_ORDER (which includes the outdoor_early/outdoor_late
+    split) instead of PRIORITY_ORDER, mapping both back to the real
+    "outdoor" category for caption/space_type/pov_movement lookups, since
+    captions and the category-lookup tables are keyed by real category
+    names, not the pseudo-split ones.
+    """
+    scenes = []
+    for pseudo_category in PREMIUM_PRIORITY_ORDER:
+        real_category = "outdoor" if pseudo_category in ("outdoor_early", "outdoor_late") else pseudo_category
+        photos = selection["selected"].get(pseudo_category, [])
+        for photo in photos:
+            scenes.append({
+                "caption": captions.get(real_category, real_category),
+                "voiceover": "",  # continuous narration track applied separately, not per-scene
+                "space_type": _CATEGORY_TO_SPACE_TYPE.get(real_category, "large"),
+                "pov_movement": _CATEGORY_TO_POV_MOVEMENT.get(real_category, "gentle_arc"),
+                "duration": clip_duration_secs,
+                "local_image_path": photo.get("local_path"),
+                "category": real_category,
+                "remove_watermark": True,
+            })
+    return scenes
 
 
 if __name__ == "__main__":
