@@ -2950,6 +2950,14 @@ async def run_pipeline(
 
 
         actual_durations = []   # per scene — set from audio or user slider
+        # 2026-07-27: real bug -- a TTS failure here (e.g. an invalid
+        # voice ID) previously fell through to the exact same audio_paths
+        # None as a scene with NO voiceover text at all, silently, with
+        # no log warning and no way for the UI to distinguish "nothing to
+        # say" from "tried to generate audio and it failed" -- both
+        # showed as "skipped". This list tracks the real failures so both
+        # get labeled correctly and surfaced.
+        tts_failed_scenes = []
 
 
         for i, (scene, img) in enumerate(zip(scenes_config, enhanced_paths)):
@@ -2994,6 +3002,9 @@ async def run_pipeline(
 
                     qc_results.append({"scene": i, "type": "tts", **tts_qc})
                 else:
+                    log.warning(f"[Job {job_id}] TTS generation FAILED for scene {i} "
+                                f"(voiceover: {voiceover[:60]!r}) -- audio will be missing for this scene")
+                    tts_failed_scenes.append(i)
                     audio_paths.append(None)
                     actual_durations.append(user_duration)
                 audio_chars.append({"chars": len(voiceover)})
@@ -3076,13 +3087,15 @@ async def run_pipeline(
                 "pov_movement":    pov_movement,
                 "duration_used":   duration,
                 "video":           "ok" if ok else "failed",
-                "audio":           "ok" if audio_paths[i] else "skipped",
+                "audio":           "ok" if audio_paths[i] else ("failed" if i in tts_failed_scenes else "skipped"),
                 "qc_verdict":      video_verdict,
             })
 
 
         JOBS[job_id]["scenes"]     = scene_statuses
         JOBS[job_id]["qc_results"] = qc_results
+        if tts_failed_scenes:
+            JOBS[job_id]["tts_failures"] = tts_failed_scenes
         _save_job(job_id)
 
 
