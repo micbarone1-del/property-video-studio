@@ -385,11 +385,11 @@
       <div class="row2">
         <div>
           <label>Property name / reference</label>
-          <input type="text" id="prop-name" placeholder="e.g. Via Roma 14" />
+          <input type="text" id="prop-name" placeholder="e.g. Via Roma 14" autocomplete="off" />
         </div>
         <div>
           <label>ElevenLabs voice ID <span style="color:var(--muted)">(optional)</span></label>
-          <input type="text" id="voice-id" placeholder="Leave blank for default" />
+          <input type="text" id="voice-id" placeholder="Leave blank for default" autocomplete="off" />
         </div>
       </div>
       <div class="row2" style="margin-top:14px">
@@ -417,7 +417,7 @@
       <div class="row2" style="margin-top:14px">
         <div>
           <label>Video quality tier</label>
-          <select id="model-tier" onchange="onTierChange(this.value)">
+          <select id="model-tier" onchange="onTierChange(this.value)" autocomplete="off">
             <option value="eco">Eco — Lyra 2.0 + upscale (~€0.05/clip) · budget</option>
             <option value="luma" selected>⭐ Luma Ray 2 (~€1.84/5s clip) · consigliato — 3D reale, no warping</option>
             <option value="premium">Veo 3.1 Fast (~€0.74/8s clip)</option>
@@ -426,7 +426,7 @@
         </div>
         <div>
           <label>Transition between clips</label>
-          <select id="transition-style">
+          <select id="transition-style" autocomplete="off">
             <option value="fade">Fade to black</option>
             <option value="fade_white">Fade to white</option>
             <option value="slide_left">Slide left</option>
@@ -436,7 +436,7 @@
         </div>
         <div>
           <label>Output format</label>
-          <select id="output-format">
+          <select id="output-format" autocomplete="off">
             <option value="" selected>Auto (rileva da foto)</option>
             <option value="landscape">Landscape (16:9)</option>
             <option value="portrait">Portrait (9:16)</option>
@@ -446,7 +446,7 @@
       <div class="row2" style="margin-top:12px">
         <div>
           <label>Lighting condition <span style="color:var(--muted);font-size:.75rem">(applies to full video)</span></label>
-          <select id="lighting">
+          <select id="lighting" autocomplete="off">
             <option value="bright_natural" selected>Bright natural daylight</option>
             <option value="golden_hour">Golden hour — warm afternoon</option>
             <option value="overcast_soft">Overcast — soft diffused light</option>
@@ -456,7 +456,7 @@
         </div>
         <div>
           <label>Motion intensity <span style="color:var(--muted);font-size:.75rem">(applies to full video)</span></label>
-          <select id="intensity">
+          <select id="intensity" autocomplete="off">
             <option value="very_slow">Very slow — appreciating every detail</option>
             <option value="natural_pace" selected>Natural pace — comfortable walk</option>
             <option value="energetic">Energetic — confident and purposeful</option>

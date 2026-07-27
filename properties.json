@@ -1,1 +1,16 @@
-[]
+[
+  {
+    "property_id": "prop_9c7deacf",
+    "name": "Property",
+    "agency_id": "ag_f40639b8",
+    "notes": "",
+    "created_at": "2026-07-26T17:16:00.528396"
+  },
+  {
+    "property_id": "prop_8ad4e274",
+    "name": "Via Antonio Varisco, Trullo, Morlupo",
+    "agency_id": "ag_f40639b8",
+    "notes": "",
+    "created_at": "2026-07-26T17:39:04.217687"
+  }
+]
