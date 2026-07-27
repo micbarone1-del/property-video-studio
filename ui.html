@@ -560,6 +560,7 @@
     <p class="sec-label">Your video is ready</p>
     <div class="card">
       <div id="job-id-display" style="font-size:.78rem;color:var(--muted);margin-bottom:10px;padding:8px 12px;background:var(--paper);border-radius:var(--radius);font-family:monospace"></div>
+      <div id="tts-failure-warning" style="display:none;font-size:.8rem;color:var(--danger);margin-bottom:10px;padding:8px 12px;background:var(--paper);border:1px solid var(--danger);border-radius:var(--radius)"></div>
       <video id="video-preview" controls></video>
       <a class="btn-download" id="download-link" href="#">⬇ Download MP4</a>
       <div id="actual-cost" style="margin-top:16px"></div>
@@ -1184,9 +1185,13 @@ async function editJob(jobId, baseJobId) {
     if (narrationTextEl) narrationTextEl.value = job.narration_text || '';
     const narrationStatusEl = document.getElementById('narration-status');
     if (narrationStatusEl) {
+      // 2026-07-27: explicit, per user request -- narration always wins
+      // over per-scene voiceover (intentional design, confirmed), but
+      // the UI previously gave no indication of which mechanism (and
+      // which lead/trail buffer) is actually in effect for this job.
       narrationStatusEl.textContent = narrationExistsOnServer
-        ? `✓ Narrazione esistente (${job.narration_duration_secs || '?'}s) — modifica il testo e premi Genera voiceover per aggiornarla`
-        : '';
+        ? `✓ Narrazione continua ATTIVA (${job.narration_duration_secs || '?'}s, buffer 1.0s inizio/fine) — il voiceover per-scena viene ignorato. Modifica il testo e premi Genera voiceover per aggiornarla`
+        : `ℹ️ Modalità voiceover per-scena (buffer 0.5s inizio/fine per scena) — nessuna narrazione continua attiva`;
       narrationStatusEl.style.color = 'var(--muted)';
     }
 
@@ -2988,7 +2993,7 @@ function startPolling(jobId) {
 
       if (job.status === 'done') {
         clearInterval(pollTimer);
-        showResult(jobId, job.property_name || 'Property', job.scenes || [], job.scenes_config ? job.scenes_config.length : null);
+        showResult(jobId, job.property_name || 'Property', job.scenes || [], job.scenes_config ? job.scenes_config.length : null, job.tts_failures || []);
         notifyJobComplete(job.property_name || 'Property', true);
         genBtn.disabled    = false;
         genBtn.textContent = 'Genera video';
@@ -3151,7 +3156,7 @@ function renderSceneProgress(scenes) {
 }
 
 
-function showResult(jobId, propName, scenes, realSceneCount) {
+function showResult(jobId, propName, scenes, realSceneCount, ttsFailures) {
   // 2026-07-23: real bug -- the displayed scene count previously came
   // from the scenes STATUS array (per-scene video/audio/qc tracking,
   // appended-to over time and never trimmed when scenes are removed),
@@ -3179,6 +3184,20 @@ function showResult(jobId, propName, scenes, realSceneCount) {
   const scenesCount = realSceneCount != null ? realSceneCount : (scenes && scenes.length ? scenes.length : (completedScenes.length || '?'));
   document.getElementById('job-id-display').innerHTML =
     `📁 <strong>${propName}</strong> — ID: <code>${jobId}</code> — ${scenesCount} scene`;
+  // 2026-07-27: real reliability gap -- a failed voiceover generation
+  // (e.g. an invalid voice ID rejected by ElevenLabs) previously
+  // produced a video with no audio for that scene, with zero visible
+  // indication anywhere in the UI. Now surfaced directly.
+  const ttsWarningEl = document.getElementById('tts-failure-warning');
+  if (ttsWarningEl) {
+    if (ttsFailures && ttsFailures.length) {
+      const sceneList = ttsFailures.map(i => i + 1).join(', ');
+      ttsWarningEl.textContent = `⚠ Generazione voiceover fallita per la/le scena/e ${sceneList} — controlla il voice ID o riprova. Video generato senza audio per quella/e scena/e.`;
+      ttsWarningEl.style.display = 'block';
+    } else {
+      ttsWarningEl.style.display = 'none';
+    }
+  }
   resultSec.style.display = 'block';
   resultSec.scrollIntoView({ behavior: 'smooth' });
 }
