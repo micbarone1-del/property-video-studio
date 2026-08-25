@@ -1012,6 +1012,7 @@ async def create_job(
             model_tier=model_tier,
             lighting=lighting,
             intensity=intensity,
+            output_format=job_format,  # 2026-07-27 URGENT FIX: run_pipeline() now needs this explicitly
         )
 
 
@@ -1089,6 +1090,7 @@ async def start_generation_for_draft(job_id: str, background_tasks: BackgroundTa
         model_tier=job.get("model_tier", "premium"),
         lighting=job.get("lighting", "bright_natural"),
         intensity=job.get("intensity", "natural_pace"),
+        output_format=job.get("output_format", "landscape"),  # 2026-07-27 URGENT FIX: run_pipeline() now needs this explicitly
     )
 
 
@@ -2866,6 +2868,7 @@ async def run_pipeline(
     model_tier:       str  = "standard",
     lighting:         str  = "bright_natural",
     intensity:        str  = "natural_pace",
+    output_format:    str  = "landscape",  # 2026-07-27 URGENT FIX: was incorrectly job.get(...) with no local job variable
 ):
     def update(status, progress, message):
         JOBS[job_id].update({"status": status, "progress": progress, "message": message})
@@ -3052,7 +3055,7 @@ async def run_pipeline(
                 lighting=lighting,
                 intensity=intensity,
                 model_tier=model_tier,
-                output_format=job.get("output_format", "landscape"),  # 2026-07-27, backlog item 37
+                output_format=output_format,  # 2026-07-27 URGENT FIX: use the local parameter, not a nonexistent job dict
                 do_video_upscale=do_video_upscale,
             )
 
