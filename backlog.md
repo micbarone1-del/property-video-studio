@@ -141,7 +141,15 @@ Items are ordered by priority. Each entry includes scope, decisions already made
 
 **Concept:** depth-based reprojection cannot hallucinate — structurally incapable of inventing content not in the source photo. Every prompt-based mitigation (including the July 21 human-shadow fix) is probabilistic harm reduction; depth rendering would be immunity.
 
-**Not started.** Scope to be defined. Would sit alongside the existing model tiers as a hallucination-free option.
+**2026-07-27 note: this detail existed in an earlier version of this file (July 17, 2026) and was lost during a later doc rewrite -- restored here after being recovered from an earlier session transcript, since this was exactly the kind of information loss this file exists to prevent.**
+
+**Previous attempt:** `depth_renderer.py` -- numpy + OpenCV pixel-shift reprojection. Hit a real quality ceiling (raw pixel-shift produces occlusion holes and stretching at depth discontinuities), and Luma Ray 2 solved the immediate problem more pragmatically, so this was paused rather than abandoned.
+
+**Motivating evidence:** propertyvideo.ai appears to be shipping this successfully, suggesting the earlier failure was an implementation ceiling rather than a fundamental one.
+
+**Proposed modern approach, not yet built:** pair a much stronger monocular depth estimator -- specifically Depth Anything V2 or Marigold -- with proper inpainting of the disoccluded regions. A materially different technique from the original attempt, not a retry of the same one.
+
+**Not started.** Scope to be defined beyond the above. Would sit alongside the existing model tiers as a hallucination-free option.
 
 ---
 

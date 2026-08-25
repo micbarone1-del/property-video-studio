@@ -380,6 +380,7 @@ def assemble_pov_prompt(
     lighting:     str,
     intensity:    str,
     model_tier:   str,
+    output_format: str = "landscape",
 ) -> str:
     """
     Assembles a model-specific prompt from structured token dictionaries.
@@ -387,6 +388,35 @@ def assemble_pov_prompt(
     Veo:   full POV narrative (follows longer prompts accurately)
     Lyra:  frozen-scene description (camera controlled via API parameters)
     """
+    # 2026-07-27 (backlog item 37, portrait-specific): a 9:16 frame has
+    # roughly a third the horizontal field of view of 16:9 for the same
+    # shot, so lateral/turning movements run past the edge of what the
+    # source photo actually shows far sooner, forcing the model to invent
+    # content. Explicit product decision, after ruling out both a flat
+    # 2D pan/zoom (not realistic enough for a property walkthrough) and a
+    # simple degree-value reduction (doesn't reliably hold since these
+    # movement descriptions aren't deterministic camera parameters, e.g.
+    # walk_in_explore's own language can drift laterally even when a
+    # forward dolly is intended): remap the confirmed-problematic lateral/
+    # turning movements to a forward-dolly movement, AND layer an explicit
+    # anti-drift constraint on top so the constraint holds even if the
+    # base movement language alone is interpreted loosely.
+    _PORTRAIT_REMAPS = {
+        "walk_in_gentle":     "walk_in_explore",  # lateral tracking -> forward dolly
+        "walk_in_turn_left":  "walk_in_explore",  # left pivot -> forward dolly
+        "walk_in_turn_right": "walk_in_explore",  # right pivot -> forward dolly
+        "stand_look_around":  "walk_in_explore",  # confirmed never used, too much -> forward dolly
+    }
+    if output_format == "portrait" and pov_movement in _PORTRAIT_REMAPS:
+        _original_movement = pov_movement
+        pov_movement = _PORTRAIT_REMAPS[pov_movement]
+        log.info(f"[VideoGen] Portrait remap: {_original_movement} -> {pov_movement}")
+    _PORTRAIT_ANTI_DRIFT = (
+        ", camera moves strictly along a single forward axis, no lateral drift, "
+        "no panning, no pivoting -- field of view stays fixed and centered "
+        "throughout the shot"
+    )
+
     if model_tier == "eco":
         # Lyra — frozen scene, camera via parameters
         light = _LYRA_LIGHTING.get(lighting, _LYRA_LIGHTING["bright_natural"])
@@ -398,6 +428,8 @@ def assemble_pov_prompt(
         motion = _LUMA_MOVEMENT_TOKENS.get(pov_movement, _LUMA_MOVEMENT_TOKENS["walk_in_explore"])
         pace   = _LUMA_INTENSITY_SUFFIX.get(intensity, _LUMA_INTENSITY_SUFFIX["natural_pace"])
         prompt = f"{motion}, {pace}, {_LUMA_RULES}"
+        if output_format == "portrait":
+            prompt += _PORTRAIT_ANTI_DRIFT
         log.info(f"[VideoGen] Luma prompt: {prompt}")
         return prompt
 
@@ -433,6 +465,8 @@ def assemble_pov_prompt(
             f"Lighting: {light}. "
             f"{_VEO_RULES}"
         )
+        if output_format == "portrait":
+            prompt += _PORTRAIT_ANTI_DRIFT
         log.info(f"[VideoGen] Veo FULL prompt: {prompt}")
         return prompt
 
@@ -737,6 +771,7 @@ def generate_video_single(
     lighting:       str  = "bright_natural",  # property-level
     intensity:      str  = "natural_pace",    # property-level
     model_tier:     str  = "standard",        # eco / standard / premium
+    output_format:  str  = "landscape",       # landscape / portrait -- 2026-07-27, backlog item 37
     # Legacy parameter kept for backward compatibility
     prompt:         str  = "",
     camera_hint:    str  = "auto",
@@ -789,7 +824,7 @@ def generate_video_single(
 
         # ── Assemble structured prompt ─────────────────────────────────────
         final_prompt = assemble_pov_prompt(
-            space_type, pov_movement, lighting, intensity, model_tier
+            space_type, pov_movement, lighting, intensity, model_tier, output_format
         )
         log.info(f"[VideoGen] Prompt: {final_prompt[:120]}...")
 

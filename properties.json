@@ -12,5 +12,19 @@
     "agency_id": "ag_f40639b8",
     "notes": "",
     "created_at": "2026-07-26T17:39:04.217687"
+  },
+  {
+    "property_id": "prop_08ed2cd2",
+    "name": "Via Francesco Marucelli, 72, Ottavia, Roma",
+    "agency_id": "ag_36f93b95",
+    "notes": "",
+    "created_at": "2026-07-29T07:04:08.718166"
+  },
+  {
+    "property_id": "prop_673b07f2",
+    "name": "Via Salento, Bologna, Roma",
+    "agency_id": "ag_f40639b8",
+    "notes": "",
+    "created_at": "2026-07-29T07:13:55.484419"
   }
 ]

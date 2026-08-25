@@ -2242,6 +2242,7 @@ async def run_redo_scene(job_id: str, scene_id: str):
             lighting=lighting,
             intensity=intensity,
             model_tier=model_tier,
+            output_format=job.get("output_format", "landscape"),  # 2026-07-27, backlog item 37
             do_video_upscale=do_video_upscale,
         )
 
@@ -2676,6 +2677,7 @@ async def run_redo_scenes_batch(job_id: str, scene_ids: list):
                 lighting=lighting,
                 intensity=intensity,
                 model_tier=model_tier,
+                output_format=job.get("output_format", "landscape"),  # 2026-07-27, backlog item 37
                 do_video_upscale=do_video_upscale,
             )
             if not ok_video:
@@ -3050,6 +3052,7 @@ async def run_pipeline(
                 lighting=lighting,
                 intensity=intensity,
                 model_tier=model_tier,
+                output_format=job.get("output_format", "landscape"),  # 2026-07-27, backlog item 37
                 do_video_upscale=do_video_upscale,
             )
 
