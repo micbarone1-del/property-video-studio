@@ -24,12 +24,9 @@ Items are ordered by priority. Each entry includes scope, decisions already made
 
 ---
 
-## 2. Multi-job dashboard / concurrent job queue
+## 2. Multi-job dashboard / concurrent job queue -- MERGED into NEXT MILESTONE (below), 2026-07-27
 
-**Scope:** View and manage multiple jobs running at once, rather than one at a time.
-
-**Open questions:**
-- Concurrency target hasn't been checked against fal.ai/ElevenLabs rate limits — needs that check before real scoping.
+This was a thinner, earlier entry describing the same feature scoped in more detail under NEXT MILESTONE -- Concurrency + Operator Dashboard. Consolidated to avoid two separate backlog entries drifting apart for the same feature. Its one open question (concurrency target vs. fal.ai/ElevenLabs rate limits) is now listed there.
 
 ---
 
@@ -272,7 +269,7 @@ UI labels updated to match all of the above.
 
 **NEXT: Concurrency + operator dashboard.** Goal: minimise time the operator spends at the PC; they intervene only when needed.
 
-1. **Job queue with configurable concurrency ceiling.** The 5-jobs/hour rate limit in api_server.py is OURS (self-imposed), not a fal.ai limit. Real constraints are fal.ai account concurrency and cost.
+1. **Job queue with configurable concurrency ceiling.** The 5-jobs/hour rate limit in api_server.py is OURS (self-imposed), not a fal.ai limit. Real constraints are fal.ai account concurrency and cost. **Open question, merged from item 2 (2026-07-27):** the actual concurrency target has not been checked against fal.ai/ElevenLabs real rate limits -- needs that check before final scoping.
 
 2. **Dashboard as an INBOX** — show ONLY what needs the operator: (a) awaiting setup review before any money is spent, (b) QC flagged/rejected, (c) failed. Everything else runs unattended.
 
