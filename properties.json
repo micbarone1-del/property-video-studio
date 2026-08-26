@@ -26,5 +26,12 @@
     "agency_id": "ag_f40639b8",
     "notes": "",
     "created_at": "2026-07-29T07:13:55.484419"
+  },
+  {
+    "property_id": "prop_2e2b28ca",
+    "name": "Property",
+    "agency_id": "",
+    "notes": "",
+    "created_at": "2026-08-25T15:34:21.925945"
   }
 ]

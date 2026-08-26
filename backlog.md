@@ -201,12 +201,14 @@ Items are ordered by priority. Each entry includes scope, decisions already made
 
 ---
 
-## 37. Luma camera movement — wobbly/exaggerated (general fixed July 22; portrait-specific still open)
+## 37. Luma/Veo camera movement — wobbly/exaggerated — FULLY RESOLVED July 27, 2026 (both general and portrait-specific)
 
 **Reported July 21, 2026.** Two related but distinct issues:
 
 1. **General wobble/stepping — ✅ FIXED July 22, 2026.** Root-caused by direct comparison against Veo's already-working `_VEO_MOVEMENT_TOKENS`: Luma's prompts lacked explicit "3D dolly" terminology and foreground/background parallax framing, and had no degree limits at all. All 11 `_LUMA_MOVEMENT_TOKENS` entries rewritten with both, plus a direct negative instruction against the reported artifact ("no stepping or bobbing"). Same caveat as every Luma prompt constraint: a well-reasoned, evidence-based probabilistic improvement, not a guarantee — a real generation test to confirm it's actually smoother has not yet been run by the user.
 2. **Portrait-specific — still open.** Root cause understood (see status.md): a 9:16 frame has roughly a third the horizontal field of view of 16:9 for the same shot, so identical movement settings consume proportionally more of the real photographed content before the model has to invent what's beyond the edge. Luma's prompt system still has no way to apply a portrait-specific reduction the way Veo's explicit degree values would allow. Not addressed by the July 22 rewrite — needs its own dedicated pass with empirical tuning against real photos.
+
+**RESOLVED July 27, 2026.** Explicit product decisions ruled out both a flat 2D pan/zoom (not realistic enough for a property walkthrough) and a simple degree-value reduction (unreliable, since movement descriptions are language, not deterministic camera parameters). Fix: confirmed-problematic lateral/turning movements (walk_in_gentle, walk_in_turn_left, walk_in_turn_right, stand_look_around — the 90-degree look-around option, confirmed never used) remapped to walk_in_explore for portrait output, plus an explicit anti-drift prompt constraint layered on top for both Luma and Veo. Composes correctly with the existing small-room remap. Verified via isolated function-level tests (all 4 movements correctly remap, landscape output unchanged, Veo confirmed alongside Luma, small+portrait cascades correctly). A real generation test on an actual portrait job has not yet been run.
 
 ---
 

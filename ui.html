@@ -2029,12 +2029,14 @@ const MOVEMENT_OPTS = {
   walk_in_turn_left:  'Entra e gira a sinistra',
   walk_in_turn_right: 'Entra e gira a destra',
   walk_through:       'Attraversa il corridoio — avanza dritto',
-  stand_look_around:  'Fermo — ruota lo sguardo (max 90°)',
+  // 2026-07-27: stand_look_around removed -- confirmed broken in any
+  // orientation, now unconditionally remapped server-side to
+  // walk_in_explore, making it a redundant duplicate option here.
   subtle_rotate:      'Rotazione sottile — max 15° (piccoli ambienti)',
-  approach_reveal:    'Avvicinati laterale — tracking parallelo alla parete (non per piccoli ambienti)',
+  approach_reveal:    'Avvicinati dolcemente — per piccoli ambienti',
   walk_toward:        'Avvicinati alla proprietà — per esterni',
   reveal_pullback:    '⭐ Avvicinamento con profondità — primo piano più veloce dello sfondo (esterno/facciata)',
-  step_out_onto:      'Esci verso — per balconi e terrazze (max 60°)',
+  step_out_onto:      'Esci verso — per balconi e terrazze (max 30°)',
 };
 
 

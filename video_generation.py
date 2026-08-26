@@ -233,9 +233,15 @@ _VEO_MOVEMENT_TOKENS = {
     },
     # Small rooms — subtle 3D parallax rotation
     "approach_reveal": {
-        "very_slow":    "very slow subtle 3D lateral movement — maximum 15 degrees, foreground slightly faster than background creating minimal parallax. Strictly within original photo frame",
-        "natural_pace": "slow subtle 3D lateral movement with minimal parallax. Maximum 15 degrees. Within original photo",
-        "energetic":    "subtle 3D lateral movement with parallax. Maximum 15 degrees. Within original photo",
+        # 2026-07-27: was described as lateral movement here, while Luma's
+        # version of this same movement name is forward/toward-the-space --
+        # a real cross-model mismatch where the same button produced
+        # different actual camera behavior depending on tier. Aligned to
+        # the safer, forward description, matching Luma and matching its
+        # role as the small-room fallback movement.
+        "very_slow":    "very slow subtle 3D dolly toward the space, foreground slightly faster than background creating minimal parallax. Strictly within original photo frame",
+        "natural_pace": "slow subtle 3D dolly toward the space with minimal parallax. Within original photo",
+        "energetic":    "subtle 3D dolly toward the space with parallax. Within original photo",
     },
     # Partial pan
     "stand_look_around": {
@@ -257,9 +263,13 @@ _VEO_MOVEMENT_TOKENS = {
     },
     # Balcony/terrace
     "step_out_onto": {
-        "very_slow":    "very slow 3D pan across the outdoor space with depth parallax — maximum 60 degrees, foreground railing or plants move faster than distant view. Within original photo width",
-        "natural_pace": "slow 3D pan across the outdoor space with parallax depth — maximum 60 degrees. Within original photo boundaries",
-        "energetic":    "3D pan across the outdoor space with parallax — maximum 60 degrees. Within original photo",
+        # 2026-07-27: was 60 degrees, directly contradicting _VEO_RULES'
+        # own global "maximum camera movement is 30 degrees in any
+        # direction" -- genuinely conflicting instructions in the same
+        # prompt. Capped to match the global rule for consistency.
+        "very_slow":    "very slow 3D pan across the outdoor space with depth parallax — maximum 30 degrees, foreground railing or plants move faster than distant view. Within original photo width",
+        "natural_pace": "slow 3D pan across the outdoor space with parallax depth — maximum 30 degrees. Within original photo boundaries",
+        "energetic":    "3D pan across the outdoor space with parallax — maximum 30 degrees. Within original photo",
     },
     # Reveal pullback — reverse dolly from property outward
     # Camera starts close to the building/subject and moves backward,
@@ -329,7 +339,7 @@ _LUMA_MOVEMENT_TOKENS = {
     "subtle_rotate":      "almost static shot with imperceptibly subtle 3D micro-parallax, maximum 10 degrees, smooth continuous motion, realistic physics",
     "approach_reveal":    "slow subtle 3D dolly toward the space, foreground slightly faster than background for minimal depth parallax, smooth continuous motion, realistic physics",
     "walk_toward":        "slow 3D forward dolly approaching the building, foreground ground moving faster than the facade for depth parallax, smooth continuous motion, realistic physics",
-    "step_out_onto":      "slow 3D pan across the outdoor space, foreground railing or plants moving faster than the distant view for depth parallax, maximum 40 degrees, smooth continuous motion, realistic physics",
+    "step_out_onto":      "slow 3D pan across the outdoor space, foreground railing or plants moving faster than the distant view for depth parallax, maximum 30 degrees, smooth continuous motion, realistic physics",  # 2026-07-27: was 40, harmonized to match Veo's cap for cross-model consistency
     "reveal_pullback":    "reverse 3D dolly shot, camera slowly moving backward as foreground elements slide past the frame edges, natural depth parallax throughout, smooth continuous motion, realistic physics",
 }
 
@@ -401,11 +411,18 @@ def assemble_pov_prompt(
     # turning movements to a forward-dolly movement, AND layer an explicit
     # anti-drift constraint on top so the constraint holds even if the
     # base movement language alone is interpreted loosely.
+    # 2026-07-27: confirmed by the user to be broken in ANY orientation,
+    # not just portrait -- unconditional remap, applied before the
+    # portrait-specific checks below, regardless of output_format.
+    if pov_movement == "stand_look_around":
+        log.info("[VideoGen] stand_look_around remap (all formats, confirmed broken): -> walk_in_explore")
+        pov_movement = "walk_in_explore"
+
     _PORTRAIT_REMAPS = {
         "walk_in_gentle":     "walk_in_explore",  # lateral tracking -> forward dolly
         "walk_in_turn_left":  "walk_in_explore",  # left pivot -> forward dolly
         "walk_in_turn_right": "walk_in_explore",  # right pivot -> forward dolly
-        "stand_look_around":  "walk_in_explore",  # confirmed never used, too much -> forward dolly
+        "step_out_onto":      "walk_toward",      # widest pan of any movement (40/60 deg) -> forward approach, exterior-appropriate
     }
     if output_format == "portrait" and pov_movement in _PORTRAIT_REMAPS:
         _original_movement = pov_movement
