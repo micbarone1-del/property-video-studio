@@ -304,3 +304,50 @@ All three bugs were only discoverable by watching the real, rendered output of a
 - `generate_narration_and_derive_scenes()`: confirmed the premium/standard branching produces the correct scene-count range in each mode (28s speech → 5 scenes standard; 58s speech → 11 scenes premium) using a real, temporary audio file so the existing "prefer tightest fit" trimming logic could run for real, with Claude/TTS calls mocked to avoid any actual cost.
 
 **Not yet done:** a real, live scrape of an actual listing (real extraction, real narration text, real photo categorization from a real site) has not been run — the user explicitly declined this for now, judging the isolated tests sufficient. Worth running before fully trusting this in production, given the standard-format equivalent of this feature has a much longer track record of real use.
+
+
+## July 26-27, 2026 — Real-world testing round: field mix-up fix, TTS-failure visibility, a self-caused NameError, and the full portrait/harmonization movement fix
+
+This entire stretch was again prompted directly by the user testing real jobs and reporting exactly what they saw, continuing the same pattern from the July 23-24 stretch above.
+
+### Real bug: property address ended up in the voice ID field, silently producing a video with no audio
+
+**Root cause, confirmed via the server log's actual ElevenLabs error response:** the "Property name" and "ElevenLabs voice ID" text inputs had no `autocomplete="off"`, letting the browser restore/suggest values from unrelated past form fills. A real address ended up in the voice ID field; ElevenLabs correctly rejected it with a 400 ("An invalid ID has been received: '...'"), `generate_voice()` returned `False`, and the job completed with a video but zero audio — silently, with no indication anywhere in the UI.
+
+**Fixed:** `autocomplete="off"` added to both text inputs, plus the model-tier/transition/output-format/lighting/intensity `<select>` dropdowns (which were separately observed reverting to different defaults — same underlying cause, browser-side form-state restoration, not application logic).
+
+### Real reliability gap: TTS failures were completely silent
+
+**Confirmed:** the exact incident above also exposed a second, independent gap — a failed `generate_voice()` call fell through to the same `audio_paths[i] = None` as a scene with no voiceover text at all, with no log warning and no way to distinguish the two in the job's own status (`"skipped"` either way).
+
+**Fixed:** `tts_failed_scenes` tracking added to `run_pipeline()` — logs a clear warning at the moment of failure, and per-scene status now correctly shows `"failed"` instead of `"skipped"` when voiceover text existed but generation genuinely failed. `job["tts_failures"]` stores the affected scene indices. Frontend: a new warning banner on the result page when this is non-empty, listing the affected scene(s).
+
+### Clear audio-mechanism messaging, per explicit request
+
+The narration-status line now states which audio mechanism is active for the current job (continuous narration, with its 1.0s lead/trail buffer, and an explicit note that per-scene voiceover is ignored while it's active — confirmed intentional design, not a bug — versus per-scene voiceover with its 0.5s lead/trail buffer), so the two mechanisms and their different buffer values are never ambiguous.
+
+### Real, self-caused incident: a live NameError during an actual generation attempt
+
+**What happened:** while building the portrait movement fix below, `output_format=job.get("output_format", "landscape")` was added to all three `generate_video_single()` call sites in `api_server.py`, verified only by confirming the *string* `job = JOBS[job_id]` existed somewhere in the file — without confirming it was within the specific calling function's own scope. `run_pipeline()` (the first-time-generation path) has no local `job` variable at all — it takes explicit individual parameters (`model_tier`, `lighting`, `intensity`, etc.), never the full job dict. This shipped, and the user's next real generation attempt failed live with `NameError: name 'job' is not defined`, stuck at 35% progress.
+
+**Root cause found and fixed within the same session:** gave `run_pipeline()` its own explicit `output_format` parameter (matching the existing pattern for `model_tier`/`lighting`/`intensity`), and fixed both of its callers — `create_job()` (which already had `job_format` computed locally) and `start_generation_for_draft()` (which does have `job` correctly in scope, unlike `run_pipeline()` itself).
+
+**Standing lesson reinforced:** confirming a variable name exists *somewhere in a file* is not the same as confirming it's in scope at the specific point being edited — the second, more expensive verification step (checking actual function boundaries) is the one that catches bugs like this, and it was skipped under time pressure. Caught this session via the user's own real-world test, not by review.
+
+### Portrait-specific camera movement fix (backlog item 37) — built, then confirmed via a real generation
+
+**Problem, precisely characterized by the user:** not about degree values, but about constraining the camera to only show content within the original photo frame while preserving genuine 3D depth (ruling out both a flat 2D pan/zoom as unrealistic for a property walkthrough, and a simple degree-reduction as unreliable since movement descriptions are language, not deterministic camera parameters). Root cause: a 9:16 frame has roughly a third the horizontal field of view of 16:9, so lateral/turning movements run past the edge of real photo content far sooner.
+
+**Fix:** confirmed-problematic lateral/turning movements (`walk_in_gentle`, `walk_in_turn_left`, `walk_in_turn_right`, `stand_look_around`) remapped to `walk_in_explore` for portrait output, plus an explicit anti-drift constraint layered onto the final prompt ("camera moves strictly along a single forward axis, no lateral drift, no panning, no pivoting") for both Luma and Veo — since the base movement language alone isn't deterministic enough to guarantee no drift. `output_format` threaded through `generate_video_single()`/`assemble_pov_prompt()` and all 3 real call sites. Composes correctly with the existing small-room remap (portrait remap runs first; a small+portrait room still correctly cascades to `subtle_rotate` afterward).
+
+**Confirmed via a real generation, same day:** user ran an actual portrait job with the confirmed-problematic movement — the video went straight (forward dolly) instead of attempting the rotation, exactly as designed.
+
+### Harmonization follow-up, same day — comprehensive review across all movements, both models, both formats
+
+Per explicit request after the portrait confirmation, three further real findings from a full systematic review of all 11 movement tokens in both `_LUMA_MOVEMENT_TOKENS` and `_VEO_MOVEMENT_TOKENS`:
+
+1. **`stand_look_around` confirmed broken in ANY orientation**, not just portrait (direct user feedback, since the UI's own label showed "max 90°" while the actual Luma/Veo prompts said 20°/30° — a separate labeling discrepancy also fixed). Now unconditionally remapped to `walk_in_explore` regardless of `output_format`, and removed from the UI dropdown entirely as a now-redundant duplicate option.
+2. **`step_out_onto` had the largest degree values of any movement** (Luma 40°, Veo 60°) and was never addressed by the original portrait fix, despite the same underlying risk. Added to the portrait remap list — mapped to `walk_toward` rather than `walk_in_explore`, since it's an exterior/balcony movement, not a room walkthrough. Harmonized down to 30° for landscape use in both models: Veo's own 60° directly contradicted `_VEO_RULES`' global "maximum camera movement is 30 degrees in any direction" — a genuine self-contradiction sent to the model in every single prompt, regardless of which movement was actually chosen.
+3. **`approach_reveal` behaved differently per model for the identical button** — Luma described it as forward/toward-the-space, Veo described it as lateral (15°). Same name, different actual camera behavior depending on which tier was selected. Aligned Veo's description to match Luma's safer, forward-oriented one, consistent with its role as the small-room fallback movement (used by `_SMALL_ROOM_REMAPS`).
+
+UI labels updated to match all three findings. Verified via isolated function-level tests covering all changes, including cross-model and format-regression checks; **not yet confirmed via a real generation** for `step_out_onto` or `approach_reveal` specifically (only the original 4-movement portrait fix has a real-world confirmation so far).
