@@ -1,6 +1,6 @@
 # Property Video Studio — Backlog
 
-_Last updated: July 22, 2026 — architecture consolidation (item 38) now fully complete, all 6 items; items 31 (Claude API cost), 37 (Luma general wobble), 39 (full client/property/job library reorganization), 40 (dead-code retirement) all completed; item 32 investigated with diagnostic logging added in place of a guessed fix; item 15 explicitly deprioritized. Numbering gap between 16 and 30 is a known pre-existing inconsistency from an earlier renumbering, not yet cleaned up._
+_Last updated: September 17, 2026 — item 15 (idealista.it/casa.it scraping) reactivated after being deprioritized July 22, 2026, back to its normal priority position (not jumped to top); new item 47 scoped (own-brand watermark on every video, pending a transparent-PNG asset from the user). Content below this line otherwise reflects work through July 24-27, 2026 (see status.md for full detail) — the "Last updated" line itself had gone stale relative to the body content and is corrected here. Numbering gap between 16 and 30 is a known pre-existing inconsistency from an earlier renumbering, not yet cleaned up._
 
 Items are ordered by priority. Each entry includes scope, decisions already made, and open questions still needing resolution.
 
@@ -18,7 +18,7 @@ Items are ordered by priority. Each entry includes scope, decisions already made
 - Narration/captions: yes, auto-generate from the scraped listing description text (built — see status.md and item 6 below on its architectural separation from the manual workflow).
 
 **Concretely remaining:**
-1. Test the same engine against a real idealista.it listing, then a real casa.it listing (see item 15 — still confirmed broken, not started, explicitly deprioritized July 22, 2026).
+1. Test the same engine against a real idealista.it listing, then a real casa.it listing (see item 15 — still confirmed broken, not started; deprioritized July 22, 2026, reactivated September 17, 2026).
 2. Human-review the auto-generated narration/caption text for quality and pacing.
 3. Phase 2 automation (currently Phase 1: auto-populates the editor, human presses "Generate Video" manually).
 
@@ -126,11 +126,11 @@ This was a thinner, earlier entry describing the same feature scoped in more det
 
 ---
 
-## 15. idealista.it / casa.it photo extraction doesn't work yet — DEPRIORITIZED July 22, 2026
+## 15. idealista.it / casa.it photo extraction doesn't work yet — REACTIVATED September 17, 2026
 
 **Problem, confirmed via real testing:** both sites return 0 photos consistently (immobiliare.it works reliably).
 
-**Likely real fix, not started:** find each site's internal image-loading API/endpoint rather than parsing the rendered page. Explicitly deprioritized by the user — lower value than other open items right now.
+**Likely real fix, not started:** find each site's internal image-loading API/endpoint rather than parsing the rendered page. **Deprioritized July 22, 2026, reactivated September 17, 2026** — back in the active backlog at its original priority position (part of item 1's remaining scope), explicitly not moved to top priority.
 
 ---
 
@@ -322,6 +322,18 @@ UI labels updated to match all of the above.
 **Requested** (track this Claude Pro subscription, €21.96/month, as part of overall investment tracking). **Found:** the investment ledger (`cost_model.py`'s `investment.json`, driving the "Investimento (fisso)" figure) had no way to add a single entry -- only a full-ledger replace, apparently meant for an XLS re-upload workflow that was never built.
 
 **Built:** `add_investment_entry()`/`delete_investment_entry()`, new `GET`/`POST /investment`, `DELETE /investment/{index}` endpoints, a new Investment section in the cost modal. The real Claude Pro entry was added -- its note flags that a new entry is needed each billing cycle to stay current, since there's no automatic recurring-cost mechanism. See status.md for full detail.
+
+## 47. Own-brand "Property Video Studio" watermark on every video — NEW, scoped September 17, 2026
+
+**Requested September 17, 2026.** A permanent brand watermark burned into every generated video, unconditionally — distinct from item 7's client logo, which is optional and per-agency. This is Property Video Studio's own mark, meant to appear regardless of which client the job is for.
+
+**Decisions made (explicit product choices, not assumed):**
+- **Position: bottom-left corner** — deliberately the opposite corner from item 7's client logo (bottom-right), so both can be shown at once without overlapping.
+- **Asset:** the first file provided was a JPEG with a solid white background — unusable as-is, since JPEG carries no alpha channel and would composite as a white rectangular block rather than a clean overlay. User will supply a proper transparent PNG instead.
+
+**Not yet built** — waiting on the transparent PNG asset before implementation. Intended approach once the asset arrives: reuse item 7's existing `assemble_property_video()` compositing pattern (a second, unconditional `CompositeVideoClip` layer, non-fatal on failure, alongside the existing conditional client-logo layer) rather than building a separate mechanism — per standing architecture-discipline practice of not duplicating workflow logic. Applies going forward only (assembly-time compositing) — does not retroactively change already-delivered videos unless they're reassembled.
+
+---
 
 ## Recently completed (see status.md for full detail)
 
