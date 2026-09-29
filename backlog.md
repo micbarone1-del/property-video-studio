@@ -1,6 +1,6 @@
 # Property Video Studio — Backlog
 
-_Last updated: September 17, 2026 — item 15 (idealista.it/casa.it scraping) reactivated after being deprioritized July 22, 2026, back to its normal priority position (not jumped to top); new item 47 scoped (own-brand watermark on every video, pending a transparent-PNG asset from the user). Content below this line otherwise reflects work through July 24-27, 2026 (see status.md for full detail) — the "Last updated" line itself had gone stale relative to the body content and is corrected here. Numbering gap between 16 and 30 is a known pre-existing inconsistency from an earlier renumbering, not yet cleaned up._
+_Last updated: September 17, 2026 — item 15 (idealista.it/casa.it scraping) reactivated after being deprioritized July 22, 2026, back to its normal priority position (not jumped to top); item 47 (own-brand watermark) built and pushed September 28, 2026 but not yet live-verified; new item 48 scoped (CRM partner API). Content below this line otherwise reflects work through July 24-27, 2026 (see status.md for full detail) — the "Last updated" line itself had gone stale relative to the body content and is corrected here. Numbering gap between 16 and 30 is a known pre-existing inconsistency from an earlier renumbering, not yet cleaned up._
 
 Items are ordered by priority. Each entry includes scope, decisions already made, and open questions still needing resolution.
 
@@ -131,6 +131,8 @@ This was a thinner, earlier entry describing the same feature scoped in more det
 **Problem, confirmed via real testing:** both sites return 0 photos consistently (immobiliare.it works reliably).
 
 **Likely real fix, not started:** find each site's internal image-loading API/endpoint rather than parsing the rendered page. **Deprioritized July 22, 2026, reactivated September 17, 2026** — back in the active backlog at its original priority position (part of item 1's remaining scope), explicitly not moved to top priority.
+
+**Idea raised by Relinx (CRM partner, item 48), September 29, 2026, NOT scoped:** scraping listing sites at scale from our server risks IP bans; their suggestion is a small local tool the agency runs on its own PC, logging into its own gestionale (e.g. Getrix) via Playwright with the agency's consent, sending cleaned data to us from the agency's own IP. Real concerns before pursuing this: (1) still automated extraction — the target site's terms may forbid it even from the agency's own account; check for an official export/API first; (2) means shipping and maintaining a desktop app per agency, breaking whenever the target site's UI changes; (3) needs a clear credentials/consent story. Treat as a separate, unscoped idea — not a quick fix for this item.
 
 ---
 
@@ -331,7 +333,76 @@ UI labels updated to match all of the above.
 - **Position: bottom-left corner** — deliberately the opposite corner from item 7's client logo (bottom-right), so both can be shown at once without overlapping.
 - **Asset:** the first file provided was a JPEG with a solid white background — unusable as-is, since JPEG carries no alpha channel and would composite as a white rectangular block rather than a clean overlay. User will supply a proper transparent PNG instead.
 
-**Not yet built** — waiting on the transparent PNG asset before implementation. Intended approach once the asset arrives: reuse item 7's existing `assemble_property_video()` compositing pattern (a second, unconditional `CompositeVideoClip` layer, non-fatal on failure, alongside the existing conditional client-logo layer) rather than building a separate mechanism — per standing architecture-discipline practice of not duplicating workflow logic. Applies going forward only (assembly-time compositing) — does not retroactively change already-delivered videos unless they're reassembled.
+**Status, September 28, 2026 — BUILT and pushed, NOT yet live-verified.** Transparent PNG received (first two supplied files had no alpha; the gray-background PNG was keyed out and downscaled to 420px, palette PNG, ~7KB) and stored at `assets/pvs_watermark.png`. `assemble_property_video()` in `video_assembly.py` now composites it as a second, unconditional, non-fatal layer after item 7's client-logo layer: bottom-left, full duration, **fixed 210px width and 40px margin** (not a percentage of frame width — a percentage looked too big on landscape and too small on portrait in side-by-side previews; fixed pixels approved on both). Commit 08906d6, merged and pushed to main. Py-compile OK on the server. **The service has NOT been restarted and no real video has been produced with it yet** — the test (assemble from real archived clips in landscape AND portrait, view a frame, confirm no overlap with a client logo) is still to do. Also committed by mistake: `video_assembly.py.bak_pre_watermark` (harmless local backup, should be removed from the repo).
+
+**Update September 28, 2026:** the watermark stays on all CRM-partner videos (item 48) — these are free videos and the watermark is the advertising. If a paid, watermark-free tier is ever offered it will need a per-partner/per-agency flag; not built, since the watermark is currently unconditional by design.
+
+---
+
+## 48. CRM partner API — video production from Relinx's CRM data — NEW, scoped September 28, 2026, confirmed September 29, 2026
+
+**Context:** the partner is **Relinx**, a real-estate CRM (holds photos, features and descriptions per property). Their customers (agencies) would get property videos produced from Relinx data. Free videos with our watermark (item 47) which get advertised via posting on major platforms. Technical contact on their side: Michele (same first name as us — do not confuse the two in notes). Nothing built yet; no contract, no legal review yet.
+
+**Design principle (architecture discipline, item 38):** the API must be a thin adapter over the SAME job-creation path the manual and URL-scraper flows already use (`create_job()` / `start_generation_for_draft()` in api_server.py, and the same `assemble_property_video()`), NOT a third pipeline. Search for existing equivalents before adding anything.
+
+**Decisions made September 28, 2026:**
+- **Human review stays** until auto-QC is trusted (item 11). The partner sees a pending/WIP state until an operator approves. No auto-release for now.
+- **Watermark stays** on all partner videos (see item 47 update).
+- **Limits and dashboard:** proposed parameters below; they are to be folded into the dashboard design principles (NEXT MILESTONE).
+- **Resolved September 29, 2026: on-demand only** (agent clicks a button per listing), not automatic for every listing — confirmed with Relinx.
+
+**Confirmed with Relinx, September 29, 2026 (their answers to our questions):**
+1. **Volumes:** 2 videos/day per agency is acceptable to them — but only 1 agency runs at pilot start (see point 6), so this is a generous ceiling relative to real pilot traffic, not a tight constraint.
+2. **Photo hosting:** direct public URLs, no authentication — we read them as given in the request package. SSRF protections below still apply since these are still partner-supplied URLs.
+3. **Their integration pattern (already in production on their side, same as their Google Calendar push-notification pattern):** they POST a package to our endpoint, we reply immediately with id+status, and separately we call back to one of THEIR endpoints when the video is ready. This matches our design below (POST /v1/videos → 202, then webhook to callback_url) — no redesign needed.
+4. **Where it appears / approval:** shows in the property record with what Relinx calls "the 4 states" (referencing a box in their own message we have not seen the content of — **open, see below**). Alert fires when the video arrives; sharing requires an explicit click from the agent/admin (matches our "no auto-release" decision).
+5. **Rights/privacy — CONFIRMED REAL GAP, not hypothetical:** Relinx's current agency agreements do NOT cover using photos for third-party video generation or social publication. A dedicated agency-side consent addendum plus a data-processing agreement between us and Relinx are both required before launch. This is a go/no-go blocker for the pilot, not a nice-to-have — needs a lawyer, not something to resolve in chat.
+6. **Target agencies:** 1 agency for the pilot, extending to 3 more afterward based on results (4 total eventually). The global multi-agency cap for that later stage is intentionally NOT set yet (see Proposed limits below).
+7. **Getrix is irrelevant to this integration** — dropped. Data comes from Relinx's own CRM, already the single source of truth on the agency side. (The Playwright/local-tool idea Relinx separately floated is a possible future approach for OTHER, non-CRM-integrated agencies — see the note added to items 1/15, not part of this item.)
+
+**Open, not yet answered:** the exact 4 states Relinx's own box refers to (need the literal list/names before finalizing our 5-state model above — a status-vocabulary mismatch would break the integration silently).
+
+**Proposed API (v1, sketch, not final):** Bearer API key per partner, mapped to agencies, hashed at rest, versioned URLs.
+- `POST /v1/videos` → 202 `{id, status}`; `Idempotency-Key` header required (no double charges on retry).
+- `GET /v1/videos/{id}` → status, progress, signed expiring `video_url` when completed. `GET /v1/videos?external_ref=` looks up by the CRM's own listing ID.
+- `DELETE /v1/videos/{id}` (GDPR erasure) — must go through the app's soft-delete/recovery mechanism, never a raw delete under jobs/.
+- `PUT /v1/agencies/{external_id}` — name, logo URL (item 7 rules: PNG with alpha), default voice, language.
+- Webhooks to partner `callback_url`, HMAC-signed: `video.in_review`, `video.completed`, `video.failed`.
+- Create body: `external_ref`, `agency_id`, `property {name, description, features[], language}`, `photos[{url, room_type, order}]`, `options {format landscape|portrait, voice_id, template standard|premium}`, `callback_url`.
+- Photos are fetched server-side from partner URLs → SSRF protection (per-partner domain allowlist, image type/size checks, photo-count cap, timeouts).
+- **Partner-visible statuses:** `queued`, `processing`, `in_review` (human review pending, shown to the partner as pending/WIP), `completed`, `failed`. Internal states (QC flagged, rework, etc.) are never exposed. A rejected video is either reworked (stays `in_review`/`processing`) or ends as `failed` with a generic reason.
+
+**Finalized pilot limits, September 29, 2026 (supersedes the earlier draft numbers, which assumed multiple agencies from day one):**
+- Per agency, daily: **2 videos** (confirmed acceptable by Relinx).
+- Per agency, monthly: **40 videos** — deliberately below the 60 a daily max would allow, so even sustained daily maxing forces a checkpoint before month-end.
+- Total during pilot: same as per-agency, since only 1 agency is active at pilot start (point 6). The global cap for the later 4-agency stage is an open decision, NOT simply 4x — depends on how the pilot goes and on our own infra capacity, to be revisited then.
+- Concurrency: max 2 partner jobs generating at once — a technical safety cap (no real queue exists yet), not a business one; real volume won't stress this.
+- Rework: 1 free regeneration per video (reworks cost real money).
+- Input: 5 to 15 photos per video; JPEG/PNG/WebP; min 1024px on the long edge; max 15MB each.
+- API burst limit: 5 requests/minute (generous headroom at this volume; just guards the server).
+- Review SLA: operator review target within 1 business day; alert when the oldest `in_review` item exceeds 24h.
+- Retention: source photos deleted 30 days after completion; finished video kept 90 days; download links signed and expiring (7 days, re-issuable).
+- Still not validated: real cost per video from cost_model, and fal.ai/ElevenLabs real concurrency limits — that check is still open, see NEXT MILESTONE.
+
+**Dashboard design principles (feed into NEXT MILESTONE):**
+1. The operator inbox shows only what needs a human: awaiting review, QC flagged, failed. Everything else is silent.
+2. Every item shows its source (manual, scraper, partner name) and its age; oldest-pending is the headline number.
+3. Per-partner panel: quota used vs limit (day/month), concurrency in use, spend vs ceiling, rework count.
+4. Global panel: queue depth, jobs generating vs the ceiling, spend burn vs the global ceiling.
+5. Limits are configuration, editable per partner without a deploy; hitting a limit returns a clear 429 with `Retry-After`, never a silent drop.
+6. One shared queue for all sources — no separate path for API jobs.
+
+**Draft terms to raise with the CRM partner (NOT legal advice — needs review by an Italian lawyer before anything is signed):**
+- Roles: CRM/agency is the data controller, we are the processor; a data-processing agreement is required. Our sub-processors (fal.ai, ElevenLabs, Anthropic) must be listed, and data may leave the EU, so transfer safeguards (e.g. standard contractual clauses) need checking.
+- Photo rights: the partner warrants that the agency has the right to use the photos, to have videos generated from them, and to have them published; people visible in photos are a risk.
+- Publication: because we advertise by posting the videos on major platforms, we need an explicit, separate right to publish them with agency consent — this is the point most likely to be contested.
+- Accuracy: videos are AI-generated approximations of the property. The agency must review and approve before publishing; we do not warrant that a video is free of hallucinated features. Misleading-advertising rules apply to the agency.
+- AI-generated content: check transparency/labelling obligations for synthetic video (EU AI Act). The "generated with Property Video Studio" watermark may help but must be verified with counsel.
+- Pilot terms: no uptime SLA, liability cap, deletion of all data on termination, either side can end the pilot at any time.
+
+**Prerequisites / dependencies:** item 47 verified live; the concurrency queue + operator dashboard (NEXT MILESTONE); item 39 (client/property/job library) is the natural home for agency and property records; item 11 (agent QC) is what eventually allows dropping the human review gate. Structured CRM data removes the need for scraping listing sites for these customers, which lowers the urgency of item 15 for this channel.
+
+**Still open:** the exact 4-states list Relinx's box refers to (see above); the rights/DPA addendum (above — blocking); who pays if this becomes paid; whether partner agencies see the operator review step at all. Resolved and removed from this list: on-demand vs automatic (on-demand), photo hosting (public URLs), volumes (2/day/agency), target agencies (1, then 3 more), Getrix (irrelevant).
 
 ---
 
