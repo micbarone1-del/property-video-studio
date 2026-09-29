@@ -52,6 +52,26 @@ def _check_access(request: Request) -> bool:
     return key == UI_ACCESS_KEY
 
 
+# ── Partner API auth (backlog item 48, 2026-09-29) ──────────────────────────
+# Distinct from UI_ACCESS_KEY above: that's a single shared admin key for
+# the web UI; this supports multiple partners (e.g. Relinx), each with
+# their own revocable key, hashed at rest -- see partner_api.py.
+import partner_api
+
+
+async def get_current_partner(authorization: str = Header(None)) -> dict:
+    """FastAPI dependency: validates the Authorization: Bearer <key> header
+    against partner_api's stored partner keys. Raises 401 if missing,
+    malformed, or invalid."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+    raw_key = authorization[len("Bearer "):].strip()
+    partner = partner_api.verify_partner_key(raw_key)
+    if not partner:
+        raise HTTPException(status_code=401, detail="Invalid or inactive API key")
+    return partner
+
+
 BASE_DIR = Path(__file__).parent
 JOBS_DIR = BASE_DIR / "jobs"
 JOBS_DIR.mkdir(exist_ok=True)
