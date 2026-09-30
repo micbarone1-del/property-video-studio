@@ -264,44 +264,65 @@ def extract_listing(url: str, attempt_resolution_upgrade: bool = True) -> dict:
 
 def classify_uncategorized_photo(image_url: str) -> str:
     """
-    For any photo Claude couldn't confidently label, falls back to the
-    existing Florence-2 vision analysis already used elsewhere in the
-    pipeline (vision_analysis.py's analyse_input()), per the agreed design:
-    site labels first, AI classification as fallback.
+    For any photo whose label/caption from the source page didn't map
+    confidently to one of our categories, classifies the room type
+    directly from the real image using Claude vision -- same client,
+    model and download-then-send pattern as rank_photos_by_quality()
+    above, applied to a different question (room type, not quality
+    ranking).
 
-    ASSUMPTION FLAGGED: this assumes analyse_input()'s return dict contains
-    a "space_type" (or similarly named) field whose value can be mapped to
-    one of our 6 categories. This has NOT been independently re-verified in
-    this session — check real output the first time this actually runs,
-    since analyse_input() was originally built for camera-movement decisions
-    (e.g. "large"/"small" space types), which may not map 1:1 onto
-    exterior/living/kitchen/bedrooms/bathrooms/outdoor without adjustment.
+    2026-09-29 (backlog item 48/Relinx): REPLACES the previous
+    Florence-2-based implementation, which was flagged in its own
+    comment as never independently verified -- confirmed broken:
+    Florence-2 was only ever asked about room SIZE (large/medium/small/
+    exterior) in analyse_input(), never room TYPE, so kitchen/living/
+    bathroom photos always silently fell through to "uncategorized"
+    (only "bedroom" and "exterior" matched by coincidence, since those
+    words happen to overlap). vision_analysis.py/Florence-2 remains in
+    use elsewhere for camera-movement decisions and post-generation QC
+    -- a genuinely different question this change does not touch (see
+    backlog item 11 for that separate, unscoped decision).
+
+    Deliberately limited to the 6 PRIORITY_ORDER categories (not the 9
+    EXTRACTION_PROMPT allows for, which adds laundry/office/garage for
+    the initial Claude labeling pass) -- a value outside PRIORITY_ORDER
+    would silently vanish in _categorize_and_rank_photos() on the
+    standard (non-premium) path, the exact bug this function exists to
+    fix, not reintroduce.
+
+    Falls back to "uncategorized" if the vision call fails for any
+    reason -- this must never raise, since callers rely on it always
+    returning a valid string.
     """
     try:
-        import tempfile
-        from vision_analysis import analyse_input
-
+        import base64
         resp = requests.get(image_url, timeout=15)
         resp.raise_for_status()
-        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
-            f.write(resp.content)
-            tmp_path = f.name
+        b64 = base64.b64encode(resp.content).decode("utf-8")
 
-        try:
-            result = analyse_input(tmp_path)
-            # best-effort mapping — VERIFY against real analyse_input() output
-            space_type = str(result.get("space_type", "")).lower()
-            mapping_hints = {
-                "kitchen": "kitchen", "bathroom": "bathrooms", "bedroom": "bedrooms",
-                "living": "living", "exterior": "exterior", "outdoor": "outdoor",
-                "garden": "outdoor", "facade": "exterior",
-            }
-            for hint, category in mapping_hints.items():
-                if hint in space_type:
-                    return category
-            return "uncategorized"
-        finally:
-            os.remove(tmp_path)
+        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        prompt = (
+            "Look at this real estate photo. Which ONE category best "
+            "describes the room or area shown?\n\n"
+            "Categories: exterior (building facade, outdoor view of the "
+            "property itself), living (living room, dining room, study, "
+            "hallway, stairs), kitchen, bedrooms, bathrooms, outdoor "
+            "(garden, terrace, courtyard, parking area, land/terrain).\n\n"
+            "If none clearly fits, answer exactly: uncategorized\n\n"
+            "Answer with ONLY the category word, nothing else."
+        )
+        content = [
+            {"type": "text", "text": prompt},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
+        ]
+        response = _track_claude(client.messages.create(
+            model=MODEL, max_tokens=20,
+            messages=[{"role": "user", "content": content}],
+        ))
+        raw = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip().lower()
+        if raw in CATEGORIES:
+            return raw
+        return "uncategorized"
     except Exception as e:
         log.warning(f"[Scraper] Vision QC fallback failed for {image_url}: {e}")
         return "uncategorized"
