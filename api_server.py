@@ -29,7 +29,8 @@ from datetime import datetime, timedelta
 from collections import defaultdict
 
 
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException, BackgroundTasks, Request, Header
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, BackgroundTasks, Request, Header, Depends
+from pydantic import BaseModel
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -585,9 +586,15 @@ async def auth_middleware(request: Request, call_next):
     path = request.url.path
     # Always allow: root UI, health check, static assets, clip previews
     # Clip previews need to be exempt because browsers can't send headers for <video src>
+    # 2026-09-30 (backlog item 48/Relinx): /v1/* has its own separate
+    # authentication (Bearer partner API key, see get_current_partner) --
+    # bypassing UI_ACCESS_KEY here does not disable auth for these routes,
+    # it just avoids a second, irrelevant check layered on top of the
+    # partner-key check that already protects them.
     if (path in ("/", "", "/health")
             or path.startswith("/static")
             or path.startswith("/test-scratch/")
+            or path.startswith("/v1/")
             or "/clip/" in path
             or path.endswith("/download")
             or "/image/" in path):
@@ -1436,6 +1443,42 @@ async def reassemble_with_narration(job_id: str, background_tasks: BackgroundTas
 # manual review step) is a later addition, not built yet.
 
 @app.post("/jobs/from-url")
+async def _apply_vision_analysis_to_scenes(scenes_config: list, scene_image_paths: list, log_prefix: str = "URL workflow") -> None:
+    """
+    Runs real per-photo vision analysis (analyse_input) to set each scene's
+    space_type/pov_movement from the actual photo, overriding the
+    category-based static defaults already on scenes_config. Mutates
+    scenes_config in place.
+
+    Extracted 2026-09-30 (backlog item 48/Relinx) from create_job_from_url(),
+    where this logic previously lived inline -- the Relinx adapter needs the
+    exact same analysis, and duplicating it would reintroduce the kind of
+    drift this project's architecture-discipline rule exists to prevent.
+    Behavior is unchanged from the original inline version; only the log
+    message's prefix is now a parameter instead of a hardcoded string.
+    """
+    from vision_analysis import analyse_input
+    _SPACE_TYPE_NORMALIZE = {
+        "large_interior": "large", "medium_interior": "medium", "small_interior": "small",
+        "ground_exterior": "outdoor",
+    }
+    for i, scene in enumerate(scenes_config):
+        dest_path = scene_image_paths[i]
+        if not dest_path or not dest_path.exists():
+            continue
+        try:
+            analysis = await asyncio.to_thread(analyse_input, str(dest_path))
+            raw_space = analysis.get("v7_space_type") or analysis.get("space_type")
+            if raw_space:
+                scene["space_type"] = _SPACE_TYPE_NORMALIZE.get(raw_space, raw_space)
+            raw_movement = analysis.get("suggested_movement") or analysis.get("pov_movement")
+            if raw_movement:
+                scene["pov_movement"] = raw_movement
+        except Exception as e:
+            log.warning(f"[{log_prefix}] Vision analysis failed for scene {i}, "
+                        f"keeping category-based default: {e}")
+
+
 async def create_job_from_url(
     request: Request,
     property_name: str = Form(""),
@@ -1582,47 +1625,10 @@ async def create_job_from_url(
     else:
         job_format = "landscape"
 
-    # Real per-photo vision analysis — BUG FIXED July 10 2026: scenes were
-    # previously getting space_type/pov_movement from a static category-name
-    # lookup table (e.g. all "bedrooms" always got the same movement),
-    # never actually looking at the photo itself. Manually-uploaded photos
-    # already get real analysis via analyse_input() (the /analyse-image
-    # endpoint) — this brings scraped photos to the same standard instead
-    # of a simplified stand-in. Falls back to the static table only if
-    # analysis fails for a specific photo.
-    from vision_analysis import analyse_input
-
-    # BUG FIXED July 10 2026: confirmed via the real /analyse-image response
-    # shape (used by manual uploads) that the actual keys are
-    # "v7_space_type" and "suggested_movement" — NOT "space_type"/
-    # "pov_movement" as originally written here. That meant real per-photo
-    # movement analysis NEVER actually fired even once; the static
-    # category table was silently doing 100% of the work the whole time.
-    # Also normalizes space_type's raw technical values (e.g.
-    # "large_interior", "ground_exterior") to the plain vocabulary
-    # SPACE_OPTS actually uses in the UI dropdown — mirrors the exact
-    # equivalence already used by ui.html's own spaceLabel() function,
-    # rather than inventing a new mapping.
-    _SPACE_TYPE_NORMALIZE = {
-        "large_interior": "large", "medium_interior": "medium", "small_interior": "small",
-        "ground_exterior": "outdoor",
-    }
-
-    for i, scene in enumerate(scenes_config):
-        dest_path = scene_image_paths[i]
-        if not dest_path or not dest_path.exists():
-            continue
-        try:
-            analysis = await asyncio.to_thread(analyse_input, str(dest_path))
-            raw_space = analysis.get("v7_space_type") or analysis.get("space_type")
-            if raw_space:
-                scene["space_type"] = _SPACE_TYPE_NORMALIZE.get(raw_space, raw_space)
-            raw_movement = analysis.get("suggested_movement") or analysis.get("pov_movement")
-            if raw_movement:
-                scene["pov_movement"] = raw_movement
-        except Exception as e:
-            log.warning(f"[URL workflow] Vision analysis failed for scene {i}, "
-                        f"keeping category-based default: {e}")
+    # 2026-09-30: extracted into _apply_vision_analysis_to_scenes() (backlog
+    # item 48/Relinx) -- shared with the new partner adapter instead of
+    # duplicating this logic a second time. Behavior unchanged.
+    await _apply_vision_analysis_to_scenes(scenes_config, scene_image_paths, log_prefix="URL workflow")
 
     claude_usage = scraper.get_claude_cost()
     log.info(f"[URL workflow] Claude API: {claude_usage['calls']} calls, "
@@ -1700,6 +1706,177 @@ async def create_job_from_url(
 
 
 # ── Job status & download ──────────────────────────────────────────────────────
+
+
+# -- Partner API: CRM integration (backlog item 48, Relinx) -----------------
+# Thin adapter over the SAME job-creation building blocks create_job_from_url()
+# already uses -- narration, photo selection, captions, scene building, vision
+# analysis -- rather than a new parallel pipeline (architecture-discipline
+# rule, item 38). Only the photo SOURCE differs: structured partner data
+# instead of scraping a listing page.
+#
+# External status vocabulary agreed with Relinx (2026-09-30): queued,
+# processing, in_review, completed, failed -- distinct from our internal
+# job statuses. Mapping used here and to be reused by the future
+# GET /v1/videos/{id} and webhook: internal "draft" and "awaiting_approval"
+# both map to external "in_review" (human review is happening either way,
+# Relinx doesn't need to know which phase); "queued"/"running" -> "processing";
+# "done" -> "completed"; "failed" -> "failed".
+
+class RelinxPhoto(BaseModel):
+    url: str
+    category: str = "uncategorized"
+    order: int = 0
+
+class RelinxVideoRequest(BaseModel):
+    external_ref: str
+    agency_name: str
+    property_name: str = "Property"
+    description: str
+    features: list = []
+    photos: list[RelinxPhoto]
+    voice_id: str = ""
+    output_format: str = None
+    callback_url: str
+
+
+@app.post("/v1/videos")
+async def create_video_from_partner(
+    payload: RelinxVideoRequest,
+    partner: dict = Depends(get_current_partner),
+):
+    """
+    Receives a video request from a CRM partner (Relinx), builds a job
+    exactly like create_job_from_url() does for a scraped listing, and
+    stops in "draft" status for human review -- generation is NOT started
+    here. Same workflow as every other job: reviewed and started manually
+    via /jobs/{id}/start-generation. Never auto-releases.
+    """
+    import listing_scraper as scraper
+
+    agency = cost_model.create_agency(payload.agency_name)
+
+    scraper.reset_claude_usage()
+    description_full = payload.description
+    if payload.features:
+        description_full += "\n\nCaratteristiche: " + ", ".join(payload.features)
+
+    narration = await asyncio.to_thread(
+        scraper.generate_narration_and_derive_scenes,
+        description_full, None, None, payload.voice_id or None, False,
+    )
+    if not narration["ok"]:
+        raise HTTPException(status_code=500, detail=f"Narration generation failed: {narration['error']}")
+
+    photos_for_selection = []
+    for p in payload.photos:
+        cat = p.category if p.category in scraper.CATEGORIES else "uncategorized"
+        photos_for_selection.append({"url": p.url, "category": cat})
+    photos_for_selection = await asyncio.to_thread(scraper.resolve_uncategorized_photos, photos_for_selection)
+
+    selection = scraper.select_photos_for_scene_count(photos_for_selection, narration["scene_count"])
+
+    job_id = str(uuid.uuid4())[:8]
+    job_dir = JOBS_DIR / job_id
+    img_dir = job_dir / "images"
+    img_dir.mkdir(parents=True)
+
+    selection = await asyncio.to_thread(scraper.download_selected_photos, selection, img_dir)
+    total_downloaded = sum(len(ps) for ps in selection["selected"].values())
+    if selection["gaps"] or total_downloaded == 0:
+        shutil.rmtree(str(job_dir), ignore_errors=True)
+        if selection["gaps"]:
+            gap_desc = "; ".join(selection["gaps"])
+        else:
+            n_failed = len(selection.get("download_failures", []))
+            gap_desc = f"All {n_failed} selected photo(s) failed to download"
+        raise HTTPException(status_code=422, detail=f"Not enough usable photos for this listing: {gap_desc}")
+
+    selected_categories = [cat for cat, photos in selection["selected"].items() if photos]
+    captions = await asyncio.to_thread(
+        scraper.generate_captions_for_categories, description_full, selected_categories
+    )
+
+    job_narration_path = str(job_dir / "narration.mp3")
+    shutil.copy2(narration["audio_path"], job_narration_path)
+
+    scenes_config = scraper.build_standard_video_scenes_config(
+        selection, captions, clip_duration_secs=scraper.SCENE_CLIP_SECS
+    )
+    scenes_config = _ensure_scene_ids(scenes_config)
+
+    scene_image_paths = []
+    for i, scene in enumerate(scenes_config):
+        src = scene.pop("local_image_path", None)
+        dest_path = None
+        if src and os.path.exists(src):
+            src_path = Path(src)
+            dest_path = img_dir / f"scene_{i:03d}{src_path.suffix}"
+            shutil.move(src, str(dest_path))
+        scene_image_paths.append(dest_path)
+
+    valid_img_paths = [p for p in scene_image_paths if p and p.exists()]
+    if payload.output_format in ("landscape", "portrait"):
+        job_format = payload.output_format
+    elif valid_img_paths:
+        job_format = _decide_job_format_from_bytes([p.read_bytes() for p in valid_img_paths])
+        for p in valid_img_paths:
+            p.write_bytes(_normalize_photo_to_format(p.read_bytes(), job_format))
+    else:
+        job_format = "landscape"
+
+    await _apply_vision_analysis_to_scenes(scenes_config, scene_image_paths, log_prefix="Relinx")
+
+    claude_usage = scraper.get_claude_cost()
+    _prop = cost_model.create_property(payload.property_name, agency_id=agency["agency_id"])
+
+    from cost_tracker import estimate_job_cost, format_cost_display
+    rolling_jobs = _get_rolling_monthly_job_count()
+    cost_estimate = estimate_job_cost(
+        scenes_config, do_upscale=True, do_video_upscale=True, do_vision_qc=True,
+        model_tier="luma", actual_monthly_jobs=rolling_jobs,
+        claude_cost_eur=claude_usage.get("cost_eur", 0.0),
+    )
+
+    JOBS[job_id] = {
+        "status": "draft",
+        "progress": 0,
+        "output_format": job_format,
+        "message": f"Ricevuto da Relinx (external_ref={payload.external_ref}) -- rivedi e premi Genera Video",
+        "scenes": [],
+        "scenes_config": scenes_config,
+        "output_path": None,
+        "created_at": datetime.utcnow().isoformat(),
+        "property_name": payload.property_name,
+        "agency_id": agency["agency_id"],
+        "property_id": _prop["property_id"],
+        "total_scenes": len(scenes_config),
+        "transition_style": "fade",
+        "enable_vision_qc": True,
+        "do_video_upscale": True,
+        "model_tier": "luma",
+        "lighting": "bright_natural",
+        "intensity": "natural_pace",
+        "voice_id": payload.voice_id,
+        "enhance_images": True,
+        "upscale_images": True,
+        "cost_estimate": format_cost_display(cost_estimate),
+        "cost_actual": None,
+        "claude_usage": claude_usage,
+        "reworks": [],
+        "qc_results": [],
+        "awaiting_scenes": [],
+        "narration_text": narration["narration_text"],
+        "narration_path": job_narration_path,
+        "narration_duration_secs": narration["video_duration_secs"],
+        "source": "relinx",
+        "partner_id": partner["partner_id"],
+        "external_ref": payload.external_ref,
+        "callback_url": payload.callback_url,
+    }
+    _save_job(job_id)
+
+    return {"id": job_id, "status": "in_review"}
 
 
 @app.get("/jobs/")
