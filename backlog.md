@@ -434,7 +434,7 @@ Built, committed, and tested this session:
 - **Partner isolation**, verified with a second real test partner: partner B gets a 403 ("This job does not belong to your account") both for status lookup and for download on partner A's job. An invalid key and a missing key both correctly return 401 over real HTTPS.
 
 **Not yet done -- small, no longer blocking, worth doing before real traffic:**
-1. The test partner key in use (`pt_08d67c8d`) is disposable -- generate Relinx's real key when ready to connect.
+1. **Real Relinx partner key generated October 1, 2026** (partner_id `pt_54820049`) and handed to Relinx. The earlier test key (`pt_08d67c8d`) has been deactivated.
 2. `.bak_pre_*` files have accumulated on the server (10+ from this session alone) -- harmless (untracked, not in git) but worth an `rm` now that the integration is stable.
 3. `WEBHOOK_SIGNING_SECRET` is still unset -- webhooks send unsigned. Fine until Relinx confirms how they'll verify a signature.
 4. The known `cost_actual` bug (see its own note elsewhere in this doc) affects any job -- Relinx's included -- that goes through QC-approve-without-redo. Deliberately deferred, not a blocker for launch.
