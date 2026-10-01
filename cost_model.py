@@ -84,6 +84,52 @@ def create_agency(name, notes=""):
     return agency
 
 
+def find_agency_by_partner_ref(partner_id, partner_external_id):
+    """
+    2026-10-01 (backlog item 48): looks up an agency by (partner_id,
+    partner_external_id) instead of by name. create_agency()'s name-based
+    matching is correct for a human operator typing a name manually, but
+    wrong for a CRM partner's own client agencies -- two real, different
+    agencies (possibly belonging to different partners, or one of them
+    manually entered) could share a common name, and matching on name
+    alone would silently merge them. Returns None if not found.
+    """
+    agencies = list_agencies()
+    for a in agencies:
+        if a.get("partner_id") == partner_id and a.get("partner_external_id") == partner_external_id:
+            return a
+    return None
+
+
+def create_agency_for_partner(name, partner_id, partner_external_id, notes=""):
+    """
+    2026-10-01 (backlog item 48): like create_agency(), but keyed by
+    (partner_id, partner_external_id) rather than name -- see
+    find_agency_by_partner_ref() for why. Updates the stored name if it
+    has changed since last time, but never merges with an unrelated
+    agency just because the name matches.
+    """
+    existing = find_agency_by_partner_ref(partner_id, partner_external_id)
+    if existing:
+        if name and name.strip() and existing["name"] != name.strip():
+            update_agency(existing["agency_id"], name=name)
+            existing = get_agency(existing["agency_id"])
+        return existing
+    agencies = list_agencies()
+    agency = {
+        "agency_id": f"ag_{uuid.uuid4().hex[:8]}",
+        "name": name.strip(),
+        "notes": notes,
+        "created_at": datetime.utcnow().isoformat(),
+        "logo_path": None,
+        "partner_id": partner_id,
+        "partner_external_id": partner_external_id,
+    }
+    agencies.append(agency)
+    _save(AGENCIES_FILE, agencies)
+    return agency
+
+
 def get_agency(agency_id):
     return next((a for a in list_agencies() if a["agency_id"] == agency_id), None)
 

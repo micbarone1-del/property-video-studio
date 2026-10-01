@@ -1731,6 +1731,7 @@ class RelinxPhoto(BaseModel):
 class RelinxVideoRequest(BaseModel):
     external_ref: str
     agency_name: str
+    agency_external_id: str = None
     property_name: str = "Property"
     description: str
     features: list = []
@@ -1773,7 +1774,39 @@ async def create_video_from_partner(
     """
     import listing_scraper as scraper
 
-    agency = cost_model.create_agency(payload.agency_name)
+    # 2026-10-01 (backlog item 48): prefer the partner's own external
+    # agency id when given -- name-only matching risks merging two real,
+    # different agencies that happen to share a name. Falls back to
+    # name-only matching (today's behavior) if Relinx doesn't send one.
+    if payload.agency_external_id:
+        agency = cost_model.create_agency_for_partner(
+            payload.agency_name, partner["partner_id"], payload.agency_external_id
+        )
+    else:
+        agency = cost_model.create_agency(payload.agency_name)
+
+    # 2026-10-01 (backlog item 48): rate limit -- max 2 videos per agency
+    # per rolling 24h, agreed with Relinx. Counts only jobs with
+    # source=="relinx" for this agency -- manual/scraper jobs an operator
+    # might separately create for the same agency don't count against it.
+    now = datetime.utcnow()
+    cutoff = now - timedelta(hours=24)
+    recent_relinx_jobs = sorted(
+        (j for j in JOBS.values()
+         if j.get("agency_id") == agency["agency_id"]
+         and j.get("source") == "relinx"
+         and j.get("created_at")
+         and datetime.fromisoformat(j["created_at"]) > cutoff),
+        key=lambda j: j["created_at"],
+    )
+    if len(recent_relinx_jobs) >= 2:
+        oldest = datetime.fromisoformat(recent_relinx_jobs[0]["created_at"])
+        retry_after_secs = max(1, int((oldest + timedelta(hours=24) - now).total_seconds()))
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded: max 2 videos per agency per 24h (agency: {payload.agency_name})",
+            headers={"Retry-After": str(retry_after_secs)},
+        )
 
     scraper.reset_claude_usage()
     description_full = payload.description
