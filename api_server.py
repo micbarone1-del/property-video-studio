@@ -1740,6 +1740,25 @@ class RelinxVideoRequest(BaseModel):
     callback_url: str
 
 
+def _map_internal_status_to_partner_status(internal_status: str) -> str:
+    """
+    Backlog item 48: maps our internal job status vocabulary onto the
+    5-state external vocabulary agreed with Relinx (queued/processing/
+    in_review/completed/failed). Both "draft" (pre-generation human
+    review) and "awaiting_approval" (post-generation QC review) surface
+    as "in_review" -- the partner doesn't need to know which phase.
+    """
+    mapping = {
+        "draft": "in_review",
+        "awaiting_approval": "in_review",
+        "queued": "processing",
+        "running": "processing",
+        "done": "completed",
+        "failed": "failed",
+    }
+    return mapping.get(internal_status, "processing")
+
+
 @app.post("/v1/videos")
 async def create_video_from_partner(
     payload: RelinxVideoRequest,
@@ -1876,7 +1895,39 @@ async def create_video_from_partner(
     }
     _save_job(job_id)
 
-    return {"id": job_id, "status": "in_review"}
+    return {"id": job_id, "status": _map_internal_status_to_partner_status("draft")}
+
+
+@app.get("/v1/videos/{job_id}")
+async def get_video_status_for_partner(job_id: str, partner: dict = Depends(get_current_partner)):
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+    if job.get("partner_id") != partner["partner_id"]:
+        raise HTTPException(status_code=403, detail="This job does not belong to your account")
+    result = {
+        "id": job_id,
+        "external_ref": job.get("external_ref"),
+        "status": _map_internal_status_to_partner_status(job.get("status")),
+    }
+    if job.get("status") == "done":
+        result["video_url"] = f"https://api.propertyvideostudioai.com/v1/videos/{job_id}/download"
+    return result
+
+
+@app.get("/v1/videos")
+async def find_video_by_external_ref(external_ref: str, partner: dict = Depends(get_current_partner)):
+    for jid, job in JOBS.items():
+        if job.get("partner_id") == partner["partner_id"] and job.get("external_ref") == external_ref:
+            result = {
+                "id": jid,
+                "external_ref": job.get("external_ref"),
+                "status": _map_internal_status_to_partner_status(job.get("status")),
+            }
+            if job.get("status") == "done":
+                result["video_url"] = f"https://api.propertyvideostudioai.com/v1/videos/{jid}/download"
+            return result
+    raise HTTPException(status_code=404, detail="No video found with that external_ref")
 
 
 @app.get("/v1/videos/{job_id}/download")
