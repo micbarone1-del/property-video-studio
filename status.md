@@ -1,6 +1,6 @@
 # Property Video Studio — Status
 
-_Last verified: July 9, 2026 — full repository audit (July 8) plus live-tested maintenance scheduler feature (July 9). Server and GitHub `main` confirmed in sync throughout via direct terminal verification, not assumption._
+_Last verified: October 1, 2026 -- Relinx CRM partner integration (backlog item 48): core pipeline, domain, HTTPS and completion webhook built and verified end-to-end. This header had gone stale (said July 9 while content below already ran through July 27) -- corrected here. Server and GitHub `main` confirmed in sync via direct terminal verification throughout._
 
 ---
 
@@ -351,3 +351,63 @@ Per explicit request after the portrait confirmation, three further real finding
 3. **`approach_reveal` behaved differently per model for the identical button** — Luma described it as forward/toward-the-space, Veo described it as lateral (15°). Same name, different actual camera behavior depending on which tier was selected. Aligned Veo's description to match Luma's safer, forward-oriented one, consistent with its role as the small-room fallback movement (used by `_SMALL_ROOM_REMAPS`).
 
 UI labels updated to match all three findings. Verified via isolated function-level tests covering all changes, including cross-model and format-regression checks; **not yet confirmed via a real generation** for `step_out_onto` or `approach_reveal` specifically (only the original 4-movement portrait fix has a real-world confirmation so far).
+
+
+## September 29 - October 1, 2026 -- Relinx CRM partner integration: core pipeline, domain, HTTPS, and completion webhook built and verified end-to-end
+
+Multi-day build for backlog item 48 (the Relinx CRM partnership). Unlike most prior entries, this one involved real production infrastructure beyond the app itself (a new domain, nginx, HTTPS) -- documented here in full since it's the first time this project needed any of that.
+
+### Partner authentication, built and tested
+
+`partner_api.py` (new file): partner records with a SHA-256 hash of the API key stored at rest, never the plaintext key after creation. `get_current_partner` FastAPI dependency added to `api_server.py`, reading `Authorization: Bearer <key>`. Verified: create -> verify (correct key) -> verify (wrong key, correctly rejected) -> deactivate -> verify (correctly rejected after deactivation).
+
+### Real bug found and fixed: the Florence-2 photo-category fallback was silently broken
+
+**Root cause, confirmed by reading the real code, not assumed:** `classify_uncategorized_photo()` (used whenever a photo's source-page label doesn't map to a category) called `vision_analysis.py`'s `analyse_input()` and tried to match words like "kitchen"/"bathroom"/"living" against its `space_type` output -- but `analyse_input()` only ever classifies room **size** (`large_interior`/`medium_interior`/`small_interior`/`ground_exterior`/`elevated`/`bedroom`), never room **type**. Only `bedroom` and `ground_exterior` ever matched, by word-overlap coincidence -- kitchen, living, and bathroom photos always silently fell through to `"uncategorized"`, which (separately confirmed) then get dropped entirely by `_categorize_and_rank_photos()` since `"uncategorized"` isn't one of the 6 `PRIORITY_ORDER` keys. The function's own comment had already flagged this as an unverified assumption from an earlier session -- confirmed broken this time by actually tracing `analyse_input()`'s real return shape.
+
+**Fixed:** replaced with a direct Claude vision call (same client/model/download-then-send pattern as the existing `rank_photos_by_quality()`), asking specifically about room type. Deliberately limited to the 6 `PRIORITY_ORDER` categories (not the 9 the initial extraction prompt allows), to avoid reintroducing the same silent-drop failure with a different unmapped value (e.g. `laundry`). Benefits the existing URL-scraping path too, not just Relinx.
+
+### Architecture-discipline catch: shared vision-analysis logic extracted before duplicating it
+
+The camera-movement vision analysis (`analyse_input()` call + `_SPACE_TYPE_NORMALIZE` mapping) lived inline inside `create_job_from_url()`. Since the new Relinx endpoint needed the identical logic, extracted it into a shared `_apply_vision_analysis_to_scenes()` function first, called from both places -- per standing practice, not duplicated a second time.
+
+### `POST /v1/videos` -- the Relinx-facing endpoint
+
+Thin adapter reusing `create_job_from_url()`'s existing building blocks (narration, photo selection, download, captions, scene building, the newly-shared vision analysis) rather than a parallel pipeline. Always stops in internal `"draft"` status -- human review before generation, confirmed as an explicit, deliberate decision (not the default `create_job_from_url()` behavior for every caller, but what Relinx specifically needs). External response uses the 5-state vocabulary agreed with Relinx (`queued`/`processing`/`in_review`/`completed`/`failed`), mapped from internal status: `draft` and `awaiting_approval` both surface as `in_review`.
+
+### Two real bugs, neither caught by `py_compile`, both found only when actually starting the server
+
+1. `Depends` used in the new endpoint's signature but never imported from `fastapi` -- crashed the entire server at startup (`NameError`, evaluated when Python parses the function's default argument at module load, not at request time). Caught immediately since the server simply wouldn't boot -- zero live-traffic impact, but a reminder that `py_compile` checks syntax only, not whether every name used actually resolves.
+2. The pre-existing global `UI_ACCESS_KEY` middleware (meant to protect the admin UI) was intercepting `/v1/*` before requests ever reached partner-key auth, returning its own "Unauthorized -- invalid access key" instead of ours. Fixed by excluding `/v1/*` from that middleware -- not a security regression, since `/v1/*` has its own separate auth (`get_current_partner`) that was never bypassed, just layered under an irrelevant check.
+
+### Repeated transcription failures on existing code containing em-dashes -- and the fix that actually worked
+
+Patching pre-existing blocks containing em-dash characters failed anchor-matching multiple times in a row because hand-transcribed copies of the live file substituted ASCII double-hyphens for the file's real em-dash (U+2014) characters -- several occurrences were missed even after fixing the first ones found, because an earlier diagnostic had truncated its own output and never showed the rest of the block. **What actually worked, and should be the standard approach going forward for any patch whose anchor is existing text with unusual characters:** have the patch script extract the exact anchor text programmatically from the live file itself (read the file, find start/end by a weak substring search, slice those exact lines) rather than hand-transcribing it at all. Zero further mismatches once this was adopted -- including for this very status.md update, after the lesson was learned the hard way on api_server.py first.
+
+### End-to-end tested successfully, twice
+
+Once against `localhost:8000` directly, once against the real public HTTPS domain -- both explicit photo category (`"category": "kitchen"` in the request) and the Claude-vision auto-classification fallback (photos with no category given) confirmed working correctly on real photos in both runs. One early test run correctly failed with a clear "not enough photos" error -- not a bug, just too few test photos supplied for the scene count the narration required that time (narration length, and therefore scene count, varies run to run since it's LLM-generated).
+
+### New production infrastructure: domain, HTTPS, reverse proxy -- all new to this project
+
+- Domain `propertyvideostudioai.com` registered on Hostinger, same account as the server (no transfer needed). `api.propertyvideostudioai.com` A record -> `187.77.196.94`, confirmed propagated via `dig`/`nslookup` against public DNS before proceeding.
+- `nginx` and `certbot` installed for the first time this project has needed either (confirmed via `which`/`systemctl` that neither existed before). Reverse proxy: port 80 -> `127.0.0.1:8000`.
+- Real HTTPS certificate obtained via Let's Encrypt/certbot (expires 2026-12-30, auto-renewal already scheduled via `certbot.timer` -- confirmed active). HTTP -> HTTPS redirect enforced (`--redirect` flag).
+- **First certbot attempt failed** with a connection timeout from Let's Encrypt's validation servers -- confirmed via the OS-level firewall (`iptables`/no `ufw` installed, nothing blocking) that the block was NOT local; it was the separate Hostinger VPS-level firewall (hPanel -> VPS -> Firewall, default-drops all incoming traffic). Fixed by adding Accept/TCP rules for ports 80 and 443 (22 and 8000 were already allowed). **Worth remembering for any future port this app needs to expose:** the Hostinger VPS firewall is a second, separate layer from the OS firewall, configured only in hPanel, and defaults to dropping everything not explicitly allowed.
+- A debug-only localhost test (`curl -H "Host: ..."` instead of the real domain) initially gave a false-looking 404 -- traced via nginx's access log to an IPv6 (`::1`) request hitting the Debian default site instead of our block, since the domain has no IPv6 address and our server block only listens on IPv4. Not a real misconfiguration -- confirmed by testing with the actual public domain name instead, which worked immediately (`200 OK`).
+
+### Completion/failure webhook -- built and verified against a real receiver
+
+`_send_partner_webhook(job_id, event)` added, called from the single shared point every completion path converges on (`run_reassemble_only()`, right where status becomes `"done"`, and in its `except` block for `"failed"`) -- confirmed via earlier code reading that this one function is reached by first-time generation, QC-redo, and manual rework alike, so hooking here covers every path, not just the straightforward one. No-op for any job without a `callback_url` (every existing manual/URL-scraped job), so this cannot affect current production behavior.
+
+**Verified with a real external receiver, not just a log line:** a temporary debug endpoint (`/debug/test-webhook/{job_id}`, removed immediately after) called the real production function against a live webhook.site URL. Confirmed via the server's own log (`HTTP 200`) and by reading webhook.site's received payload directly: `{"id": "...", "external_ref": "...", "status": "completed", "video_url": "..."}` -- exact shape as designed.
+
+Signing is deliberately left optional (`WEBHOOK_SIGNING_SECRET` env var, unset today) rather than inventing a scheme Relinx hasn't confirmed how they'll verify.
+
+### GitHub token exposed twice this session, both revoked
+
+Once via `git remote -v` showing the token embedded in the stored remote URL (a leftover from earlier setup, not something this session's work introduced), and again via a `~/.git-credentials` file that had somehow ended up with a second token split across a line break, which is why git's credential store wasn't authenticating automatically and fell back to an interactive password prompt. Both tokens regenerated via GitHub's "Regenerate token" (keeps the same name/scopes, just a new secret) rather than delete-and-recreate. Root cause of the credential-store failure: a malformed multi-line `~/.git-credentials` file; fixed by overwriting it with a single clean line. Confirmed fixed via a plain `git fetch` producing no password prompt.
+
+### Not yet built -- real blockers before Relinx can be connected for real (see backlog item 48 for the full list)
+
+A dedicated, partner-key-authenticated video download endpoint under `/v1/` (today's webhook payload points at `/jobs/{id}/download`, which only accepts the admin UI key, not a partner key); the new-job alert email; a real (non-test) partner key for Relinx; `GET /v1/videos/{id}` status lookup; rate limiting. A real, paid end-to-end generation (not just job creation, which stops at "draft" for free) has deliberately not been run yet, pending a decision on whether to spend on that test before or after sending Relinx their access details.
