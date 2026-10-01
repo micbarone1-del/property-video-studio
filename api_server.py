@@ -1879,6 +1879,22 @@ async def create_video_from_partner(
     return {"id": job_id, "status": "in_review"}
 
 
+@app.get("/v1/videos/{job_id}/download")
+async def download_video_for_partner(job_id: str, partner: dict = Depends(get_current_partner)):
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+    if job.get("partner_id") != partner["partner_id"]:
+        raise HTTPException(status_code=403, detail="This job does not belong to your account")
+    if job.get("status") != "done":
+        raise HTTPException(status_code=400, detail=f"Video not ready (status: {job.get('status')})")
+    output_path = job.get("output_path")
+    if not output_path or not Path(output_path).exists():
+        raise HTTPException(status_code=500, detail="Output file missing")
+    filename = f"{job.get('property_name','property').replace(' ','_')}_video.mp4"
+    return FileResponse(output_path, media_type="video/mp4", filename=filename)
+
+
 @app.get("/jobs/")
 def list_jobs():
     """Returns all jobs sorted by creation date, newest first."""
@@ -2541,7 +2557,7 @@ async def _send_partner_webhook(job_id: str, event: str):
             "status": event,
         }
         if event == "completed":
-            payload["video_url"] = f"https://api.propertyvideostudioai.com/jobs/{job_id}/download"
+            payload["video_url"] = f"https://api.propertyvideostudioai.com/v1/videos/{job_id}/download"
 
         body = _json.dumps(payload)
         headers = {"Content-Type": "application/json"}
