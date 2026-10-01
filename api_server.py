@@ -2511,6 +2511,57 @@ async def run_redo_scene(job_id: str, scene_id: str):
 
 
 
+async def _send_partner_webhook(job_id: str, event: str):
+    """
+    Backlog item 48 (Relinx): notifies a partner's callback_url when a job
+    reaches a state they care about. No-op for any job without a
+    callback_url -- every manual/URL-scraped job never has one, so this is
+    safe to call unconditionally from shared completion/failure paths.
+    Best-effort: never raises, a failed or slow webhook must never break
+    the assembly pipeline that calls this.
+
+    Signing is deliberately optional for now -- if WEBHOOK_SIGNING_SECRET
+    is not set in .env, sends unsigned (logs a warning) rather than
+    inventing a scheme Relinx hasn't confirmed how to verify yet.
+
+    video_url currently points at the existing /jobs/{id}/download
+    endpoint, which is protected by UI_ACCESS_KEY -- NOT actually
+    downloadable by an external partner yet. A dedicated, partner-key
+    authenticated download endpoint under /v1/ is still needed before
+    this is real for Relinx (see backlog item 48 "not yet built").
+    """
+    job = JOBS.get(job_id)
+    if not job or not job.get("callback_url"):
+        return
+    try:
+        import requests, hmac, hashlib, json as _json
+        payload = {
+            "id": job_id,
+            "external_ref": job.get("external_ref"),
+            "status": event,
+        }
+        if event == "completed":
+            payload["video_url"] = f"https://api.propertyvideostudioai.com/jobs/{job_id}/download"
+
+        body = _json.dumps(payload)
+        headers = {"Content-Type": "application/json"}
+        secret = os.getenv("WEBHOOK_SIGNING_SECRET", "")
+        if secret:
+            signature = hmac.new(secret.encode(), body.encode(), hashlib.sha256).hexdigest()
+            headers["X-Signature"] = signature
+        else:
+            log.warning(f"[Job {job_id}] WEBHOOK_SIGNING_SECRET not set -- sending unsigned webhook")
+
+        def _post():
+            return requests.post(job["callback_url"], data=body, headers=headers, timeout=10)
+
+        resp = await asyncio.to_thread(_post)
+        cb_url = job["callback_url"]
+        log.info(f"[Job {job_id}] Partner webhook ({event}) sent to {cb_url}: HTTP {resp.status_code}")
+    except Exception as e:
+        log.warning(f"[Job {job_id}] Partner webhook ({event}) failed (non-fatal): {e}")
+
+
 async def run_reassemble_only(job_id: str):
     """Reassembles the final video from whatever clips currently exist for
     this job's scenes_config, in order. Does not regenerate anything —
@@ -2611,12 +2662,14 @@ async def run_reassemble_only(job_id: str):
 
         job["output_path"] = output_path
         update("done", 100, "Video pronto per il download")
+        await _send_partner_webhook(job_id, "completed")
 
 
     except Exception as e:
         log.error(f"[Job {job_id}] reassembly failed: {e}", exc_info=True)
         JOBS[job_id].update({"status": "failed", "message": f"Errore assemblaggio: {str(e)[:200]}"})
         _save_job(job_id)
+        await _send_partner_webhook(job_id, "failed")
     finally:
         _release_job_lock(job_id)
 
