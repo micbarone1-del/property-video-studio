@@ -1894,6 +1894,7 @@ async def create_video_from_partner(
         "callback_url": payload.callback_url,
     }
     _save_job(job_id)
+    await _send_new_partner_job_alert(job_id)
 
     return {"id": job_id, "status": _map_internal_status_to_partner_status("draft")}
 
@@ -2627,6 +2628,40 @@ async def _send_partner_webhook(job_id: str, event: str):
         log.info(f"[Job {job_id}] Partner webhook ({event}) sent to {cb_url}: HTTP {resp.status_code}")
     except Exception as e:
         log.warning(f"[Job {job_id}] Partner webhook ({event}) failed (non-fatal): {e}")
+
+
+async def _send_new_partner_job_alert(job_id: str):
+    """
+    Backlog item 48: alerts the operator by email when a new job arrives
+    from a CRM partner, so there's no need to poll the job list manually.
+    Reuses communication.py's generic send_custom_email() -- NOT
+    maintenance_scheduler.send_maintenance_alert(), whose cooldown logic
+    exists to suppress repeated maintenance errors, the wrong semantics
+    for "alert me on every new job". Reuses the SAME recipient list as
+    maintenance alerts (load_alert_emails()) rather than a separate
+    config mechanism. Best-effort: never raises, a failed alert email
+    must not break job creation.
+    """
+    job = JOBS.get(job_id)
+    if not job:
+        return
+    try:
+        import maintenance_scheduler
+        subject = f"Nuovo job da {job.get('source', 'partner')}: {job.get('property_name', 'Property')}"
+        body_html = (
+            f"<p>E arrivato un nuovo job da {job.get('source', 'partner')}.</p>"
+            f"<p><b>Immobile:</b> {job.get('property_name', 'Property')}<br>"
+            f"<b>External ref:</b> {job.get('external_ref', 'N/A')}<br>"
+            f"<b>Job ID:</b> {job_id}</p>"
+            f"<p>Apri l'app per rivedere scene e narrazione prima di generare il video.</p>"
+        )
+        sent = await asyncio.to_thread(maintenance_scheduler.send_maintenance_alert, subject, body_html)
+        if sent:
+            log.info(f"[Job {job_id}] New-job alert email sent")
+        else:
+            log.warning(f"[Job {job_id}] New-job alert email NOT sent (no recipients or creds missing -- see send_maintenance_alert's own log line above)")
+    except Exception as e:
+        log.warning(f"[Job {job_id}] New-job alert email failed (non-fatal): {e}")
 
 
 async def run_reassemble_only(job_id: str):
