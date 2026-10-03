@@ -679,22 +679,31 @@ async function generateNarration(extraSecsNeeded = 0) {
       // rework call instead of normal first-time generation.
       completedScenes = [];  // no scenes generated yet — draft only
       console.log(`Draft job created: ${currentJobId}`);
-    } else if (currentJobStatus === 'draft') {
-      // 2026-07-17 fix: this used to be a plain `else`, meaning it ran
-      // for ANY existing job, not just a still-draft one -- so generating
-      // narration on an ALREADY-GENERATED job called /draft/resync and
-      // got correctly rejected ("Job is no longer in draft status"),
-      // blocking narration regeneration on a finished job entirely. Now
-      // resync only fires for a job that's genuinely still a draft; for
-      // an already-generated job this block is simply skipped and
-      // execution falls through straight to the /narration call below.
-      const res = await authFetch(`${API_BASE}/jobs/${currentJobId}/draft/resync`, { method: 'POST', body: fd });
-      if (!res.ok) {
-        let detail = `Errore ${res.status}`;
-        try { const e = await res.json(); detail = e.detail || detail; } catch(_) {}
-        throw new Error(detail);
+    } else {
+      // 2026-10-03 fix: currentJobStatus is a browser-memory variable
+      // that can go stale -- confirmed live: it caused a real "Job is
+      // no longer in draft status" error when generating narration on
+      // an already-done job. Same fix pattern as the "Genera video"
+      // button's safety guard below: check the SERVER's current status
+      // fresh, never trust the in-memory flag alone.
+      let freshStatus = currentJobStatus;
+      try {
+        const jobRes = await authFetch(`${API_BASE}/jobs/${currentJobId}`);
+        if (jobRes.ok) {
+          const jobData = await jobRes.json();
+          freshStatus = jobData.status;
+          currentJobStatus = freshStatus;
+        }
+      } catch(_) {}
+      if (freshStatus === 'draft') {
+        const res = await authFetch(`${API_BASE}/jobs/${currentJobId}/draft/resync`, { method: 'POST', body: fd });
+        if (!res.ok) {
+          let detail = `Errore ${res.status}`;
+          try { const e = await res.json(); detail = e.detail || detail; } catch(_) {}
+          throw new Error(detail);
+        }
+        console.log(`Draft job resynced: ${currentJobId}`);
       }
-      console.log(`Draft job resynced: ${currentJobId}`);
     }
   } catch(e) {
     statusEl.textContent = `✗ Errore preparazione scene: ${e.message}`;

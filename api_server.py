@@ -1741,7 +1741,7 @@ class RelinxVideoRequest(BaseModel):
     callback_url: str
 
 
-def _map_internal_status_to_partner_status(internal_status: str) -> str:
+def _map_internal_status_to_partner_status(internal_status: str, released: bool = False) -> str:
     """
     Backlog item 48: maps our internal job status vocabulary onto the
     5-state external vocabulary agreed with Relinx (queued/processing/
@@ -1757,12 +1757,15 @@ def _map_internal_status_to_partner_status(internal_status: str) -> str:
         "done": "completed",
         "failed": "failed",
     }
+    if internal_status == "done":
+        return "completed" if released else "in_review"
     return mapping.get(internal_status, "processing")
 
 
 @app.post("/v1/videos")
 async def create_video_from_partner(
     payload: RelinxVideoRequest,
+    background_tasks: BackgroundTasks,
     partner: dict = Depends(get_current_partner),
 ):
     """
@@ -1771,8 +1774,40 @@ async def create_video_from_partner(
     stops in "draft" status for human review -- generation is NOT started
     here. Same workflow as every other job: reviewed and started manually
     via /jobs/{id}/start-generation. Never auto-releases.
+
+    2026-10-02 (backlog item 48, URGENT): the actual job-building work
+    (narration generation, photo resolution/download, caption writing,
+    vision analysis) used to run synchronously inside this request and
+    could take well over Relinx's client timeout for a real listing --
+    confirmed live during their first integration test: nginx logged
+    their requests closing with 499 (client gave up) while our own
+    pipeline kept running in the background and actually succeeded a few
+    seconds later (job cc2aead8 completed fine, alert email sent, nothing
+    lost). This endpoint now does only the fast, synchronous checks
+    (agency resolution, rate limit) and returns immediately with
+    status="queued"; the rest of the work happens in
+    _build_relinx_job_in_background(), exactly like every other job's
+    generation pipeline already runs as a background task elsewhere in
+    this file.
     """
-    import listing_scraper as scraper
+    # 2026-10-02 (URGENT, found live): Relinx's client retried this
+    # request multiple times while our old synchronous endpoint was
+    # still timing out (see the async-background fix above) -- each
+    # retry created its own separate job for the identical external_ref,
+    # since nothing checked for an existing one first. Idempotency check:
+    # if a non-failed job already exists for this partner+external_ref,
+    # return it instead of creating a duplicate. A previously FAILED
+    # attempt is allowed to retry fresh (e.g. after a real photo-download
+    # failure gets fixed on Relinx's side).
+    existing_id, existing = next(
+        ((jid, j) for jid, j in JOBS.items()
+         if j.get("partner_id") == partner["partner_id"]
+         and j.get("external_ref") == payload.external_ref
+         and j.get("status") != "failed"),
+        (None, None),
+    )
+    if existing:
+        return {"id": existing_id, "status": _map_internal_status_to_partner_status(existing["status"], existing.get("released", False))}
 
     # 2026-10-01 (backlog item 48): prefer the partner's own external
     # agency id when given -- name-only matching risks merging two real,
@@ -1808,128 +1843,161 @@ async def create_video_from_partner(
             headers={"Retry-After": str(retry_after_secs)},
         )
 
-    scraper.reset_claude_usage()
-    description_full = payload.description
-    if payload.features:
-        description_full += "\n\nCaratteristiche: " + ", ".join(payload.features)
-
-    narration = await asyncio.to_thread(
-        scraper.generate_narration_and_derive_scenes,
-        description_full, None, None, payload.voice_id or None, False,
-    )
-    if not narration["ok"]:
-        raise HTTPException(status_code=500, detail=f"Narration generation failed: {narration['error']}")
-
-    photos_for_selection = []
-    for p in payload.photos:
-        cat = p.category if p.category in scraper.CATEGORIES else "uncategorized"
-        photos_for_selection.append({"url": p.url, "category": cat})
-    photos_for_selection = await asyncio.to_thread(scraper.resolve_uncategorized_photos, photos_for_selection)
-
-    selection = scraper.select_photos_for_scene_count(photos_for_selection, narration["scene_count"])
-
     job_id = str(uuid.uuid4())[:8]
-    job_dir = JOBS_DIR / job_id
-    img_dir = job_dir / "images"
-    img_dir.mkdir(parents=True)
-
-    selection = await asyncio.to_thread(scraper.download_selected_photos, selection, img_dir)
-    total_downloaded = sum(len(ps) for ps in selection["selected"].values())
-    if selection["gaps"] or total_downloaded == 0:
-        shutil.rmtree(str(job_dir), ignore_errors=True)
-        if selection["gaps"]:
-            gap_desc = "; ".join(selection["gaps"])
-        else:
-            n_failed = len(selection.get("download_failures", []))
-            gap_desc = f"All {n_failed} selected photo(s) failed to download"
-        raise HTTPException(status_code=422, detail=f"Not enough usable photos for this listing: {gap_desc}")
-
-    selected_categories = [cat for cat, photos in selection["selected"].items() if photos]
-    captions = await asyncio.to_thread(
-        scraper.generate_captions_for_categories, description_full, selected_categories
-    )
-
-    job_narration_path = str(job_dir / "narration.mp3")
-    shutil.copy2(narration["audio_path"], job_narration_path)
-
-    scenes_config = scraper.build_standard_video_scenes_config(
-        selection, captions, clip_duration_secs=scraper.SCENE_CLIP_SECS
-    )
-    scenes_config = _ensure_scene_ids(scenes_config)
-
-    scene_image_paths = []
-    for i, scene in enumerate(scenes_config):
-        src = scene.pop("local_image_path", None)
-        dest_path = None
-        if src and os.path.exists(src):
-            src_path = Path(src)
-            dest_path = img_dir / f"scene_{i:03d}{src_path.suffix}"
-            shutil.move(src, str(dest_path))
-        scene_image_paths.append(dest_path)
-
-    valid_img_paths = [p for p in scene_image_paths if p and p.exists()]
-    if payload.output_format in ("landscape", "portrait"):
-        job_format = payload.output_format
-    elif valid_img_paths:
-        job_format = _decide_job_format_from_bytes([p.read_bytes() for p in valid_img_paths])
-        for p in valid_img_paths:
-            p.write_bytes(_normalize_photo_to_format(p.read_bytes(), job_format))
-    else:
-        job_format = "landscape"
-
-    await _apply_vision_analysis_to_scenes(scenes_config, scene_image_paths, log_prefix="Relinx")
-
-    claude_usage = scraper.get_claude_cost()
-    _prop = cost_model.create_property(payload.property_name, agency_id=agency["agency_id"])
-
-    from cost_tracker import estimate_job_cost, format_cost_display
-    rolling_jobs = _get_rolling_monthly_job_count()
-    cost_estimate = estimate_job_cost(
-        scenes_config, do_upscale=True, do_video_upscale=True, do_vision_qc=True,
-        model_tier="luma", actual_monthly_jobs=rolling_jobs,
-        claude_cost_eur=claude_usage.get("cost_eur", 0.0),
-    )
-
     JOBS[job_id] = {
-        "status": "draft",
+        "status": "queued",
         "progress": 0,
-        "output_format": job_format,
-        "message": f"Ricevuto da Relinx (external_ref={payload.external_ref}) -- rivedi e premi Genera Video",
+        "message": f"Ricevuto da Relinx (external_ref={payload.external_ref}) -- elaborazione in corso",
         "scenes": [],
-        "scenes_config": scenes_config,
+        "scenes_config": [],
         "output_path": None,
         "created_at": datetime.utcnow().isoformat(),
         "property_name": payload.property_name,
         "agency_id": agency["agency_id"],
-        "property_id": _prop["property_id"],
-        "total_scenes": len(scenes_config),
-        "transition_style": "fade",
-        "enable_vision_qc": True,
-        "do_video_upscale": True,
-        "model_tier": "luma",
-        "lighting": "bright_natural",
-        "intensity": "natural_pace",
-        "voice_id": payload.voice_id,
-        "enhance_images": True,
-        "upscale_images": True,
-        "cost_estimate": format_cost_display(cost_estimate),
         "cost_actual": None,
-        "claude_usage": claude_usage,
         "reworks": [],
         "qc_results": [],
         "awaiting_scenes": [],
-        "narration_text": narration["narration_text"],
-        "narration_path": job_narration_path,
-        "narration_duration_secs": narration["video_duration_secs"],
         "source": "relinx",
         "partner_id": partner["partner_id"],
         "external_ref": payload.external_ref,
         "callback_url": payload.callback_url,
     }
     _save_job(job_id)
-    await _send_new_partner_job_alert(job_id)
 
-    return {"id": job_id, "status": _map_internal_status_to_partner_status("draft")}
+    background_tasks.add_task(_build_relinx_job_in_background, job_id, payload, agency)
+
+    return {"id": job_id, "status": _map_internal_status_to_partner_status("queued")}
+
+
+async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoRequest, agency: dict):
+    """
+    Background counterpart of create_video_from_partner() (2026-10-02,
+    backlog item 48) -- does all the slow work (narration generation,
+    photo resolution/download, captions, vision QC) that used to block
+    the HTTP response. On any failure, marks the job 'failed' with a
+    clear message instead of raising, since there's no HTTP response
+    left to raise into.
+    """
+    import listing_scraper as scraper
+    try:
+        scraper.reset_claude_usage()
+        description_full = payload.description
+        if payload.features:
+            description_full += "\n\nCaratteristiche: " + ", ".join(payload.features)
+
+        narration = await asyncio.to_thread(
+            scraper.generate_narration_and_derive_scenes,
+            description_full, None, None, payload.voice_id or None, False,
+        )
+        if not narration["ok"]:
+            JOBS[job_id].update({"status": "failed", "message": f"Narration generation failed: {narration['error']}"})
+            _save_job(job_id)
+            await _send_partner_webhook(job_id, "failed")
+            return
+
+        photos_for_selection = []
+        for p in payload.photos:
+            cat = p.category if p.category in scraper.CATEGORIES else "uncategorized"
+            photos_for_selection.append({"url": p.url, "category": cat})
+        photos_for_selection = await asyncio.to_thread(scraper.resolve_uncategorized_photos, photos_for_selection)
+
+        selection = scraper.select_photos_for_scene_count(photos_for_selection, narration["scene_count"])
+
+        job_dir = JOBS_DIR / job_id
+        img_dir = job_dir / "images"
+        img_dir.mkdir(parents=True, exist_ok=True)
+
+        selection = await asyncio.to_thread(scraper.download_selected_photos, selection, img_dir)
+        total_downloaded = sum(len(ps) for ps in selection["selected"].values())
+        if selection["gaps"] or total_downloaded == 0:
+            shutil.rmtree(str(job_dir), ignore_errors=True)
+            if selection["gaps"]:
+                gap_desc = "; ".join(selection["gaps"])
+            else:
+                n_failed = len(selection.get("download_failures", []))
+                gap_desc = f"All {n_failed} selected photo(s) failed to download"
+            JOBS[job_id].update({"status": "failed", "message": f"Not enough usable photos for this listing: {gap_desc}"})
+            _save_job(job_id)
+            await _send_partner_webhook(job_id, "failed")
+            return
+
+        selected_categories = [cat for cat, photos in selection["selected"].items() if photos]
+        captions = await asyncio.to_thread(
+            scraper.generate_captions_for_categories, description_full, selected_categories
+        )
+
+        job_narration_path = str(job_dir / "narration.mp3")
+        shutil.copy2(narration["audio_path"], job_narration_path)
+
+        scenes_config = scraper.build_standard_video_scenes_config(
+            selection, captions, clip_duration_secs=scraper.SCENE_CLIP_SECS
+        )
+        scenes_config = _ensure_scene_ids(scenes_config)
+
+        scene_image_paths = []
+        for i, scene in enumerate(scenes_config):
+            src = scene.pop("local_image_path", None)
+            dest_path = None
+            if src and os.path.exists(src):
+                src_path = Path(src)
+                dest_path = img_dir / f"scene_{i:03d}{src_path.suffix}"
+                shutil.move(src, str(dest_path))
+            scene_image_paths.append(dest_path)
+
+        valid_img_paths = [p for p in scene_image_paths if p and p.exists()]
+        if payload.output_format in ("landscape", "portrait"):
+            job_format = payload.output_format
+        elif valid_img_paths:
+            job_format = _decide_job_format_from_bytes([p.read_bytes() for p in valid_img_paths])
+            for p in valid_img_paths:
+                p.write_bytes(_normalize_photo_to_format(p.read_bytes(), job_format))
+        else:
+            job_format = "landscape"
+
+        await _apply_vision_analysis_to_scenes(scenes_config, scene_image_paths, log_prefix="Relinx")
+
+        claude_usage = scraper.get_claude_cost()
+        _prop = cost_model.create_property(payload.property_name, agency_id=agency["agency_id"])
+
+        from cost_tracker import estimate_job_cost, format_cost_display
+        rolling_jobs = _get_rolling_monthly_job_count()
+        cost_estimate = estimate_job_cost(
+            scenes_config, do_upscale=True, do_video_upscale=True, do_vision_qc=True,
+            model_tier="luma", actual_monthly_jobs=rolling_jobs,
+            claude_cost_eur=claude_usage.get("cost_eur", 0.0),
+        )
+
+        JOBS[job_id].update({
+            "status": "draft",
+            "output_format": job_format,
+            "message": f"Ricevuto da Relinx (external_ref={payload.external_ref}) -- rivedi e premi Genera Video",
+            "scenes_config": scenes_config,
+            "property_id": _prop["property_id"],
+            "total_scenes": len(scenes_config),
+            "transition_style": "fade",
+            "enable_vision_qc": True,
+            "do_video_upscale": True,
+            "model_tier": "luma",
+            "lighting": "bright_natural",
+            "intensity": "natural_pace",
+            "voice_id": payload.voice_id,
+            "enhance_images": True,
+            "upscale_images": True,
+            "cost_estimate": format_cost_display(cost_estimate),
+            "claude_usage": claude_usage,
+            "narration_text": narration["narration_text"],
+            "narration_path": job_narration_path,
+            "narration_duration_secs": narration["video_duration_secs"],
+        })
+        _save_job(job_id)
+        await _send_new_partner_job_alert(job_id)
+    except Exception as e:
+        log.exception(f"[Relinx] Background job build failed for {job_id}")
+        if job_id in JOBS:
+            JOBS[job_id].update({"status": "failed", "message": f"Internal error building job: {e}"})
+            _save_job(job_id)
+            await _send_partner_webhook(job_id, "failed")
 
 
 @app.get("/v1/videos/{job_id}")
@@ -1939,12 +2007,13 @@ async def get_video_status_for_partner(job_id: str, partner: dict = Depends(get_
     job = JOBS[job_id]
     if job.get("partner_id") != partner["partner_id"]:
         raise HTTPException(status_code=403, detail="This job does not belong to your account")
+    released = job.get("released", False)
     result = {
         "id": job_id,
         "external_ref": job.get("external_ref"),
-        "status": _map_internal_status_to_partner_status(job.get("status")),
+        "status": _map_internal_status_to_partner_status(job.get("status"), released),
     }
-    if job.get("status") == "done":
+    if job.get("status") == "done" and released:
         result["video_url"] = f"https://api.propertyvideostudioai.com/v1/videos/{job_id}/download"
     return result
 
@@ -1953,12 +2022,13 @@ async def get_video_status_for_partner(job_id: str, partner: dict = Depends(get_
 async def find_video_by_external_ref(external_ref: str, partner: dict = Depends(get_current_partner)):
     for jid, job in JOBS.items():
         if job.get("partner_id") == partner["partner_id"] and job.get("external_ref") == external_ref:
+            released = job.get("released", False)
             result = {
                 "id": jid,
                 "external_ref": job.get("external_ref"),
-                "status": _map_internal_status_to_partner_status(job.get("status")),
+                "status": _map_internal_status_to_partner_status(job.get("status"), released),
             }
-            if job.get("status") == "done":
+            if job.get("status") == "done" and released:
                 result["video_url"] = f"https://api.propertyvideostudioai.com/v1/videos/{jid}/download"
             return result
     raise HTTPException(status_code=404, detail="No video found with that external_ref")
@@ -2797,7 +2867,7 @@ async def run_reassemble_only(job_id: str):
 
         job["output_path"] = output_path
         update("done", 100, "Video pronto per il download")
-        await _send_partner_webhook(job_id, "completed")
+        # 2026-10-02: webhook "completed" spostato su /jobs/{id}/release
 
 
     except Exception as e:
@@ -2807,6 +2877,24 @@ async def run_reassemble_only(job_id: str):
         await _send_partner_webhook(job_id, "failed")
     finally:
         _release_job_lock(job_id)
+
+
+@app.post("/jobs/{job_id}/release")
+async def release_job(job_id: str):
+    """2026-10-02: operatore conferma che il video e pronto -- per ogni job;
+    per uno Relinx, questo e il momento in cui parte il webhook al partner."""
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+    if job["status"] != "done":
+        raise HTTPException(status_code=400, detail=f"Job not ready to release (status: {job['status']})")
+    if job.get("released"):
+        raise HTTPException(status_code=400, detail="Job already released")
+    job["released"] = True
+    _save_job(job_id)
+    if job.get("source") == "relinx":
+        await _send_partner_webhook(job_id, "completed")
+    return {"job_id": job_id, "released": True, "partner_notified": job.get("source") == "relinx"}
 
 
 

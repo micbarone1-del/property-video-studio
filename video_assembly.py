@@ -517,17 +517,24 @@ def assemble_property_video(scenes_config, video_clip_paths, audio_paths, image_
             final = concatenate_videoclips(clips, method="compose")
 
         elif transition_style == "fade":
-            result = []
-            current_start = 0.0
+            # 2026-10-03 (confirmed live, root-caused): the previous manual
+            # with_start()+CompositeVideoClip([bg]+result) approach showed
+            # a real ~0.5s solid-black gap at EVERY transition once 3+
+            # clips were involved (confirmed via direct frame-by-frame
+            # luminosity scan of a real produced video, reproduced in an
+            # isolated 5-clip test using the exact same code, and absent
+            # in a 2-clip test -- a genuine multi-clip compositing bug,
+            # not a caching or perception issue). MoviePy's own built-in
+            # concatenate_videoclips(..., padding=-td, method="compose")
+            # mechanism -- designed exactly for this -- was verified clean
+            # (zero dark frames) on the same 5-clip case and is used here
+            # instead of the manual composite.
+            faded_clips = []
             for idx, clip in enumerate(clips):
-                c = clip.with_start(current_start)
                 if idx > 0:
-                    c = c.with_effects([vfx.CrossFadeIn(td)])
-                result.append(c)
-                current_start += clip.duration if idx == len(clips) - 1 else clip.duration - td
-            total_dur = current_start
-            bg = ColorClip(size=(TARGET_W, TARGET_H), color=(0, 0, 0), duration=total_dur)
-            final = CompositeVideoClip([bg] + result)
+                    clip = clip.with_effects([vfx.CrossFadeIn(td)])
+                faded_clips.append(clip)
+            final = concatenate_videoclips(faded_clips, padding=-td, method="compose")
 
         elif transition_style in ("slide_left", "slide_right"):
             side = "left" if transition_style == "slide_left" else "right"
@@ -546,44 +553,60 @@ def assemble_property_video(scenes_config, video_clip_paths, audio_paths, image_
         else:
             final = concatenate_videoclips(clips, method="compose")
 
-        # 2026-07-22 (backlog item 7): client logo overlay -- bottom-right,
-        # full video duration, solid opacity. Requires an alpha channel,
-        # validated at upload time (see /agencies/{id}/logo), so this
-        # composites as a subtle brand mark rather than an opaque box.
-        # Any failure here is non-fatal -- logs and continues without the
-        # logo rather than breaking a real client delivery over it.
+        # 2026-10-03 (confirmed live, root-caused, SECOND attempt): neither
+        # post-transition CompositeVideoClip([final, overlay]) (breaks the
+        # crossfade -- solid black at every transition) nor pre-transition
+        # per-clip CompositeVideoClip (breaks the overlay's OWN transparency
+        # instead -- solid black box throughout, confirmed on real
+        # production clips) works. Nesting ANY CompositeVideoClip around a
+        # concatenate_videoclips(padding=-td) result breaks something.
+        # Manual numpy alpha-blending via .transform() bypasses MoviePy's
+        # mask/composite system entirely -- verified clean on real clips.
+        import numpy as np
+        from PIL import Image as _PILImage
+
         if logo_path and os.path.exists(logo_path):
             try:
-                logo_clip = ImageClip(logo_path).with_duration(final.duration)
+                logo_img = _PILImage.open(logo_path).convert("RGBA")
                 target_logo_w = int(TARGET_W * 0.12)
-                logo_clip = logo_clip.resized(width=target_logo_w)
+                logo_h = int(logo_img.height * target_logo_w / logo_img.width)
+                logo_img = logo_img.resize((target_logo_w, logo_h))
+                logo_arr = np.array(logo_img).astype(float)
+                logo_rgb = logo_arr[:, :, :3]
+                logo_alpha = logo_arr[:, :, 3:4] / 255.0
                 margin = int(TARGET_W * 0.02)
-                logo_clip = logo_clip.with_position((TARGET_W - logo_clip.w - margin, TARGET_H - logo_clip.h - margin))
-                final = CompositeVideoClip([final, logo_clip])
+                lx, ly = TARGET_W - target_logo_w - margin, TARGET_H - logo_h - margin
+
+                def _add_logo(get_frame, t, _lx=lx, _ly=ly, _lw=target_logo_w, _lh=logo_h, _rgb=logo_rgb, _a=logo_alpha):
+                    frame = get_frame(t).copy().astype(float)
+                    region = frame[_ly:_ly+_lh, _lx:_lx+_lw]
+                    frame[_ly:_ly+_lh, _lx:_lx+_lw] = _rgb * _a + region * (1 - _a)
+                    return frame.astype("uint8")
+
+                final = final.transform(_add_logo)
             except Exception as e:
                 print(f'[Assemble] Logo overlay failed, continuing without it: {e}')
 
-        # 2026-09-18 (backlog item 47): Property Video Studio's own brand
-        # watermark -- bottom-left, full video duration, unconditional
-        # (unlike item 7's client logo, this is not per-agency and always
-        # applies, regardless of which client the job is for). Deliberately
-        # sized as a fixed absolute pixel width rather than a percentage of
-        # TARGET_W -- a percentage-based size read correctly on landscape
-        # but far too small on portrait (confirmed via side-by-side preview
-        # before this was built), since portrait's TARGET_W is much
-        # narrower than landscape's. Uses the opposite corner from item 7
-        # so both can be shown at once without overlapping. Same non-fatal
-        # failure handling as item 7 -- logs and continues without the
-        # watermark rather than breaking a real delivery over it.
         PVS_WATERMARK_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'assets', 'pvs_watermark.png')
-        PVS_WATERMARK_WIDTH_PX = 210
-        PVS_WATERMARK_MARGIN_PX = 40
         if os.path.exists(PVS_WATERMARK_PATH):
             try:
-                watermark_clip = ImageClip(PVS_WATERMARK_PATH).with_duration(final.duration)
-                watermark_clip = watermark_clip.resized(width=PVS_WATERMARK_WIDTH_PX)
-                watermark_clip = watermark_clip.with_position((PVS_WATERMARK_MARGIN_PX, TARGET_H - watermark_clip.h - PVS_WATERMARK_MARGIN_PX))
-                final = CompositeVideoClip([final, watermark_clip])
+                wm_img = _PILImage.open(PVS_WATERMARK_PATH).convert("RGBA")
+                wm_w = 210
+                wm_h = int(wm_img.height * wm_w / wm_img.width)
+                wm_img = wm_img.resize((wm_w, wm_h))
+                wm_arr = np.array(wm_img).astype(float)
+                wm_rgb = wm_arr[:, :, :3]
+                wm_alpha = wm_arr[:, :, 3:4] / 255.0
+                wm_margin = 40
+                wx, wy = wm_margin, TARGET_H - wm_h - wm_margin
+
+                def _add_watermark(get_frame, t, _wx=wx, _wy=wy, _ww=wm_w, _wh=wm_h, _rgb=wm_rgb, _a=wm_alpha):
+                    frame = get_frame(t).copy().astype(float)
+                    region = frame[_wy:_wy+_wh, _wx:_wx+_ww]
+                    frame[_wy:_wy+_wh, _wx:_wx+_ww] = _rgb * _a + region * (1 - _a)
+                    return frame.astype("uint8")
+
+                final = final.transform(_add_watermark)
             except Exception as e:
                 print(f'[Assemble] PVS watermark overlay failed, continuing without it: {e}')
         # Attach all TTS audio tracks positioned correctly on the final timeline

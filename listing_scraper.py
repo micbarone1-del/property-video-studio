@@ -719,7 +719,8 @@ def generate_narration_and_derive_scenes(
 
     elif speech_secs < _min_speech:
         target_speech = _min_speech + 3.0  # margin above the floor
-        extra_words = int((target_speech - speech_secs) * WORDS_PER_SECOND_ESTIMATE)
+        words_per_second = len(narration_text.split()) / speech_secs  # measured from this narration, not a hardcoded estimate -- 2026-10-02 fix: WORDS_PER_SECOND_ESTIMATE was referenced but never defined anywhere, crashing with NameError (500 on /v1/videos) any time narration landed below the minimum speech length
+        extra_words = int((target_speech - speech_secs) * words_per_second)
         try:
             extend_prompt = EXTEND_PROMPT.format(actual_secs=speech_secs, target_secs=target_speech,
                                                    extra_words=extra_words, description=description,

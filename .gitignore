@@ -9,3 +9,6 @@ venv/
 hardcopy.*
 maintenance_last_run.json
 maintenance_status.json
+agencies.json
+properties.json
+partners.json
