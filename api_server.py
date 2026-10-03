@@ -2000,6 +2000,32 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
             await _send_partner_webhook(job_id, "failed")
 
 
+def _resolve_real_relinx_job(job_id: str, job: dict):
+    """
+    2026-10-03 (confirmed live, real partner impact): if `job` is a
+    labeled duplicate from a retry-storm incident (source starts with
+    'relinx_duplicate_retry'), find and return the REAL job sharing the
+    same partner_id + external_ref instead. A partner whose client ended
+    up storing one of the duplicate ids (as Relinx's did -- they stored
+    8ccdd462, created during the 2026-10-02 timeout/retry storm, while
+    the real completed job is cc2aead8) would otherwise see a permanently
+    stuck "draft" job instead of the real, completed one. Returns
+    (resolved_job_id, resolved_job_dict); falls back to the original
+    (job_id, job) if no real counterpart is found.
+    """
+    source = job.get("source", "")
+    if not source.startswith("relinx_duplicate_retry"):
+        return job_id, job
+    partner_id = job.get("partner_id")
+    external_ref = job.get("external_ref")
+    for other_id, other_job in JOBS.items():
+        if (other_job.get("partner_id") == partner_id
+                and other_job.get("external_ref") == external_ref
+                and other_job.get("source") == "relinx"):
+            return other_id, other_job
+    return job_id, job
+
+
 @app.get("/v1/videos/{job_id}")
 async def get_video_status_for_partner(job_id: str, partner: dict = Depends(get_current_partner)):
     if job_id not in JOBS:
@@ -2007,6 +2033,7 @@ async def get_video_status_for_partner(job_id: str, partner: dict = Depends(get_
     job = JOBS[job_id]
     if job.get("partner_id") != partner["partner_id"]:
         raise HTTPException(status_code=403, detail="This job does not belong to your account")
+    real_id, job = _resolve_real_relinx_job(job_id, job)
     released = job.get("released", False)
     result = {
         "id": job_id,
@@ -2014,24 +2041,34 @@ async def get_video_status_for_partner(job_id: str, partner: dict = Depends(get_
         "status": _map_internal_status_to_partner_status(job.get("status"), released),
     }
     if job.get("status") == "done" and released:
-        result["video_url"] = f"https://api.propertyvideostudioai.com/v1/videos/{job_id}/download"
+        result["video_url"] = f"https://api.propertyvideostudioai.com/v1/videos/{real_id}/download"
     return result
 
 
 @app.get("/v1/videos")
 async def find_video_by_external_ref(external_ref: str, partner: dict = Depends(get_current_partner)):
-    for jid, job in JOBS.items():
-        if job.get("partner_id") == partner["partner_id"] and job.get("external_ref") == external_ref:
-            released = job.get("released", False)
-            result = {
-                "id": jid,
-                "external_ref": job.get("external_ref"),
-                "status": _map_internal_status_to_partner_status(job.get("status"), released),
-            }
-            if job.get("status") == "done" and released:
-                result["video_url"] = f"https://api.propertyvideostudioai.com/v1/videos/{jid}/download"
-            return result
-    raise HTTPException(status_code=404, detail="No video found with that external_ref")
+    matches = [(jid, job) for jid, job in JOBS.items()
+               if job.get("partner_id") == partner["partner_id"] and job.get("external_ref") == external_ref]
+    if not matches:
+        raise HTTPException(status_code=404, detail="No video found with that external_ref")
+    # 2026-10-03 (confirmed live, real partner impact): with multiple jobs
+    # sharing one external_ref (a retry-storm duplicate situation), always
+    # prefer the REAL job (source == "relinx") over any labeled
+    # duplicate-retry job -- dict iteration order is not guaranteed to
+    # put the real one first, confirmed live: Relinx's own external_ref
+    # lookup was returning a stuck "draft" duplicate instead of the real,
+    # completed job.
+    real = next((m for m in matches if m[1].get("source") == "relinx"), None)
+    jid, job = real if real else matches[0]
+    released = job.get("released", False)
+    result = {
+        "id": jid,
+        "external_ref": job.get("external_ref"),
+        "status": _map_internal_status_to_partner_status(job.get("status"), released),
+    }
+    if job.get("status") == "done" and released:
+        result["video_url"] = f"https://api.propertyvideostudioai.com/v1/videos/{jid}/download"
+    return result
 
 
 @app.get("/v1/videos/{job_id}/download")
@@ -2041,6 +2078,7 @@ async def download_video_for_partner(job_id: str, partner: dict = Depends(get_cu
     job = JOBS[job_id]
     if job.get("partner_id") != partner["partner_id"]:
         raise HTTPException(status_code=403, detail="This job does not belong to your account")
+    _, job = _resolve_real_relinx_job(job_id, job)
     if job.get("status") != "done":
         raise HTTPException(status_code=400, detail=f"Video not ready (status: {job.get('status')})")
     output_path = job.get("output_path")
