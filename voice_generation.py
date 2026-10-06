@@ -6,10 +6,16 @@ import logging as log
 from pydub import AudioSegment
 
 # Constants
-DEFAULT_VOICE_ID = "b8jhBTcGAq4kQGWmKprT" 
-ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
-
 load_dotenv()
+
+TTS_PROVIDER = os.environ.get("TTS_PROVIDER", "elevenlabs").strip().lower()
+
+DEFAULT_VOICE_ID_ELEVENLABS = "b8jhBTcGAq4kQGWmKprT"
+DEFAULT_VOICE_ID_GOOGLE     = "it-IT-Chirp3-HD-Leda"
+DEFAULT_VOICE_ID = DEFAULT_VOICE_ID_GOOGLE if TTS_PROVIDER == "google" else DEFAULT_VOICE_ID_ELEVENLABS
+
+ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+GOOGLE_TTS_URL = "https://texttospeech.googleapis.com/v1/text:synthesize"
 
 def apply_noise_gate(audio_segment, threshold_db=-32.0, chunk_size_ms=10, tail_only_ms=200):
     """
@@ -74,7 +80,8 @@ def generate_speech(
     noise_gate_threshold=-38.0
 ):
     """
-    Generates Italian speech using ElevenLabs, then applies a noise gate 
+    Generates Italian speech using ElevenLabs or Google Cloud TTS (set via
+    TTS_PROVIDER env var), then applies a noise gate 
     to remove breathing sounds from the end before saving the final file.
     
     Args:
@@ -89,9 +96,10 @@ def generate_speech(
     # Guard against None voice_id (fallback to default)
     voice_id = voice_id or DEFAULT_VOICE_ID
     # 1. Get API Key
-    key = api_key or os.environ.get("ELEVENLABS_API_KEY")
+    key_env_var = "GOOGLE_TTS_API_KEY" if TTS_PROVIDER == "google" else "ELEVENLABS_API_KEY"
+    key = api_key or os.environ.get(key_env_var)
     if not key:
-        print("Error: ELEVENLABS_API_KEY not found. Please set it or pass it as an argument.")
+        print(f"Error: {key_env_var} not found. Please set it or pass it as an argument.")
         return False
 
     print(f"Generating speech for: \"{text[:30]}...\"")
@@ -119,66 +127,78 @@ def generate_speech(
         # If no newline, just process the whole text as body
         final_text = add_breaks(text)
 
-    # 3. Prepare API Request
-    url = ELEVENLABS_TTS_URL.format(voice_id=voice_id)
-    
-    headers = {
-        "Accept": "audio/mpeg",
-        "Content-Type": "application/json",
-        "xi-api-key": key
-    }
-
-    data = {
-        "text": final_text,
-        "model_id": "eleven_multilingual_v2", 
-        "voice_settings": {
-            "stability": 0.3,       
-            "similarity_boost": 0.75, 
-            "style": 0.8,           
-            "use_speaker_boost": True
-        }
-    }
-
     try:
-        # 4. Call API
-        response = requests.post(url, json=data, headers=headers)
-        
-        if response.status_code == 200:
-            # 5. Save Audio to Temp File
-            temp_path = f"temp_{os.path.basename(output_path)}"
-            with open(temp_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=1024):
-                    if chunk:
-                        f.write(chunk)
-            
-            # 6. Apply Noise Gate
-            try:
-                print(f"  Applying noise gate to last 200ms (Threshold: {noise_gate_threshold}dB)...")
-                audio = AudioSegment.from_mp3(temp_path)
-                # Call apply_noise_gate (it defaults to 50ms now)
-                cleaned = apply_noise_gate(audio, threshold_db=noise_gate_threshold)
-                
-                # 7. Export Cleaned Audio
-                cleaned.export(output_path, format="mp3")
-                print(f"  Audio cleaned and saved to: {output_path}")
-                
-            except Exception as e:
-                print(f"  Error during noise gate processing: {e}")
-                # Fallback: Rename temp to output if pydub fails
-                if os.path.exists(temp_path):
-                    os.rename(temp_path, output_path)
-                    print("  Saved original audio (uncleaned) due to error.")
-            
-            # 8. Cleanup Temp File
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-            return True
-
+        # 3. Prepare & Send API Request (provider-specific)
+        if TTS_PROVIDER == "google":
+            lang_code = "-".join(voice_id.split("-")[:2])  # "it-IT" from "it-IT-Chirp3-HD-Leda"
+            url = f"{GOOGLE_TTS_URL}?key={key}"
+            headers = {"Content-Type": "application/json; charset=utf-8"}
+            data = {
+                "input": {"ssml": f"<speak>{final_text}</speak>"},
+                "voice": {"languageCode": lang_code, "name": voice_id},
+                "audioConfig": {"audioEncoding": "MP3"},
+            }
+            response = requests.post(url, json=data, headers=headers)
+            if response.status_code != 200:
+                print(f"  Error: Google TTS API returned {response.status_code}")
+                print(f"  Details: {response.text}")
+                return False
+            audio_b64 = response.json().get("audioContent")
+            if not audio_b64:
+                print(f"  Error: Google TTS response had no audioContent: {response.text}")
+                return False
+            import base64
+            audio_bytes = base64.b64decode(audio_b64)
         else:
-            print(f"  Error: ElevenLabs API returned {response.status_code}")
-            print(f"  Details: {response.text}")
-            return False
-            
+            url = ELEVENLABS_TTS_URL.format(voice_id=voice_id)
+            headers = {
+                "Accept": "audio/mpeg",
+                "Content-Type": "application/json",
+                "xi-api-key": key
+            }
+            data = {
+                "text": final_text,
+                "model_id": "eleven_multilingual_v2",
+                "voice_settings": {
+                    "stability": 0.3,
+                    "similarity_boost": 0.75,
+                    "style": 0.8,
+                    "use_speaker_boost": True
+                }
+            }
+            response = requests.post(url, json=data, headers=headers)
+            if response.status_code != 200:
+                print(f"  Error: ElevenLabs API returned {response.status_code}")
+                print(f"  Details: {response.text}")
+                return False
+            audio_bytes = response.content
+
+        # 5. Save Audio to Temp File
+        temp_path = f"temp_{os.path.basename(output_path)}"
+        with open(temp_path, 'wb') as f:
+            f.write(audio_bytes)
+
+        # 6. Apply Noise Gate
+        try:
+            print(f"  Applying noise gate to last 200ms (Threshold: {noise_gate_threshold}dB)...")
+            audio = AudioSegment.from_mp3(temp_path)
+            cleaned = apply_noise_gate(audio, threshold_db=noise_gate_threshold)
+
+            # 7. Export Cleaned Audio
+            cleaned.export(output_path, format="mp3")
+            print(f"  Audio cleaned and saved to: {output_path}")
+
+        except Exception as e:
+            print(f"  Error during noise gate processing: {e}")
+            if os.path.exists(temp_path):
+                os.rename(temp_path, output_path)
+                print("  Saved original audio (uncleaned) due to error.")
+
+        # 8. Cleanup Temp File
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        return True
+
     except Exception as e:
         print(f"  Exception during speech generation: {e}")
         return False
