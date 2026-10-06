@@ -824,6 +824,22 @@ def set_alert_emails(payload: dict):
     return {"emails": emails}
 
 
+@app.get("/maintenance/notification-topics")
+def get_notification_topics():
+    import maintenance_scheduler
+    return {"topics": maintenance_scheduler.load_ntfy_topics()}
+
+
+@app.post("/maintenance/notification-topics")
+def set_notification_topics(payload: dict):
+    import maintenance_scheduler
+    topics = payload.get("topics", [])
+    if not isinstance(topics, list) or not all(isinstance(t, str) for t in topics):
+        raise HTTPException(status_code=400, detail="topics must be a list of strings")
+    maintenance_scheduler.save_ntfy_topics(topics)
+    return {"topics": topics}
+
+
 
 
 # ── Vision analysis endpoint ───────────────────────────────────────────────────
@@ -1894,6 +1910,11 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
             JOBS[job_id].update({"status": "failed", "message": f"Narration generation failed: {narration['error']}"})
             _save_job(job_id)
             await _send_partner_webhook(job_id, "failed")
+            await _notify_operator(job_id, "Relinx job failed",
+                subject=f"Job Relinx fallito: {payload.property_name}",
+                body_html=f"<p><b>{payload.property_name}</b> - narrazione fallita: {narration['error']}</p>"
+                          f"<p>Job ID: {job_id}, external_ref: {payload.external_ref}</p>",
+                push_message=f"{payload.property_name} - fallito (narrazione)", tags=["x"])
             return
 
         photos_for_selection = []
@@ -1920,6 +1941,11 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
             JOBS[job_id].update({"status": "failed", "message": f"Not enough usable photos for this listing: {gap_desc}"})
             _save_job(job_id)
             await _send_partner_webhook(job_id, "failed")
+            await _notify_operator(job_id, "Relinx job failed",
+                subject=f"Job Relinx fallito: {payload.property_name}",
+                body_html=f"<p><b>{payload.property_name}</b> - foto insufficienti: {gap_desc}</p>"
+                          f"<p>Job ID: {job_id}, external_ref: {payload.external_ref}</p>",
+                push_message=f"{payload.property_name} - fallito (foto insufficienti)", tags=["x"])
             return
 
         selected_categories = [cat for cat, photos in selection["selected"].items() if photos]
@@ -1998,6 +2024,11 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
             JOBS[job_id].update({"status": "failed", "message": f"Internal error building job: {e}"})
             _save_job(job_id)
             await _send_partner_webhook(job_id, "failed")
+            await _notify_operator(job_id, "Relinx job failed",
+                subject=f"Job Relinx fallito: {payload.property_name}",
+                body_html=f"<p><b>{payload.property_name}</b> - errore interno: {e}</p>"
+                          f"<p>Job ID: {job_id}, external_ref: {payload.external_ref}</p>",
+                push_message=f"{payload.property_name} - fallito (errore interno)", tags=["x"])
 
 
 def _resolve_real_relinx_job(job_id: str, job: dict):
@@ -2771,6 +2802,22 @@ async def _send_partner_webhook(job_id: str, event: str):
         log.warning(f"[Job {job_id}] Partner webhook ({event}) failed (non-fatal): {e}")
 
 
+async def _notify_operator(job_id: str, event: str, subject: str, body_html: str,
+                            push_message: str, priority: str = "default", tags: list = None):
+    try:
+        import maintenance_scheduler
+        result = await asyncio.to_thread(
+            maintenance_scheduler.send_notification,
+            subject, body_html, push_message=push_message, priority=priority, tags=tags,
+        )
+        if result["email"] or result["push"]:
+            log.info(f"[Job {job_id}] {event} alert sent (email={result['email']}, push={result['push']})")
+        else:
+            log.warning(f"[Job {job_id}] {event} alert NOT sent on either channel")
+    except Exception as e:
+        log.warning(f"[Job {job_id}] {event} alert failed (non-fatal): {e}")
+
+
 async def _send_new_partner_job_alert(job_id: str):
     """
     Backlog item 48: alerts the operator by email when a new job arrives
@@ -2796,13 +2843,15 @@ async def _send_new_partner_job_alert(job_id: str):
             f"<b>Job ID:</b> {job_id}</p>"
             f"<p>Apri l'app per rivedere scene e narrazione prima di generare il video.</p>"
         )
-        sent = await asyncio.to_thread(maintenance_scheduler.send_maintenance_alert, subject, body_html)
-        if sent:
-            log.info(f"[Job {job_id}] New-job alert email sent")
+        push_message = f"{job.get('property_name', 'Property')} - in attesa di revisione"
+        result = await asyncio.to_thread(maintenance_scheduler.send_notification, subject, body_html,
+                                          push_message=push_message, tags=["inbox_tray"])
+        if result["email"] or result["push"]:
+            log.info(f"[Job {job_id}] New-job alert sent (email={result['email']}, push={result['push']})")
         else:
-            log.warning(f"[Job {job_id}] New-job alert email NOT sent (no recipients or creds missing -- see send_maintenance_alert's own log line above)")
+            log.warning(f"[Job {job_id}] New-job alert NOT sent on either channel")
     except Exception as e:
-        log.warning(f"[Job {job_id}] New-job alert email failed (non-fatal): {e}")
+        log.warning(f"[Job {job_id}] New-job alert failed (non-fatal): {e}")
 
 
 async def run_reassemble_only(job_id: str):
@@ -3632,6 +3681,16 @@ async def run_pipeline(
                 f"{len(flagged_scenes)} flagged. Please review before assembly."
             )
             _save_job(job_id)
+            prop_name = JOBS[job_id].get("property_name", "Property")
+            await _notify_operator(
+                job_id, "QC flagged",
+                subject=f"QC da rivedere: {prop_name}",
+                body_html=(f"<p><b>{prop_name}</b> - QC ha fermato il job: "
+                           f"{len(rejected_scenes)} scene rifiutate, {len(flagged_scenes)} segnalate.</p>"
+                           f"<p>Job ID: {job_id}</p>"),
+                push_message=f"{prop_name} - QC: {len(rejected_scenes)} rifiutate, {len(flagged_scenes)} segnalate",
+                tags=["warning"],
+            )
             return   # pipeline pauses here — resumed by /approve endpoint
 
 

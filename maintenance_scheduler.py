@@ -74,6 +74,7 @@ TEST_SCRATCH_DIR  = JOBS_DIR / "_test_scratch"
 STATUS_FILE       = BASE_DIR / "maintenance_status.json"
 LAST_RUN_FILE     = BASE_DIR / "maintenance_last_run.json"
 ALERT_EMAILS_FILE = BASE_DIR / "maintenance_alert_emails.json"
+NTFY_TOPICS_FILE  = BASE_DIR / "notification_topics.json"
 LOG_FILE          = Path("/tmp/property-video.log")  # confirmed via start.sh — screen session pipes uvicorn output here
 API_BASE          = "http://localhost:8000"
 
@@ -102,6 +103,8 @@ FALLBACK_LOG_TAIL_LINES   = 5000  # bound scan cost regardless of run frequency
 EMAIL_FROM     = credit_monitor.EMAIL_FROM
 EMAIL_PASSWORD = credit_monitor.EMAIL_PASSWORD
 
+NTFY_SERVER = os.getenv("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
+
 
 # ── Recipient list (editable via API, not just .env) ───────────────────────
 
@@ -117,6 +120,20 @@ def load_alert_emails() -> list:
 
 def save_alert_emails(emails: list) -> None:
     ALERT_EMAILS_FILE.write_text(json.dumps(emails, indent=2))
+
+
+def load_ntfy_topics() -> list:
+    if NTFY_TOPICS_FILE.exists():
+        try:
+            return json.loads(NTFY_TOPICS_FILE.read_text())
+        except Exception:
+            log.error("[Maintenance] Could not parse notification_topics.json.")
+    default = os.getenv("NTFY_DEFAULT_TOPIC", "").strip()
+    return [default] if default else []
+
+
+def save_ntfy_topics(topics: list) -> None:
+    NTFY_TOPICS_FILE.write_text(json.dumps(topics, indent=2))
 
 
 # ── Per-check scheduling state ──────────────────────────────────────────────
@@ -404,6 +421,37 @@ def send_maintenance_alert(subject: str, body_html: str) -> bool:
         return False
 
 
+def send_ntfy_push(subject: str, message: str, priority: str = "default", tags: list = None) -> bool:
+    topics = load_ntfy_topics()
+    if not topics:
+        log.warning("[Maintenance] Push skipped - no ntfy topics configured.")
+        return False
+    sent_any = False
+    for topic in topics:
+        try:
+            resp = requests.post(
+                f"{NTFY_SERVER}/{topic}",
+                data=message.encode("utf-8"),
+                headers={"Title": subject, "Priority": priority,
+                         **({"Tags": ",".join(tags)} if tags else {})},
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                sent_any = True
+            else:
+                log.warning(f"[Maintenance] ntfy push to '{topic}' returned HTTP {resp.status_code}")
+        except Exception as e:
+            log.warning(f"[Maintenance] ntfy push to '{topic}' failed (non-fatal): {e}")
+    return sent_any
+
+
+def send_notification(subject: str, body_html: str, push_message: str = None,
+                       priority: str = "default", tags: list = None) -> dict:
+    email_sent = send_maintenance_alert(subject, body_html)
+    push_sent = send_ntfy_push(subject, push_message or subject, priority=priority, tags=tags)
+    return {"email": email_sent, "push": push_sent}
+
+
 def _alert_is_on_cooldown(last_run: dict) -> bool:
     last_alert = last_run.get("_last_alert_sent")
     if not last_alert:
@@ -503,7 +551,12 @@ def run_due_checks() -> dict:
         for c in red_checks:
             body += f"<li><b>{c['title']}</b>: {c['summary']}</li>"
         body += "</ul>"
-        if send_maintenance_alert("Property Video Studio — Maintenance Alert", body):
+        push_text = "; ".join(f"{c['title']}: {c['summary']}" for c in red_checks)
+        result = send_notification(
+            "Property Video Studio — Maintenance Alert", body,
+            push_message=push_text, priority="high", tags=["rotating_light"],
+        )
+        if result["email"] or result["push"]:
             last_run["_last_alert_sent"] = datetime.now().isoformat()
 
     _save_last_run(last_run)
