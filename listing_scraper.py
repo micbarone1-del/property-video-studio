@@ -99,6 +99,28 @@ MODEL = "claude-haiku-4-5-20251001"  # cheapest current model; upgrade to
 CATEGORIES = ["exterior", "living", "kitchen", "bedrooms", "bathrooms", "outdoor"]
 PRIORITY_ORDER = ["exterior", "living", "kitchen", "bedrooms", "bathrooms", "outdoor"]
 
+CATEGORY_ITALIAN_LABELS = {
+    "exterior": "facciata/esterno dell'edificio",
+    "living": "soggiorno",
+    "kitchen": "cucina",
+    "bedrooms": "camere da letto",
+    "bathrooms": "bagni",
+    "outdoor": "spazi esterni (giardino/terrazza)",
+    "laundry": "lavanderia",
+    "office": "studio",
+    "garage": "garage",
+}
+
+
+def derive_available_category_order(photos: list, priority_order: list = None) -> list:
+    """Returns the subset of priority_order categories that have at least
+    one real photo, in priority_order's sequence -- this IS the actual
+    scene sequence the video will show. Lightweight on purpose: only
+    checks presence, no quality ranking, no API calls."""
+    order = priority_order if priority_order is not None else PRIORITY_ORDER
+    present = {p.get("category") for p in photos}
+    return [cat for cat in order if cat in present]
+
 SUPPORTED_DOMAINS = {"immobiliare.it", "www.immobiliare.it", "idealista.it", "www.idealista.it",
                      "casa.it", "www.casa.it"}
 
@@ -405,9 +427,15 @@ NARRATION_PROMPT = """You are writing a short, natural-sounding Italian voiceove
 {description}
 ---
 
-Property details: {address}, {price}
+Property details: {address}, {price}{agency_instruction}
 
-Write a single continuous narration script (in Italian) covering this property naturally and completely. Do NOT target a specific word count or duration; write however much is naturally needed to cover the property's real features well, neither padded nor rushed. Should flow as ONE continuous piece, no headers, no scene labels.
+Write a single continuous narration script (in Italian) covering this property naturally and completely. Should flow as ONE continuous piece, no headers, no scene labels. {opening_instruction}
+
+The description above may also include promotional or biographical text about the real estate agency itself (e.g. company history, founding year, mission statement, values) that has nothing to do with THIS specific property — ignore any such agency-about-us content entirely; describe only the property itself.
+
+{feature_scope_instruction}
+
+{scene_order_instruction}
 
 STAY OBJECTIVE AND FACTUAL — this is important, not a minor style note:
 - Do NOT add subjective or promotional adjectives that aren't grounded in the description (e.g. don't call a location "prestigious," "esclusivo," "meraviglioso," or similar, unless the description itself uses language like that). A small town is not automatically "prestigious" just because it's in a real estate video.
@@ -421,7 +449,9 @@ AVOID legal/administrative real estate jargon that means nothing to a general vi
 
 IMPORTANT: clearly state whether the property is FOR SALE or FOR RENT ("in vendita" or "in affitto") near the beginning of the narration, based on what the listing description actually says — do not leave this ambiguous or assume one over the other.
 
-End the narration with a brief, natural closing line inviting the viewer to contact the agency for more information (e.g. "Contattate l'agenzia per maggiori informazioni" or similar) — do NOT include a phone number or email in this closing line, just a general invitation to get in touch.
+Include one brief sentence about the property's location and accessibility (e.g. proximity to services, central position) if the description supports it.
+
+{closing_instruction}
 
 Return ONLY the narration text (no JSON, no markdown, no preamble, no quotation marks around it).
 
@@ -443,6 +473,10 @@ Base captions on the actual description — don't invent details or qualities no
 
 EXTEND_PROMPT = """The narration below was measured at {actual_secs:.1f} seconds of spoken audio, but should be closer to {target_secs:.0f} seconds. Extend it by about {extra_words} more words, using ONLY additional real detail from the original property description below — do not invent any facts, features, or details not present in the description, and do not add subjective/promotional adjectives (e.g. "prestigioso," "esclusivo") that aren't grounded in the description's own language. Stay factual and objective. Do not include phone numbers or price in the narration.
 
+The property description may also include promotional or biographical text about the real estate agency itself (company history, founding year, mission, values) — do not pull any such agency-about-us content into the narration.
+
+Preserve the narration's existing opening sentence (the agency introduction, if present) and closing sentence (the invitation to contact the agency, if present) essentially unchanged — add the extra detail to the descriptive portion in between, not by altering the opening/closing.
+
 Original property description:
 ---
 {description}
@@ -457,7 +491,7 @@ Return ONLY the full extended narration text (no JSON, no markdown, no preamble)
 
 SHORTEN_PROMPT = """The narration below was measured at {actual_secs:.1f} seconds of spoken audio, but needs to fit within {target_secs:.0f} seconds — it MUST be shorter than that, not just close to it. Rewrite it at no more than {target_words} words. This is a hard ceiling — err on the side of cutting too much rather than too little.
 
-Keep the most important property details (location, size, standout features) and drop secondary ones first. Keep it flowing naturally. Stay factual and objective — don't add subjective or promotional adjectives that weren't already justified by the source material.
+Keep the most important property details (location, size, standout features) and drop secondary ones first. Always preserve the narration's existing opening sentence (the agency introduction, if present) and closing sentence (the invitation to contact the agency, if present) essentially unchanged — cut length from the descriptive middle portion, not from these bookends. Keep it flowing naturally. Stay factual and objective — don't add subjective or promotional adjectives that weren't already justified by the source material.
 
 Current narration to shorten:
 ---
@@ -627,7 +661,7 @@ _PREMIUM_EXTRA_CATEGORIES = ["laundry", "office", "garage"]
 
 def generate_narration_and_derive_scenes(
     description: str, address: str = None, price: str = None, voice_id: str = None,
-    premium: bool = False,
+    premium: bool = False, agency_name: str = None, scene_category_order: list = None,
 ) -> dict:
     """
     Writes ONE natural narration (no artificial length target), measures
@@ -656,8 +690,43 @@ def generate_narration_and_derive_scenes(
        "scene_count": int | None, "video_duration_secs": int | None,
        "tts_calls_used": int, "was_trimmed": bool, "error": str | None}
     """
-    prompt = NARRATION_PROMPT.format(description=description, address=address or "non specificato",
-                                       price=price or "non specificato")
+    if agency_name:
+        agency_instruction = f"\nAgency: {agency_name}"
+        opening_instruction = f'Open the narration with the agency presenting the property, e.g. "{agency_name} presenta..." (adapt naturally to flow well).'
+        closing_instruction = (f'End the narration with a brief, natural closing line inviting the viewer to contact {agency_name} by name '
+                                f'for more information (e.g. "Contattate {agency_name} per maggiori informazioni") -- do NOT include a phone '
+                                f'number or email, just the agency name and a general invitation to get in touch.')
+    else:
+        agency_instruction = ""
+        opening_instruction = ""
+        closing_instruction = ('End the narration with a brief, natural closing line inviting the viewer to contact the agency for more '
+                                'information (e.g. "Contattate l\'agenzia per maggiori informazioni" or similar) -- do NOT include a phone '
+                                'number or email in this closing line, just a general invitation to get in touch.')
+
+    feature_scope_instruction = (
+        "This is a longer-format video (~60 seconds) -- you may cover the property's features in fuller detail than a quick "
+        "highlight reel, while still avoiding an exhaustive room-by-room list."
+        if premium else
+        "This is a SHORT-format video (~30 seconds) -- mention only 2-3 standout features of the property rather than "
+        "describing every room; a brief highlight, not an exhaustive tour."
+    )
+
+    if scene_category_order:
+        labels = [CATEGORY_ITALIAN_LABELS.get(c, c) for c in scene_category_order]
+        scene_order_instruction = (
+            "The video will show the property in this exact order: " + ", poi ".join(labels) + ". "
+            "Describe the property's features roughly following this same order, so the narration matches what's "
+            "visible on screen at each point -- don't jump back to an earlier room after moving on."
+        )
+    else:
+        scene_order_instruction = ""
+
+    prompt = NARRATION_PROMPT.format(
+        description=description, address=address or "non specificato", price=price or "non specificato",
+        agency_instruction=agency_instruction, opening_instruction=opening_instruction,
+        feature_scope_instruction=feature_scope_instruction, closing_instruction=closing_instruction,
+        scene_order_instruction=scene_order_instruction,
+    )
     try:
         client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
         response = _track_claude(client.messages.create(model=MODEL, max_tokens=2048,

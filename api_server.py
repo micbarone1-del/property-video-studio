@@ -1458,7 +1458,6 @@ async def reassemble_with_narration(job_id: str, background_tasks: BackgroundTas
 # endpoint, same as any other draft job. Phase 2 (fully automatic, no
 # manual review step) is a later addition, not built yet.
 
-@app.post("/jobs/from-url")
 async def _apply_vision_analysis_to_scenes(scenes_config: list, scene_image_paths: list, log_prefix: str = "URL workflow") -> None:
     """
     Runs real per-photo vision analysis (analyse_input) to set each scene's
@@ -1495,6 +1494,7 @@ async def _apply_vision_analysis_to_scenes(scenes_config: list, scene_image_path
                         f"keeping category-based default: {e}")
 
 
+@app.post("/jobs/from-url")
 async def create_job_from_url(
     request: Request,
     property_name: str = Form(""),
@@ -1526,10 +1526,17 @@ async def create_job_from_url(
         raise HTTPException(status_code=400, detail=f"Could not read listing: {extraction['error']}")
     extraction["photos"] = await asyncio.to_thread(scraper.resolve_uncategorized_photos, extraction["photos"])
 
+    agency_name = None
+    if agency_id:
+        _agency = cost_model.get_agency(agency_id)
+        if _agency:
+            agency_name = _agency.get("name")
+    scene_category_order = scraper.derive_available_category_order(extraction["photos"])
+
     narration = await asyncio.to_thread(
         scraper.generate_narration_and_derive_scenes,
         extraction["description"], extraction["address"], extraction["price"], voice_id or None,
-        premium,
+        premium, agency_name, scene_category_order,
     )
     if not narration["ok"]:
         raise HTTPException(status_code=500, detail=f"Narration generation failed: {narration['error']}")
@@ -1902,9 +1909,15 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
         if payload.features:
             description_full += "\n\nCaratteristiche: " + ", ".join(payload.features)
 
+        scene_category_order = scraper.derive_available_category_order([
+            {"category": p.category if p.category in scraper.CATEGORIES else "uncategorized"}
+            for p in payload.photos
+        ])
+
         narration = await asyncio.to_thread(
             scraper.generate_narration_and_derive_scenes,
             description_full, None, None, payload.voice_id or None, False,
+            agency.get("name"), scene_category_order,
         )
         if not narration["ok"]:
             JOBS[job_id].update({"status": "failed", "message": f"Narration generation failed: {narration['error']}"})
