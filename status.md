@@ -1,6 +1,6 @@
 # Property Video Studio — Status
 
-_Last verified: October 3, 2026 -- first real Relinx job tested end-to-end live and released (backlog item 48); three real video_assembly.py compositing bugs found and fixed (watermark transparency, fade-transition black screen, and the architecture interaction between the two); async timeout, job-dedup, and release-gate fixes shipped. See the October 2-3 section below for the full writeup._
+_Last verified: October 6, 2026 -- operator notification system (push + email) built and verified end-to-end for Relinx job events; TTS provider migrated from ElevenLabs to Google Cloud TTS (Chirp3 HD "Leda"), switchable via TTS_PROVIDER env var, verified with a real synthesized clip. See the October 6 section below. Previous checkpoint: October 3, 2026 -- first real Relinx job tested end-to-end live and released (backlog item 48); three real video_assembly.py compositing bugs found and fixed (watermark transparency, fade-transition black screen, and the architecture interaction between the two); async timeout, job-dedup, and release-gate fixes shipped. See the October 2-3 section below for the full writeup._
 
 ---
 
@@ -42,6 +42,8 @@ cd /var/www/property-video-studio/ && git status && git fetch origin && git log 
 **Anchor-matching for code patches has a recurring, specific failure mode: missed blank lines.** This codebase consistently uses double blank lines between many statements/blocks (not a universal rule, but common enough to catch people out repeatedly this session). Multiple patches failed on the first attempt purely because an anchor assumed a single blank line where the real file had two. Standing practice: when a patch anchor fails to match, check for this specific issue first (`cat -A` on the real lines) before assuming anything more complicated is wrong.
 
 **`grep` for a function call can silently miss real call sites if the function is passed by reference rather than invoked directly** — e.g. `asyncio.to_thread(some_function, ...)` has no literal `some_function(` substring, so `grep "some_function("` finds nothing even though it's genuinely called there. This tripped up the same search pattern at least three separate times this session (`assemble_property_video`, `enhance_image`, `generate_video_single`). Standing practice: when checking "does anything call X," grep for the bare name first, without requiring a trailing `(`.
+
+**Google Cloud's "Secure by Default" org policies can silently block API/service-account key creation, even on a genuinely personal account (found October 6, 2026).** Google auto-provisions an "organization" resource for new Cloud customers with security defaults enforced -- including `iam.managed.disableServiceAccountApiKeyCreation` -- with no employer involved. Symptom: "API keys are disallowed... use Application Default Credentials instead." Fix, if you own the account (project picker -> look for an org-named resource above your projects, e.g. `<username>-org`): IAM & Admin -> Organization Policies, switched to the *organization* context (not the project) via the project-picker's three-dot menu -> Organization Policies -> find the constraint -> Manage Policy -> Override parent's policy -> Not enforced. Separately: the Console's "Create Credentials -> API key" wizard can default new keys to an auto-created service account restricted to Vertex/Gemini only ("Agent Platform API") -- NOT the same restriction, not fixed by the above. Workaround: create the key via `gcloud services api-keys create --display-name="..." --api-target=service=SERVICE` in Cloud Shell instead -- this does not auto-bind to a service account unless `--service-account` is explicitly passed.
 
 ---
 
@@ -468,3 +470,35 @@ No UI button yet for the new release gate (direct API call only). The scene-4-re
 ### A session-long terminal reliability issue, and the workaround that ended up working
 
 The Hostinger browser terminal hung repeatedly tonight on large pastes -- inconsistently, at sizes ranging from under 1KB up to several KB, with no clean threshold (a block that worked fine earlier in the session would sometimes hang later at a similar or even smaller size). Ctrl+C was always safe (nothing partial is written to disk until the base64 decode/apply step runs as its own separate command). The reliable workaround for the rest of the session: much smaller `echo -n` chunks (settled around 700 base64 characters per line) with an explicit byte-count confirmation printed after each piece before sending the next, sent as a single multi-line paste rather than one line per round-trip once the pattern was proven stable. See the project's custom instructions for the full writeup of this as a standing practice.
+
+---
+
+## October 6, 2026 -- Operator notification system (push + email) and ElevenLabs -> Google Cloud TTS migration, both built, tested end-to-end with real calls, committed and pushed
+
+### Operator notification system: unified email + push, built for a team that will eventually be bigger than one person
+
+**Context:** email alerts already existed (`send_maintenance_alert`) but Michele doesn't check email frequently enough for anything time-sensitive, and explicitly flagged that monitoring will eventually be delegated to a contractor or student, not stay solely his.
+
+**Built:** `maintenance_scheduler.py` gained `send_ntfy_push()` (posts to any number of ntfy.sh topics, each independent/best-effort so one bad topic never blocks the others) and `send_notification()` as the single shared entry point (email + push together). Topics are stored as a **list** (`notification_topics.json`, same editable pattern as the existing alert-emails list, new `GET/POST /maintenance/notification-topics` endpoints) specifically so a second person's topic can be added later with zero code change. Hooked to 5 call sites, all routed through one new shared `_notify_operator()` helper in `api_server.py` (no per-site duplication): the existing new-partner-job alert (upgraded from email-only), the QC-gate pause (new), and all 3 failure points inside `_build_relinx_job_in_background()` (new). The single existing RED-flag maintenance dispatch site was switched to the same unified channel.
+
+**Deliberately NOT touched:** 5 other `status: "failed"` call sites in the legacy/manual job pipeline (non-Relinx) remain on no notification at all, each already written inline rather than through a shared function -- flagged as a known duplication pattern (consistent with the project's standing architecture-discipline concern) but out of scope for this pass, since Relinx is what needs live monitoring today.
+
+**Verified, not just deployed:** a real push notification was sent via `send_ntfy_push()` and confirmed received on Michele's own device (topic `pvs-ops-4xqqcmd13n`) before this was considered done -- not just a clean test script.
+
+### TTS provider: ElevenLabs -> Google Cloud TTS (Chirp3 HD "Leda"), switchable
+
+**Why:** ElevenLabs costs ~€300/year flat; Google Cloud TTS covers Michele's real volume (tens of videos/month) within its free tier regardless of voice tier used, confirmed via Google's own pricing page.
+
+**Open-source alternatives researched and explicitly rejected:** XTTS v2 and Fish Speech both have non-commercial licenses (CPML / CC-BY-NC) that would be a real violation for a revenue product; commercially-licensed options (Piper, MIT) are CPU-friendly but noticeably lower quality; all practical options need a GPU this VPS doesn't have. Conclusion: self-hosting doesn't make sense here even before the cost comparison.
+
+**Voice selected:** `it-IT-Chirp3-HD-Leda` (female) -- Google's newest TTS generation, chosen after generating and listening to 6 real candidate clips (Aoede, Kore, Leda, Charon, Puck, Orus) via a Cloud Shell `curl` loop, narrowed to 4, final pick made by Michele.
+
+**Built:** `voice_generation.py`'s `generate_speech()` now branches on a new `TTS_PROVIDER` env var (default stays `elevenlabs` -- nothing changes for existing deployments unless `.env` is updated). Both providers share the exact same break-tag-building logic (ElevenLabs takes it as plain text with inline `<break>` tags; Google wraps the same string in `<speak>...</speak>` and sends it as SSML) and converge on the same noise-gate/export pipeline afterward -- one function, not two parallel implementations. Confirmed via grep: all 5 real call sites in the codebase (narration.py's per-sentence loop + 4 in api_server.py) already route through this single function, so zero other files needed changes.
+
+**Real infrastructure friction, worth recording:** Google's "Secure by Default" org policies (see new READ THIS FIRST entry above) blocked both service-account-key creation and, separately, the Console's API-key wizard defaulted new keys to a Vertex/Gemini-only service-account binding. Resolved by disabling the org constraint (Michele owned the auto-created `micbarone1-org`) and creating the actual key via `gcloud services api-keys create` in Cloud Shell instead of the Console UI.
+
+**Verified, not just deployed:** a real `generate_speech()` call against the live Google API produced an actual 18.5KB MP3 before this was considered done, confirmed on the server, not just `py_compile`. Committed and pushed (`e8801dd`).
+
+**ElevenLabs is not removed from the code** -- it's the default; switching back is one `.env` line (`TTS_PROVIDER=elevenlabs`) plus a restart, no code changes, in case Google TTS quality doesn't hold up in real production use.
+
+**Still open:** `ELEVENLABS_API_KEY` / ElevenLabs account itself not yet cancelled (intentionally -- kept as a live fallback until Google TTS has run in production for a while). The 5 un-hooked legacy failure sites noted above. A UI toggle for provider selection was discussed and explicitly deferred -- today it's `.env`-only, not exposed in the operator UI.

@@ -405,7 +405,7 @@ UI labels updated to match all of the above.
 
 **Prerequisites / dependencies:** item 47 verified live; the concurrency queue + operator dashboard (NEXT MILESTONE); item 39 (client/property/job library) is the natural home for agency and property records; item 11 (agent QC) is what eventually allows dropping the human review gate. Structured CRM data removes the need for scraping listing sites for these customers, which lowers the urgency of item 15 for this channel.
 
-**Still open:** the exact 4-states list Relinx's box refers to (see above); the rights/DPA addendum (above — blocking); who pays if this becomes paid; whether partner agencies see the operator review step at all. Resolved and removed from this list: on-demand vs automatic (on-demand), photo hosting (public URLs), volumes (2/day/agency), target agencies (1, then 3 more), Getrix (irrelevant).
+**Still open:** the exact 4-states list Relinx's box refers to (see above); the rights/DPA addendum (above — blocking) -- a first working draft now exists (Claude Doc, built October 6, 2026, covering roles/DPA, sub-processor transfers, publication rights, AI-content liability, retention; explicitly NOT legal-reviewed and not yet sent to Relinx); who pays if this becomes paid; whether partner agencies see the operator review step at all. Resolved and removed from this list: on-demand vs automatic (on-demand), photo hosting (public URLs), volumes (2/day/agency), target agencies (1, then 3 more), Getrix (irrelevant).
 
 **Implementation status, September 30 – October 1, 2026 — core pipeline BUILT and verified end-to-end over real HTTPS; two real pieces still missing before Relinx can actually be connected (see below).**
 
@@ -465,6 +465,30 @@ Built, committed, and tested this session:
 
 ---
 
+## 50. Operator notification system (push + email) -- ✅ COMPLETED October 6, 2026
+
+**Problem:** the only alert channel was email, which Michele doesn't check frequently enough for anything time-sensitive (new Relinx job awaiting review, QC-flagged job, failed job). Monitoring is also expected to eventually move to a contractor/student, not stay solely Michele's.
+
+**Built:** `send_ntfy_push()` + unified `send_notification()` (email + push together) in `maintenance_scheduler.py`; topics stored as an editable list (`notification_topics.json`, `GET/POST /maintenance/notification-topics`) so a second person's topic can be added later with no code change. One shared `_notify_operator()` helper in `api_server.py`, used by all 5 hooked call sites (new partner job, QC-gate pause, and all 3 failure points in `_build_relinx_job_in_background()`) plus the existing RED-flag maintenance dispatch -- no per-site duplication.
+
+**Verified:** real push notification sent and confirmed received on-device before considered done.
+
+**Deliberately deferred:** 5 non-Relinx `status: "failed"` sites in the legacy/manual pipeline, each already written inline rather than through a shared function, left un-hooked this pass -- flagged as a known duplication pattern worth consolidating if/when monitoring needs to cover non-Relinx jobs too.
+
+## 51. TTS provider: ElevenLabs → Google Cloud TTS -- ✅ COMPLETED October 6, 2026
+
+**Why:** ElevenLabs ~€300/year flat; Google Cloud TTS covers real volume within its free tier at any voice tier, confirmed against Google's own pricing page. Open-source self-hosting explicitly researched and rejected: best options (XTTS v2, Fish Speech) are non-commercially licensed, commercially-licensed options (Piper) are materially lower quality, and all practical options need a GPU this VPS doesn't have.
+
+**Built:** `voice_generation.py`'s `generate_speech()` branches on a new `TTS_PROVIDER` env var (default unchanged: `elevenlabs`). Both providers share the same break-tag text-building logic and converge on the same noise-gate/export pipeline -- one function, not two. All 5 real call sites across the codebase already route through this one function (confirmed via grep), so no other file needed changes.
+
+**Voice:** `it-IT-Chirp3-HD-Leda`, chosen by generating and listening to 6 real candidates via Cloud Shell, narrowed to 4, final pick by Michele.
+
+**Verified:** a real `generate_speech()` call against the live Google API produced an actual playable MP3 (18.5KB) before considered done. Committed and pushed (`e8801dd`).
+
+**Still open:** ElevenLabs account intentionally not cancelled yet (kept as live fallback, one `.env` line to switch back). A UI toggle for provider selection was discussed and explicitly deferred -- today `.env`-only.
+
+---
+
 ## Recently completed (see status.md for full detail)
 
 - **Auto maintenance scheduler** — July 9, 2026.
@@ -491,6 +515,8 @@ Built, committed, and tested this session:
 - **Real root-cause bug fixed: moviepy CompositeAudioClip requirement, breaking both audio buffer fixes** — July 24, 2026. See item 45. Confirmed working in the real world (email + WhatsApp forward).
 - **Real cost-tracking gap fixed: narration regeneration cost** — July 24, 2026. See item 46.
 - **Premium ~1-minute video template, full scope** — July 24-26, 2026. See item 35 (live scrape test not yet run, deferred by explicit user choice).
+- **Operator notification system (push + email), Relinx events** — October 6, 2026. See item 50.
+- **TTS provider migrated ElevenLabs → Google Cloud TTS (Chirp3 HD Leda)** — October 6, 2026. See item 51.
 
 ## Not backlog items — standing watch items (tracked in status.md, not here)
 
