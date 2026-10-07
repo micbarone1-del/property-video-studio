@@ -502,3 +502,60 @@ The Hostinger browser terminal hung repeatedly tonight on large pastes -- incons
 **ElevenLabs is not removed from the code** -- it's the default; switching back is one `.env` line (`TTS_PROVIDER=elevenlabs`) plus a restart, no code changes, in case Google TTS quality doesn't hold up in real production use.
 
 **Still open:** `ELEVENLABS_API_KEY` / ElevenLabs account itself not yet cancelled (intentionally -- kept as a live fallback until Google TTS has run in production for a while). The 5 un-hooked legacy failure sites noted above. A UI toggle for provider selection was discussed and explicitly deferred -- today it's `.env`-only, not exposed in the operator UI.
+
+---
+
+## October 7, 2026 -- Luma direct activated in production, logo sizing fixed, narration template built (with a real architectural limit found via live testing), two vision-classification bugs confirmed reproducible, one confirmed UI workflow bug, three camera-rule fixes agreed but not delivered
+
+### Client logo sizing normalized -- COMPLETED, committed (`c9144bc`)
+
+**Problem:** GIAL's logo (flood-fill background removal, 800x800, content filling ~97% of its own canvas edge-to-edge) rendered visibly larger on screen than Sinergie Immobiliari's logo, even though both resize to the identical `target_logo_w` (12% of video width) in `video_assembly.py`. Root cause: raw-canvas-width sizing ignores how much transparent padding is baked into each source file.
+
+**Fix:** crop each logo to its actual non-transparent content bounding box (`getbbox()`) before computing `target_logo_w`. Verified with a real test comparing the actual GIAL file against a synthetic padded logo (simulating Sinergie's style) -- both now normalize to the identical output width.
+
+### Luma direct (Ray 3.2 via the Agents API) -- ACTIVE in production, committed (`da1a33e`)
+
+**What shipped:** `_generate_luma_direct()` in `video_generation.py`, behind `LUMA_DIRECT` (now `true` in `.env`). Fallback cascade preserved exactly as requested: Luma direct -> fal.ai Luma Ray 2 -> Veo.
+
+**Real debugging saga:** the first attempt targeted the classic Dream Machine API (`api.lumalabs.ai/dream-machine/v1`) based on generic documentation -- a real, free auth test (`GET /generations`) returned `403 Not authenticated` even with a confirmed-active key. Root cause, found by checking the actual dashboard the key came from (`platform.lumalabs.ai`): this account's key belongs to a *different* product, the **Luma Agents API** (`agents.lumalabs.ai`), with its own host, its own request/response shape (`video: {resolution, duration, start_frame}` nested, not flat; output at `output[0].url`, not `assets.video`), and its own constraint -- **`duration: "10s"` is rejected outright when an image (`start_frame`) is present**, so in practice only 5s clips are usable via Luma direct for image-to-video; anything longer correctly falls back to fal.ai Ray 2.
+
+**Verified with a real paid generation** (~$1.20, SDR/1080p) producing an actual playable `.mp4`, then confirmed again via a real UI-triggered job after activation. Also confirmed: on this API, **ray-3.2 is the only video model** -- `uni-1`/`uni-1-max` are image-only.
+
+**Still open:** credit/balance monitoring for Google TTS and Luma direct is **not yet added** to the maintenance routine -- needs checking whether either provider exposes a programmatic balance endpoint before it can even be scoped.
+
+### `/jobs/from-url` was completely unreachable since a September 30 refactor -- found and fixed, committed (`97dac94`)
+
+**Found via:** a real 422 error ("Errore: [object Object],[object Object]") testing the narration-sync work through the actual UI button. The error detail showed `scenes_config`/`scene_image_paths` as "required fields" -- the parameters of `_apply_vision_analysis_to_scenes()`, an internal helper, not the real endpoint.
+
+**Root cause:** `@app.post("/jobs/from-url")` was attached to `_apply_vision_analysis_to_scenes()` instead of `create_job_from_url()` -- almost certainly left behind when that helper was extracted out of `create_job_from_url()` on Sept 30 (per that function's own docstring). `create_job_from_url()` itself had **no decorator at all**, making it unreachable via HTTP for over a week, undetected until tonight.
+
+**Fix:** moved the decorator to the real function, verified via grep that exactly one `@app.post("/jobs/from-url")` now exists, directly above `create_job_from_url`.
+
+### Narration template: agency name, feature scope, scene-order hint -- built, committed (`97dac94`), real limitation found via live testing
+
+**Built:** `generate_narration_and_derive_scenes()` (`listing_scraper.py`) now takes `agency_name` (opens/closes the narration with the real agency name) and `scene_category_order` (derived from the real photo list via a new `derive_available_category_order()`, independent of narration length). Also added: an instruction to ignore any agency about-us text embedded in the scraped description (confirmed this really appears mixed into Relinx's `Descrizione completa` field), and a feature-scope limit (2-3 standout features for standard/~30s, fuller detail for premium/~60s). `EXTEND_PROMPT`/`SHORTEN_PROMPT` were separately patched to preserve the opening/closing sentences -- a real bug found live: the first length-correction pass silently dropped the closing "contact us" line, since those prompts had no awareness of the new template.
+
+**Verified with real Claude API calls** against the real Albano Laziale / GIAL listing (including its embedded agency blurb, a genuine test of the ignore-instruction) -- all template elements confirmed present, agency blurb confirmed not leaking in.
+
+**Real limitation found tonight, not caught by the isolated tests above:** driven through a full real Relinx-path job (real photos, real categories confirmed by Michele directly from the live listing), the scene-order instruction did **not** reliably produce narration-to-visual sync -- it's a soft prompt nudge, and the model followed the source description's own structure more than the category-order hint. **Michele's own diagnosis, confirmed correct:** true sync likely needs narration generated **per scene/category** rather than as one paragraph with an order hint. A real design pass for next session, not a quick patch.
+
+### Two vision-classification bugs confirmed live, reproduced twice in a row -- concrete evidence for item 11
+
+Running the real Relinx test twice surfaced the same class of error both times: a photo clearly showing a living room (Florence's own caption said so) classified as `space=bedroom`; a photo clearly showing a balcony classified as `space=large_interior`, movement `stand_look_around` -- a movement the codebase's own comments elsewhere already flag as "confirmed broken in any orientation." Separately, Michele confirmed via a *manually category-selected* UI test that a balcony scene's camera moved toward the interior instead of outward -- ruling out misclassification for *that* case and pointing at the `step_out_onto` prompt itself instead (see below).
+
+### QC-approval panel vanishes when reopening a job that still has scenes awaiting approval -- confirmed real bug, not yet fixed
+
+`showQcReview()` only ever runs during the live polling loop right after a job finishes generating. Reopening an existing job later via the library (`editJob()`) never checks whether the job's real status is still `awaiting_approval` and never re-shows that panel -- the approve/redo step becomes completely inaccessible once you navigate away. Confirmed against a real job (`relinx_test_7f7a5127`) that still carried `awaiting_scenes: {rejected: [1, 5]}`. Needs a real fix: on load, check the job's actual status and re-render the QC panel if still pending -- touches both the load path and the render path, not a one-line patch.
+
+### Three camera-movement fixes discussed and agreed today -- explicitly NOT implemented, an honest gap
+
+Scoped and agreed with Michele earlier the same session, then never written, having been pulled into the narration/Luma work instead:
+1. **Global motion-intensity default** -> "Natural pace" to "Very slow" (agreed: slow pace works everywhere, not just large spaces).
+2. **Space-type movement map**: merge `medium` and `bedroom` to both use `walk_in_gentle` (the real distinction is size, not room type).
+3. **Balcony (`step_out_onto`) prompt**: confirmed real via a manually-selected test. Root cause diagnosed: the prompt says only "pan across the outdoor space," no outward-direction wording. Fix text already drafted, not applied.
+
+Also still open: the frontend/backend drift on the `small` space-type default movement (`ui.html` says `approach_reveal`; `video_generation.py` says `subtle_rotate`) -- found, not fixed.
+
+### Test methodology note for next real-pipeline test
+
+Tonight's real end-to-end Relinx test used the listing's **thumbnail-resolution** photo URLs, not full-resolution originals -- fine for verifying narration/order/pronunciation, but not representative of real output quality. Next real test should use full-resolution source images.

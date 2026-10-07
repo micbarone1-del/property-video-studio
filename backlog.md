@@ -405,7 +405,7 @@ UI labels updated to match all of the above.
 
 **Prerequisites / dependencies:** item 47 verified live; the concurrency queue + operator dashboard (NEXT MILESTONE); item 39 (client/property/job library) is the natural home for agency and property records; item 11 (agent QC) is what eventually allows dropping the human review gate. Structured CRM data removes the need for scraping listing sites for these customers, which lowers the urgency of item 15 for this channel.
 
-**Still open:** the exact 4-states list Relinx's box refers to (see above); the rights/DPA addendum (above — blocking) -- a first working draft now exists (Claude Doc, built October 6, 2026, covering roles/DPA, sub-processor transfers, publication rights, AI-content liability, retention; explicitly NOT legal-reviewed and not yet sent to Relinx); who pays if this becomes paid; whether partner agencies see the operator review step at all. Resolved and removed from this list: on-demand vs automatic (on-demand), photo hosting (public URLs), volumes (2/day/agency), target agencies (1, then 3 more), Getrix (irrelevant).
+**Still open:** the exact 4-states list Relinx's box refers to (see above); the rights/DPA addendum (above — blocking) -- a first working draft now exists (Claude Doc, built October 6, 2026, covering roles/DPA, sub-processor transfers, publication rights, AI-content liability, retention; explicitly NOT legal-reviewed and not yet sent to Relinx); who pays if this becomes paid; whether partner agencies see the operator review step at all. The full real pipeline (API receive -> narration -> photo resolution -> vision analysis -> draft) was verified end-to-end for the first time October 7, 2026 using real listing data (Albano Laziale / GIAL) -- surfaced the real bugs listed in status.md's October 7 section (vision misclassification, QC-panel-on-reopen, narration/scene sync) that a live partner integration will hit for real. Resolved and removed from this list: on-demand vs automatic (on-demand), photo hosting (public URLs), volumes (2/day/agency), target agencies (1, then 3 more), Getrix (irrelevant).
 
 **Implementation status, September 30 – October 1, 2026 — core pipeline BUILT and verified end-to-end over real HTTPS; two real pieces still missing before Relinx can actually be connected (see below).**
 
@@ -487,6 +487,35 @@ Built, committed, and tested this session:
 
 **Still open:** ElevenLabs account intentionally not cancelled yet (kept as live fallback, one `.env` line to switch back). A UI toggle for provider selection was discussed and explicitly deferred -- today `.env`-only.
 
+## 52. Camera movement rule fixes -- agreed October 7, 2026, NOT implemented
+
+Three fixes scoped and agreed with Michele, then never written (pulled into narration/Luma work instead):
+1. Global motion-intensity default: "Natural pace" -> "Very slow" (slow pace works everywhere, not just large spaces -- Michele's real-world observation).
+2. Merge `medium` and `bedroom` space-type movement to both use `walk_in_gentle` (the real distinction is size, not room type).
+3. Balcony (`step_out_onto`, "Esci verso") prompt: confirmed real via a manually-category-selected test -- camera moves toward the interior instead of the outward view. Root cause: the prompt says only "pan across the outdoor space," no outward-direction wording. Fix text already drafted.
+
+Also: the frontend/backend drift on the `small` space-type default movement (`ui.html`'s `SPACE_DEFAULT_MOVEMENT_MAP` says `approach_reveal`; `video_generation.py`'s `SPACE_DEFAULT_MOVEMENT` says `subtle_rotate`) -- found October 7, still not fixed.
+
+## 53. QC-approval panel vanishes on reopening a job with scenes still awaiting approval -- found October 7, 2026
+
+**Problem:** `showQcReview()` only runs during the live polling loop right after a job finishes generating. Reopening an existing job later via the library (`editJob()`) never checks whether the job's real status is still `awaiting_approval` and never re-shows the panel -- the approve/redo step becomes completely inaccessible. Confirmed against a real job (`relinx_test_7f7a5127`, left with `awaiting_scenes: {rejected: [1, 5]}` unreachable).
+
+**Scope (not yet built):** on job load, check the real status; if `awaiting_approval`, render the same QC panel shown during live polling. Touches both the load path (`editJob`/`loadJobIntoUI`) and the render path (`showQcReview`) -- not a one-line patch.
+
+## 54. Narration-to-visual scene order sync -- real architecture limit found October 7, 2026
+
+Item 51's scene-order instruction (`scene_category_order`, built the same day) is a soft prompt nudge, not a hard constraint -- verified via a real full-pipeline test that the model follows the source description's own structure more than the category-order hint, so spoken content can land out of step with what's on screen at that point in the video.
+
+**Michele's own diagnosis, confirmed correct:** true sync likely needs narration generated **per scene/category** rather than as one paragraph with an order hint -- a real design change (how/when narration text is built relative to scene selection), not a prompt tweak. Needs its own scoping pass next session: whether to generate narration in one call with per-scene sections, or one short call per scene stitched together, and how that interacts with the existing duration-measurement/extend-shorten correction loop.
+
+## 55. Vision-based space-type classification is unreliable (Florence-2) -- reinforces item 11 with concrete new evidence
+
+October 7: running the real Relinx pipeline twice surfaced the same class of misclassification both times -- a living room (Florence's own caption correctly said "living room") classified as `bedroom`; a balcony (Florence's own caption correctly said "balcony") classified as `large_interior` with movement `stand_look_around`, a movement the codebase already documents elsewhere as broken. Not a one-off: reproduced twice, different photos. Strengthens the case for item 11 (agent-based/Claude-vision QC and classification) being the real fix rather than further tuning of the Florence-2-based classifier.
+
+## 56. Credit/balance monitoring for Google TTS and Luma direct -- requested October 7, 2026, not yet scoped
+
+Michele asked explicitly that both new paid providers (Google Cloud TTS, Luma direct/Agents API) get added to the existing maintenance-routine credit-check mechanism (today covers fal.ai and ElevenLabs). Not yet investigated whether either provider exposes a programmatic balance/quota endpoint -- needed before this can even be scoped, let alone built.
+
 ---
 
 ## Recently completed (see status.md for full detail)
@@ -517,6 +546,10 @@ Built, committed, and tested this session:
 - **Premium ~1-minute video template, full scope** — July 24-26, 2026. See item 35 (live scrape test not yet run, deferred by explicit user choice).
 - **Operator notification system (push + email), Relinx events** — October 6, 2026. See item 50.
 - **TTS provider migrated ElevenLabs → Google Cloud TTS (Chirp3 HD Leda)** — October 6, 2026. See item 51.
+- **Client logo sizing normalized (content-bbox crop before resize)** — October 7, 2026.
+- **Luma direct (Ray 3.2, Agents API) active in production, fal.ai/Veo fallback preserved** — October 7, 2026.
+- **Real bug fixed: `/jobs/from-url` unreachable since Sept 30 (misplaced route decorator)** — October 7, 2026.
+- **Narration template (agency name, feature scope, scene-order hint)** — October 7, 2026. See item 54 (scene-order sync needs a real architecture revision, not reliable as built).
 
 ## Not backlog items — standing watch items (tracked in status.md, not here)
 
