@@ -568,6 +568,18 @@ def assemble_property_video(scenes_config, video_clip_paths, audio_paths, image_
         if logo_path and os.path.exists(logo_path):
             try:
                 logo_img = _PILImage.open(logo_path).convert("RGBA")
+                # Normalize for visual consistency: crop to the logo's actual
+                # non-transparent content FIRST, then resize to the target
+                # width. Without this, two logo files of the same pixel size
+                # but different amounts of transparent padding render at
+                # visibly different sizes on screen -- confirmed real case:
+                # GIAL's logo fills ~97% of its own canvas edge-to-edge,
+                # while another client's logo has real padding around the
+                # mark, so sizing off raw file width alone made GIAL look
+                # much bigger even at the identical target_logo_w.
+                content_bbox = logo_img.getbbox()
+                if content_bbox:
+                    logo_img = logo_img.crop(content_bbox)
                 target_logo_w = int(TARGET_W * 0.12)
                 logo_h = int(logo_img.height * target_logo_w / logo_img.width)
                 logo_img = logo_img.resize((target_logo_w, logo_h))
