@@ -21,6 +21,7 @@ Future hook:
 
 import os
 import io
+import time
 import logging
 import requests
 import fal_client
@@ -670,7 +671,116 @@ def _generate_luma(image_url: str, prompt: str, duration: int, aspect_ratio: str
         return None
 
 
-# ── Lyra 2.0 generation (Eco tier) ────────────────────────────────────────────
+# -- Luma Ray 3.2 -- DIRECT API (bypasses fal.ai) ----------------------------
+# Switchable via LUMA_DIRECT env var (default: false, stays on fal.ai Ray 2).
+# Confirmed via live account testing (Oct 2026): this account's direct API
+# only offers Ray 3.2, not Ray 2. Still uses fal.ai's _upload_bytes() purely
+# for image hosting (decoupled utility, not a model call). On ANY failure,
+# falls back to the existing fal.ai Luma Ray 2 path untouched, then Veo --
+# same cascade as before, with one more rung added at the top.
+
+LUMA_DIRECT = os.environ.get("LUMA_DIRECT", "false").strip().lower() == "true"
+LUMA_DIRECT_API_URL = "https://agents.lumalabs.ai/v1/generations"  # Agents API, not classic Dream Machine
+_LUMA_DIRECT_POLL_INTERVAL_SECS = 4
+_LUMA_DIRECT_MAX_WAIT_SECS = 300  # 5 min ceiling, same spirit as _subscribe_with_timeout
+
+
+def _snap_luma_direct_duration(duration: int) -> str | None:
+    """Ray 3.2 Agents API accepts '5s' or '10s' -- but start_frame/end_frame
+    (i.e. any image-to-video call, which is 100% of our use case) are
+    REJECTED outright with duration '10s'. So in practice only '5s' is
+    usable here; anything needing longer returns None so the caller skips
+    straight to the fal.ai Luma Ray 2 fallback (which handles up to 9s with
+    an image fine) instead of wasting a call the API will reject."""
+    return "5s" if duration <= 6 else None
+
+
+def _generate_luma_direct(image_url: str, prompt: str, duration: int, aspect_ratio: str = "16:9") -> str | None:
+    """Submits to Luma Ray 3.2 via Luma's AGENTS API (agents.lumalabs.ai) --
+    confirmed via live testing (Oct 2026) that this account's key only
+    authenticates on this host, not the classic Dream Machine API. SDR
+    (hdr omitted = off) -- confirmed via a real prior test: same visual
+    quality as HDR, roughly half the cost. Returns video URL or None; any
+    failure (bad param, timeout, duration >6s with an image, account
+    issue) returns None so the caller falls back to the existing fal.ai path.
+    """
+    key = os.environ.get("LUMA_API_KEY")
+    if not key:
+        log.error("[VideoGen] LUMA_DIRECT is on but LUMA_API_KEY is not set")
+        return None
+    luma_dur = _snap_luma_direct_duration(duration)
+    if luma_dur is None:
+        log.info(f"[VideoGen] Luma direct: {duration}s needs '10s', not supported with an image -- skipping to fal.ai fallback")
+        return None
+    # Agents API supports 1:1 instead of 9:21 -- our shared aspect-ratio
+    # detection was computed against the fal.ai Ray 2 option set, which
+    # doesn't match this API's six values.
+    if aspect_ratio == "9:21":
+        aspect_ratio = "9:16"
+    try:
+        log.info(f"[VideoGen] Luma Ray 3.2 DIRECT (Agents API) -- {luma_dur} (requested {duration}s) at 1080p SDR")
+        resp = requests.post(
+            LUMA_DIRECT_API_URL,
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "ray-3.2",
+                "type": "video",
+                "prompt": prompt,
+                "aspect_ratio": aspect_ratio,
+                "video": {
+                    "resolution": "1080p",
+                    "duration": luma_dur,
+                    "start_frame": {"url": image_url},
+                },
+            },
+            timeout=30,
+        )
+        if resp.status_code not in (200, 201):
+            log.error(f"[VideoGen] Luma direct create failed: HTTP {resp.status_code} {resp.text[:300]}")
+            return None
+        gen = resp.json()
+        gen_id = gen.get("id")
+        if not gen_id:
+            log.error(f"[VideoGen] Luma direct: no generation id in response: {gen}")
+            return None
+
+        waited = 0
+        while waited < _LUMA_DIRECT_MAX_WAIT_SECS:
+            time.sleep(_LUMA_DIRECT_POLL_INTERVAL_SECS)
+            waited += _LUMA_DIRECT_POLL_INTERVAL_SECS
+            poll = requests.get(
+                f"{LUMA_DIRECT_API_URL}/{gen_id}",
+                headers={"Authorization": f"Bearer {key}"},
+                timeout=30,
+            )
+            if poll.status_code != 200:
+                log.warning(f"[VideoGen] Luma direct poll HTTP {poll.status_code}, retrying")
+                continue
+            data = poll.json()
+            state = data.get("state")
+            if state == "completed":
+                outputs = data.get("output") or []
+                video_url = outputs[0].get("url") if outputs else None
+                if video_url:
+                    log.info(f"[VideoGen] Luma direct completed after ~{waited}s")
+                    return video_url
+                log.error(f"[VideoGen] Luma direct completed but no output: {data}")
+                return None
+            if state == "failed":
+                log.error(f"[VideoGen] Luma direct generation failed: {data.get('failure_reason')}")
+                return None
+
+        log.error(f"[VideoGen] Luma direct timed out after {_LUMA_DIRECT_MAX_WAIT_SECS}s")
+        return None
+    except Exception as e:
+        log.error(f"[VideoGen] Luma direct exception: {e}")
+        return None
+
+
+# -- Lyra 2.0 generation (Eco tier) ----------------------------------------
 
 def _generate_lyra(image_url: str, prompt: str, duration: int,
                    space_type: str, pov_movement: str) -> str | None:
@@ -896,8 +1006,16 @@ def generate_video_single(
             # Luma Ray 2 — confirmed via real testing: genuine 3D parallax,
             # no warping, no hallucination, on the same photo that caused
             # persistent problems with Veo. New default recommendation.
-            video_url  = _generate_luma(image_url, final_prompt, duration, aspect_ratio=luma_aspect_ratio)
-            used_model = "luma-ray-2"
+            if LUMA_DIRECT:
+                video_url  = _generate_luma_direct(image_url, final_prompt, duration, aspect_ratio=luma_aspect_ratio)
+                used_model = "luma-ray-3.2-direct"
+                if not video_url:
+                    log.warning("[VideoGen] Luma direct failed — falling back to fal.ai Luma Ray 2")
+                    video_url  = _generate_luma(image_url, final_prompt, duration, aspect_ratio=luma_aspect_ratio)
+                    used_model = "luma-ray-2-fallback"
+            else:
+                video_url  = _generate_luma(image_url, final_prompt, duration, aspect_ratio=luma_aspect_ratio)
+                used_model = "luma-ray-2"
             if not video_url:
                 log.warning("[VideoGen] Luma failed — falling back to Veo Fast")
                 video_url  = _generate_veo(image_url, final_prompt, duration, aspect_ratio=veo_aspect_ratio)
