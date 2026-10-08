@@ -874,6 +874,13 @@ async function toggleLibrary() {
 // reporting already uses, not a separate library-only concept. Legacy
 // jobs predating this feature (no property_id at all) land in a
 // "Senza proprieta" bucket rather than being hidden or erroring.
+function isPendingApproval(j) { return j.status === 'awaiting_approval'; }
+
+function setLibCount(jobs) {
+  const pending = jobs.filter(isPendingApproval).length;
+  document.getElementById('lib-count').textContent = pending ? `⚠ ${pending} / ${jobs.length}` : jobs.length;
+}
+
 async function loadLibrary() {
   const list = document.getElementById('library-list');
   list.innerHTML = '<div class="lib-empty">Caricamento…</div>';
@@ -888,7 +895,7 @@ async function loadLibrary() {
     const properties  = (await propRes.json()).properties || [];
 
 
-    document.getElementById('lib-count').textContent = jobs.length;
+    setLibCount(jobs);
 
 
     if (!jobs.length) {
@@ -985,7 +992,7 @@ async function loadLibrary() {
             <div class="lib-meta">${prop.jobs.length} video</div>
           </div>
         </div>
-        <div id="prop-${propSafeId}" style="display:none;flex-direction:column;gap:4px;margin-top:4px">${jobRows}</div>
+        <div id="prop-${propSafeId}" style="display:${prop.jobs.some(j => isPendingApproval(j)) ? 'flex' : 'none'};flex-direction:column;gap:4px;margin-top:4px">${jobRows}</div>
       </div>`;
     }
 
@@ -1001,12 +1008,14 @@ async function loadLibrary() {
             <div class="lib-meta">${client.props.length} proprietà · ${totalJobs} video</div>
           </div>
         </div>
-        <div id="client-${agSafeId}" style="display:none;flex-direction:column;gap:2px">${propRows}</div>
+        <div id="client-${agSafeId}" style="display:${client.props.some(p => p.jobs.some(j => isPendingApproval(j))) ? 'flex' : 'none'};flex-direction:column;gap:2px">${propRows}</div>
       </div>`;
     }
 
 
-    list.innerHTML = clientEntries.map(renderClient).join('');
+    const pendingN = jobs.filter(j => isPendingApproval(j)).length;
+    const banner = pendingN ? `<div class="lib-job lib-review" style="font-weight:600"><div class="lib-info"><div class="lib-name">⚠ ${pendingN} job da rivedere</div><div class="lib-meta">Apri il job per approvare o rifare le scene</div></div></div>` : '';
+    list.innerHTML = banner + clientEntries.map(renderClient).join('');
   } catch(e) {
     list.innerHTML = `<div class="lib-empty">Errore caricamento: ${e.message}</div>`;
   }
@@ -1731,8 +1740,7 @@ async function uploadAgencyLogo() {
 
 // Auto-refresh library count on load
 authFetch('/jobs/').then(r => r.json()).then(d => {
-  const count = d.total || 0;
-  if (count > 0) document.getElementById('lib-count').textContent = count;
+  setLibCount(d.jobs || []);
 }).catch(() => {});
 
 
