@@ -2981,6 +2981,7 @@ async def run_reassemble_only(job_id: str):
 
 
         job["output_path"] = output_path
+        job["awaiting_scenes"] = []  # 2026-10-08: clear QC-wait data once the job is finished (was never cleared, left stale on done jobs)
         update("done", 100, "Video pronto per il download")
         # 2026-10-02: webhook "completed" spostato su /jobs/{id}/release
 
