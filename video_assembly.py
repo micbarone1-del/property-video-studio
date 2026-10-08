@@ -423,7 +423,7 @@ if __name__ == "__main__":
         if final_path:
             print(f"\nProcess completed successfully. Final video at: {final_path}")
 
-def assemble_property_video(scenes_config, video_clip_paths, audio_paths, image_paths, output_path, property_name, transition_style="fade", output_format="landscape", logo_path=None):
+def assemble_property_video(scenes_config, video_clip_paths, audio_paths, image_paths, output_path, property_name, transition_style="fade", output_format="landscape", logo_path=None, show_captions=False):
     """Assembles the final property video with the selected transition style.
     Supports: cut, fade, slide_left, slide_right.
     """
@@ -498,7 +498,8 @@ def assemble_property_video(scenes_config, video_clip_paths, audio_paths, image_
                 clip = clip.resized((TARGET_W, TARGET_H))
             # Burn caption text onto clip if provided
             scene_caption = str(scene.get("caption", "")).strip() if scene else ""
-            if scene_caption:
+            # 2026-10-08: captions OFF by default; text stays stored on the scene, only the burn-in is gated here.
+            if show_captions and scene_caption:
                 clip = _burn_caption(clip, scene_caption)
             # Add 1s tail on last scene — prevents audio cutting at final frame
             if i == len(clips) - 1:

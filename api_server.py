@@ -2951,6 +2951,7 @@ async def run_reassemble_only(job_id: str):
             transition_style=job.get("transition_style", "fade"),
             output_format=job.get("output_format", "landscape"),
             logo_path=_logo_path,
+            show_captions=job.get("show_captions", False),  # 2026-10-08: default OFF
         )
         if not ok:
             raise RuntimeError("Assemblaggio fallito")
