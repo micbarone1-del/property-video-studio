@@ -917,6 +917,8 @@ async function loadLibrary() {
       awaiting_approval:  { icon: '⚠', cls: 'lib-review',  label: 'Revisione QC' },
       queued:             { icon: '○', cls: 'lib-queued',  label: 'In coda' },
       draft:              { icon: '✎', cls: 'lib-queued',  label: 'Bozza' },
+      interrupted:        { icon: '⏸', cls: 'lib-review',  label: 'Interrotto' },
+      stopped:            { icon: '⏹', cls: 'lib-failed',  label: 'Fermato' },
     };
 
 
@@ -972,12 +974,13 @@ async function loadLibrary() {
         ? `<a class="lib-btn lib-primary" href="/jobs/${j.job_id}/download" download>⬇</a>`
         : '';
       const loadBtn = `<button class="lib-btn" onclick="loadJobIntoUI('${j.job_id}')">Apri</button>`;
+      const resumeBtn = (j.status === 'interrupted' || j.status === 'stopped') ? `<button class="lib-btn lib-primary" onclick="resumeInterruptedJob('${j.job_id}')">Riprendi</button>` : '';
       return `<div class="lib-job ${st.cls}" style="margin-left:16px">
         <div class="lib-info">
           <div class="lib-name">${st.icon} ${date}</div>
           <div class="lib-meta">${tier} · ${scenes} · ${j.job_id}</div>
         </div>
-        <div class="lib-actions">${dlBtn}${loadBtn}</div>
+        <div class="lib-actions">${dlBtn}${loadBtn}${resumeBtn}</div>
       </div>`;
     }
 
@@ -1018,6 +1021,23 @@ async function loadLibrary() {
     list.innerHTML = banner + clientEntries.map(renderClient).join('');
   } catch(e) {
     list.innerHTML = `<div class="lib-empty">Errore caricamento: ${e.message}</div>`;
+  }
+}
+
+
+async function resumeInterruptedJob(jobId) {
+  if (!confirm('Riprendere questo job? Le scene gia pronte vengono riusate; quelle mancanti vengono generate e pagate di nuovo.')) return;
+  try {
+    const res = await authFetch(`/jobs/${jobId}/resume-interrupted`, { method: 'POST' });
+    if (!res.ok) {
+      let detail = '';
+      try { detail = (await res.json()).detail || ''; } catch (e) {}
+      showError(`Impossibile riprendere ${jobId}: ${detail || 'HTTP ' + res.status}`);
+      return;
+    }
+    if (typeof loadLibrary === 'function') loadLibrary();
+  } catch (e) {
+    showError(`Errore di rete durante la ripresa di ${jobId}: ${e.message}`);
   }
 }
 
