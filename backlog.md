@@ -555,3 +555,15 @@ Michele asked explicitly that both new paid providers (Google Cloud TTS, Luma di
 
 - Rework edge cases that may surface in specific use cases (no confirmed repro yet).
 - Maintenance scheduler tiering behavior — pending log confirmation.
+
+---
+
+## 57. Cost tracking: durable actuals ledger, EUR pricing, live FX -- scoped Oct 8, 2026, NOT STARTED (deliberately behind automation work)
+
+**Why:** costs live only in each job's job_meta.json, so the 7-day cleanup and the Jul 16 deletion erase them (Oct 8: all 17 jobs on disk are October, 12 have no cost_actual).
+
+**Decided:** append-only ledger OUTSIDE jobs/ (date, job, provider, EUR, fx rate used), history before Oct 8 not reconstructed. fx.py with daily ECB rate (server reaches ECB: 1.1177 on Oct 8) replacing hardcoded rates (cost_tracker.py 0.92, listing_scraper.py 0.93, VPS 34.79/mo = $453.69 x 0.92 / 12). Luma direct priced flat $1.20 per 5s clip (tracker prices it as fal Ray 2: ~EUR 1.84 vs ~1.07 real). Google TTS is free tier, so ELEVENLABS_COST_PER_CHAR should be ~0.
+
+**Open:** fal Usage by model (last 7 days) needed to reconcile; Anthropic Jul 3-10 purchase amounts not read.
+
+**Time-sensitive, not code:** add a card in Anthropic Console billing (email Sep 11); ElevenLabs renews Oct 13 ($26.84).
