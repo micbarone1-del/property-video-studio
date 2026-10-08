@@ -1253,6 +1253,14 @@ async function editJob(jobId, baseJobId) {
     showError(isFreshDraft
       ? `${scenesConfig.length} scene caricate — rivedi le scene e la narrazione, poi premi Genera Video quando sei pronto.`
       : `${scenesConfig.length} scene caricate da ${jobId} — modifica, aggiungi scene o usa ↺ Rifai`);
+    // 2026-10-08 (backlog item 53): showQcReview() used to run ONLY from the live polling loop, so reopening a job still
+    // in awaiting_approval never brought the approve/redo panel back. Same single render function, now also called here;
+    // any other job hides a panel left over from a previously opened one.
+    if (job.status === 'awaiting_approval') {
+      showQcReview(job);
+    } else {
+      qcSec.style.display = 'none';
+    }
   } catch(e) {
     showError(`Errore: ${e.message}`);
   }
