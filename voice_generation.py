@@ -14,6 +14,46 @@ DEFAULT_VOICE_ID_ELEVENLABS = "b8jhBTcGAq4kQGWmKprT"
 DEFAULT_VOICE_ID_GOOGLE     = "it-IT-Chirp3-HD-Leda"
 DEFAULT_VOICE_ID = DEFAULT_VOICE_ID_GOOGLE if TTS_PROVIDER == "google" else DEFAULT_VOICE_ID_ELEVENLABS
 
+# 2026-10-08: language/voice registry -- single source of truth for which voices exist per language.
+# Adding a language = adding one entry here (the UI menus read it through /tts/voices).
+# NOTE: only the TTS voice is language-aware so far; narration prompts, captions,
+# pronunciation fixes and UI strings are still Italian-only.
+DEFAULT_LANGUAGE = "it-IT"
+TTS_LANGUAGES = {
+    "it-IT": {
+        "label": "Italiano",
+        "default_voice": DEFAULT_VOICE_ID_GOOGLE,
+        "voices": [
+            {"id": "it-IT-Chirp3-HD-Leda",   "label": "Leda (femminile)"},
+            {"id": "it-IT-Chirp3-HD-Aoede",  "label": "Aoede (femminile)"},
+            {"id": "it-IT-Chirp3-HD-Kore",   "label": "Kore (femminile)"},
+            {"id": "it-IT-Chirp3-HD-Charon", "label": "Charon (maschile)"},
+            {"id": "it-IT-Chirp3-HD-Puck",   "label": "Puck (maschile)"},
+            {"id": "it-IT-Chirp3-HD-Orus",   "label": "Orus (maschile)"},
+        ],
+    },
+}
+
+
+def language_of_voice(voice_id):
+    """'it-IT' from 'it-IT-Chirp3-HD-Leda'; DEFAULT_LANGUAGE when not recognisable."""
+    code = "-".join((voice_id or "").split("-")[:2])
+    return code if code in TTS_LANGUAGES else DEFAULT_LANGUAGE
+
+
+def resolve_voice(voice_id, language=None):
+    """Always returns a usable voice. Google: must be in the registry, otherwise the language default
+    (this is what stops a stray address or an ElevenLabs ID in the voice field from breaking TTS)."""
+    voice_id = (voice_id or "").strip()
+    if TTS_PROVIDER != "google":
+        return voice_id or DEFAULT_VOICE_ID  # ElevenLabs IDs are free-form
+    if any(voice_id == v["id"] for lang in TTS_LANGUAGES.values() for v in lang["voices"]):
+        return voice_id
+    if voice_id:
+        print(f"[TTS] voice {voice_id!r} is not a known Google voice, using the default")
+    return TTS_LANGUAGES[language if language in TTS_LANGUAGES else DEFAULT_LANGUAGE]["default_voice"]
+
+
 ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 GOOGLE_TTS_URL = "https://texttospeech.googleapis.com/v1/text:synthesize"
 
@@ -121,7 +161,7 @@ def generate_speech(
         noise_gate_threshold (float): dB threshold for removing breath sounds.
     """
     # Guard against None voice_id (fallback to default)
-    voice_id = voice_id or DEFAULT_VOICE_ID
+    voice_id = resolve_voice(voice_id)  # 2026-10-08: invalid or foreign voices fall back to the default
     # 1. Get API Key
     key_env_var = "GOOGLE_TTS_API_KEY" if TTS_PROVIDER == "google" else "ELEVENLABS_API_KEY"
     key = api_key or os.environ.get(key_env_var)

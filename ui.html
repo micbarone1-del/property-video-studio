@@ -388,8 +388,11 @@
           <input type="text" id="prop-name" placeholder="e.g. Via Roma 14" autocomplete="off" />
         </div>
         <div>
-          <label>ElevenLabs voice ID <span style="color:var(--muted)">(optional)</span></label>
-          <input type="text" id="voice-id" placeholder="Leave blank for default" autocomplete="off" />
+          <label>Narration voice</label>
+          <div style="display:flex;gap:6px">
+            <select id="tts-language" style="display:none" onchange="onTtsLanguageChange(this.value)" autocomplete="off"></select>
+            <select id="voice-id" autocomplete="off"><option value="">Voce predefinita</option></select>
+          </div>
         </div>
       </div>
       <div class="row2" style="margin-top:14px">
@@ -1304,6 +1307,33 @@ async function toggleGenerationPause() {
 }
 
 checkGenerationPauseStatus();
+
+// 2026-10-08: voice menu + language architecture. Source of truth is voice_generation.TTS_LANGUAGES (via /tts/voices).
+// The language selector stays hidden until more than one language exists.
+let ttsCatalog = null;
+function onTtsLanguageChange(code) {
+  const sel = document.getElementById('voice-id');
+  const lang = ttsCatalog && ttsCatalog.languages[code];
+  if (!sel || !lang) return;
+  sel.innerHTML = lang.voices.map(v => `<option value="${v.id}"${v.id === lang.default_voice ? ' selected' : ''}>${v.label}</option>`).join('');
+}
+async function loadTtsVoices() {
+  try {
+    const res = await authFetch('/tts/voices');
+    if (!res.ok) return;
+    ttsCatalog = await res.json();
+    const codes = Object.keys(ttsCatalog.languages || {});
+    if (!codes.length) return;
+    const langSel = document.getElementById('tts-language');
+    if (langSel) {
+      langSel.innerHTML = codes.map(c => `<option value="${c}">${ttsCatalog.languages[c].label}</option>`).join('');
+      langSel.value = ttsCatalog.default_language;
+      langSel.style.display = codes.length > 1 ? '' : 'none';
+    }
+    onTtsLanguageChange(ttsCatalog.default_language);
+  } catch (e) { console.error('loadTtsVoices error:', e); }
+}
+loadTtsVoices();
 
 
 // ── Cost & profit reporting ────────────────────────────────────────────────

@@ -621,6 +621,18 @@ if (BASE_DIR / "ui.html").exists():
 # ── Utility endpoints ──────────────────────────────────────────────────────────
 
 
+@app.get("/tts/voices")
+def list_tts_voices():
+    """Voice/language catalog for the UI menus. Source of truth: voice_generation.TTS_LANGUAGES."""
+    import voice_generation as _vg
+    return {
+        "provider": _vg.TTS_PROVIDER,
+        "default_language": _vg.DEFAULT_LANGUAGE,
+        "default_voice": _vg.DEFAULT_VOICE_ID,
+        "languages": _vg.TTS_LANGUAGES if _vg.TTS_PROVIDER == "google" else {},
+    }
+
+
 @app.get("/test-scratch/{filename}")
 def serve_test_scratch(filename: str):
     """Serves files ONLY from jobs/_test_scratch/ — a dedicated directory
@@ -2627,7 +2639,7 @@ async def run_redo_scene(job_id: str, scene_id: str):
             from voice_generation import generate_speech as generate_voice
             ok_audio = await asyncio.to_thread(
                 generate_voice, voiceover, audio_out,
-                voice_id=os.getenv("DEFAULT_VOICE_ID") or None
+                voice_id=job.get("voice_id") or None  # 2026-10-08: was a global env var that ignored the job voice
             )
             if ok_audio and Path(audio_out).exists():
                 try:
@@ -3200,7 +3212,7 @@ async def run_redo_scenes_batch(job_id: str, scene_ids: list):
                 from voice_generation import generate_speech as generate_voice
                 ok_audio = await asyncio.to_thread(
                     generate_voice, voiceover, audio_out,
-                    voice_id=os.getenv("DEFAULT_VOICE_ID") or None
+                    voice_id=job.get("voice_id") or None  # 2026-10-08: was a global env var that ignored the job voice
                 )
                 if ok_audio and Path(audio_out).exists():
                     try:
@@ -3361,7 +3373,7 @@ async def run_redo_audio_only(job_id: str, scene_ids: list):
             from voice_generation import generate_speech as generate_voice
             ok_audio = await asyncio.to_thread(
                 generate_voice, voiceover, audio_out,
-                voice_id=os.getenv("DEFAULT_VOICE_ID") or None
+                voice_id=job.get("voice_id") or None  # 2026-10-08: was a global env var that ignored the job voice
             )
             if not ok_audio or not Path(audio_out).exists():
                 log.error(f"[Job {job_id}] Audio-only redo: TTS generation failed for scene {scene_id}")
