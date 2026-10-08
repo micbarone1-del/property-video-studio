@@ -1,0 +1,85 @@
+"""Startup recovery for jobs orphaned by a server restart.
+
+2026-10-08 (task 4): a job left "running" or "queued" by a restart has no
+thread that will ever finish it, and _save_job() used to write
+job_meta.json non-atomically. This module holds the pure, testable logic;
+api_server.py only wires it in at startup.
+"""
+import json
+import os
+import subprocess
+import tempfile
+from datetime import datetime
+from pathlib import Path
+
+ORPHAN_STATES = ("running", "queued")
+IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp")
+
+
+def atomic_write_json(path, obj):
+    """Write JSON to a temp file in the same folder, then os.replace().
+    A crash mid-write leaves the old file intact instead of a truncated one."""
+    path = Path(path)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".job_meta_", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(obj, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def probe_duration(path):
+    """Duration in seconds via ffprobe, or None if unreadable/truncated."""
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=nw=1:nk=1", str(path)],
+            capture_output=True, text=True, timeout=30,
+        )
+        return float(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip() else None
+    except Exception:
+        return None
+
+
+def classify_orphan(job, job_dir):
+    """Returns (new_status, message) for a job found running/queued at startup."""
+    out = job.get("output_path")
+    if out and Path(out).is_file() and (probe_duration(out) or 0) > 0:
+        return "done", ("Il server e' stato riavviato durante un'operazione: "
+                        "il video precedente e' ancora valido. Controlla le ultime modifiche.")
+    imgs = Path(job_dir) / "images"
+    has_images = imgs.is_dir() and any(p.suffix.lower() in IMAGE_EXTS for p in imgs.iterdir())
+    if job.get("scenes_config") and has_images:
+        return "interrupted", "Interrotto da un riavvio del server. Le scene gia' pronte non vanno perse."
+    return "failed", ("Interrotto da un riavvio del server prima che il job avesse scene e foto. "
+                      "Va ricreato.")
+
+
+def recover_orphans(jobs, jobs_dir, save_fn):
+    """Fixes the status of every orphaned job in `jobs`, persists each via
+    save_fn(job_id), and returns a list describing what changed."""
+    recovered = []
+    for job_id, job in list(jobs.items()):
+        old = job.get("status")
+        if old not in ORPHAN_STATES:
+            continue
+        new, msg = classify_orphan(job, Path(jobs_dir) / job_id)
+        job["status"] = new
+        job["message"] = msg
+        job["recovered_from"] = old
+        job["recovered_at"] = datetime.utcnow().isoformat()
+        save_fn(job_id)
+        recovered.append({
+            "job_id": job_id, "old": old, "new": new,
+            "property_name": job.get("property_name"),
+            "has_callback": bool(job.get("callback_url")),
+        })
+    return recovered

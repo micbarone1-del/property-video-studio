@@ -550,8 +550,7 @@ def _save_job(job_id: str):
             return
         meta_path = JOBS_DIR / job_id / "job_meta.json"
         meta_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(meta_path, "w") as f:
-            json.dump(job, f)
+        _atomic_write_json(meta_path, job)
     except Exception as e:
         log.warning(f"[Jobs] Could not save job meta for {job_id}: {e}")
 
@@ -578,6 +577,37 @@ def _load_jobs_from_disk():
 
 
 _load_jobs_from_disk()
+from job_recovery import recover_orphans as _recover_orphans, atomic_write_json as _atomic_write_json
+
+# 2026-10-08 (task 4): a job left running/queued by a restart has no thread
+# that will ever finish it. Classified once at startup (job_recovery.py);
+# the operator is notified from the startup hook below.
+_RECOVERED_ORPHANS = _recover_orphans(JOBS, JOBS_DIR, _save_job)
+if _RECOVERED_ORPHANS:
+    log.warning(f"[Jobs] Recovered {len(_RECOVERED_ORPHANS)} orphaned job(s) after restart: "
+                + ", ".join(f"{r['job_id']}:{r['old']}->{r['new']}" for r in _RECOVERED_ORPHANS))
+
+
+@app.on_event("startup")
+async def _notify_recovered_orphans():
+    if not _RECOVERED_ORPHANS:
+        return
+    try:
+        for r in _RECOVERED_ORPHANS:
+            if r["new"] == "failed" and r["has_callback"]:
+                await _send_partner_webhook(r["job_id"], "failed")
+        items = "".join(
+            f"<li>{r['property_name'] or r['job_id']}: {r['old']} -> {r['new']} ({r['job_id']})</li>"
+            for r in _RECOVERED_ORPHANS)
+        await _notify_operator(
+            _RECOVERED_ORPHANS[0]["job_id"], "Restart recovery",
+            subject=f"Riavvio: {len(_RECOVERED_ORPHANS)} job interrotti",
+            body_html=f"<p>Il server e' stato riavviato con job in corso.</p><ul>{items}</ul>",
+            push_message=f"Riavvio: {len(_RECOVERED_ORPHANS)} job interrotti, controlla la library",
+            tags=["warning"],
+        )
+    except Exception as e:
+        log.warning(f"[Jobs] Startup recovery notification failed (non-fatal): {e}")
 
 
 # ── App ────────────────────────────────────────────────────────────────────────
