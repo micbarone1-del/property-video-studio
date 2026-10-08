@@ -1333,7 +1333,6 @@ async function loadTtsVoices() {
     onTtsLanguageChange(ttsCatalog.default_language);
   } catch (e) { console.error('loadTtsVoices error:', e); }
 }
-loadTtsVoices();
 
 
 // ── Cost & profit reporting ────────────────────────────────────────────────
@@ -1780,6 +1779,7 @@ async function submitLogin() {
 function showApp() {
   document.getElementById('login-screen').classList.remove('visible');
   populateAgencyDropdowns();
+  loadTtsVoices();  // 2026-10-08: needs SESSION_KEY (a const declared further down), so it can only run after login
 }
 
 
