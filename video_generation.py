@@ -117,13 +117,16 @@ def _detect_space(hint: str) -> str:
 # Used by Florence-2 auto-suggest AND as fallback when camera_hint="auto"
 SPACE_DEFAULT_MOVEMENT = {
     "large":    "walk_in_explore",
-    "medium":   "walk_in_explore",
+    "medium":   "walk_in_gentle",
     "bedroom":  "walk_in_gentle",
     "small":    "subtle_rotate",
     "corridor": "walk_through",
     "outdoor":  "reveal_pullback",   # starts on facade detail, reveals full exterior
     "elevated": "step_out_onto",
 }
+
+# Single source of truth for the default motion pace (api_server.py imports it; ui.html mirrors it with its selected option).
+DEFAULT_INTENSITY = "very_slow"
 
 # ── Movements that use crop-and-reveal pre-processing ─────────────────────────
 CROP_REVEAL_MOVEMENTS = {
@@ -268,18 +271,18 @@ _VEO_MOVEMENT_TOKENS = {
         # own global "maximum camera movement is 30 degrees in any
         # direction" -- genuinely conflicting instructions in the same
         # prompt. Capped to match the global rule for consistency.
-        "very_slow":    "very slow 3D pan across the outdoor space with depth parallax — maximum 30 degrees, foreground railing or plants move faster than distant view. Within original photo width",
-        "natural_pace": "slow 3D pan across the outdoor space with parallax depth — maximum 30 degrees. Within original photo boundaries",
-        "energetic":    "3D pan across the outdoor space with parallax — maximum 30 degrees. Within original photo",
+        "very_slow":    "very slow 3D forward dolly stepping out toward the open view beyond the railing, camera always facing outward away from the building and never turning back toward the interior, foreground railing or plants move faster than the distant view for depth parallax, maximum 30 degrees. Within original photo width",
+        "natural_pace": "slow 3D forward dolly out toward the open view beyond the railing, camera always facing outward away from the building and never turning back toward the interior, with parallax depth, maximum 30 degrees. Within original photo boundaries",
+        "energetic":    "3D forward dolly out toward the open view beyond the railing, camera always facing outward away from the building and never turning back toward the interior, with parallax. Maximum 30 degrees. Within original photo",
     },
     # Reveal pullback — reverse dolly from property outward
     # Camera starts close to the building/subject and moves backward,
     # foreground elements rushing past as the full scene opens up.
     # No cropping needed — describe the motion, Veo handles the 3D.
     "reveal_pullback": {
-        "very_slow":    "reverse dolly shot — camera begins close to the property and very slowly moves backward away from it, foreground elements sliding past the frame edges as the full scene gradually reveals. Natural depth parallax throughout",
-        "natural_pace": "reverse dolly shot — camera starts near the building and pulls back smoothly, foreground rushing past as the complete property and surroundings come into view. Steady backward movement with natural parallax",
-        "energetic":    "confident reverse dolly — camera pulls back from the property with purpose, foreground sweeping past as the full exterior scene reveals itself. Strong depth parallax",
+        "very_slow":    "reverse dolly shot — camera begins close to the property and very slowly moves backward away from it, foreground elements sliding past the frame edges as the full scene gradually reveals. Natural depth parallax throughout. The building facade stays fully visible and no branches, leaves or foliage ever cross in front of it or cover it",
+        "natural_pace": "reverse dolly shot — camera starts near the building and pulls back smoothly, foreground rushing past as the complete property and surroundings come into view. Steady backward movement with natural parallax. The building facade stays fully visible and no branches, leaves or foliage ever cross in front of it or cover it",
+        "energetic":    "confident reverse dolly — camera pulls back from the property with purpose, foreground sweeping past as the full exterior scene reveals itself. Strong depth parallax. The building facade stays fully visible and no branches, leaves or foliage ever cross in front of it or cover it",
     },
 }
 
@@ -340,8 +343,8 @@ _LUMA_MOVEMENT_TOKENS = {
     "subtle_rotate":      "almost static shot with imperceptibly subtle 3D micro-parallax, maximum 10 degrees, smooth continuous motion, realistic physics",
     "approach_reveal":    "slow subtle 3D dolly toward the space, foreground slightly faster than background for minimal depth parallax, smooth continuous motion, realistic physics",
     "walk_toward":        "slow 3D forward dolly approaching the building, foreground ground moving faster than the facade for depth parallax, smooth continuous motion, realistic physics",
-    "step_out_onto":      "slow 3D pan across the outdoor space, foreground railing or plants moving faster than the distant view for depth parallax, maximum 30 degrees, smooth continuous motion, realistic physics",  # 2026-07-27: was 40, harmonized to match Veo's cap for cross-model consistency
-    "reveal_pullback":    "reverse 3D dolly shot, camera slowly moving backward as foreground elements slide past the frame edges, natural depth parallax throughout, smooth continuous motion, realistic physics",
+    "step_out_onto":      "slow 3D forward dolly out toward the open view beyond the railing, camera always facing outward away from the building and never turning back toward the interior, foreground railing or plants moving faster than the distant view for depth parallax, maximum 30 degrees, smooth continuous motion, realistic physics",  # 2026-10-08: was a lateral pan with no outward direction; camera drifted back toward the interior
+    "reveal_pullback":    "reverse 3D dolly shot, camera slowly moving backward as foreground elements slide past the frame edges, natural depth parallax throughout, the building facade stays fully visible and no branches, leaves or foliage ever cross in front of it or cover it, smooth continuous motion, realistic physics",
 }
 
 _LUMA_INTENSITY_SUFFIX = {
@@ -896,7 +899,7 @@ def generate_video_single(
     space_type:     str  = "large",        # from Florence-2 or user dropdown
     pov_movement:   str  = "walk_in_explore", # from Florence-2 or user dropdown
     lighting:       str  = "bright_natural",  # property-level
-    intensity:      str  = "natural_pace",    # property-level
+    intensity:      str  = DEFAULT_INTENSITY,    # property-level
     model_tier:     str  = "standard",        # eco / standard / premium
     output_format:  str  = "landscape",       # landscape / portrait -- 2026-07-27, backlog item 37
     # Legacy parameter kept for backward compatibility
@@ -1112,7 +1115,7 @@ def mass_generation(
     duration:     int  = 8,
     model_tier:   str  = "standard",
     lighting:     str  = "bright_natural",
-    intensity:    str  = "natural_pace",
+    intensity:    str  = DEFAULT_INTENSITY,
     test_mode:    bool = False,
 ) -> dict:
     """
@@ -1173,7 +1176,7 @@ if __name__ == "__main__":
     p.add_argument("--space",  default="large")
     p.add_argument("--move",   default=None)
     p.add_argument("--light",  default="bright_natural")
-    p.add_argument("--pace",   default="natural_pace")
+    p.add_argument("--pace",   default=DEFAULT_INTENSITY)
     p.add_argument("--tier",   default="standard")
     args = p.parse_args()
 

@@ -239,6 +239,8 @@ def _overlay_narration_audio(video_path: str, narration_path: str, transition_st
 
 
 
+from video_generation import DEFAULT_INTENSITY
+
 app = FastAPI(title="Real Estate Video Generator", version="3.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
@@ -903,7 +905,7 @@ async def create_job(
     enable_vision_qc: bool = Form(True),
     model_tier: str = Form("standard"),       # eco / standard / premium
     lighting: str = Form("bright_natural"),   # property-level lighting
-    intensity: str = Form("natural_pace"),    # property-level motion intensity
+    intensity: str = Form(DEFAULT_INTENSITY),    # property-level motion intensity
     start_generation: bool = Form(True),      # False = draft mode, no video cost yet
     output_format: str = Form(None),          # 2026-07-17: "landscape"/"portrait" override, or None to auto-detect
     agency_id: str = Form(None),              # 2026-07-22: client this job belongs to (backlog item 39), optional
@@ -1695,7 +1697,7 @@ async def create_job_from_url(
         "do_video_upscale": True,
         "model_tier": model_tier,
         "lighting": "bright_natural",
-        "intensity": "natural_pace",
+        "intensity": DEFAULT_INTENSITY,
         "voice_id": voice_id,
         "enhance_images": True,
         "upscale_images": True,
@@ -2019,7 +2021,7 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
             "do_video_upscale": True,
             "model_tier": "luma",
             "lighting": "bright_natural",
-            "intensity": "natural_pace",
+            "intensity": DEFAULT_INTENSITY,
             "voice_id": payload.voice_id,
             "enhance_images": True,
             "upscale_images": True,
@@ -3440,7 +3442,7 @@ async def run_pipeline(
     do_video_upscale: bool = True,
     model_tier:       str  = "standard",
     lighting:         str  = "bright_natural",
-    intensity:        str  = "natural_pace",
+    intensity:        str  = DEFAULT_INTENSITY,
     output_format:    str  = "landscape",  # 2026-07-27 URGENT FIX: was incorrectly job.get(...) with no local job variable
 ):
     def update(status, progress, message):

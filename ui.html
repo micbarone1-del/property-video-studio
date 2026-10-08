@@ -457,8 +457,8 @@
         <div>
           <label>Motion intensity <span style="color:var(--muted);font-size:.75rem">(applies to full video)</span></label>
           <select id="intensity" autocomplete="off">
-            <option value="very_slow">Very slow — appreciating every detail</option>
-            <option value="natural_pace" selected>Natural pace — comfortable walk</option>
+            <option value="very_slow" selected>Very slow — appreciating every detail</option>
+            <option value="natural_pace">Natural pace — comfortable walk</option>
             <option value="energetic">Energetic — confident and purposeful</option>
           </select>
         </div>
@@ -2052,9 +2052,9 @@ const MOVEMENT_OPTS = {
 // Space type → default POV movement mapping (mirrors SPACE_DEFAULT_MOVEMENT in video_generation.py)
 const SPACE_DEFAULT_MOVEMENT_MAP = {
   large:    'walk_in_explore',
-  medium:   'walk_in_explore',
+  medium:   'walk_in_gentle',
   bedroom:  'walk_in_gentle',
-  small:    'approach_reveal',
+  small:    'subtle_rotate',
   corridor: 'walk_through',
   outdoor:  'reveal_pullback',
   elevated: 'step_out_onto',
