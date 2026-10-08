@@ -70,6 +70,33 @@ def apply_noise_gate(audio_segment, threshold_db=-32.0, chunk_size_ms=10, tail_o
     # Reattach the untouched main audio with the cleaned tail
     return main_audio + cleaned_target
 
+# 2026-10-08: pronunciation corrections. One shared place (every TTS caller goes through generate_speech),
+# applied to the text sent to the voice only -- stored job text and the UI are never changed.
+_PRON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pronunciation_fixes.json")
+_pron_cache = {"mtime": None, "rules": []}
+
+
+def apply_pronunciation_fixes(text):
+    import re, json
+    try:
+        mtime = os.path.getmtime(_PRON_PATH)
+    except OSError:
+        return text
+    try:
+        if _pron_cache["mtime"] != mtime:
+            with open(_PRON_PATH, encoding="utf-8") as f:
+                data = json.load(f)
+            rules = [(re.compile(r"(?<!\w)" + re.escape(k) + r"(?!\w)"), v)
+                     for k, v in sorted(data.items(), key=lambda kv: -len(kv[0]))
+                     if isinstance(k, str) and isinstance(v, str) and k and not k.startswith("_")]
+            _pron_cache["mtime"], _pron_cache["rules"] = mtime, rules
+        for rx, rep in _pron_cache["rules"]:
+            text = rx.sub(lambda m, r=rep: r, text)
+    except Exception as e:
+        print(f"[Pronunciation] ignoring fixes file ({e!r})")
+    return text
+
+
 def generate_speech(
     text, 
     output_path, 
@@ -102,6 +129,7 @@ def generate_speech(
         print(f"Error: {key_env_var} not found. Please set it or pass it as an argument.")
         return False
 
+    text = apply_pronunciation_fixes(text)  # 2026-10-08: single choke point for all TTS callers
     print(f"Generating speech for: \"{text[:30]}...\"")
     
     # 2. Process Text for Pauses (SSML Injection)
