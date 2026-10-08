@@ -83,3 +83,34 @@ def recover_orphans(jobs, jobs_dir, save_fn):
             "has_callback": bool(job.get("callback_url")),
         })
     return recovered
+
+
+# ── Stage 2 (2026-10-08): reuse of work already on disk when a job is resumed ──
+
+def clip_is_valid(path):
+    """A clip is reusable only if ffprobe can read it and it has real length."""
+    return (probe_duration(path) or 0) > 1.0
+
+
+def audio_is_valid(path):
+    return (probe_duration(path) or 0) > 0.3
+
+
+def image_is_valid(path):
+    """Fully decodes the image, so a file truncated by a crash is not trusted."""
+    p = Path(path)
+    try:
+        if not p.is_file() or p.stat().st_size == 0:
+            return False
+    except OSError:
+        return False
+    try:
+        from PIL import Image
+    except ImportError:
+        return True
+    try:
+        with Image.open(p) as im:
+            im.load()
+        return True
+    except Exception:
+        return False

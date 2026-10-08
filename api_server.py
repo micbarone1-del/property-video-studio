@@ -578,20 +578,21 @@ def _load_jobs_from_disk():
 
 _load_jobs_from_disk()
 from job_recovery import recover_orphans as _recover_orphans, atomic_write_json as _atomic_write_json
+from job_recovery import clip_is_valid as _reusable_clip, audio_is_valid as _reusable_audio, image_is_valid as _reusable_image
 
 # 2026-10-08 (task 4): a job left running/queued by a restart has no thread
 # that will ever finish it. Classified once at startup (job_recovery.py);
 # the operator is notified from the startup hook below.
-_RECOVERED_ORPHANS = _recover_orphans(JOBS, JOBS_DIR, _save_job)
-if _RECOVERED_ORPHANS:
-    log.warning(f"[Jobs] Recovered {len(_RECOVERED_ORPHANS)} orphaned job(s) after restart: "
-                + ", ".join(f"{r['job_id']}:{r['old']}->{r['new']}" for r in _RECOVERED_ORPHANS))
+_RECOVERED_ORPHANS = []   # filled by the startup hook below, NOT at import time
 
 
 @app.on_event("startup")
 async def _notify_recovered_orphans():
+    _RECOVERED_ORPHANS[:] = _recover_orphans(JOBS, JOBS_DIR, _save_job)
     if not _RECOVERED_ORPHANS:
         return
+    log.warning(f"[Jobs] Recovered {len(_RECOVERED_ORPHANS)} orphaned job(s) after restart: "
+                + ", ".join(f"{r['job_id']}:{r['old']}->{r['new']}" for r in _RECOVERED_ORPHANS))
     try:
         for r in _RECOVERED_ORPHANS:
             if r["new"] == "failed" and r["has_callback"]:
@@ -608,6 +609,81 @@ async def _notify_recovered_orphans():
         )
     except Exception as e:
         log.warning(f"[Jobs] Startup recovery notification failed (non-fatal): {e}")
+
+
+
+def _pipeline_kwargs(job_id: str) -> dict:
+    """Single place that rebuilds run_pipeline()'s arguments from a saved job.
+    2026-10-08: was inlined in start_generation_for_draft(); the resume path
+    needs exactly the same arguments, so both now call this."""
+    job = JOBS[job_id]
+    job_dir = JOBS_DIR / job_id
+    scenes_config = job.get("scenes_config", [])
+    image_paths = []
+    for scene in scenes_config:
+        sid = scene.get("scene_id")
+        for ext in [".jpg", ".jpeg", ".png", ".webp"]:
+            candidate = job_dir / "images" / f"{sid}{ext}"
+            if candidate.exists():
+                image_paths.append(str(candidate))
+                break
+        else:
+            # Fallback to old index-based naming for the same scene
+            idx = scenes_config.index(scene)
+            for ext in [".jpg", ".jpeg", ".png", ".webp"]:
+                candidate = job_dir / "images" / f"scene_{idx:03d}{ext}"
+                if candidate.exists():
+                    image_paths.append(str(candidate))
+                    break
+    return dict(
+        job_id=job_id,
+        job_dir=job_dir,
+        image_paths=image_paths,
+        scenes_config=scenes_config,
+        property_name=job.get("property_name", "Property"),
+        voice_id=job.get("voice_id", ""),
+        do_lighting=job.get("enhance_images", True),
+        do_upscale=job.get("upscale_images", True),
+        transition_style=job.get("transition_style", "fade"),
+        enable_vision_qc=job.get("enable_vision_qc", True),
+        do_video_upscale=job.get("do_video_upscale", True),
+        model_tier=job.get("model_tier", "premium"),
+        lighting=job.get("lighting", "bright_natural"),
+        intensity=job.get("intensity", "natural_pace"),
+        output_format=job.get("output_format", "landscape"),
+    )
+
+
+@app.post("/jobs/{job_id}/resume-interrupted")
+async def resume_interrupted_job(job_id: str, background_tasks: BackgroundTasks):
+    """2026-10-08 (task 4, phase 2): restarts the pipeline of a job left
+    "interrupted" (server restart) or "stopped" (user stop), REUSING the
+    enhanced images, audio and clips already valid on disk, so only the
+    missing scenes are paid for again. Never automatic: spending money
+    again is always an explicit click."""
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    _raise_if_generation_paused()
+    job = JOBS[job_id]
+    if job.get("status") not in ("interrupted", "stopped"):
+        raise HTTPException(status_code=400,
+                            detail=f"Job is not interrupted or stopped (status: {job.get('status')})")
+    if not _acquire_job_lock(job_id, "resume generation"):
+        lock = _job_lock_status(job_id)
+        raise HTTPException(status_code=409, detail=f"Job is busy ({lock.get('operation')})")
+    try:
+        kwargs = _pipeline_kwargs(job_id)
+        if not kwargs["scenes_config"] or len(kwargs["image_paths"]) != len(kwargs["scenes_config"]):
+            raise HTTPException(status_code=400, detail="Foto mancanti: impossibile riprendere questo job")
+        job.pop("cancel_requested", None)   # /stop persisted it; it would stop the resumed run at scene 0
+        job["status"] = "queued"
+        job["message"] = "Ripresa generazione: riuso delle scene gia' pronte"
+        job["resumed_at"] = datetime.utcnow().isoformat()
+        _save_job(job_id)
+    finally:
+        _release_job_lock(job_id)
+    background_tasks.add_task(run_pipeline, resume=True, **kwargs)
+    return {"job_id": job_id, "status": "queued", "resume": True}
 
 
 # ── App ────────────────────────────────────────────────────────────────────────
@@ -1135,50 +1211,13 @@ async def start_generation_for_draft(job_id: str, background_tasks: BackgroundTa
         raise HTTPException(status_code=409, detail=f"Job is busy ({lock.get('operation')})")
 
 
-    job_dir = JOBS_DIR / job_id
-    scenes_config = job.get("scenes_config", [])
-    image_paths = []
-    for scene in scenes_config:
-        sid = scene.get("scene_id")
-        for ext in [".jpg", ".jpeg", ".png", ".webp"]:
-            candidate = job_dir / "images" / f"{sid}{ext}"
-            if candidate.exists():
-                image_paths.append(str(candidate))
-                break
-        else:
-            # Fallback to old index-based naming for the same scene
-            idx = scenes_config.index(scene)
-            for ext in [".jpg", ".jpeg", ".png", ".webp"]:
-                candidate = job_dir / "images" / f"scene_{idx:03d}{ext}"
-                if candidate.exists():
-                    image_paths.append(str(candidate))
-                    break
-
-
     job["status"]  = "queued"
     job["message"] = "Generazione avviata"
     _save_job(job_id)
     _release_job_lock(job_id)  # run_pipeline manages its own lock internally via its update() calls
 
-
-    background_tasks.add_task(
-        run_pipeline,
-        job_id=job_id,
-        job_dir=job_dir,
-        image_paths=image_paths,
-        scenes_config=scenes_config,
-        property_name=job.get("property_name", "Property"),
-        voice_id=job.get("voice_id", ""),
-        do_lighting=job.get("enhance_images", True),
-        do_upscale=job.get("upscale_images", True),
-        transition_style=job.get("transition_style", "fade"),
-        enable_vision_qc=job.get("enable_vision_qc", True),
-        do_video_upscale=job.get("do_video_upscale", True),
-        model_tier=job.get("model_tier", "premium"),
-        lighting=job.get("lighting", "bright_natural"),
-        intensity=job.get("intensity", "natural_pace"),
-        output_format=job.get("output_format", "landscape"),  # 2026-07-27 URGENT FIX: run_pipeline() now needs this explicitly
-    )
+    # 2026-10-08: arguments come from the single shared helper (also used by resume-interrupted)
+    background_tasks.add_task(run_pipeline, **_pipeline_kwargs(job_id))
 
 
     return {"job_id": job_id, "status": "queued"}
@@ -3488,6 +3527,7 @@ async def run_pipeline(
     lighting:         str  = "bright_natural",
     intensity:        str  = DEFAULT_INTENSITY,
     output_format:    str  = "landscape",  # 2026-07-27 URGENT FIX: was incorrectly job.get(...) with no local job variable
+    resume:           bool = False,  # 2026-10-08: reuse valid images/audio/clips already on disk
 ):
     def update(status, progress, message):
         JOBS[job_id].update({"status": status, "progress": progress, "message": message})
@@ -3539,7 +3579,10 @@ async def run_pipeline(
                 continue
             update("running", int(2 + (i/n)*3), f"Rimozione watermark scena {i}…")
             wm_out = str(enhanced_dir / f"scene_{i:03d}_dewatermarked.jpg")
-            wm_result = await asyncio.to_thread(remove_watermark, image_paths[i], wm_out)
+            if resume and _reusable_image(wm_out):
+                wm_result = {"ok": True}
+            else:
+                wm_result = await asyncio.to_thread(remove_watermark, image_paths[i], wm_out)
             if wm_result.get("ok"):
                 working_image_paths[i] = wm_out
                 log.info(f"[Job {job_id}] Watermark removed for scene {i}")
@@ -3554,7 +3597,10 @@ async def run_pipeline(
         for i, img_path in enumerate(working_image_paths):
             update("running", int(5 + (i/n)*15), f"Enhancing image {i} of {n-1} (scene_{i:03d})…")
             out    = str(enhanced_dir / f"scene_{i:03d}_enhanced.jpg")
-            result = await asyncio.to_thread(enhance_image, img_path, out, do_lighting, do_upscale)
+            if resume and _reusable_image(out):
+                result = out
+            else:
+                result = await asyncio.to_thread(enhance_image, img_path, out, do_lighting, do_upscale)
             enhanced_paths.append(result)
 
 
@@ -3592,10 +3638,13 @@ async def run_pipeline(
 
 
             if voiceover:
-                ok = await asyncio.to_thread(
-                    generate_voice, voiceover, audio_out,
-                    voice_id=voice_id or None
-                )
+                if resume and _reusable_audio(audio_out):
+                    ok = True
+                else:
+                    ok = await asyncio.to_thread(
+                        generate_voice, voiceover, audio_out,
+                        voice_id=voice_id or None
+                    )
                 if ok:
                     # TTS QC — also measures actual duration
                     tts_qc = await asyncio.to_thread(analyse_tts, audio_out, voiceover)
@@ -3666,17 +3715,21 @@ async def run_pipeline(
             update("running", int(35 + (i/n)*40), f"Generating video clip {i} of {n-1} (scene_{i:03d}, {duration}s)…")
 
 
-            ok = await asyncio.to_thread(
-                generate_video_single,
-                img, duration, clip_out,
-                space_type=space_type,
-                pov_movement=pov_movement,
-                lighting=lighting,
-                intensity=intensity,
-                model_tier=model_tier,
-                output_format=output_format,  # 2026-07-27 URGENT FIX: use the local parameter, not a nonexistent job dict
-                do_video_upscale=do_video_upscale,
-            )
+            if resume and _reusable_clip(clip_out):
+                ok = True
+                log.info(f"[Job {job_id}] Resume: reusing existing clip for scene {i}")
+            else:
+                ok = await asyncio.to_thread(
+                    generate_video_single,
+                    img, duration, clip_out,
+                    space_type=space_type,
+                    pov_movement=pov_movement,
+                    lighting=lighting,
+                    intensity=intensity,
+                    model_tier=model_tier,
+                    output_format=output_format,  # 2026-07-27 URGENT FIX: use the local parameter, not a nonexistent job dict
+                    do_video_upscale=do_video_upscale,
+                )
 
 
             model = model_tier
