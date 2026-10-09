@@ -578,3 +578,11 @@ Format as V2_TEST_PLAN.md (numbered steps, PASS/FAIL). Phase A: simulator script
 
 ### 60. Production readiness (open risks, no work started)
 DPA/GDPR with providers and Relinx; legal check on labelling AI-generated video; domain + HTTPS; external uptime monitor; provider spend cap and balance alerts; bus factor (solo operator) -> handover tiers: operator (library banner, Riprendi, Risolto), technical (restart, logs, backups), decisions (Michele); remote operator handover Nov-Dec; checkpoint early December.
+
+### 59 (update 2026-10-09, live findings from the first live test of the rework caps)
+- A request whose scene ids are all invalid/filtered out (zero valid scenes) still counted as a rework round and ran a reassembly. Fix: gate and count only when the filtered redo list is non-empty; return a clear 400 otherwise.
+- Test job zz_test_restart_1 used scene id `s1` (not the normal `sc_xxxxxxxx` format); the server regenerated ids (`_ensure_scene_ids`), so counters keyed on `s1` did not match. Check with a real job that the library edit view sends the true scene ids; if not, key the counters on a stable id that survives that step.
+- UI: editing a past job showed 2 scene cards for a 1-scene job and the extra scene was saved into scenes_config (it has no clip; "Riprendi" on that job would generate it and cost ~EUR 1.1).
+- UI: after a refused rework (HTTP 429) the "Progress 0% / Ferma questo job" panel stays visible although nothing started.
+- Verified live 2026-10-09: refusal message shown in the edit view, library banner + 🛠 row with reason, "Risolto" confirmation dialog. Push/email count at refusal: to confirm.
+- AUTOMATION_TEST_PLAN.md written (backlog 58): see that file for per-step status.
