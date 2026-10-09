@@ -12,6 +12,8 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
+import rework_policy
+
 ORPHAN_STATES = ("running", "queued")
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp")
 
@@ -74,6 +76,13 @@ def recover_orphans(jobs, jobs_dir, save_fn):
         new, msg = classify_orphan(job, Path(jobs_dir) / job_id)
         job["status"] = new
         job["message"] = msg
+        # 2026-10-09: a rework cut short by the restart must not look like a
+        # clean "done" -- rework_policy turns it into rework_incomplete +
+        # needs_operator and gives the interrupted round back.
+        rw_ids = rework_policy.recovery_mark(job)
+        if rw_ids is not None and new == "done":
+            job["message"] = ("Rework interrotto dal riavvio (scene: "
+                              + ", ".join(rw_ids) + "). Il video mostrato e' la versione precedente.")
         job["recovered_from"] = old
         job["recovered_at"] = datetime.utcnow().isoformat()
         save_fn(job_id)
@@ -81,6 +90,7 @@ def recover_orphans(jobs, jobs_dir, save_fn):
             "job_id": job_id, "old": old, "new": new,
             "property_name": job.get("property_name"),
             "has_callback": bool(job.get("callback_url")),
+            "rework_incomplete": rw_ids,
         })
     return recovered
 

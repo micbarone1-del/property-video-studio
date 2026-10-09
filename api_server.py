@@ -578,6 +578,7 @@ def _load_jobs_from_disk():
 
 _load_jobs_from_disk()
 from job_recovery import recover_orphans as _recover_orphans, atomic_write_json as _atomic_write_json
+import rework_policy as _rwp
 from job_recovery import clip_is_valid as _reusable_clip, audio_is_valid as _reusable_audio, image_is_valid as _reusable_image
 
 # 2026-10-08 (task 4): a job left running/queued by a restart has no thread
@@ -2509,6 +2510,7 @@ async def approve_job(
                 if sid:
                     redo_scene_ids.append(sid)
 
+        await _rework_gate(job_id, redo_scene_ids)
         if not _acquire_job_lock(job_id, f"QC redo {len(redo_scene_ids)} scene(s)"):
             lock = _job_lock_status(job_id)
             raise HTTPException(
@@ -2671,6 +2673,78 @@ async def delete_scene(job_id: str, background_tasks: BackgroundTasks):
     return {"job_id": job_id, "status": "running"}
 
 
+
+
+async def _rework_gate(job_id: str, scene_ids: list, force: bool = False):
+    """2026-10-09 (stage 4): the ONE check every paid rework entry point calls
+    before taking the job lock. Limits live in rework_policy. If a limit is
+    hit: the job gets a needs_operator flag, the operator is notified ONCE,
+    and the request is refused with 429. force=True is the operator's
+    explicit decision: budget is reset (and recorded) and the rework goes on."""
+    job = JOBS[job_id]
+    if force:
+        _rwp.reset_budget(job, "forzato dall'operatore")
+        _save_job(job_id)
+        return
+    res = _rwp.evaluate(job, scene_ids)
+    if res["allowed"]:
+        return
+    reason = "; ".join(res["reasons"])
+    if _rwp.flag(job, reason, "rework_cap"):
+        _save_job(job_id)
+        try:
+            await _notify_operator(
+                job_id, "Rework cap",
+                subject=f"Rework bloccato: {job.get('property_name') or job_id}",
+                body_html=f"<p>Rework fermato dal tetto di sicurezza: {reason}.</p>"
+                          f"<p>Job {job_id}. Decide l'operatore: reset del budget o chiusura cosi' com'e'.</p>",
+                push_message=f"Rework bloccato ({reason}) - serve l'operatore",
+                tags=["warning"],
+            )
+        except Exception as e:
+            log.warning(f"[Job {job_id}] Rework-cap notification failed (non-fatal): {e}")
+    raise HTTPException(
+        status_code=429,
+        detail=f"Rework bloccato: {reason}. Serve una decisione dell'operatore "
+               f"(POST /jobs/{job_id}/rework-budget/reset oppure force_rework=1).")
+
+
+async def _rework_after(job_id: str, failed_ids: list):
+    """After a batch rework: scenes whose regeneration failed silently kept
+    their OLD clip. The job must not look like a clean success."""
+    job = JOBS.get(job_id)
+    if not job:
+        return
+    if not failed_ids:
+        if job.pop("rework_failed_scenes", None) is not None:
+            _save_job(job_id)
+        return
+    job["rework_failed_scenes"] = list(failed_ids)
+    reason = ("Rework incompleto: rigenerazione fallita per " + ", ".join(failed_ids)
+              + " (resta la versione precedente)")
+    if _rwp.flag(job, reason, "rework_failed"):
+        _save_job(job_id)
+        try:
+            await _notify_operator(
+                job_id, "Rework failed",
+                subject=f"Rework incompleto: {job.get('property_name') or job_id}",
+                body_html=f"<p>{reason}.</p><p>Job {job_id}.</p>",
+                push_message=reason, tags=["warning"],
+            )
+        except Exception as e:
+            log.warning(f"[Job {job_id}] Rework-failed notification failed (non-fatal): {e}")
+    else:
+        _save_job(job_id)
+
+
+@app.post("/jobs/{job_id}/rework-budget/reset")
+async def reset_rework_budget(job_id: str, note: str = Form("")):
+    """Operator action: fresh rework budget for this job and clears needs_operator."""
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    _rwp.reset_budget(JOBS[job_id], note)
+    _save_job(job_id)
+    return {"job_id": job_id, "rework_counts": {}, "rework_rounds": 0, "needs_operator": None}
 
 
 async def run_redo_scene(job_id: str, scene_id: str):
@@ -3152,6 +3226,7 @@ async def redo_scenes_batch(
     new_images: list[UploadFile] = File(default=[]),
     new_image_indices: list[str] = Form(default=[]),
     transition_style: str = Form(None),
+    force_rework: str = Form(None),
 ):
     """
     Batches multiple scene redos into ONE locked operation with ONE final
@@ -3230,6 +3305,7 @@ async def redo_scenes_batch(
 
         valid_ids = {s.get("scene_id") for s in new_scenes_config}
         redo_ids = [rid for rid in redo_ids if rid in valid_ids]
+        await _rework_gate(job_id, redo_ids, force=str(force_rework or "").strip().lower() in ("1", "true", "yes"))
 
         if transition_style:
             job["transition_style"] = transition_style
@@ -3268,6 +3344,10 @@ async def run_redo_scenes_batch(job_id: str, scene_ids: list):
         n = max(len(scene_ids), 1)
         redone_results = []
         statuses = job.get("scenes", [])
+        failed_ids = []
+        _rwp.count(job, scene_ids)
+        _rwp.begin(job, scene_ids, "video")
+        _save_job(job_id)
 
         for idx, scene_id in enumerate(scene_ids):
             scene_idx = next((i for i, s in enumerate(scenes_config) if s.get("scene_id") == scene_id), None)
@@ -3321,6 +3401,7 @@ async def run_redo_scenes_batch(job_id: str, scene_ids: list):
                         break
             if not source_img:
                 log.error(f"[Job {job_id}] Batch redo: no source image for scene {scene_id}, skipping")
+                failed_ids.append(scene_id)
                 continue
 
             enhanced_img = enhanced_dir / f"{scene_id}_enhanced.jpg"
@@ -3349,6 +3430,7 @@ async def run_redo_scenes_batch(job_id: str, scene_ids: list):
             )
             if not ok_video:
                 log.error(f"[Job {job_id}] Batch redo: video generation failed for scene {scene_id}")
+                failed_ids.append(scene_id)
                 continue
 
             found = False
@@ -3398,12 +3480,20 @@ async def run_redo_scenes_batch(job_id: str, scene_ids: list):
             _save_job(job_id)
 
         await run_reassemble_only(job_id)
+        _rwp.end(JOBS[job_id])
+        _save_job(job_id)
+        await _rework_after(job_id, failed_ids)
 
     except Exception as e:
         log.error(f"[Job {job_id}] batch redo failed: {e}", exc_info=True)
         JOBS[job_id].update({"status": "failed", "message": f"Errore: {str(e)[:200]}"})
         _save_job(job_id)
     finally:
+        try:
+            if _rwp.end(JOBS.get(job_id)):
+                _save_job(job_id)
+        except Exception:
+            pass
         _release_job_lock(job_id)
 
 
@@ -3429,6 +3519,8 @@ async def run_redo_audio_only(job_id: str, scene_ids: list):
 
         n = max(len(scene_ids), 1)
         redone_results = []
+        _rwp.begin(job, scene_ids, "audio")
+        _save_job(job_id)
 
         for idx, scene_id in enumerate(scene_ids):
             scene_idx = next((i for i, s in enumerate(scenes_config) if s.get("scene_id") == scene_id), None)
@@ -3496,12 +3588,19 @@ async def run_redo_audio_only(job_id: str, scene_ids: list):
             _save_job(job_id)
 
         await run_reassemble_only(job_id)
+        _rwp.end(JOBS[job_id])
+        _save_job(job_id)
 
     except Exception as e:
         log.error(f"[Job {job_id}] audio-only redo failed: {e}", exc_info=True)
         JOBS[job_id].update({"status": "failed", "message": f"Errore: {str(e)[:200]}"})
         _save_job(job_id)
     finally:
+        try:
+            if _rwp.end(JOBS.get(job_id)):
+                _save_job(job_id)
+        except Exception:
+            pass
         _release_job_lock(job_id)
 
 
