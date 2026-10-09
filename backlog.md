@@ -567,3 +567,14 @@ Michele asked explicitly that both new paid providers (Google Cloud TTS, Luma di
 **Open:** fal Usage by model (last 7 days) needed to reconcile; Anthropic Jul 3-10 purchase amounts not read.
 
 **Time-sensitive, not code:** add a card in Anthropic Console billing (email Sep 11); ElevenLabs renews Oct 13 ($26.84).
+
+## October 9, 2026 additions (scoped, NOT done unless stated)
+
+### 58. AUTOMATION_TEST_PLAN.md -- reliability test plan for the Relinx/GIAL pilot (scoped, file not yet written)
+Format as V2_TEST_PLAN.md (numbered steps, PASS/FAIL). Phase A: simulator script that plays Relinx (requests, duplicate external_ref, webhook receiver) against our API with a "fake provider" switch (OFF by default, env var, never in production). Phase B: a joint test window with Relinx, last week of October (~2-3 days, ~20 requests, ~EUR 350-400 real generation). Phase 1 before it: ~30 listings from >=6 agencies, ~10 of them hard (few/odd photos, long text, missing fields). Every test checks 4 invariants: no job lost; no double cost; final state correct and visible in the library; operator informed. Areas: restart/crash, providers (timeouts, 422), photos/listings, partner API, webhook, costs, queue/load, QC gates, operator/observability. Rework section: interrupt mid-batch, two sequential reworks of the same scene, rework while locked, rework cap reached, interruption during a QC-triggered redo, scene that keeps failing, cap reached mid-batch, single escalation notification, operator reset, 422 must not escalate to a pricier provider. Open: who runs Phase B on our side; Relinx's side contact; success criteria numbers for the pilot.
+
+### 59. Rework hardening -- remaining work after stages 4/4b
+(1) put the add-scene endpoint (run_redo_scene, ~line 2644) under the same gate or decide explicitly it is exempt; (2) Luma accepted-then-state=failed still cascades to Veo/LTX -- need real data to know if it means bad input or content block; (3) time cap per rework; (4) set PVS_REWORK_MAX_COST_EUR after backlog 57 (FX/Luma constants); (5) mention rework_incomplete in the startup notification; (6) unify clip/enhanced naming (scene_NNN vs <scene_id>, _lit) and drop duplicate clip copies; (7) third inline run_pipeline argument build (~line 1056) -> _pipeline_kwargs; (8) optional git rm --cached for the tracked file under clients/; (9) live check that a real QC-gated job now records cost.
+
+### 60. Production readiness (open risks, no work started)
+DPA/GDPR with providers and Relinx; legal check on labelling AI-generated video; domain + HTTPS; external uptime monitor; provider spend cap and balance alerts; bus factor (solo operator) -> handover tiers: operator (library banner, Riprendi, Risolto), technical (restart, logs, backups), decisions (Michele); remote operator handover Nov-Dec; checkpoint early December.
