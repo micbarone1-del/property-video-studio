@@ -47,6 +47,14 @@ dur = float(info["format"]["duration"]); wh = [(s["width"], s["height"]) for s i
 check("T3 veo fake -> 200 playable mp4 8s 1920x1080", resp.status_code == 200 and abs(dur - 8) < 0.5 and wh == [(1920, 1080)], (resp.status_code, dur, wh))
 r2 = fc.subscribe("fal-ai/aura-sr", arguments={"image_url": url}); b = requests.get(r2["image"]["url"], stream=True).content
 check("T3b upscale fake returns the uploaded photo bytes", b == open(img, "rb").read())
+os.remove(img)  # the pipeline deletes its temp file right after upload
+check("T3d photo still served after the original was deleted", requests.get(url, stream=True).content == b)
+vurl2 = fc.subscribe("fal-ai/veo3.1/image-to-video", arguments={"image_url": url, "duration": "5"})["video"]["url"]
+shot = os.path.join(st, "f.png")
+vd = requests.get(vurl2, stream=True).content; open(os.path.join(st, "c.mp4"), "wb").write(vd)
+subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", os.path.join(st, "c.mp4"), "-frames:v", "1", shot])
+px = Image.open(shot).convert("RGB").getpixel((960, 540))
+check("T3e clip shows the photo (blue-ish), not the test pattern", px[2] > px[0] + 40, px)
 check("T3c florence deterministic", fc.subscribe("fal-ai/florence-2-large/more-detailed-caption", arguments={"image_url": url})["results"] == fc.subscribe("fal-ai/florence-2-large/more-detailed-caption", arguments={"image_url": url})["results"])
 
 # T4 faults file: sequence consumed then ok; changes reset

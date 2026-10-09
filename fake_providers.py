@@ -178,8 +178,14 @@ def _fal_key(endpoint):
 
 def fake_upload_file(path, *a, **kw):
     import hashlib
-    token = hashlib.sha1(f"{path}{os.path.getmtime(path) if os.path.exists(path) else ''}".encode()).hexdigest()[:12]
-    _uploads[token] = str(path)
+    # The pipeline deletes its temp file right after upload (video_generation._upload_bytes),
+    # so keep our own copy: the fake clip must show the real photo.
+    data = open(path, "rb").read() if os.path.exists(path) else b""
+    token = hashlib.sha1(data + str(path).encode()).hexdigest()[:12]
+    keep = _media_dir() / f"up_{token}{os.path.splitext(str(path))[1] or '.bin'}"
+    if data and not keep.exists():
+        keep.write_bytes(data)
+    _uploads[token] = str(keep)
     outbox("fal_upload", path=str(path))
     return _fake_url("file", token, os.path.splitext(str(path))[1] or ".bin")
 
