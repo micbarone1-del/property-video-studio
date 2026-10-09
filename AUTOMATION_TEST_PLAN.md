@@ -62,7 +62,7 @@ Companion documents: QUALITY_CRITERIA.md (what a finished video must satisfy, re
 - **G5 (go/no-go to paid / more agencies, early December)**: pilot KPIs and agency feedback reviewed.
 
 ## 4. FMEA
-Scales (1-10). **S** severity: 10 = agency/Relinx cannot get or see the video, or legal/safety harm; 9 = misleading/unsafe content delivered or data/money lost at scale; 8 = failure invisible to us, relationship damage; 7 = visible delay/rework or large cost; 6 = noticeable but recoverable; <=5 = minor. **O** occurrence: 10 = nearly every job, 7 = weekly, 5 = monthly, 3 = rare, 1 = practically never (use real counts from the pilot as soon as available). **D** detection: 1 = automatic and certain before impact, 5 = operator would likely notice, 8-10 = found only by the agency or never. **RPN = S x O x D.** Level `ACT` = S>=9 or RPN>=100 (action mandatory before gate); `watch` = RPN 60-99; `ok` otherwise. Sorted by severity then RPN. 50 failure modes, 33 at level ACT.
+Scales (1-10). **S** severity: 10 = agency/Relinx cannot get or see the video, or legal/safety harm; 9 = misleading/unsafe content delivered or data/money lost at scale; 8 = failure invisible to us, relationship damage; 7 = visible delay/rework or large cost; 6 = noticeable but recoverable; <=5 = minor. **O** occurrence: 10 = nearly every job, 7 = weekly, 5 = monthly, 3 = rare, 1 = practically never (use real counts from the pilot as soon as available). **D** detection: 1 = automatic and certain before impact, 5 = operator would likely notice, 8-10 = found only by the agency or never. **RPN = S x O x D.** Level `ACT` = S>=9 or RPN>=100 (action mandatory before gate); `watch` = RPN 60-99; `ok` otherwise. Sorted by severity then RPN. 53 failure modes, 36 at level ACT.
 
 | ID | Step | Failure mode | Effect | Cause | S | O | D | RPN | Current control | Action / test | Status | Level |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -90,6 +90,7 @@ Scales (1-10). **S** severity: 10 = agency/Relinx cannot get or see the video, o
 | F11 | P5,P7 | Operator approves a bad scene/narration | Bad video delivered | Human error, fatigue at volume | 7 | 3 | 8 | 168 | QC panel shows flags | Review checklist; random second-look sample | Open | ACT |
 | F14 | P6 | Provider credit/key exhausted mid-batch (Anthropic card, ElevenLabs renewal 13 Oct, fal, Luma) | Batch fails, several jobs stop | No balance monitoring | 7 | 4 | 6 | 168 | None | Balance alerts + pre-window top-up checklist | Open | ACT |
 | F45 | X | Notification channel fails (ntfy/email) | Operator not informed | Third-party outage | 7 | 3 | 8 | 168 | Multi-topic best-effort (push verified) | Heartbeat/test ping daily; email count check | Partly | ACT |
+| F52 | P4,P6 | A new language is enabled without its golden set or a native-level reviewer (language parameter exists, only Italian live) | Wrong voice/format/pronunciation reaches agencies | Language-general design, no per-language acceptance | 7 | 3 | 7 | 147 | Only Italian enabled | Rule: a language is supported only after golden set + native reviewer sign-off | Planned | ACT |
 | F22 | P6 | Many simultaneous jobs exhaust CPU/RAM or provider rate limits | Slow/failed jobs | No confirmed queue/semaphore | 7 | 4 | 5 | 140 | Per-IP rate limiter only | Load test T-G1..G4; add concurrency limit | Open | ACT |
 | F29 | P8 | Audio/video desync or double padding | Voice cut/early | Two padding mechanisms (fixed) | 7 | 3 | 6 | 126 | Buffer tests (July) | One sentence per scene (backlog 54); sync check | Partly | ACT |
 | F36 | P11 | Video URL expires, file moved or removed; slow download over http | Broken video later | Retention/backup/clean-up | 7 | 3 | 6 | 126 | Nightly backup | Retention rule + link check job | Open | ACT |
@@ -99,7 +100,9 @@ Scales (1-10). **S** severity: 10 = agency/Relinx cannot get or see the video, o
 | F25 | P7 | Rework interrupted looks like clean done | Old video delivered as new | Restart during rework | 7 | 3 | 3 | 63 | rework_in_progress marker + recovery (function-tested) | T-A4 live | Verified (fn) | watch |
 | F19 | P6 | Voice not acceptable (news-anchor tone) | Agency dislikes video | Voice choice | 6 | 5 | 8 | 240 | Voice selectable | Voice acceptance in pilot; collect feedback | Open | ACT |
 | F10 | P5 | Pre-generation review is a bottleneck or forgotten (release has no UI button) | Turnaround > 24h; Relinx wants faster | Single human, manual gate | 6 | 7 | 4 | 168 | Notification on new partner job | SLA timer + banner for draft jobs + release button; define turnaround target | Open | ACT |
+| F53 | P5,P7,P12 | Single-reviewer bias or reviewer disagreement (Michele alone; criteria read differently) | Inconsistent releases, defects missed | Small team | 6 | 4 | 7 | 168 | Reviewers decided 2026-10-09: internal phase Michele + Relinx contact; pilot Michele + agency | Common rubric, calibration on 5 videos, record disagreements | Planned | ACT |
 | F08 | P4 | Narration longer than scene durations / overflow | Audio cut or clip too long | Text length vs 5-9s clips | 6 | 5 | 5 | 150 | Duration from audio length; overflow warning not built (task 8) | Warning + test with long descriptions (T-D8) | Open | ACT |
+| F51 | P6,P12 | AI label light grey is illegible on bright walls, or missing in some scenes | Label requirement not met; agency/legal issue | Light grey text-only label over variable backgrounds (decision 2026-10-09) | 6 | 5 | 4 | 120 | None yet (watermark change not built) | Subtle shadow + contrast check on frames (Q31); test on bright and dark photos | Open | ACT |
 | F13 | P6 | Provider timeout/failure (fal, Luma, Google TTS) | Scene missing | Provider outage | 6 | 6 | 3 | 108 | Cascade; scene marked failed; operator notified | T-C4 [SIM] | Control exists | ACT |
 | F27 | P7 | Cap bypassed because scene ids regenerate | Cap does not protect | Non-standard ids; ensure_scene_ids | 6 | 3 | 6 | 108 | Round cap still applies | Test with real job ids (T-B12); count only non-empty requests (T-B11) | Open | ACT |
 | F20 | P6-P7 | Cost per job above plan (cascade, resume pay twice, reworks, wrong constants) | Margin lost, no true cost known | Duplicated logic, FX/Luma constants (backlog 57) | 6 | 4 | 4 | 96 | Cost at QC gate (stage 3), rework caps (stage 4) | Ledger fix; cost per job KPI; T-F1..F5 | Partly | watch |
@@ -146,9 +149,9 @@ Roles: **Operator** = person watching the library and notifications; **Tech** = 
 
 ## 6. Phases, schedule and exit criteria
 - **Phase A (now to ~20 Oct)**: build simulator + fake-provider switch, run L2/L3; fix `ACT` rows; verify R04/R05.
-- **Phase 1 (2nd half of October)**: ~30 real listings from >=6 agencies through the real channel, ~10 hard cases; internal only, not delivered to agencies. Capture real O values for the FMEA.
+- **Phase 1 (2nd half of October)**: ~30 real listings from >=6 agencies through the real channel, ~10 hard cases; internal only, not delivered to agencies; reviewers Michele + Relinx's contact (to confirm). Capture real O values for the FMEA.
 - **Phase B (last week of October, 2-3 working days)**: ~20 requests sent by Relinx from the CRM with a separate test callback; real providers; hard spend cap decided in advance (expected EUR 350-400). Exit: >=95% of requests reach `completed`/`in_review` without a developer touching the server; 0 lost; 0 double-charged; every failure visible to the operator within 5 min; 0 duplicate jobs; every video shown correctly in Relinx's player (R14); acceptance rubric >= 90%.
-- **GIAL pilot (end Oct/early Nov to end Nov)**: 5-10 videos, one review step kept by Michele; weekly KPI review.
+- **GIAL pilot (end Oct/early Nov to end Nov)**: 5-10 videos, one review step kept by Michele, agency gives qualitative feedback by voice (Michele relays); weekly KPI review.
 - **Checkpoint (early December)**: G5.
 - **Stop rule** (any phase): a job above 2x its estimate, or the same failure 3 times -> pause new requests and decide.
 **Leading indicators to watch daily**: needs-human count, draft/queued age, QC flag rate, rework rate, cost per job, failures per provider, webhook failures, notifications sent vs expected.
@@ -159,6 +162,29 @@ Roles: **Operator** = person watching the library and notifications; **Tech** = 
 3. Michele/Relinx: numeric targets: turnaround, cost ceiling per video, acceptable failure rate, volume per day.
 4. Michele: review S and O ratings (section 4) and the acceptance rubric (voice, framing, accuracy, logo).
 5. Who runs which tests on our side; who is the named contact at Relinx for Phase B.
+
+
+## 8. Governance: keep the scores and the control plan alive (like status.md / backlog.md)
+**Rule (requested 2026-10-09):** the FMEA, the test results and the control plan are updated on the same cadence as status.md and backlog.md, never "later".
+- **Triggers for an update**: any code change in a risk area; every bug, incident or near miss; every test round; every Relinx/agency feedback item; every gate review. Update the linked FMEA rows (Status, and O/D re-rated with evidence), the test statuses, and the control-plan lines in the same commit that records the change.
+- **Cadence**: quick pass at every deploy; full review at each gate (G1-G5) and weekly during Phase 1, Phase B and the pilot.
+- **Scores to watch** (computed, not typed): total RPN; number of `ACT` rows still open; open rows with S>=9; tests by status per level (VERIFIED / Verified (fn) / TO-DO / KNOWN GAP / FAILED); requirement coverage (requirements with at least one VERIFIED test); first-pass release rate and Critical findings per 100 videos (from QUALITY_CRITERIA.md). Each review appends a dated line to the scoreboard below.
+- **Implementation (to build, backlog 63)**: move FMEA rows and the test catalogue from the generator script into data files (CSV), generate this markdown and the scoreboard from them with one script, so there is a single source of truth; add the update rule to the project's standing instructions.
+- **Rows are never deleted**: close with date and evidence.
+**Scoreboard** (manual until the script exists)
+| Date | Rows | ACT open | Total RPN | Tests VERIFIED / total | Note |
+|---|---|---|---|---|---|
+| 2026-10-09 | 53 | 36 | 7066 | see catalogue: 4 live + stages 1-4b function tests | baseline; ratings are proposals, not yet reviewed by Michele/Relinx |
+
+## 9. Decision log
+| Date | Decision | Where it lands |
+|---|---|---|
+| 2026-10-09 | Reviewers: internal phase with Relinx = Michele + Relinx's contact (Michele); pilot = Michele + the agency (GIAL) | QUALITY_CRITERIA.md section 7, F53, Q-F8 |
+| 2026-10-09 | Agency feedback: qualitative, by voice, for the ~10 pilot videos; Michele reports to Claude; no feedback endpoint now | QUALITY_CRITERIA.md section 8, F38 |
+| 2026-10-09 | Languages: language-general design, only Italian live; a language is supported after golden set + native reviewer | QUALITY_CRITERIA.md section 4, F52, backlog 62 |
+| 2026-10-09 | Video marking: text-only "Generated with AI", light grey, subtle shadow, same position as today, localized; no Property Video Studio logo; agency logo separate and optional | QUALITY_CRITERIA.md Q30/Q31, F51, backlog 61 |
+| 2026-10-09 | FMEA/test scores and control plan updated regularly like status/backlog | section 8, backlog 63 |
+| 2026-10-09 | Automating light-bug handling: evaluate after the pilot with real finding frequencies; auto-fix only deterministic, reversible, low-cost, check-verified defects, never content/facts/deploy/jobs data | backlog 64 |
 
 ## Appendix T -- test catalogue (system-level steps, kept from the first version; IDs are referenced above)
 Status words as in the first version of this plan. New required tests derived from the FMEA that are not in this catalogue yet: partner status endpoint contract (F34), partner video fetch with partner auth and in Relinx's real player (F35), expired photo URL (F03), webhook retry/replay/signature (F32/F33), Relinx-player playback (F37), balance-exhausted mid-batch (F14), concurrent jobs (F22), disk-low behaviour (F21), spend cap (F47), fake-flag-in-production guard (F46), narration fact check (F07), uptime/auto-restart (F41).
@@ -209,6 +235,7 @@ Status words as in the first version of this plan. New required tests derived fr
 
 ### H. Operator and observability
 - **T-H1** Needs-human cases notify once (push + email) and show in the library banner with the reason. Banner/row VERIFIED live 2026-10-09; push/email count TO-DO. 2. Operator can resolve from the library ("Risolto", "Riprendi", QC panel) without a terminal. VERIFIED for these three. 3. External uptime monitor + alert when the app is down. KNOWN GAP. 4. Daily summary (jobs done / failed / needing a human / spend). KNOWN GAP. 5. Logs reachable by the remote operator without full server access. KNOWN GAP.
+
 
 
 
