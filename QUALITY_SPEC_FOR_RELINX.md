@@ -12,6 +12,6 @@ _Bozza 2026-10-09. Versione sintetica di QUALITY_CRITERIA.md, pensata per essere
 
 **Aspetto complessivo (maggiore).** Ritmo e durata da video professionale (~30 secondi nel formato standard), transizioni coerenti, audio livellato.
 
-**Marchio e consegna.** Logo dell'agenzia secondo i dati inviati con la richiesta; nessun marchio di terzi. Scritta "Generated with AI" sempre in inglese, grigio chiaro con ombra sottile, in basso a sinistra. Formato e link di download corretti; stato comunicato via webhook e rilettura.
+**Marchio e consegna.** Logo dell'agenzia secondo i dati inviati con la richiesta; nessun marchio di terzi. Scritta "Generated with AI" sempre in inglese, grigio chiaro, senza ombra, con lo stesso stile e nella stessa posizione dell'attuale scritta (in basso a sinistra). Formato e link di download corretti; stato comunicato via webhook e rilettura.
 
 **Verifica.** Controllo automatico di ogni scena e verifica umana nella fase pilota. Ogni difetto e' classificato e registrato. Per i primi ~10 video del pilota raccogliamo anche il feedback qualitativo dell'agenzia.
