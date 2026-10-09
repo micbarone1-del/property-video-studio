@@ -2269,9 +2269,16 @@ def get_scene_image(job_id: str, scene_index: int):
 
     # Original upload FIRST — enhanced version only as last-resort fallback
     candidates = []
+    # 2026-10-09: current jobs store originals as images/<scene_id>.<ext>, not scene_NNN.<ext>
+    scenes_cfg = JOBS[job_id].get("scenes_config", [])
+    sid = scenes_cfg[scene_index].get("scene_id") if 0 <= scene_index < len(scenes_cfg) else None
+    if sid:
+        for ext in [".jpg", ".jpeg", ".png", ".webp"]:
+            candidates.append(job_dir / "images" / f"{sid}{ext}")
     for ext in [".jpg", ".jpeg", ".png", ".webp"]:
         candidates.append(job_dir / "images" / f"scene_{scene_index:03d}{ext}")
     candidates.append(job_dir / "enhanced" / f"scene_{scene_index:03d}_enhanced.jpg")
+    candidates.append(job_dir / "enhanced" / f"scene_{scene_index:03d}_enhanced_lit.jpg")
 
 
     for path in candidates:
@@ -3511,6 +3518,22 @@ async def run_redo_audio_only(job_id: str, scene_ids: list):
 # ── Pipeline runner ────────────────────────────────────────────────────────────
 
 
+def _record_actual_cost(job_id, scenes_config, models_used, audio_chars,
+                        do_upscale, enable_vision_qc, model_tier):
+    """Single place that computes and stores a job's actual generation cost
+    (2026-10-09). Called when the pipeline pauses at the QC gate AND when it
+    finishes without one -- before this, only the second path recorded it."""
+    claude_cost_eur = JOBS[job_id].get("claude_usage", {}).get("cost_eur", 0.0)
+    from cost_tracker import calculate_actual_cost, format_cost_display
+    actual = calculate_actual_cost(
+        scenes_config, models_used, audio_chars,
+        do_upscale=do_upscale, do_vision_qc=enable_vision_qc,
+        model_tier=model_tier, claude_cost_eur=claude_cost_eur,
+    )
+    JOBS[job_id]["cost_actual_raw"] = actual
+    JOBS[job_id]["cost_actual"] = format_cost_display(actual, previous_reworks=JOBS[job_id].get("reworks", []))
+
+
 async def run_pipeline(
     job_id:           str,
     job_dir:          Path,
@@ -3597,8 +3620,12 @@ async def run_pipeline(
         for i, img_path in enumerate(working_image_paths):
             update("running", int(5 + (i/n)*15), f"Enhancing image {i} of {n-1} (scene_{i:03d})…")
             out    = str(enhanced_dir / f"scene_{i:03d}_enhanced.jpg")
-            if resume and _reusable_image(out):
-                result = out
+            # 2026-10-09: with do_lighting the final file is "<out>_lit.jpg" (image_enhance.py),
+            # not <out> itself, so the reuse check must look for it too
+            _prev = [out.replace(".jpg", "_lit.jpg"), out] if do_lighting else [out]
+            _prev_ok = next((c for c in _prev if _reusable_image(c)), None) if resume else None
+            if _prev_ok:
+                result = _prev_ok
             else:
                 result = await asyncio.to_thread(enhance_image, img_path, out, do_lighting, do_upscale)
             enhanced_paths.append(result)
@@ -3803,6 +3830,15 @@ async def run_pipeline(
                 push_message=f"{prop_name} - QC: {len(rejected_scenes)} rifiutate, {len(flagged_scenes)} segnalate",
                 tags=["warning"],
             )
+            # 2026-10-09: the money is already spent here (clips generated). Cost used to be
+            # recorded only on the no-QC-flag path, so every job that paused here and was then
+            # approved ended 'done' with NO cost recorded at all.
+            try:
+                _record_actual_cost(job_id, scenes_config, models_used, audio_chars,
+                                    do_upscale, enable_vision_qc, model_tier)
+                _save_job(job_id)
+            except Exception as e:
+                log.warning(f"[Job {job_id}] Could not record cost at the QC gate (non-fatal): {e}")
             return   # pipeline pauses here — resumed by /approve endpoint
 
 
@@ -3823,15 +3859,8 @@ async def run_pipeline(
         # creation time by create_job_from_url) -- was captured but never
         # actually counted in the displayed total. Absent/0 for manual
         # jobs, which never call Claude at all.
-        claude_cost_eur = JOBS[job_id].get("claude_usage", {}).get("cost_eur", 0.0)
-        from cost_tracker import calculate_actual_cost, format_cost_display
-        actual = calculate_actual_cost(
-            scenes_config, models_used, audio_chars,
-            do_upscale=do_upscale, do_vision_qc=enable_vision_qc,
-            model_tier=model_tier, claude_cost_eur=claude_cost_eur,
-        )
-        JOBS[job_id]["cost_actual_raw"] = actual
-        JOBS[job_id]["cost_actual"] = format_cost_display(actual, previous_reworks=JOBS[job_id].get("reworks", []))
+        _record_actual_cost(job_id, scenes_config, models_used, audio_chars,
+                            do_upscale, enable_vision_qc, model_tier)
         _save_job(job_id)
 
 
