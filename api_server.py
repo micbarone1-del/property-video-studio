@@ -2236,6 +2236,7 @@ def list_jobs():
             "model_tier":   job.get("model_tier", "premium"),
             "created_at":   job.get("created_at", ""),
             "cost_estimate": job.get("cost_estimate"),
+            "needs_operator": job.get("needs_operator"),   # 2026-10-09 stage 4b
             "has_video":    bool(job.get("output_path") and Path(job["output_path"]).exists()),
         })
     jobs.sort(key=lambda j: j["created_at"], reverse=True)

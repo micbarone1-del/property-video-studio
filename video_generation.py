@@ -24,6 +24,7 @@ import io
 import time
 import logging
 import requests
+import threading
 import fal_client
 from pathlib import Path
 from dotenv import load_dotenv
@@ -683,6 +684,9 @@ def _generate_luma(image_url: str, prompt: str, duration: int, aspect_ratio: str
 # same cascade as before, with one more rung added at the top.
 
 LUMA_DIRECT = os.environ.get("LUMA_DIRECT", "false").strip().lower() == "true"
+# 2026-10-09 (stage 4b): per-thread note that Luma rejected the INPUT (HTTP 400/422).
+# generate_video_single reads it to avoid escalating to pricier models for the same bad input.
+_LUMA_STATE = threading.local()
 LUMA_DIRECT_API_URL = "https://agents.lumalabs.ai/v1/generations"  # Agents API, not classic Dream Machine
 _LUMA_DIRECT_POLL_INTERVAL_SECS = 4
 _LUMA_DIRECT_MAX_WAIT_SECS = 300  # 5 min ceiling, same spirit as _subscribe_with_timeout
@@ -742,6 +746,8 @@ def _generate_luma_direct(image_url: str, prompt: str, duration: int, aspect_rat
             timeout=30,
         )
         if resp.status_code not in (200, 201):
+            if resp.status_code in (400, 422):
+                _LUMA_STATE.bad_input = True
             log.error(f"[VideoGen] Luma direct create failed: HTTP {resp.status_code} {resp.text[:300]}")
             return None
         gen = resp.json()
@@ -1009,6 +1015,7 @@ def generate_video_single(
             # Luma Ray 2 — confirmed via real testing: genuine 3D parallax,
             # no warping, no hallucination, on the same photo that caused
             # persistent problems with Veo. New default recommendation.
+            _LUMA_STATE.bad_input = False
             if LUMA_DIRECT:
                 video_url  = _generate_luma_direct(image_url, final_prompt, duration, aspect_ratio=luma_aspect_ratio)
                 used_model = "luma-ray-3.2-direct"
@@ -1019,6 +1026,10 @@ def generate_video_single(
             else:
                 video_url  = _generate_luma(image_url, final_prompt, duration, aspect_ratio=luma_aspect_ratio)
                 used_model = "luma-ray-2"
+            if not video_url and getattr(_LUMA_STATE, "bad_input", False):
+                log.error("[VideoGen] Luma rejected the input (HTTP 400/422) and the same-price fal Luma retry failed: "
+                          "NOT escalating to Veo/LTX (pricier, same input) -- the operator must look at this scene")
+                return False
             if not video_url:
                 log.warning("[VideoGen] Luma failed — falling back to Veo Fast")
                 video_url  = _generate_veo(image_url, final_prompt, duration, aspect_ratio=veo_aspect_ratio)

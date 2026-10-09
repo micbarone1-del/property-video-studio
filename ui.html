@@ -874,7 +874,10 @@ async function toggleLibrary() {
 // reporting already uses, not a separate library-only concept. Legacy
 // jobs predating this feature (no property_id at all) land in a
 // "Senza proprieta" bucket rather than being hidden or erroring.
-function isPendingApproval(j) { return j.status === 'awaiting_approval'; }
+// 2026-10-09 (stage 4b): "needs a human" = waiting for QC approval, interrupted by a
+// restart, or flagged needs_operator (rework cap / failed rework / interrupted rework).
+// ONE definition feeds the counter, the banner and the auto-open of client/property groups.
+function isPendingApproval(j) { return j.status === 'awaiting_approval' || j.status === 'interrupted' || !!j.needs_operator; }
 
 function setLibCount(jobs) {
   const pending = jobs.filter(isPendingApproval).length;
@@ -1016,12 +1019,25 @@ async function loadLibrary() {
     }
 
 
+    const escH = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const flaggedHtml = jobs.filter(j => j.needs_operator).map(j => `<div class="lib-job lib-review"><div class="lib-info"><div class="lib-name">🛠 ${escH(j.property_name)}</div><div class="lib-meta">${escH(j.needs_operator.reason)}</div></div><button style="padding:6px 10px;border-radius:8px;border:1px solid var(--border,#999);background:transparent;color:inherit;cursor:pointer" onclick="resolveNeedsOperator('${escH(j.job_id)}')">Risolto</button></div>`).join('');
     const pendingN = jobs.filter(j => isPendingApproval(j)).length;
-    const banner = pendingN ? `<div class="lib-job lib-review" style="font-weight:600"><div class="lib-info"><div class="lib-name">⚠ ${pendingN} job da rivedere</div><div class="lib-meta">Apri il job per approvare o rifare le scene</div></div></div>` : '';
-    list.innerHTML = banner + clientEntries.map(renderClient).join('');
+    const banner = pendingN ? `<div class="lib-job lib-review" style="font-weight:600"><div class="lib-info"><div class="lib-name">⚠ ${pendingN} job da rivedere</div><div class="lib-meta">Apri il job per approvare, rifare le scene o riprendere (interrotti / serve un tuo intervento)</div></div></div>` : '';
+    list.innerHTML = banner + flaggedHtml + clientEntries.map(renderClient).join('');
   } catch(e) {
     list.innerHTML = `<div class="lib-empty">Errore caricamento: ${e.message}</div>`;
   }
+}
+
+
+async function resolveNeedsOperator(jobId) {
+  if (!confirm('Segnare come risolto? Azzera anche il budget di rework di questo job (il reset resta registrato).')) return;
+  try {
+    const fd = new FormData(); fd.append('note', 'risolto dalla libreria');
+    const r = await authFetch('/jobs/' + jobId + '/rework-budget/reset', { method: 'POST', body: fd });
+    if (!r.ok) { let d = ''; try { d = (await r.json()).detail || ''; } catch (e) {} throw new Error(d || ('HTTP ' + r.status)); }
+    loadLibrary();
+  } catch (e) { showError('Operazione non riuscita: ' + e.message); }
 }
 
 
