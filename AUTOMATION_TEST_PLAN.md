@@ -1,6 +1,6 @@
 # AUTOMATION_TEST_PLAN.md -- E2E risk, control and test plan (FMEA + control plan + V-model)
 
-_Rewritten 2026-10-09 (replaces the first version of this file, kept in git history). Scope: the whole chain from an agency's request in the Relinx CRM to the agency seeing a satisfactory video inside Relinx. Living document: every incident, test round or new finding adds/changes rows. Status words are honest: VERIFIED (date, how), Verified (fn) = function test only, Open, VERIFY = to be checked on the server first. The S/O/D ratings below are a **baseline proposed by Claude from project evidence and must be reviewed by Michele (and S by Relinx)**; they are not measured data._
+_Rewritten 2026-10-09 (replaces the first version of this file, kept in git history). Scope: the whole chain from an agency's request in the Relinx CRM to the agency seeing a satisfactory video inside Relinx. Living document: every incident, test round or new finding adds/changes rows. Status words are honest: VERIFIED (date, how), Verified (fn) = function test only, Open, Exists, untested = code found but no contract test yet. The S/O/D ratings below are a **baseline proposed by Claude from project evidence and must be reviewed by Michele (and S by Relinx)**; they are not measured data._
 
 ## 0. How the three tools fit together
 - **V-model (section 3)** gives the structure: what the system must do (requirements) on the left, the test level that proves each requirement on the right. Nothing is tested without a requirement; no requirement without a test.
@@ -20,8 +20,8 @@ Traceability: Requirement R -> FMEA rows F -> test T (catalogue in Appendix T) -
 | P7 | QC gate (`awaiting_approval`), operator approves or reworks (caps) | Operator | QC panel |
 | P8 | Final assembly | PVS | final mp4 |
 | P9 | Release by operator -> `completed` webhook (signed if secret set) | Operator/PVS | webhook |
-| P10 | Relinx receives webhook and re-fetches status | Relinx | `GET /v1/videos/{id}` (VERIFY exists) |
-| P11 | Relinx fetches/streams the video and shows it in the CRM | Relinx/PVS | `video_url` (VERIFY partner access) |
+| P10 | Relinx receives webhook and re-fetches status | Relinx | `GET /v1/videos/{id}` (exists) |
+| P11 | Relinx fetches/streams the video and shows it in the CRM | Relinx/PVS | `video_url` -> `/v1/videos/{id}/download` (exists; auth/expiry to agree) |
 | P12 | Agency watches: video is satisfactory (quality, voice, accuracy, logo) | Agency | feedback |
 Cross-cutting (X): server/infra, restarts, disk, backups, provider balances and cost, notifications, operator availability, security/legal, test hygiene.
 
@@ -52,13 +52,13 @@ Targets marked (proposed) need agreement with Relinx; numbers are not facts.
 | L2 Integration | our API against the partner contract (schema, auth, idempotency, status, webhook, download) | Phase A simulator [SIM] on a staging/fake-provider instance | L1 done; contract written | contract tests PASS |
 | L3 System | whole pipeline under failure: restart, provider errors, rework, load, disk, backup restore | Phase A with fake providers, then small real runs (budget) | L2 done | all `ACT` rows have a PASS test |
 | L4 Acceptance | real Relinx requests, real photos, human judgement of the result in Relinx | Phase 1 (30 listings, internal) -> Phase B (window, ~20 requests) -> GIAL pilot (5-10) | L3 done, go/no-go gate G3 | exit criteria G4 |
-Test already run (2026-10-08/09): L1 stages 1-4b (all PASS); L3 live: resume (A2), rework cap refusal + banner + Risolto (B2, B5, H1 push once). L2 and most of L3 still to do.
+Companion documents: QUALITY_CRITERIA.md (what a finished video must satisfy, release rule) and RELINX_QUESTIONS.md (questions to agree with Relinx). Test already run (2026-10-08/09): L1 stages 1-4b (all PASS); L3 live: resume (A2), rework cap refusal + banner + Risolto (B2, B5, H1 push once). L2 and most of L3 still to do.
 
 ### Gates
-- **G1 (before Phase A)**: simulator + fake-provider switch built (off by default, refuses to run in production); R04/R05 endpoints exist or consciously scheduled.
+- **G1 (before Phase A)**: simulator + fake-provider switch built (off by default, refuses to run in production); R04/R05 endpoints exist (confirmed 2026-10-09) and have a contract test.
 - **G2 (before Phase 1 on real listings)**: every FMEA row with S>=9 has an owner and either a control or an accepted risk written here; HTTPS decision made; balances topped up; spend cap set.
 - **G3 (before Phase B window)**: all `ACT` rows closed or accepted by Michele in writing; L2 contract tests PASS; restore test PASS; real partner key issued and tested; stop rule agreed.
-- **G4 (before GIAL pilot)**: Phase B exit criteria met (section 6); open S>=8 items none.
+- **G4 (before GIAL pilot)**: Phase B exit criteria met (section 6); open S>=8 items none; quality release rule in QUALITY_CRITERIA.md applied to every video.
 - **G5 (go/no-go to paid / more agencies, early December)**: pilot KPIs and agency feedback reviewed.
 
 ## 4. FMEA
@@ -66,12 +66,12 @@ Scales (1-10). **S** severity: 10 = agency/Relinx cannot get or see the video, o
 
 | ID | Step | Failure mode | Effect | Cause | S | O | D | RPN | Current control | Action / test | Status | Level |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| F35 | P11 | video_url points to admin-only /jobs/{id}/download | Agency cannot open the video in Relinx | Partner download path not built (VERIFY today) | 10 | 6 | 3 | 180 | None documented | Verify; build partner-authenticated or signed expiring URL | VERIFY | ACT |
+| F35 | P11 | Video cannot be opened from the CRM: download needs partner auth, link expiry/streaming/range unknown | Agency cannot watch the video in Relinx | video_url = https://api.propertyvideostudioai.com/v1/videos/{id}/download exists; how a browser/player authenticates and how long it lives is unknown | 10 | 4 | 5 | 200 | Download endpoint exists | Contract test with partner key and with Relinx's real player; agree URL lifetime and auth model (Q-B) | Exists, untested | ACT |
 | F40 | X | Photos with people/plates/personal data sent to US providers without DPA | GDPR exposure | No DPA, no review | 9 | 4 | 8 | 288 | Relinx holds agency release (belief) | DPA/GDPR review, document processors | Open | ACT |
 | F16 | P6 | AI video artifacts: warped walls, invented objects, people, bad camera move | Unusable or misleading video | Generative model limits | 9 | 5 | 6 | 270 | Vision QC (Florence caption diff = weak) + human QC gate | Agent-based QC; acceptance rubric; audit sample | Open | ACT |
 | F41 | X | Server down or process dead (manual start, no uptime monitor) | All requests fail unnoticed | screen+start.sh, no watchdog | 9 | 4 | 7 | 252 | None | External uptime monitor + auto-restart (T-A7, T-H3) | Open | ACT |
 | F07 | P4 | AI narration invents or distorts facts (rooms, size, price, claims) | Misleading listing video seen by agency/buyers | LLM generation from description | 9 | 4 | 6 | 216 | Human review before generation | Automated fact check vs description (numbers, rooms); sample audit | Open | ACT |
-| F34 | P10 | GET /v1/videos/{id} status endpoint missing (Relinx re-fetches status) | Relinx cannot confirm state | Not built as of status.md (VERIFY today) | 9 | 6 | 3 | 162 | None documented | Verify on server; build + contract test | VERIFY | ACT |
+| F34 | P10 | GET /v1/videos/{id} returns wrong state or fields (Relinx re-fetches status) | Relinx shows wrong state | Endpoint exists (grep 2026-10-09: GET /v1/videos/{id} and list); contract not tested | 9 | 3 | 4 | 108 | Endpoint + status mapping exist | Contract test: every internal state -> expected external state, incl. needs_operator/interrupted | Exists, untested | ACT |
 | F46 | X | Test traffic pollutes production (zz_ jobs, fake-provider flag left on, test callbacks) | Wrong KPIs or fake videos delivered | Missing guard | 9 | 2 | 6 | 108 | Test naming convention | Fake flag refuses to run in production; KPI filter | Open | ACT |
 | F43 | X | Secrets leaked (public repo) | Account takeover, spend | Commit mistake | 9 | 2 | 5 | 90 | .env gitignored | Periodic secret scan | Control exists | ACT |
 | F42 | X | Job data lost (rm -rf on jobs/ happened 2026-07-16) | Videos/clips lost | Human/command error | 9 | 2 | 3 | 54 | Absolute rule, nightly backup 30d | Restore test T-G5 | Partly | ACT |
@@ -97,7 +97,6 @@ Scales (1-10). **S** severity: 10 = agency/Relinx cannot get or see the video, o
 | F18 | P6 | Wrong/missing agency logo or watermark (earlier black box; advertising other firms) | Brand problem for agency/Relinx | Logo config per agency | 7 | 3 | 5 | 105 | Logo normalisation; black-box fixed | Per-agency logo check in acceptance | Partly | ACT |
 | F24 | P7 | Repeated reworks burn money | Cost overrun | Operator/automation loop | 7 | 4 | 3 | 84 | Caps per scene/rounds, needs_operator (verified live) | Cost cap value after ledger fix | Verified | watch |
 | F25 | P7 | Rework interrupted looks like clean done | Old video delivered as new | Restart during rework | 7 | 3 | 3 | 63 | rework_in_progress marker + recovery (function-tested) | T-A4 live | Verified (fn) | watch |
-| F06 | P3,P9 | Plain http on a bare IP (no domain/TLS) | Relinx security review blocks, or payload/URL tampering | No domain yet | 7 | 4 | 2 | 56 | None | Domain + HTTPS before pilot | Open | ok |
 | F19 | P6 | Voice not acceptable (news-anchor tone) | Agency dislikes video | Voice choice | 6 | 5 | 8 | 240 | Voice selectable | Voice acceptance in pilot; collect feedback | Open | ACT |
 | F10 | P5 | Pre-generation review is a bottleneck or forgotten (release has no UI button) | Turnaround > 24h; Relinx wants faster | Single human, manual gate | 6 | 7 | 4 | 168 | Notification on new partner job | SLA timer + banner for draft jobs + release button; define turnaround target | Open | ACT |
 | F08 | P4 | Narration longer than scene durations / overflow | Audio cut or clip too long | Text length vs 5-9s clips | 6 | 5 | 5 | 150 | Duration from audio length; overflow warning not built (task 8) | Warning + test with long descriptions (T-D8) | Open | ACT |
@@ -109,6 +108,7 @@ Scales (1-10). **S** severity: 10 = agency/Relinx cannot get or see the video, o
 | F12 | P6 | Server restart/crash mid-generation | Job interrupted, work/cost lost | Deploy, OOM, VPS reboot | 6 | 5 | 3 | 90 | Orphan recovery + Riprendi reuses valid work (verified live) | T-A1..A4; auto-restart (T-A7) | Verified | watch |
 | F30 | P8 | Output orientation/format not what Relinx player expects | Black bars / unplayable | Portrait vs landscape, codec | 6 | 3 | 5 | 90 | output_format inherited | Test in Relinx player (T-E9) | Open | watch |
 | F01 | P2-P3 | Relinx client times out and retries; each retry creates a new job | Duplicate jobs, double cost, rate limit eaten | Synchronous work in POST (happened live 2026-10-02: 4 retries) | 6 | 3 | 4 | 72 | Immediate `queued` return; idempotency on partner_id+external_ref (fixed) | T-E2 + [SIM] retry storm with timeouts | Fixed, retest | watch |
+| F06 | P3,P9 | API domain/TLS not verified end to end; operator UI is still plain http on IP:8000 | Relinx blocks, tampering, expired certificate | Partner URLs already use api.propertyvideostudioai.com; certificate validity/renewal and http->https not checked; UI on IP | 6 | 3 | 3 | 54 | Domain in use for partner URLs | Check certificate + auto-renew + redirect; decide UI access (domain or VPN) | Partly | ok |
 | F26 | P7 | UI shows wrong state (phantom 2nd scene saved; progress panel after refusal) | Operator confusion, paid generation of a bogus scene | UI state bugs (found live 2026-10-09) | 5 | 4 | 6 | 120 | None | Fix UI; test T-B12 | Open | ACT |
 | F50 | P4 | Real listing from non-GIAL agency has unusual data (few rooms, long text, other language) | Failure or poor video | Data variability | 5 | 6 | 4 | 120 | Failure paths | Phase 1: 30 listings, 10 hard (T-D) | Planned | ACT |
 | F17 | P6 | Photo category/order wrong (kitchen shown as bedroom) | Confusing video, wrong captions | Relinx category mapping, scene ordering | 5 | 4 | 5 | 100 | Per-photo category field | Contract test on categories | Open | ACT |
@@ -154,14 +154,14 @@ Roles: **Operator** = person watching the library and notifications; **Tech** = 
 **Leading indicators to watch daily**: needs-human count, draft/queued age, QC flag rate, rework rate, cost per job, failures per provider, webhook failures, notifications sent vs expected.
 
 ## 7. Open inputs needed to finish (ask list)
-1. VERIFY on the server whether `GET /v1/videos/{id}` and a partner-accessible video download exist today (status.md as fetched predates 7 Oct) -> F34, F35 (S=9/10).
+1. RESOLVED 2026-10-09 (grep on server): `GET /v1/videos/{id}`, `GET /v1/videos` and `GET /v1/videos/{id}/download` exist, and `video_url` uses https://api.propertyvideostudioai.com. Still open: contract tests (F34), and how a browser/player authenticates and how long the URL lives (F35, question Q-B to Relinx).
 2. Relinx: how do they display the video (stream our URL, download and re-host, player/codec limits), URL lifetime they need, their webhook retry/timeouts, and what they consider "satisfactory".
 3. Michele/Relinx: numeric targets: turnaround, cost ceiling per video, acceptable failure rate, volume per day.
 4. Michele: review S and O ratings (section 4) and the acceptance rubric (voice, framing, accuracy, logo).
 5. Who runs which tests on our side; who is the named contact at Relinx for Phase B.
 
 ## Appendix T -- test catalogue (system-level steps, kept from the first version; IDs are referenced above)
-Status words as in the first version of this plan. New required tests derived from the FMEA that are not in this catalogue yet: partner status endpoint contract (F34), partner video fetch with partner auth (F35), expired photo URL (F03), webhook retry/replay/signature (F32/F33), Relinx-player playback (F37), balance-exhausted mid-batch (F14), concurrent jobs (F22), disk-low behaviour (F21), spend cap (F47), fake-flag-in-production guard (F46), narration fact check (F07), uptime/auto-restart (F41).
+Status words as in the first version of this plan. New required tests derived from the FMEA that are not in this catalogue yet: partner status endpoint contract (F34), partner video fetch with partner auth and in Relinx's real player (F35), expired photo URL (F03), webhook retry/replay/signature (F32/F33), Relinx-player playback (F37), balance-exhausted mid-batch (F14), concurrent jobs (F22), disk-low behaviour (F21), spend cap (F47), fake-flag-in-production guard (F46), narration fact check (F07), uptime/auto-restart (F41).
 
 ### A. Restart / crash
 - **T-A1** Restart while a job is `running` before QC -> job becomes `interrupted` (or `done` if its final video is valid), never stays `running`. VERIFIED 2026-10-08 (fake + live). 
@@ -209,5 +209,6 @@ Status words as in the first version of this plan. New required tests derived fr
 
 ### H. Operator and observability
 - **T-H1** Needs-human cases notify once (push + email) and show in the library banner with the reason. Banner/row VERIFIED live 2026-10-09; push/email count TO-DO. 2. Operator can resolve from the library ("Risolto", "Riprendi", QC panel) without a terminal. VERIFIED for these three. 3. External uptime monitor + alert when the app is down. KNOWN GAP. 4. Daily summary (jobs done / failed / needing a human / spend). KNOWN GAP. 5. Logs reachable by the remote operator without full server access. KNOWN GAP.
+
 
 
