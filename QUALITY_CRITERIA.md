@@ -35,7 +35,7 @@ Method: **A** = automatic check (to build or already existing), **H** = human ch
 | Q18 | File size and bitrate allow smooth playback over the CRM (proposed <= 60 MB for 60 s) | A | pass | Minor |
 
 ## 4. Voice and narration
-_Language (decision 2026-10-09): the design is language-general (language is a request parameter; voice, narration prompt, number/unit formats, label text and the language-dependent thresholds below -- Q04, Q20, Q26 -- are per language), but **only Italian is live**. A language becomes "supported" only after its golden set of 10 listings passes and a native-level reviewer has signed off._
+_Language (decision 2026-10-09): the design is language-general (language is a request parameter; voice, narration prompt, number/unit formats and the language-dependent thresholds below -- Q04, Q20, Q26 -- are per language), but **only Italian is live**. A language becomes "supported" only after its golden set of 10 listings passes and a native-level reviewer has signed off._
 | ID | Criterion | Method | Threshold | Severity |
 |---|---|---|---|---|
 | Q20 | Language correct (Italian), grammar and register natural, not "news-anchor/TG" style (Relinx feedback); energetic but credible | H (rubric 1-5) | >= 4 | Major |
@@ -49,11 +49,11 @@ _Language (decision 2026-10-09): the design is language-general (language is a r
 | Q28 | Narration length fits the scene (no overflow warning) | A | pass | Major |
 
 ## 5. Brand, compliance and delivery
-_Decision 2026-10-09: the Property Video Studio logo/watermark is replaced by the text-only AI label (Q31); the agency logo (Q30) stays a separate, optional element. Consequence accepted: no brand advertising on the videos._
+_Decision 2026-10-09: the Property Video Studio logo/watermark is replaced by the text-only AI label (Q31, always English); the agency logo (Q30) arrives through the API and stays a separate, optional element. Consequence accepted: no brand advertising on the videos._
 | ID | Criterion | Method | Threshold | Severity |
 |---|---|---|---|---|
-| Q30 | Agency logo correct and legible if configured; if none, neutral/no third-party branding (Relinx feedback) | A (config) + H | pass | Major |
-| Q31 | AI label (decision 2026-10-09): text only "Generated with AI" (localized to the video language), light grey with a subtle shadow, same position as the former watermark (bottom-left), no logo/icon; configurable per partner (text, language, position). Legible on bright walls: contrast of label vs local background >= 3:1 (proposed) measured on sample frames | A (frame contrast) + H | present in every scene and in the final video, legible | Major |
+| Q30 | Agency logo (supplied through the API, same mechanism as onboarding a new agency) correct and legible if supplied; if none, neutral/no third-party branding (Relinx feedback) | A (config) + H | pass | Major |
+| Q31 | AI label (decision 2026-10-09): text only "Generated with AI" (always English, never localized), light grey with a subtle shadow, same position as the former watermark (bottom-left), no logo/icon; text fixed in English, white label (no Property Video Studio logo). Legible on bright walls: contrast of label vs local background >= 3:1 (proposed) measured on sample frames | A (frame contrast) + H | present in every scene and in the final video, legible | Major |
 | Q32 | Photos used only from the listing supplied by the agency; no scraped/foreign images | A (source check) | 0 foreign | Critical |
 | Q33 | Delivered file plays in the Relinx player and the link works for the agreed time | A (synthetic partner probe) + H (their staging) | pass | Critical |
 | Q34 | Status and `video_url` consistent: `completed` only when the file exists, is valid and was released | A | pass | Critical |
@@ -80,4 +80,6 @@ Reviewers (decision 2026-10-09): internal phase with Relinx = Michele + Relinx's
 - Every finding from a test, review or agency feedback becomes a row (or a re-rating) in the FMEA.
 
 ## 9. Open decisions
-Must-have narration fields (Q21); length range (Q16); whether music is used and rules; people/plate rule (Q08); exact AI label wording per language (Q31) and any Relinx legal requirement; player specs and URL lifetime (Q33); acceptance rubric thresholds after the first 30 videos. Decided 2026-10-09: reviewers, feedback channel, label style, language scope (see above).
+Must-have narration fields (Q21); length range (Q16); whether music is used and rules; people/plate rule (Q08); any Relinx legal requirement on the AI label (wording is fixed: "Generated with AI", English); player specs and URL lifetime (Q33); acceptance rubric thresholds after the first 30 videos. Decided 2026-10-09: reviewers, feedback channel, label style, language scope (see above).
+
+_Assumptions (2026-10-09): photos supplied by the CRM are the high-resolution originals with reliable order and categories; if tests show otherwise, log a finding. The Relinx contact (Michele) is the test referent. A shareable summary is in QUALITY_SPEC_FOR_RELINX.md._
