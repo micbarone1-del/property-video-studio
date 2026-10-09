@@ -40,6 +40,12 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
+# 2026-10-09 (backlog 58a): fake-providers switch. OFF unless PVS_FAKE_PROVIDERS=1
+# at process start; then every paid/external provider is replaced at transport
+# level (see fake_providers.py). Only for a separate test instance (start_fake.sh).
+import fake_providers
+fake_providers.install_if_enabled()
+
 
 # ── Access key auth ────────────────────────────────────────────────────────────
 UI_ACCESS_KEY = os.getenv("UI_ACCESS_KEY", "").strip()
@@ -74,8 +80,13 @@ async def get_current_partner(authorization: str = Header(None)) -> dict:
 
 
 BASE_DIR = Path(__file__).parent
-JOBS_DIR = BASE_DIR / "jobs"
-JOBS_DIR.mkdir(exist_ok=True)
+# PVS_JOBS_DIR lets a test instance use its own jobs folder. Unset = unchanged
+# production behaviour. A fake-providers instance MUST NOT share the real jobs/.
+JOBS_DIR = Path(os.getenv("PVS_JOBS_DIR") or (BASE_DIR / "jobs"))
+if fake_providers.ENABLED and JOBS_DIR.resolve() == (BASE_DIR / "jobs").resolve():
+    raise RuntimeError("PVS_FAKE_PROVIDERS=1 requires PVS_JOBS_DIR pointing to a separate folder "
+                       "(refusing to run fake providers on the real jobs/ folder)")
+JOBS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 JOBS: dict = {}
@@ -774,7 +785,7 @@ def serve_test_scratch(filename: str):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "time": datetime.utcnow().isoformat()}
+    return {"status": "ok", "time": datetime.utcnow().isoformat(), "fake_providers": fake_providers.ENABLED}
 
 
 
