@@ -586,3 +586,20 @@ DPA/GDPR with providers and Relinx; legal check on labelling AI-generated video;
 - UI: after a refused rework (HTTP 429) the "Progress 0% / Ferma questo job" panel stays visible although nothing started.
 - Verified live 2026-10-09: refusal message shown in the edit view, library banner + 🛠 row with reason, "Risolto" confirmation dialog. Push/email count at refusal: to confirm.
 - AUTOMATION_TEST_PLAN.md written (backlog 58): see that file for per-step status.
+
+## October 9, 2026 -- decisions from the quality/test alignment (scoped, NOT built)
+
+### 61. Video marking: replace the Property Video Studio logo watermark with a text-only "Generated with AI" label
+Decision 2026-10-09 (Michele). Light grey text, subtle shadow, same position as the current watermark (bottom-left), no icon/logo, localized to the video language. Configurable per partner (text, language, position). The agency logo stays a separate optional element (Relinx feedback). Consequence accepted: no brand advertising on videos (supersedes the earlier "watermark stays as advertising" decision for CRM partner videos). Constraints: legible on bright walls (shadow + contrast check, Q31, F51); applied on every scene and on the final video; check where the watermark is drawn today (watermark code and assembly) and whether a second copy of that logic exists (architecture discipline: search frontend/backend/manual/scraper/legacy before changing). Open: exact wording per language and any Relinx legal requirement (RELINX_QUESTIONS Q-E3).
+
+### 62. Language as a request parameter (design only; Italian is the only live language)
+Decision 2026-10-09. Add `language` to the partner request and the manual flow (fallback: detect from the description). Impacts to design: TTS voice per language, narration prompt per language, number/unit/currency formatting, label text, language-dependent quality thresholds (speech rate, number reading), captions. A language is "supported" only after its golden set of 10 listings passes and a native-level reviewer signs off (F52). No other language is switched on now. Check before building: where language is hard-coded today (narration engine, TTS, captions, UI), in all paths.
+
+### 63. Risk scoreboard and update rule
+Request 2026-10-09: monitor FMEA score and test score and update the control plan regularly, like status.md/backlog.md. Scope: move FMEA rows and the test catalogue to data files (CSV), one script generates AUTOMATION_TEST_PLAN.md tables and the scoreboard (total RPN, open ACT rows, open S>=9 rows, tests by status per level, requirement coverage), each review appends a dated scoreboard line. Add the update rule to the project's standing instructions (Michele pastes it into the Project settings; Claude cannot edit them). Until built, the scoreboard in the plan is updated by hand.
+
+### 64. Automating light-bug handling (decision after the pilot)
+Evaluate after the pilot with real finding frequencies. Ladder: (a) automatic logging, classification and linking of every Minor finding to its FMEA row; (b) automatic fix only for defects that are deterministic, reversible, low cost and verified by an automatic check (normalize loudness, re-encode, reassemble, regenerate voice only), always inside the rework caps and cost caps; (c) for recurring defects, Claude proposes a code change that Michele approves, with the golden set as regression test. Never automatic: anything touching content/facts, deploys, or data under jobs/. Open: which finding classes qualify, cost ceiling per auto-fix, who reviews the log.
+
+### 58 (update 2026-10-09)
+AUTOMATION_TEST_PLAN.md is now an E2E FMEA + control plan + V-model plan (53 failure modes). Companion documents: QUALITY_CRITERIA.md and RELINX_QUESTIONS.md. Reviewers decided: internal phase Michele + Relinx contact, pilot Michele + agency (GIAL). Questions to Relinx NOT yet sent: Michele wants to align internally first. Verified on the server 2026-10-09: GET /v1/videos/{id}, GET /v1/videos and GET /v1/videos/{id}/download exist and video_url uses https://api.propertyvideostudioai.com; contract tests still open.

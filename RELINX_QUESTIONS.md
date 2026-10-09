@@ -54,7 +54,7 @@ _Priorita: **P1** = serve prima della finestra di test (ultima settimana di otto
 |---|---|---|---|---|---|
 | Q-E1 | La liberatoria delle agenzie copre l'elaborazione delle foto con servizi IA di terzi, anche fuori dall'UE? Potete condividerne il testo? | GDPR, responsabili del trattamento | F40 | P1 | |
 | Q-E2 | Serve un accordo di trattamento dati (DPA) tra noi e voi? Chi e' titolare e chi responsabile? | Conformita' | F40 | P1 | |
-| Q-E3 | C'e' un obbligo o una preferenza per la dicitura "generato con IA" nel video e nel CRM? Quale testo? | Etichetta IA | F39 | P1 | |
+| Q-E3 | Sui video mettiamo solo la scritta "Generated with AI" (grigio chiaro, in basso a sinistra, nella lingua del video, niente logo nostro). Va bene? C'e' un obbligo o un testo preferito, anche per il CRM? | Etichetta IA | F39 | P1 | |
 | Q-E4 | Per quanto conserviamo le foto originali e i video? Come gestiamo una richiesta di cancellazione? | Retention e diritto all'oblio | F36, F40 | P2 | |
 | Q-E5 | Di chi e' la titolarita' dei video e delle foto, e possiamo usarli come esempi (anonimizzati)? | Uso dei contenuti | F39 | P3 | |
 
@@ -65,6 +65,7 @@ _Priorita: **P1** = serve prima della finestra di test (ultima settimana di otto
 | Q-F2 | Date esatte della finestra (2-3 giorni, ultima settimana di ottobre) e fascia oraria in cui inviate le richieste. | Pianificazione operatore | F44 | P1 | |
 | Q-F3 | Potete usare un `callback_url` di test separato e un ambiente in cui non si notifichino gli utenti finali? | Evitare di contaminare la produzione | F46 | P1 | |
 | Q-F4 | Potete fornirci annunci reali da piu' agenzie (circa 30, di cui circa 10 difficili) per il test interno prima della finestra? Quali casi difficili conoscete (foto scure, poche foto, testi lunghi)? | Fase 1 del piano | F50 | P1 | |
+| Q-F8 | Nella fase interna possiamo coinvolgere il vostro referente (Michele) come secondo revisore dei video, con una griglia comune? Quanto tempo puo' dedicare? | Secondo sguardo indipendente prima del pilota | F53 | P1 | |
 | Q-F5 | Accettate i criteri di successo proposti (>=95% completati senza intervento sul server, 0 doppioni, tempi concordati, accettazione >= 90%)? | Criteri di uscita condivisi | tutti | P1 | |
 | Q-F6 | Cosa succede se un video non e' pronto in tempo o fallisce? Come lo comunicate all'agenzia durante il pilota? | Aspettative del pilota | F10, F32 | P2 | |
 | Q-F7 | Per la fase successiva: avete requisiti di continuita' del servizio (orari, tempi di risposta ai problemi)? | Impegni di servizio | F41, F44 | P3 | |
