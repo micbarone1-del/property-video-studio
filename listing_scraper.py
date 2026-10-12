@@ -49,6 +49,7 @@ import os
 import re
 import math
 import json
+import time
 import logging
 from pathlib import Path
 from urllib.parse import urlparse
@@ -370,6 +371,9 @@ def resolve_uncategorized_photos(photos: list) -> list:
 # — so actual removal happens at generation time via the same one existing
 # mechanism manual uploads already use, not a separate eager pass here.
 
+DOWNLOAD_ATTEMPTS = 3
+
+
 def download_photo(photo_url: str, output_dir: Path, filename_stem: str) -> dict:
     """
     Downloads one scraped photo. Returns:
@@ -377,13 +381,26 @@ def download_photo(photo_url: str, output_dir: Path, filename_stem: str) -> dict
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     dest_path = output_dir / f"{filename_stem}.jpg"
-    try:
-        resp = requests.get(photo_url, timeout=20)
-        resp.raise_for_status()
-        dest_path.write_bytes(resp.content)
-        return {"ok": True, "path": str(dest_path), "error": None}
-    except Exception as e:
-        return {"ok": False, "path": None, "error": f"download failed: {e}"}
+    # 2026-10-12: transient failures (timeouts, connection errors, HTTP 429/5xx) are retried
+    # with a short backoff; permanent ones (other 4xx, e.g. 404) are not. A single network
+    # blip used to fail a whole job ("All 5 selected photo(s) failed to download").
+    last_error = "unknown"
+    for attempt in range(DOWNLOAD_ATTEMPTS):
+        try:
+            resp = requests.get(photo_url, timeout=20)
+            if resp.status_code == 429 or resp.status_code >= 500:
+                last_error = f"HTTP {resp.status_code}"
+            else:
+                resp.raise_for_status()  # other 4xx -> permanent, handled below without retry
+                dest_path.write_bytes(resp.content)
+                return {"ok": True, "path": str(dest_path), "error": None}
+        except requests.HTTPError as e:
+            return {"ok": False, "path": None, "error": f"download failed: {e}"}
+        except Exception as e:
+            last_error = str(e)
+        if attempt < DOWNLOAD_ATTEMPTS - 1:
+            time.sleep(1.5 * (attempt + 1))
+    return {"ok": False, "path": None, "error": f"download failed after {DOWNLOAD_ATTEMPTS} attempts: {last_error}"}
 
 
 def download_selected_photos(selection: dict, output_dir: Path) -> dict:
@@ -501,7 +518,24 @@ Current narration to shorten:
 Return ONLY the shortened narration text (no JSON, no markdown, no preamble)."""
 
 
-def _measure_tts_duration(text: str, voice_id: str = None) -> dict:
+TTS_MEASURE_ATTEMPTS = 3
+
+
+def _measure_tts_duration(text: str, voice_id: str = None, attempts: int = TTS_MEASURE_ATTEMPTS) -> dict:
+    """2026-10-12: retries the real TTS measurement on transient failure (backoff 2 s, 4 s).
+    A single provider hiccup used to fail the whole job ("TTS measurement failed on initial narration")."""
+    last = {"ok": False, "duration_secs": None, "audio_path": None}
+    for n in range(attempts):
+        last = _measure_tts_duration_once(text, voice_id)
+        if last.get("ok"):
+            return last
+        log.warning(f"[Scraper] TTS measurement attempt {n + 1}/{attempts} failed")
+        if n < attempts - 1:
+            time.sleep(2 * (n + 1))
+    return last
+
+
+def _measure_tts_duration_once(text: str, voice_id: str = None) -> dict:
     """Generates real TTS audio and measures its actual duration — the
     only reliable way to know how long narration text will actually take
     to speak. Never estimated from word/character count for any decision
@@ -574,11 +608,22 @@ def _fade_out_and_trim(audio_path: str, target_secs: float, search_window_secs: 
     return audio_path
 
 
+# 2026-10-12 (Michele): no on-screen/scene captions for URL jobs until the graphics are improved.
+# One switch, used by both scene builders and by the caption generator (which then skips its Claude call).
+SCENE_CAPTIONS_ENABLED = False
+
+
+def _scene_caption(captions: dict, category: str) -> str:
+    return captions.get(category, category) if SCENE_CAPTIONS_ENABLED else ""
+
+
 def generate_captions_for_categories(description: str, categories: list) -> dict:
     """Generates short on-screen captions for exactly the given categories —
     called AFTER scene count/category selection is known (see
     generate_narration_and_derive_scenes), not before, since which
     categories end up selected depends on the real narration length."""
+    if not SCENE_CAPTIONS_ENABLED:
+        return {}
     prompt = CAPTIONS_PROMPT.format(description=description, categories=", ".join(categories))
     try:
         client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
@@ -936,7 +981,7 @@ def build_standard_video_scenes_config(selection: dict, captions: dict, clip_dur
         photos = selection["selected"].get(category, [])
         for photo in photos:
             scenes.append({
-                "caption": captions.get(category, category),
+                "caption": _scene_caption(captions, category),
                 "voiceover": "",  # continuous narration track applied separately, not per-scene
                 "space_type": _CATEGORY_TO_SPACE_TYPE.get(category, "large"),
                 "pov_movement": _CATEGORY_TO_POV_MOVEMENT.get(category, "gentle_arc"),
@@ -1249,7 +1294,7 @@ def build_premium_video_scenes_config(selection: dict, captions: dict, clip_dura
         photos = selection["selected"].get(pseudo_category, [])
         for photo in photos:
             scenes.append({
-                "caption": captions.get(real_category, real_category),
+                "caption": _scene_caption(captions, real_category),
                 "voiceover": "",  # continuous narration track applied separately, not per-scene
                 "space_type": _CATEGORY_TO_SPACE_TYPE.get(real_category, "large"),
                 "pov_movement": _CATEGORY_TO_POV_MOVEMENT.get(real_category, "gentle_arc"),

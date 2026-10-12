@@ -1292,10 +1292,11 @@ async def resync_draft(
 
     job_dir = JOBS_DIR / job_id
     img_dir = job_dir / "images"
-    # Safe to wipe and rewrite -- draft jobs have no generated clips/audio
-    # yet that reference these image paths.
-    shutil.rmtree(str(img_dir), ignore_errors=True)
-    img_dir.mkdir(parents=True)
+    # 2026-10-12 DATA-LOSS FIX: this used to wipe images/ BEFORE validating the
+    # new photos, so a single invalid photo ("Image 11 is not a valid image
+    # file") left the job with no photos at all. Now: validate everything
+    # first (Pass 1), write into a scratch dir (Pass 2), then swap; the
+    # previous photos are kept as images.prev.
 
     # ── Pass 1: validate + read every photo ──────────────────────────────
     validated = []
@@ -1322,12 +1323,21 @@ async def resync_draft(
     job_format = _decide_job_format_from_bytes([c for c, _ in validated])
     job["output_format"] = job_format
 
-    # ── Pass 2: normalize + save ──────────────────────────────────────────
-    for i, (content, ext) in enumerate(validated):
-        content = _normalize_photo_to_format(content, job_format)
-        dest = img_dir / f"scene_{i:03d}{ext}"
-        with open(dest, "wb") as f:
-            f.write(content)
+    # ── Pass 2: normalize + save into a scratch dir, then swap ───────────
+    from safe_fs import replace_dir_atomic
+    new_img_dir = job_dir / "images.new"
+    try:
+        if new_img_dir.exists():
+            shutil.rmtree(str(new_img_dir))  # leftover scratch of a failed earlier attempt, never the real photos
+        new_img_dir.mkdir(parents=True)
+        for i, (content, ext) in enumerate(validated):
+            content = _normalize_photo_to_format(content, job_format)
+            with open(new_img_dir / f"scene_{i:03d}{ext}", "wb") as f:
+                f.write(content)
+        replace_dir_atomic(new_img_dir, img_dir)
+    except Exception:
+        shutil.rmtree(str(new_img_dir), ignore_errors=True)
+        raise
 
     from cost_tracker import estimate_job_cost, format_cost_display
     rolling_jobs = _get_rolling_monthly_job_count()
