@@ -615,3 +615,7 @@ Open: (1) 3B: fixed 6 scenes with speech band 24-28 s (standard only, premium un
 
 ### 66 (update 2026-10-12, 3B built)
 Built: fixed 6 scenes / 30 s for the standard video, speech band 24-28 s, acceptance rule before narration (>=5 usable photos and >=4 environment types), failure_code `insufficient_photos` with an Italian reason in the job and in the 422 reply (URL path). Unit-tested (26 tests); NOT yet run on real listings. Next: (a) re-run Via Giulia, Euclide and the other test listings and have Michele judge them; (b) list every rejection from the ~30 listings and tune thresholds only on that evidence (F60); (c) expose failure_code/failure_reason in the webhook and GET /v1/videos/{id} once Michele has told Relinx (separate step); (d) photo classification with Claude vision and facade/balcony choice remain open; (e) Package 2 remains undecided.
+
+
+### 66 (update 2026-10-12, evening): photo classification by vision
+Built: every photo of a URL listing is classified by Claude vision (see status.md 2026-10-12 evening). Next: (a) re-run Via Giulia and Euclide and have Michele judge; (b) repeatability check: run the same listing twice and compare the categories (F56 is closed only on that evidence); (c) if facade/balcony choice is still weak, improve the ranking prompt per category (exterior: clear building facade from the street, no corridor; outdoor: private balcony/terrace/garden); (d) cost: about one small Claude call per photo (up to 36 per listing), to be read from the job's Claude cost after the run.

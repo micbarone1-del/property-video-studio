@@ -252,3 +252,5 @@ Status words as in the first version of this plan. New required tests derived fr
 Scores for F54-F59 added 2026-10-12 are proposals until reviewed by Michele. Tests still not run live: F54 live re-check; F56 repeatability test.
 
 Update 2026-10-12 (3B): F02 (fewer than 6 usable photos) now has a stricter, earlier control (acceptance rule before narration); its test status stays 'not run live' until the Phase 1 listings have been run. F60 added (proposal scores).
+
+Update 2026-10-12 (evening): F56 mitigation built (vision classification of every photo in the URL workflow, 22 unit tests PASS); the row stays Open/ACT until a repeatability run on real listings shows stable categories. Test status: unit tests PASS, real-listing repeatability not run.

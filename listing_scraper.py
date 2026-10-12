@@ -51,6 +51,7 @@ import math
 import json
 import time
 import logging
+import threading
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -74,12 +75,16 @@ _claude_usage = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
 def reset_claude_usage():
     _claude_usage.update({"input_tokens": 0, "output_tokens": 0, "calls": 0})
 
+_claude_lock = threading.Lock()
+
+
 def _track_claude(response):
     try:
         u = response.usage
-        _claude_usage["input_tokens"]  += getattr(u, "input_tokens", 0) or 0
-        _claude_usage["output_tokens"] += getattr(u, "output_tokens", 0) or 0
-        _claude_usage["calls"] += 1
+        with _claude_lock:
+            _claude_usage["input_tokens"]  += getattr(u, "input_tokens", 0) or 0
+            _claude_usage["output_tokens"] += getattr(u, "output_tokens", 0) or 0
+            _claude_usage["calls"] += 1
     except Exception:
         pass
     return response
@@ -379,71 +384,102 @@ def extract_listing(url: str, attempt_resolution_upgrade: bool = True) -> dict:
 
 # ── Uncategorized-photo fallback via existing vision QC ─────────────────────
 
-def classify_uncategorized_photo(image_url: str, fallback_url: str = None) -> str:
-    """
-    For any photo whose label/caption from the source page didn't map
-    confidently to one of our categories, classifies the room type
-    directly from the real image using Claude vision -- same client,
-    model and download-then-send pattern as rank_photos_by_quality()
-    above, applied to a different question (room type, not quality
-    ranking).
+_VISION_CLASSIFY_PROMPT = (
+    "Look at this real estate photo. Which ONE category best describes what the photo mainly shows?\n\n"
+    "- exterior: the OUTSIDE of the building seen from outside / from the street (facade, front of the building).\n"
+    "- living: living room, lounge, dining area, open-plan living area.\n"
+    "- kitchen: kitchen or kitchenette.\n"
+    "- bedrooms: bedroom or sleeping area (also the sleeping area of a studio flat).\n"
+    "- bathrooms: bathroom, toilet, shower room.\n"
+    "- outdoor: a PRIVATE outdoor space belonging to this home: balcony, terrace, private garden, or the view from that balcony/terrace.\n"
+    "- other: entrance hall, corridor, hallway, stairs, shared building areas (courtyard, portico, lobby, lift, communal garden), "
+    "floor plan, close-up of a detail, view from a window, or anything that is not one of the categories above.\n\n"
+    "Answer with ONLY one word: exterior, living, kitchen, bedrooms, bathrooms, outdoor or other."
+)
+VISION_MAX_SIDE = 768
 
-    2026-09-29 (backlog item 48/Relinx): REPLACES the previous
-    Florence-2-based implementation, which was flagged in its own
-    comment as never independently verified -- confirmed broken:
-    Florence-2 was only ever asked about room SIZE (large/medium/small/
-    exterior) in analyse_input(), never room TYPE, so kitchen/living/
-    bathroom photos always silently fell through to "uncategorized"
-    (only "bedroom" and "exterior" matched by coincidence, since those
-    words happen to overlap). vision_analysis.py/Florence-2 remains in
-    use elsewhere for camera-movement decisions and post-generation QC
-    -- a genuinely different question this change does not touch (see
-    backlog item 11 for that separate, unscoped decision).
 
-    Deliberately limited to the 6 PRIORITY_ORDER categories (not the 9
-    EXTRACTION_PROMPT allows for, which adds laundry/office/garage for
-    the initial Claude labeling pass) -- a value outside PRIORITY_ORDER
-    would silently vanish in _categorize_and_rank_photos() on the
-    standard (non-premium) path, the exact bug this function exists to
-    fix, not reintroduce.
-
-    Falls back to "uncategorized" if the vision call fails for any
-    reason -- this must never raise, since callers rely on it always
-    returning a valid string.
-    """
+def _image_b64_for_vision(content: bytes) -> str:
+    """Downscaled JPEG (max side VISION_MAX_SIDE) as base64: enough to recognise a room, far cheaper and faster than the
+    full-resolution original. Falls back to the original bytes if Pillow cannot read the image."""
+    import base64, io
     try:
-        import base64
+        from PIL import Image
+        img = Image.open(io.BytesIO(content)).convert("RGB")
+        img.thumbnail((VISION_MAX_SIDE, VISION_MAX_SIDE))
+        buf = io.BytesIO(); img.save(buf, "JPEG", quality=80)
+        return base64.b64encode(buf.getvalue()).decode("utf-8")
+    except Exception:
+        return base64.b64encode(content).decode("utf-8")
+
+
+def _classify_photo_vision(image_url: str, fallback_url: str = None) -> tuple:
+    """Single implementation of "which room is this photo" (Claude vision). Returns (category, ok):
+    category is one of CATEGORIES or "uncategorized" (the model answered "other"/anything else);
+    ok is False only when the call itself failed (download or API), so callers can keep a previous label."""
+    try:
         fetched = fetch_photo_bytes(image_url, fallback_url, timeout=15)
         if not fetched["ok"]:
             raise RuntimeError(fetched["error"])
-        b64 = base64.b64encode(fetched["content"]).decode("utf-8")
-
+        b64 = _image_b64_for_vision(fetched["content"])
         client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-        prompt = (
-            "Look at this real estate photo. Which ONE category best "
-            "describes the room or area shown?\n\n"
-            "Categories: exterior (building facade, outdoor view of the "
-            "property itself), living (living room, dining room, study, "
-            "hallway, stairs), kitchen, bedrooms, bathrooms, outdoor "
-            "(garden, terrace, courtyard, parking area, land/terrain).\n\n"
-            "If none clearly fits, answer exactly: uncategorized\n\n"
-            "Answer with ONLY the category word, nothing else."
-        )
         content = [
-            {"type": "text", "text": prompt},
+            {"type": "text", "text": _VISION_CLASSIFY_PROMPT},
             {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
         ]
         response = _track_claude(client.messages.create(
-            model=MODEL, max_tokens=20,
-            messages=[{"role": "user", "content": content}],
+            model=MODEL, max_tokens=20, messages=[{"role": "user", "content": content}],
         ))
         raw = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip().lower()
-        if raw in CATEGORIES:
-            return raw
-        return "uncategorized"
+        raw = re.sub(r"[^a-z]", "", raw)
+        return (raw if raw in CATEGORIES else "uncategorized"), True
     except Exception as e:
-        log.warning(f"[Scraper] Vision QC fallback failed for {image_url}: {e}")
-        return "uncategorized"
+        log.warning(f"[Scraper] Vision classification failed for {image_url}: {e}")
+        return "uncategorized", False
+
+
+def classify_uncategorized_photo(image_url: str, fallback_url: str = None) -> str:
+    """Room type of one photo via Claude vision (see _classify_photo_vision). Never raises; "uncategorized" if unsure.
+    Limited to the 6 PRIORITY_ORDER categories on purpose (a value outside it would vanish in selection)."""
+    return _classify_photo_vision(image_url, fallback_url)[0]
+
+
+MAX_PHOTOS_TO_CLASSIFY = 36
+CLASSIFY_WORKERS = 4
+
+
+def reclassify_photos_with_vision(photos: list, max_photos: int = MAX_PHOTOS_TO_CLASSIFY) -> dict:
+    """2026-10-12: the categories read from the listing page are unstable between readings (living 4 -> 1, exterior 0 -> 2)
+    and sometimes wrong (entrance hall as exterior, communal portico as balcony). Every photo (up to max_photos) is now
+    classified from the image itself, in place: p["category_page"] keeps the page label, p["category"] the vision result,
+    p["category_source"] is "vision" / "page_fallback" (vision call failed, page label kept) / "page_not_checked" (beyond the cap).
+    Returns a summary dict stored in the job's selection_report."""
+    from concurrent.futures import ThreadPoolExecutor
+    todo = photos[:max_photos]
+    for p in photos[max_photos:]:
+        p["category_page"] = p.get("category"); p["category_source"] = "page_not_checked"
+    def work(p):
+        return _classify_photo_vision(p["url"], p.get("original_url"))
+    with ThreadPoolExecutor(max_workers=CLASSIFY_WORKERS) as ex:
+        results = list(ex.map(work, todo))
+    changed = fallback = other = 0
+    for p, (cat, ok) in zip(todo, results):
+        p["category_page"] = p.get("category")
+        if ok:
+            p["category_source"] = "vision"
+            if cat != p["category"]:
+                changed += 1
+            if cat == "uncategorized":
+                other += 1
+            p["category"] = cat
+        else:
+            p["category_source"] = "page_fallback"
+            fallback += 1
+    summary = {"method": "vision", "classified": len(todo), "changed_vs_page": changed,
+               "excluded_as_other": other, "kept_page_label_after_failure": fallback,
+               "not_checked_over_cap": max(0, len(photos) - len(todo))}
+    log.info(f"[Scraper] Vision classification: {summary}")
+    return summary
 
 
 def resolve_uncategorized_photos(photos: list) -> list:

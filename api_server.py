@@ -1629,7 +1629,9 @@ async def create_job_from_url(
     extraction = await asyncio.to_thread(scraper.extract_listing, url)
     if not extraction["ok"]:
         raise HTTPException(status_code=400, detail=f"Could not read listing: {extraction['error']}")
-    extraction["photos"] = await asyncio.to_thread(scraper.resolve_uncategorized_photos, extraction["photos"])
+    # 2026-10-12: every photo is classified from the image itself (page-read categories are unstable and sometimes wrong).
+    # Relinx jobs keep the CRM categories (decision: reliable) and only get the uncategorized fallback.
+    classification_summary = await asyncio.to_thread(scraper.reclassify_photos_with_vision, extraction["photos"])
 
     # 2026-10-12 (3B): standard-video acceptance rule BEFORE narration/TTS is paid for. Premium is unchanged.
     acceptance = None
@@ -1677,6 +1679,7 @@ async def create_job_from_url(
     selection_report = scraper.build_selection_report(extraction["photos"], selection, narration["scene_count"], premium=premium)
     if acceptance is not None:
         selection_report["acceptance"] = acceptance
+    selection_report["classification"] = classification_summary
     # BUG FIXED: this check previously only looked at selection["gaps"],
     # computed BEFORE the download attempt. Confirmed real case: a
     # listing's entire photo CDN batch returned 404 during download -
