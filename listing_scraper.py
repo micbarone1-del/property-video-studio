@@ -386,14 +386,14 @@ def extract_listing(url: str, attempt_resolution_upgrade: bool = True) -> dict:
 
 _VISION_CLASSIFY_PROMPT = (
     "Look at this real estate photo. Which ONE category best describes what the photo mainly shows?\n\n"
-    "- exterior: the OUTSIDE of the building seen from outside / from the street (facade, front of the building).\n"
-    "- living: living room, lounge, dining area, open-plan living area.\n"
-    "- kitchen: kitchen or kitchenette.\n"
+    "- exterior: the building's exterior walls and windows seen from the street OR from an inner courtyard. If the main subject is the building's outer walls, it is exterior even if a courtyard is visible.\n"
+    "- living: only when a sofa, lounge or dining table is the main subject.\n"
+    "- kitchen: choose kitchen whenever cabinets, hob, sink or appliances are the main subject, even in an open-plan room.\n"
     "- bedrooms: bedroom or sleeping area (also the sleeping area of a studio flat).\n"
     "- bathrooms: bathroom, toilet, shower room.\n"
-    "- outdoor: a PRIVATE outdoor space belonging to this home: balcony, terrace, private garden, or the view from that balcony/terrace.\n"
+    "- outdoor: a PRIVATE outdoor space belonging to this home: balcony, terrace, private garden, or the view from that balcony/terrace. A shared or condominium space (courtyard, portico, shared balcony or walkway) is NOT outdoor: answer other.\n"
     "- other: entrance hall, corridor, hallway, stairs, shared building areas (courtyard, portico, lobby, lift, communal garden), "
-    "floor plan, close-up of a detail, view from a window, or anything that is not one of the categories above.\n\n"
+    "floor plan, close-up of a detail, view from a window, a tree or vegetation, or anything that is not one of the categories above.\n\n"
     "Answer with ONLY one word: exterior, living, kitchen, bedrooms, bathrooms, outdoor or other."
 )
 VISION_MAX_SIDE = 768

@@ -619,3 +619,7 @@ Built: fixed 6 scenes / 30 s for the standard video, speech band 24-28 s, accept
 
 ### 66 (update 2026-10-12, evening): photo classification by vision
 Built: every photo of a URL listing is classified by Claude vision (see status.md 2026-10-12 evening). Next: (a) re-run Via Giulia and Euclide and have Michele judge; (b) repeatability check: run the same listing twice and compare the categories (F56 is closed only on that evidence); (c) if facade/balcony choice is still weak, improve the ranking prompt per category (exterior: clear building facade from the street, no corridor; outdoor: private balcony/terrace/garden); (d) cost: about one small Claude call per photo (up to 36 per listing), to be read from the job's Claude cost after the run.
+
+
+### 66 (update 2026-10-12, measured classification)
+Prompt v2 deployed after a 9-photo comparison (see status.md): page 3/9, vision v1 6/9, v2 7/9. Open: (a) review of Via Giulia and Euclide re-runs with v2 (6 chosen photos each); (b) more labelled photos from other listings (Michele labels, Claude adds them to eval_photo_categories.py); (c) consider a consensus rule (page label + vision) if v2 keeps missing kitchens/facades that the page labelled correctly; (d) repeatability: same listing twice.

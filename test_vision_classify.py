@@ -107,5 +107,9 @@ check("W2 Relinx path keeps CRM categories + uncategorized fallback only", "scra
 check("W3 classification summary saved in selection_report", api.count('selection_report["classification"] = classification_summary') == 1)
 check("W4 usage counter is thread safe", hasattr(ls, "_claude_lock"))
 
+P = ls._VISION_CLASSIFY_PROMPT
+check("P6 prompt v2: kitchen wins when cabinets/hob/sink are the main subject (open-plan)", "choose kitchen whenever cabinets" in P)
+check("P7 prompt v2: living only with sofa/lounge/dining table; facade also from inner courtyard", "only when a sofa" in P and "inner courtyard" in P)
+check("P8 prompt v2: shared/condominium spaces and trees are 'other', not outdoor", "condominium space" in P and "a tree or vegetation" in P)
 print(f"RESULT: {'ALL PASS' if not fails else 'FAIL'} ({total - len(fails)}/{total})")
 sys.exit(1 if fails else 0)
