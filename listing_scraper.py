@@ -185,6 +185,19 @@ _RESOLUTION_UPGRADE_PATTERNS = [
 ]
 
 
+_TRUNCATED_PHOTO_URL = re.compile(r"^(https?://[^/?#]+/image/\d+)/?$")
+
+
+def normalize_photo_url(url: str) -> str:
+    """2026-10-12: the page reader sometimes returns an immobiliare CDN photo URL WITHOUT its file
+    name (".../image/1963262752/" -> 404; verified live: the same id answers 200 with "/m-c.jpg",
+    "/xl-c.jpg" and "/xl.jpg"). Such a URL is rewritten to the canonical "/m-c.jpg" form, which the
+    existing try_upgrade_resolution() then upgrades exactly like any other photo. Everything else
+    is returned unchanged."""
+    m = _TRUNCATED_PHOTO_URL.match(url or "")
+    return (m.group(1) + "/m-c.jpg") if m else url
+
+
 def try_upgrade_resolution(image_url: str) -> dict:
     """Attempts a few common CDN size-suffix substitutions via a cheap HEAD
     request, returning the first one that responds successfully. Falls back
@@ -304,6 +317,8 @@ def extract_listing(url: str, attempt_resolution_upgrade: bool = True) -> dict:
         data = json.loads(json_str)
 
         for p in data.get("photos", []):
+            if p.get("url"):
+                p["url"] = normalize_photo_url(p["url"])
             if p.get("category") not in CATEGORIES:
                 p["category"] = "uncategorized"
             if attempt_resolution_upgrade and p.get("url"):
