@@ -1,9 +1,11 @@
 """
 vision_analysis.py
 ──────────────────
-Dual-purpose vision AI module using Florence-2 Large via fal.ai:
+Dual-purpose vision AI module (input analysis: Claude vision with Florence-2
+fallback; output/TTS QC: Florence-2 Large via fal.ai):
 
   1. INPUT ANALYSIS  — analyses a property photo on upload
+     (2026-10-10: room recognition by Claude vision; Florence-2 only as fallback)
      Returns: space_type, depth, recommended_camera, confidence, description
      Used by: UI to auto-fill space type and camera movement dropdowns
 
@@ -197,20 +199,190 @@ def _estimate_depth(description: str) -> str:
 
 # ── 1. INPUT ANALYSIS ──────────────────────────────────────────────────────────
 
+# ── 1a. ROOM RECOGNITION (Claude vision) ───────────────────────────────────────
+# 2026-10-10: Florence-2 + keyword rules mislabelled rooms (exterior -> "large
+# interior", living room -> "bedroom", balcony -> "large interior"). Room
+# recognition now asks Claude vision; Florence stays only as a fallback when the
+# Claude call fails. ONE implementation: analyse_input() is used by the manual
+# "analyse photo" endpoint, the URL scraper and the Relinx adapter alike.
+
+_ROOMS = ("living", "dining", "kitchen", "bedroom", "bathroom", "hallway", "balcony",
+          "terrace", "garden", "building_exterior", "pool", "other_interior", "other_exterior")
+_SIZES = ("small", "medium", "large")
+_DEPTHS = ("shallow", "medium", "deep")
+
+ROOM_PROMPT = """You classify ONE real-estate photo so a camera-motion planner can choose a move.
+Look only at what the camera sees. Reply with ONLY a JSON object, no other text:
+{"room": "<one of: living, dining, kitchen, bedroom, bathroom, hallway, balcony, terrace, garden, building_exterior, pool, other_interior, other_exterior>",
+ "size": "<small|medium|large>",
+ "depth": "<shallow|medium|deep>",
+ "confidence": <0.0-1.0>,
+ "description": "<max 15 words>"}
+Rules:
+- "balcony" or "terrace" ONLY if the camera is standing ON that outdoor space. An interior photo that shows a balcony or terrace through a window or door is the interior room (living, bedroom...).
+- "garden", "building_exterior", "pool", "other_exterior" = camera is outside at ground level (facade, yard, courtyard, driveway, land).
+- "hallway" = entrance hall, corridor, stairs landing.
+- "size": how much floor area is visible. small = bathroom/closet/tiny room, medium = typical bedroom/kitchen/dining, large = open-plan or big living space (or any outdoor area).
+- "depth": shallow = wall or objects close to camera, deep = long view through the space."""
+
+
+def _claude_vision_text(image_path: str, prompt: str, max_tokens: int = 250) -> str | None:
+    """Sends one (downscaled) photo + prompt to Claude vision; returns the text, or None on any failure.
+    Reuses listing_scraper's model name and usage tracking so the cost lands in the job's claude_usage."""
+    try:
+        import base64, io
+        import anthropic
+        from PIL import Image
+        from listing_scraper import MODEL, _track_claude
+        if not os.getenv("ANTHROPIC_API_KEY"):
+            return None
+        img = Image.open(image_path).convert("RGB")
+        img.thumbnail((1024, 1024))
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=85)
+        b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        resp = _track_claude(client.messages.create(
+            model=MODEL, max_tokens=max_tokens,
+            messages=[{"role": "user", "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
+            ]}],
+        ))
+        return "".join(b.text for b in resp.content if getattr(b, "type", None) == "text").strip()
+    except Exception as e:
+        log.warning(f"[Vision] Claude room recognition call failed: {e}")
+        return None
+
+
+def _classify_room_claude(image_path: str) -> dict | None:
+    """Returns {"room","size","depth","confidence","description"} or None if the call failed or the answer is invalid."""
+    import json
+    raw = _claude_vision_text(image_path, ROOM_PROMPT)
+    if not raw:
+        return None
+    m = re.search(r"\{.*\}", raw, re.DOTALL)
+    if not m:
+        log.warning(f"[Vision] Claude room answer is not JSON: {raw[:120]}")
+        return None
+    try:
+        d = json.loads(m.group(0))
+    except Exception:
+        log.warning(f"[Vision] Claude room answer is invalid JSON: {raw[:120]}")
+        return None
+    room = str(d.get("room", "")).strip().lower()
+    size = str(d.get("size", "medium")).strip().lower()
+    depth = str(d.get("depth", "medium")).strip().lower()
+    if room not in _ROOMS:
+        log.warning(f"[Vision] Claude returned unknown room {room!r}")
+        return None
+    if size not in _SIZES:
+        size = "medium"
+    if depth not in _DEPTHS:
+        depth = "medium"
+    try:
+        conf = max(0.0, min(1.0, float(d.get("confidence", 0.8))))
+    except Exception:
+        conf = 0.8
+    return {"room": room, "size": size, "depth": depth, "confidence": conf,
+            "description": str(d.get("description", ""))[:200]}
+
+
+def _space_from_room(room: str, size: str) -> str:
+    """Room + size -> the internal space_type vocabulary used by the rest of this module."""
+    if room in ("garden", "building_exterior", "pool", "other_exterior"):
+        return "ground_exterior"
+    if room in ("balcony", "terrace"):
+        return "elevated"
+    if room == "bedroom":
+        return "bedroom"
+    if room == "bathroom":
+        return "small_interior"
+    if room == "hallway":
+        return "corridor"
+    return {"small": "small_interior", "medium": "medium_interior", "large": "large_interior"}.get(size, "medium_interior")
+
+
+# internal space_type -> v7 UI vocabulary (ui.html SPACE_OPTS) and default POV movement (MOVEMENT_OPTS)
+_SPACE_MAP = {
+    "large_interior": "large", "medium_interior": "medium", "bedroom": "bedroom",
+    "small_interior": "small", "corridor": "corridor", "ground_exterior": "outdoor", "elevated": "elevated",
+}
+_MOVEMENT_MAP = {
+    "large": "walk_in_explore", "medium": "walk_in_explore", "bedroom": "walk_in_gentle",
+    "small": "subtle_rotate", "corridor": "walk_through", "outdoor": "reveal_pullback",
+    "elevated": "step_out_onto",
+}
+
+
+def _build_input_result(space_type, depth, confidence, description, source, room=None) -> dict:
+    v7_space = _SPACE_MAP.get(space_type, "large")
+    v7_movement = _MOVEMENT_MAP.get(v7_space, "walk_in_explore")
+    if v7_space == "large" and depth == "shallow":
+        v7_movement = "stand_look_around"
+    camera = _SPACE_CAMERA.get(space_type, "gentle_arc")
+    log.info(f"[Vision] Input analysis ({source}): room={room} space={space_type}->{v7_space} "
+             f"movement={v7_movement} depth={depth} confidence={confidence:.0%}")
+    return {
+        "space_type":          space_type,
+        "v7_space_type":       v7_space,
+        "suggested_movement":  v7_movement,
+        "depth":               depth,
+        "recommended_camera":  camera,
+        "confidence":          confidence,
+        "description":         description,
+        "room":                room,
+        "source":              source,
+        "error":               None,
+    }
+
+
+def _analyse_input_florence(image_path: str, default: dict) -> dict:
+    """Legacy Florence-2 + keyword classification (fallback only)."""
+    if not os.environ.get("FAL_KEY"):
+        log.warning("[Vision] FAL_KEY not set — skipping Florence input analysis")
+        default["error"] = "FAL_KEY not set"
+        return default
+    try:
+        image_url = _upload_local_image(image_path)
+        if not image_url:
+            default["error"] = "Image upload failed"
+            return default
+        description = _describe_image(image_url)
+        if not description:
+            default["error"] = "Vision model returned no description"
+            return default
+        space_type, confidence = _classify_space(description)
+        depth = _estimate_depth(description)
+        corridor_cues = ["corridor", "hallway", "entrance hall", "foyer", "narrow passage"]
+        if any(c in description.lower() for c in corridor_cues):
+            space_type = "small_interior"
+        return _build_input_result(space_type, depth, confidence, description, "florence")
+    except Exception as e:
+        log.error(f"[Vision] Florence input analysis failed: {e}", exc_info=True)
+        default["error"] = str(e)
+        return default
+
+
+# ── 1. INPUT ANALYSIS ──────────────────────────────────────────────────────────
+
 def analyse_input(image_path: str) -> dict:
     """
     Analyses a property photo to determine space type and recommend camera movement.
 
-    Args:
-        image_path: Local path to the uploaded photo.
+    2026-10-10: room recognition by Claude vision (Florence-2 only as fallback).
 
     Returns:
         {
-          "space_type":          "large_interior|medium_interior|bedroom|small_interior|ground_exterior|elevated",
+          "space_type":          "large_interior|medium_interior|bedroom|small_interior|corridor|ground_exterior|elevated",
+          "v7_space_type":       "large|medium|bedroom|small|corridor|outdoor|elevated"  (ui.html SPACE_OPTS keys),
+          "suggested_movement":  a ui.html MOVEMENT_OPTS key,
           "depth":               "shallow|medium|deep",
           "recommended_camera":  "gentle_arc|straight_push|soft_orbit|minimal|static",
           "confidence":          0.0-1.0,
-          "description":         "Florence-2 description of the image",
+          "description":         short description of the image,
+          "room":                "living|kitchen|bedroom|..." (None when Florence was used),
+          "source":              "claude" | "florence",
           "error":               None or error message
         }
     """
@@ -222,86 +394,20 @@ def analyse_input(image_path: str) -> dict:
         "recommended_camera": "gentle_arc",
         "confidence":         0.0,
         "description":        "",
+        "room":               None,
+        "source":             None,
         "error":              None,
     }
-
-    if not os.environ.get("FAL_KEY"):
-        log.warning("[Vision] FAL_KEY not set — skipping input analysis")
-        default["error"] = "FAL_KEY not set"
-        return default
-
     if not os.path.exists(image_path):
         default["error"] = f"Image not found: {image_path}"
         return default
 
-    try:
-        # Upload image
-        image_url   = _upload_local_image(image_path)
-        if not image_url:
-            default["error"] = "Image upload failed"
-            return default
-
-        # Get Florence description
-        description = _describe_image(image_url)
-        if not description:
-            default["error"] = "Vision model returned no description"
-            return default
-
-        # Classify
-        space_type, confidence = _classify_space(description)
-        depth                  = _estimate_depth(description)
-        recommended_camera     = _SPACE_CAMERA.get(space_type, "gentle_arc")
-
-        # Map Florence space type to v7 space type and suggested POV movement
-        _SPACE_MAP = {
-            "large_interior":  "large",
-            "medium_interior": "medium",
-            "bedroom":         "bedroom",
-            "small_interior":  "small",
-            "ground_exterior": "outdoor",
-            "elevated":        "elevated",
-        }
-        _MOVEMENT_MAP = {
-            "large":    "walk_in_explore",
-            "medium":   "walk_in_explore",
-            "bedroom":  "walk_in_gentle",
-            "small":    "subtle_rotate",
-            "corridor": "walk_through",
-            "outdoor":  "reveal_pullback",
-            "elevated": "step_out_onto",
-        }
-        # Also detect corridor from description
-        corridor_cues = ["corridor","hallway","entrance hall","foyer","narrow passage"]
-        if any(c in description.lower() for c in corridor_cues):
-            space_type = "small_interior"
-
-        v7_space    = _SPACE_MAP.get(space_type, "large")
-        v7_movement = _MOVEMENT_MAP.get(v7_space, "walk_in_explore")
-        # Refine movement based on depth
-        if v7_space == "large" and depth == "shallow":
-            v7_movement = "stand_look_around"
-
-        log.info(
-            f"[Vision] Input analysis: space={space_type}→{v7_space} "
-            f"movement={v7_movement} depth={depth} "
-            f"camera={recommended_camera} confidence={confidence:.0%}"
-        )
-
-        return {
-            "space_type":          space_type,
-            "v7_space_type":       v7_space,
-            "suggested_movement":  v7_movement,
-            "depth":               depth,
-            "recommended_camera":  recommended_camera,
-            "confidence":          confidence,
-            "description":         description,
-            "error":               None,
-        }
-
-    except Exception as e:
-        log.error(f"[Vision] Input analysis failed: {e}", exc_info=True)
-        default["error"] = str(e)
-        return default
+    r = _classify_room_claude(image_path)
+    if r:
+        return _build_input_result(_space_from_room(r["room"], r["size"]), r["depth"],
+                                   r["confidence"], r["description"], "claude", room=r["room"])
+    log.warning("[Vision] Claude room recognition unavailable — falling back to Florence-2")
+    return _analyse_input_florence(image_path, default)
 
 
 # ── 2. OUTPUT VIDEO QC ────────────────────────────────────────────────────────
