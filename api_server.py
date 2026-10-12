@@ -1629,9 +1629,10 @@ async def create_job_from_url(
     extraction = await asyncio.to_thread(scraper.extract_listing, url)
     if not extraction["ok"]:
         raise HTTPException(status_code=400, detail=f"Could not read listing: {extraction['error']}")
-    # 2026-10-12: every photo is classified from the image itself (page-read categories are unstable and sometimes wrong).
-    # Relinx jobs keep the CRM categories (decision: reliable) and only get the uncategorized fallback.
-    classification_summary = await asyncio.to_thread(scraper.reclassify_photos_with_vision, extraction["photos"])
+    # 2026-10-12 (A+): interiors keep the page labels; unlabeled photos get vision; facade/balcony candidates are verified
+    # by vision (same shared function as the Relinx path).
+    await asyncio.to_thread(scraper.resolve_uncategorized_photos, extraction["photos"])
+    classification_summary = await asyncio.to_thread(scraper.refine_exterior_outdoor_with_vision, extraction["photos"])
 
     # 2026-10-12 (3B): standard-video acceptance rule BEFORE narration/TTS is paid for. Premium is unchanged.
     acceptance = None
@@ -2034,6 +2035,7 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
             cat = p.category if p.category in scraper.CATEGORIES else "uncategorized"
             photos_for_selection.append({"url": p.url, "category": cat})
         photos_for_selection = await asyncio.to_thread(scraper.resolve_uncategorized_photos, photos_for_selection)
+        classification_summary = await asyncio.to_thread(scraper.refine_exterior_outdoor_with_vision, photos_for_selection)
 
         # 2026-10-12 (3B): standard-video acceptance rule BEFORE narration/TTS is paid for.
         acceptance = scraper.check_listing_acceptance(photos_for_selection)
@@ -2076,6 +2078,7 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
         selection = await asyncio.to_thread(scraper.download_selected_photos, selection, img_dir)
         selection_report = scraper.build_selection_report(photos_for_selection, selection, narration["scene_count"])
         selection_report["acceptance"] = acceptance
+        selection_report["classification"] = classification_summary
         total_downloaded = sum(len(ps) for ps in selection["selected"].values())
         if selection["gaps"] or total_downloaded == 0:
             shutil.rmtree(str(job_dir), ignore_errors=True)

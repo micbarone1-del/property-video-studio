@@ -444,41 +444,47 @@ def classify_uncategorized_photo(image_url: str, fallback_url: str = None) -> st
     return _classify_photo_vision(image_url, fallback_url)[0]
 
 
-MAX_PHOTOS_TO_CLASSIFY = 36
+MAX_PHOTOS_TO_REFINE = 12
 CLASSIFY_WORKERS = 4
 
 
-def reclassify_photos_with_vision(photos: list, max_photos: int = MAX_PHOTOS_TO_CLASSIFY) -> dict:
-    """2026-10-12: the categories read from the listing page are unstable between readings (living 4 -> 1, exterior 0 -> 2)
-    and sometimes wrong (entrance hall as exterior, communal portico as balcony). Every photo (up to max_photos) is now
-    classified from the image itself, in place: p["category_page"] keeps the page label, p["category"] the vision result,
-    p["category_source"] is "vision" / "page_fallback" (vision call failed, page label kept) / "page_not_checked" (beyond the cap).
+def refine_exterior_outdoor_with_vision(photos: list, max_photos: int = MAX_PHOTOS_TO_REFINE) -> dict:
+    """2026-10-12 (A+): ONE shared check for the URL path and the Relinx path. Interior categories (living, kitchen,
+    bedrooms, bathrooms) keep the label that came with the photo (listing page or CRM). Only photos labelled exterior or
+    outdoor are looked at by Claude vision, because that is where labels are wrong: an entrance hall or corridor read as
+    facade, a shared portico or condominium courtyard read as balcony.
+      vision says exterior/outdoor -> that category (exterior and outdoor may swap)
+      vision says anything else    -> category "uncategorized" (photo leaves the selection; interiors are never assigned here)
+      vision call failed           -> label kept (p["category_source"] = "page_fallback")
+    Photos already classified by vision (p["category_source"] == "vision", i.e. resolved from "uncategorized") are skipped.
     Returns a summary dict stored in the job's selection_report."""
     from concurrent.futures import ThreadPoolExecutor
-    todo = photos[:max_photos]
-    for p in photos[max_photos:]:
-        p["category_page"] = p.get("category"); p["category_source"] = "page_not_checked"
+    cands = [p for p in photos if p.get("category") in ("exterior", "outdoor") and p.get("category_source") != "vision" and p.get("url")]
+    todo, over = cands[:max_photos], cands[max_photos:]
     def work(p):
         return _classify_photo_vision(p["url"], p.get("original_url"))
     with ThreadPoolExecutor(max_workers=CLASSIFY_WORKERS) as ex:
         results = list(ex.map(work, todo))
-    changed = fallback = other = 0
+    confirmed = swapped = excluded = fallback = 0
     for p, (cat, ok) in zip(todo, results):
         p["category_page"] = p.get("category")
-        if ok:
-            p["category_source"] = "vision"
-            if cat != p["category"]:
-                changed += 1
-            if cat == "uncategorized":
-                other += 1
+        if not ok:
+            p["category_source"] = "page_fallback"; fallback += 1
+        elif cat in ("exterior", "outdoor"):
+            p["category_source"] = "vision_refine"
+            if cat == p["category"]:
+                confirmed += 1
+            else:
+                swapped += 1
             p["category"] = cat
         else:
-            p["category_source"] = "page_fallback"
-            fallback += 1
-    summary = {"method": "vision", "classified": len(todo), "changed_vs_page": changed,
-               "excluded_as_other": other, "kept_page_label_after_failure": fallback,
-               "not_checked_over_cap": max(0, len(photos) - len(todo))}
-    log.info(f"[Scraper] Vision classification: {summary}")
+            p["category_source"] = "vision_refine"; p["category"] = "uncategorized"; excluded += 1
+    for p in over:
+        p["category_page"] = p.get("category"); p["category_source"] = "page_not_checked"
+    summary = {"method": "exterior_outdoor_check", "checked": len(todo), "confirmed": confirmed,
+               "swapped_exterior_outdoor": swapped, "excluded_as_other": excluded,
+               "kept_page_label_after_failure": fallback, "not_checked_over_cap": len(over)}
+    log.info(f"[Scraper] Exterior/outdoor check: {summary}")
     return summary
 
 
@@ -487,6 +493,7 @@ def resolve_uncategorized_photos(photos: list) -> list:
     for p in photos:
         if p.get("category") == "uncategorized":
             p["category"] = classify_uncategorized_photo(p["url"], p.get("original_url"))
+            p["category_source"] = "vision"
     return photos
 
 

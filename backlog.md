@@ -623,3 +623,6 @@ Built: every photo of a URL listing is classified by Claude vision (see status.m
 
 ### 66 (update 2026-10-12, measured classification)
 Prompt v2 deployed after a 9-photo comparison (see status.md): page 3/9, vision v1 6/9, v2 7/9. Open: (a) review of Via Giulia and Euclide re-runs with v2 (6 chosen photos each); (b) more labelled photos from other listings (Michele labels, Claude adds them to eval_photo_categories.py); (c) consider a consensus rule (page label + vision) if v2 keeps missing kitchens/facades that the page labelled correctly; (d) repeatability: same listing twice.
+
+Update 2026-10-12 (night) to item 66: photo categories = A+ (decision Michele). Interior labels from page/CRM are kept; only exterior/outdoor candidates are verified by Claude vision through one shared function (`refine_exterior_outdoor_with_vision`) used by the URL and the Relinx path; whole-listing vision removed. Selection = existing `select_photos_for_scene_count`. Open: review on the 5 test listings (Aurelio, Euclide, Giulia, Pinciano, Trigoria); facade labelled as an interior room is not detected; repeatability run; real Relinx API scenario test.
+

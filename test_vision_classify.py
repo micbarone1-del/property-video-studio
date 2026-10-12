@@ -1,4 +1,4 @@
-"""6 (2026-10-12): photos classified from the image by Claude vision. No network, no API key."""
+"""6 (2026-10-12, A+): vision classifier + exterior/outdoor check. No network, no API key."""
 import os, sys, types, io
 sys.path.insert(0, os.getcwd())
 try:
@@ -65,32 +65,45 @@ check("P4 image sent is downscaled to <= 768 px", max(im.size) <= 768, im.size)
 check("P5 prompt asks about PRIVATE outdoor spaces and 'other' for entrance/corridor/shared areas",
       "PRIVATE outdoor" in ls._VISION_CLASSIFY_PROMPT and "entrance hall" in ls._VISION_CLASSIFY_PROMPT and "portico" in ls._VISION_CLASSIFY_PROMPT)
 
-# 3. reclassify in place
-urls = {"u1": "exterior", "u2": "other", "u3": "kitchen", "u4": "kitchen", "u5": "outdoor", "u6": "other"}
-photos = [{"url": "u1", "category": "exterior"},          # unchanged
-          {"url": "u2", "category": "exterior"},          # entrance hall wrongly read as exterior -> excluded
-          {"url": "u3", "category": "living"},            # wrong page label -> kitchen
-          {"url": "u4", "category": "kitchen"},
-          {"url": "u5", "category": "outdoor"},
-          {"url": "u6", "category": "outdoor"}]           # communal portico read as balcony -> excluded
-ls._classify_photo_vision = lambda url, fb=None: ("uncategorized" if urls[url] == "other" else urls[url], True)
-s = ls.reclassify_photos_with_vision(photos)
+# 3. A+ : only exterior/outdoor candidates are checked, interiors untouched
+urls = {"e1": "exterior", "e2": "other", "o1": "outdoor", "o2": "other", "o3": "living", "e3": "outdoor"}
+ls_calls = []
+def stub(url, fb=None):
+    ls_calls.append(url)
+    return ("uncategorized" if urls[url] == "other" else urls[url], True)
+ls._classify_photo_vision = stub
+photos = [{"url": "e1", "category": "exterior"},          # confirmed
+          {"url": "e2", "category": "exterior"},          # entrance hall read as facade -> excluded
+          {"url": "k1", "category": "kitchen"},           # interior: never sent to vision
+          {"url": "l1", "category": "living"},            # interior: never sent to vision
+          {"url": "o1", "category": "outdoor"},           # confirmed
+          {"url": "o2", "category": "outdoor"},           # communal portico read as balcony -> excluded
+          {"url": "o3", "category": "outdoor"},           # a room labelled balcony -> excluded, NOT turned into living
+          {"url": "e3", "category": "exterior"}]          # courtyard-side balcony labelled facade -> swapped to outdoor
+s = ls.refine_exterior_outdoor_with_vision(photos)
 cats = [p["category"] for p in photos]
-check("R1 categories replaced in order", cats == ["exterior", "uncategorized", "kitchen", "kitchen", "outdoor", "uncategorized"], cats)
-check("R2 page label kept in category_page, source vision", photos[1]["category_page"] == "exterior" and photos[2]["category_page"] == "living" and all(p["category_source"] == "vision" for p in photos))
-check("R3 summary counts", s["classified"] == 6 and s["changed_vs_page"] == 3 and s["excluded_as_other"] == 2 and s["kept_page_label_after_failure"] == 0 and s["not_checked_over_cap"] == 0, s)
+check("R1 only exterior/outdoor candidates are sent to vision", sorted(ls_calls) == ["e1", "e2", "e3", "o1", "o2", "o3"], ls_calls)
+check("R2 interior labels untouched", cats[2] == "kitchen" and cats[3] == "living" and "category_source" not in photos[2])
+check("R3 confirmed / excluded / swapped", cats[0] == "exterior" and cats[1] == "uncategorized" and cats[4] == "outdoor" and cats[5] == "uncategorized" and cats[6] == "uncategorized" and cats[7] == "outdoor", cats)
+check("R4 page label kept in category_page", photos[1]["category_page"] == "exterior" and photos[7]["category_page"] == "exterior" and photos[1]["category_source"] == "vision_refine")
+check("R5 summary counts", s["checked"] == 6 and s["confirmed"] == 2 and s["swapped_exterior_outdoor"] == 1 and s["excluded_as_other"] == 3 and s["kept_page_label_after_failure"] == 0 and s["not_checked_over_cap"] == 0, s)
 
-# 4. failure keeps the page label; cap
-fails_map = {"f1": ("uncategorized", False), "f2": ("bathrooms", True)}
+# 4. failure keeps the label; cap; skip photos already classified by vision
+fails_map = {"f1": ("uncategorized", False), "f2": ("outdoor", True)}
 ls._classify_photo_vision = lambda url, fb=None: fails_map[url]
-ph = [{"url": "f1", "category": "bedrooms"}, {"url": "f2", "category": "kitchen"}]
-s = ls.reclassify_photos_with_vision(ph)
-check("R4 vision failure keeps the page label and is marked", ph[0]["category"] == "bedrooms" and ph[0]["category_source"] == "page_fallback" and ph[1]["category"] == "bathrooms" and s["kept_page_label_after_failure"] == 1, (ph, s))
-ls._classify_photo_vision = lambda url, fb=None: ("living", True)
-ph = [{"url": f"c{i}", "category": "kitchen"} for i in range(10)]
-s = ls.reclassify_photos_with_vision(ph, max_photos=4)
-check("R5 cap: only the first 4 classified, the rest keep the page label", [p["category"] for p in ph] == ["living"] * 4 + ["kitchen"] * 6 and ph[9]["category_source"] == "page_not_checked" and s["not_checked_over_cap"] == 6, s)
-check("R6 empty list ok", ls.reclassify_photos_with_vision([])["classified"] == 0)
+ph = [{"url": "f1", "category": "exterior"}, {"url": "f2", "category": "exterior"}]
+s = ls.refine_exterior_outdoor_with_vision(ph)
+check("R6 vision failure keeps the label and is marked", ph[0]["category"] == "exterior" and ph[0]["category_source"] == "page_fallback" and ph[1]["category"] == "outdoor" and s["kept_page_label_after_failure"] == 1, (ph, s))
+ls._classify_photo_vision = lambda url, fb=None: ("exterior", True)
+ph = [{"url": f"c{i}", "category": "exterior"} for i in range(10)]
+s = ls.refine_exterior_outdoor_with_vision(ph, max_photos=4)
+check("R7 cap: only the first 4 checked, the rest keep the label", s["checked"] == 4 and s["not_checked_over_cap"] == 6 and ph[9]["category_source"] == "page_not_checked" and ph[9]["category"] == "exterior", s)
+ph = [{"url": "v1", "category": "outdoor", "category_source": "vision"}]
+calls = []
+ls._classify_photo_vision = lambda url, fb=None: calls.append(url) or ("exterior", True)
+s = ls.refine_exterior_outdoor_with_vision(ph)
+check("R8 photo already classified by vision is not checked twice", calls == [] and s["checked"] == 0 and ph[0]["category"] == "outdoor")
+check("R9 empty list ok", ls.refine_exterior_outdoor_with_vision([])["checked"] == 0)
 
 # 5. old API still works (single implementation)
 ls._classify_photo_vision = real
@@ -99,12 +112,16 @@ check("C1 classify_uncategorized_photo still returns the category", ls.classify_
 ph = [{"url": "x", "category": "uncategorized"}, {"url": "y", "category": "living"}]
 ls.resolve_uncategorized_photos(ph)
 check("C2 resolve_uncategorized_photos only touches uncategorized photos", ph[0]["category"] == "bathrooms" and ph[1]["category"] == "living")
+check("C3 resolved photo is marked as vision", ph[0].get("category_source") == "vision" and "category_source" not in ph[1])
 
-# 6. wiring (static)
+# 6. wiring (static): one shared function, both paths, before the acceptance rule
 api = open("api_server.py", encoding="utf-8").read()
-check("W1 URL path uses vision reclassification and no longer the page-only resolve", "scraper.reclassify_photos_with_vision, extraction[\"photos\"]" in api and "scraper.resolve_uncategorized_photos, extraction[\"photos\"]" not in api)
-check("W2 Relinx path keeps CRM categories + uncategorized fallback only", "scraper.resolve_uncategorized_photos, photos_for_selection" in api and "reclassify_photos_with_vision" not in api.split("_build_relinx_job_in_background")[1])
-check("W3 classification summary saved in selection_report", api.count('selection_report["classification"] = classification_summary') == 1)
+url_part = api.split("async def create_job_from_url")[1].split("async def ")[0]
+rel_part = api.split("async def _build_relinx_job_in_background")[1].split("\ndef ")[0]
+check("W1 URL path: resolve unlabeled, then refine exterior/outdoor, then acceptance", url_part.index("resolve_uncategorized_photos") < url_part.index("refine_exterior_outdoor_with_vision") < url_part.index("check_listing_acceptance"))
+check("W2 Relinx path: same two shared functions, before acceptance", rel_part.index("resolve_uncategorized_photos") < rel_part.index("refine_exterior_outdoor_with_vision") < rel_part.index("check_listing_acceptance"))
+check("W3 summary saved in selection_report in both paths", api.count('selection_report["classification"] = classification_summary') == 2)
+check("W5 old whole-listing reclassification is gone (no duplicate implementation)", not hasattr(ls, "reclassify_photos_with_vision") and "reclassify_photos_with_vision" not in api)
 check("W4 usage counter is thread safe", hasattr(ls, "_claude_lock"))
 
 P = ls._VISION_CLASSIFY_PROMPT
