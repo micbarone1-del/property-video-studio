@@ -119,6 +119,12 @@ Scales (1-10). **S** severity: 10 = agency/Relinx cannot get or see the video, o
 | F23 | P7 | QC flags nearly everything | No real automation, operator overloaded | Strict thresholds | 5 | 6 | 2 | 60 | Banner + counts | Track flag rate KPI | Control exists | watch |
 | F15 | P6 | Luma rejects input (400/422) and we escalate to pricier model; or accepts then fails | Cost spike for a bad photo | Cascade design | 5 | 3 | 3 | 45 | No Veo/LTX after 400/422 (stage 4b, verified) | Luma accept-then-fail still cascades: gather data (T-C3) | Partly | ok |
 | F05 | P3 | 2/24h per-agency limit blocks legitimate pilot/test traffic | 429s, Relinx UI shows errors | Pilot limit | 4 | 6 | 2 | 48 | Relinx handles 429 | Raise limit for test agency; test 429 path | Open | ok |
+| F54 | P4,P7 | UI shows stale or duplicated scene cards when a job is opened (previous job's cards copied over the loaded values; two overlapping editJob() calls push into the same file list -> 9-12 cards for 6 scenes, repeated photos, wrong room labels) | Operator reviews and may save a wrong video; false alarms on good jobs | editJob() wrote shared global state; no sequence guard (found 2026-10-12) | 7 | 6 | 5 | 210 | Fix 69c3af2 (cards emptied) + this commit (sequence token, data built locally) | T-B12 + node race test (control reproduces 12 cards on old code, 6 on new); live re-check on Via Giulia v5 pending | Fixed, live check pending | ACT |
+| F55 | P4 | Scraped photo URL truncated (".../image/<id>/", 404) or resolution upgrade returns 403 on GET | Job creation fails (422) or photo missing | Page reader output; CDN HEAD ok but GET 403 | 6 | 5 | 3 | 90 | Shared fetch with fallback to original URL, URL normalisation, selection_report (commits 0dcc5ad, 0bdd62d); tests 29+11 PASS | Real listings Via Giulia and Euclide created with 6 scenes in server log | Verified | watch |
+| F56 | P4 | Page-read photo categories are unstable between readings (living 4 -> 1, exterior 0 -> 2) and sometimes wrong (kitchen as exterior) | Wrong rooms in the video, wrong captions/camera | Non-deterministic page reading | 6 | 8 | 6 | 288 | Selection report shows what was used; manual review | Classify every photo with Claude vision (planned), then re-run the same listings twice and compare | Open | ACT |
+| F57 | P4,P5 | Narration length measured twice with different results (scraper 22.3 s vs UI 29.5 s) | UI message "video esteso a N s", planned scene count does not match audio | Two TTS/duration implementations (architecture discipline) | 5 | 8 | 4 | 160 | UI extends duration | Package 2: one shared implementation (decision pending) | Open | ACT |
+| F58 | P4 | "&" (and similar characters) in agency names break TTS | Narration fails or mispronounced | Unsanitised text to TTS | 6 | 4 | 3 | 72 | Sanitiser, test_tts_sanitize 9 PASS | Keep test in suite | Verified | watch |
+| F59 | P4,P7 | "Genera voiceover" calls draft/resync, which can overwrite server job data with the UI state | Good job data replaced by stale UI values | resync trusts the UI | 7 | 3 | 6 | 126 | UI cause fixed (F54); server-side guard postponed | Decide server guard after F54 live check | Open | ACT |
 
 **FMEA rules**: re-rate a row after each action (new O/D); add a row after every incident, bug or test failure; review the whole table at each gate and at the checkpoint; never delete a row, mark it closed with date and evidence.
 
@@ -240,3 +246,6 @@ Status words as in the first version of this plan. New required tests derived fr
 
 
 
+
+
+Scores for F54-F59 added 2026-10-12 are proposals until reviewed by Michele. Tests still not run live: F54 live re-check; F56 repeatability test.

@@ -1208,11 +1208,14 @@ async function startFromUrl() {
 }
 
 
+let _editJobSeq = 0;  // 2026-10-12: only the latest editJob() call may write the shared state
 async function editJob(jobId, baseJobId) {
+  const mySeq = ++_editJobSeq;
   // Explicit action: load this job's exact scene list into the editable form
   try {
     const res = await authFetch(`/jobs/${jobId}`);
     const job = await res.json();
+    if (mySeq !== _editJobSeq) return;  // a newer editJob() started meanwhile
     const scenesConfig = job.scenes_config || [];
 
 
@@ -1224,12 +1227,12 @@ async function editJob(jobId, baseJobId) {
 
     currentJobId = baseJobId;
     currentJobStatus = job.status || null;
-    files = [];
+    const loadedFiles = [];
+    const loadedUserData = {};
     newlyAddedSceneIndices.clear();  // fresh job context — no new scenes yet
     durationChangedSceneIndices.clear();
     contentChangedSceneIndices.clear();
     Object.keys(sceneAnalysis).forEach(k => delete sceneAnalysis[k]);
-    Object.keys(sceneUserData).forEach(k => delete sceneUserData[k]);
 
 
     // Restore narration state from the SERVER (not a session-local flag) —
@@ -1269,14 +1272,14 @@ async function editJob(jobId, baseJobId) {
         const imgRes = await authFetch(`/jobs/${baseJobId}/image/${i}?_t=${Date.now()}`, { cache: 'no-store' });
         if (imgRes.ok) {
           const blob = await imgRes.blob();
-          files.push(new File([blob], `scene_${i}.jpg`, { type: blob.type || 'image/jpeg' }));
+          loadedFiles.push(new File([blob], `scene_${i}.jpg`, { type: blob.type || 'image/jpeg' }));
         } else {
-          files.push(new File([], `scene_${i}.jpg`, { type: 'image/jpeg' }));
+          loadedFiles.push(new File([], `scene_${i}.jpg`, { type: 'image/jpeg' }));
         }
       } catch(e) {
-        files.push(new File([], `scene_${i}.jpg`, { type: 'image/jpeg' }));
+        loadedFiles.push(new File([], `scene_${i}.jpg`, { type: 'image/jpeg' }));
       }
-      sceneUserData[i] = {
+      loadedUserData[i] = {
         caption:      scene.caption || '',
         voiceover:    scene.voiceover || '',
         duration:     String(scene.duration || 8),
@@ -1292,6 +1295,10 @@ async function editJob(jobId, baseJobId) {
     }
 
 
+    if (mySeq !== _editJobSeq) return;  // superseded while the images were loading
+    files = loadedFiles;
+    Object.keys(sceneUserData).forEach(k => delete sceneUserData[k]);
+    Object.assign(sceneUserData, loadedUserData);
     completedScenes = job.scenes || [];
     scenesCont.replaceChildren();  // 2026-10-12: svuota le schede del job precedente, altrimenti saveSceneData() le copia sopra ai valori appena caricati
     renderScenes();
