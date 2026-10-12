@@ -122,6 +122,44 @@ def derive_available_category_order(photos: list, priority_order: list = None) -
     present = {p.get("category") for p in photos}
     return [cat for cat in order if cat in present]
 
+MIN_USABLE_PHOTOS = 5
+MIN_ENVIRONMENT_TYPES = 4
+_STANDARD_TYPES_IT = "facciata, soggiorno, cucina, camera da letto, bagno, balcone/giardino"
+
+
+def check_listing_acceptance(photos: list) -> dict:
+    """2026-10-12 (3B): standard-video acceptance rule, run BEFORE any narration/TTS is paid for.
+    A listing is accepted only with at least MIN_USABLE_PHOTOS usable photos (a real category, de-duplicated
+    by URL) AND at least MIN_ENVIRONMENT_TYPES distinct environment types. Otherwise it is rejected with the
+    code "insufficient_photos" and an Italian reason an operator or a partner API can show as it is."""
+    seen, by_cat = set(), {}
+    for p in photos or []:
+        cat, url = p.get("category"), p.get("url")
+        if cat in CATEGORIES and url and url not in seen:
+            seen.add(url)
+            by_cat[cat] = by_cat.get(cat, 0) + 1
+    usable = sum(by_cat.values())
+    types_found = [c for c in PRIORITY_ORDER if c in by_cat]
+    missing = [c for c in PRIORITY_ORDER if c not in by_cat]
+    result = {"ok": True, "code": None, "message": None, "usable_photos": usable,
+              "environment_types": types_found, "missing_types": missing,
+              "min_photos": MIN_USABLE_PHOTOS, "min_types": MIN_ENVIRONMENT_TYPES}
+    if usable >= MIN_USABLE_PHOTOS and len(types_found) >= MIN_ENVIRONMENT_TYPES:
+        return result
+    found_it = ", ".join(CATEGORY_ITALIAN_LABELS[c] for c in types_found) or "nessuno"
+    only_outside = bool(types_found) and set(types_found) <= {"exterior", "outdoor"}
+    msg = (f"Annuncio non idoneo al video standard: {usable} foto utilizzabili e {len(types_found)} tipi di ambiente "
+           f"(servono almeno {MIN_USABLE_PHOTOS} foto e {MIN_ENVIRONMENT_TYPES} ambienti diversi tra: {_STANDARD_TYPES_IT}). "
+           f"Ambienti trovati: {found_it}.")
+    if missing:
+        msg += " Mancano: " + ", ".join(CATEGORY_ITALIAN_LABELS[c] for c in missing) + "."
+    if only_outside:
+        msg += " Le foto mostrano solo esterni: servono anche gli interni."
+    result.update({"ok": False, "code": "insufficient_photos", "message": msg})
+    log.warning(f"[Scraper] Listing rejected (insufficient_photos): {msg}")
+    return result
+
+
 SUPPORTED_DOMAINS = {"immobiliare.it", "www.immobiliare.it", "idealista.it", "www.idealista.it",
                      "casa.it", "www.casa.it"}
 
@@ -785,6 +823,13 @@ TARGET_SCENES = 6          # 30s — the anchor; derived scene count should land
 MIN_SPEECH_SECS_FOR_RANGE = (MIN_SCENES * SCENE_CLIP_SECS) - LEAD_SILENCE_SECS - TRAIL_SILENCE_SECS  # 22s
 MAX_SPEECH_SECS_FOR_RANGE = (MAX_SCENES * SCENE_CLIP_SECS) - LEAD_SILENCE_SECS - TRAIL_SILENCE_SECS  # 32s
 
+# 2026-10-12 (3B, Michele's decision): the STANDARD video is always exactly 6 scenes = 30 s (facade, living,
+# kitchen, bedroom, bathroom, balcony/garden). The narration must therefore fit 6 x 5 s minus the 1 s lead and
+# 1 s trail silence: speech band 24-28 s. Premium keeps its own wider band.
+STANDARD_SCENES = TARGET_SCENES
+STANDARD_MIN_SPEECH_SECS = 24.0
+STANDARD_MAX_SPEECH_SECS = (STANDARD_SCENES * SCENE_CLIP_SECS) - LEAD_SILENCE_SECS - TRAIL_SILENCE_SECS  # 28s
+
 # 2026-07-24 (backlog item 35): premium ~1-minute template. Same
 # tightened-band mechanism as the standard format, just a wider target --
 # a manual per-job toggle, URL-scrape only per explicit product decision.
@@ -862,7 +907,8 @@ def generate_narration_and_derive_scenes(
         "highlight reel, while still avoiding an exhaustive room-by-room list."
         if premium else
         "This is a SHORT-format video (~30 seconds) -- mention only 2-3 standout features of the property rather than "
-        "describing every room; a brief highlight, not an exhaustive tour."
+        "describing every room; a brief highlight, not an exhaustive tour. The finished narration must take about 26 seconds "
+        "to speak aloud (roughly 65-75 Italian words in total, including the opening and the closing line)."
     )
 
     if scene_category_order:
@@ -910,10 +956,12 @@ def generate_narration_and_derive_scenes(
 
     # Single correction pass if outside the tightened band — symmetric:
     # both directions are actively corrected, not just clamped.
-    _min_speech = MIN_SPEECH_SECS_FOR_RANGE_PREMIUM if premium else MIN_SPEECH_SECS_FOR_RANGE
-    _max_speech = MAX_SPEECH_SECS_FOR_RANGE_PREMIUM if premium else MAX_SPEECH_SECS_FOR_RANGE
-    _min_scenes = MIN_SCENES_PREMIUM if premium else MIN_SCENES
-    _max_scenes = MAX_SCENES_PREMIUM if premium else MAX_SCENES
+    if premium:
+        _min_speech, _max_speech = MIN_SPEECH_SECS_FOR_RANGE_PREMIUM, MAX_SPEECH_SECS_FOR_RANGE_PREMIUM
+        _min_scenes, _max_scenes = MIN_SCENES_PREMIUM, MAX_SCENES_PREMIUM
+    else:
+        _min_speech, _max_speech = STANDARD_MIN_SPEECH_SECS, STANDARD_MAX_SPEECH_SECS
+        _min_scenes = _max_scenes = STANDARD_SCENES
 
     if speech_secs > _max_speech:
         target_speech = _max_speech - 2.0  # margin under the ceiling, not right at the edge

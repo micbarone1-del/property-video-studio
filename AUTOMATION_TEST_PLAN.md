@@ -125,6 +125,7 @@ Scales (1-10). **S** severity: 10 = agency/Relinx cannot get or see the video, o
 | F57 | P4,P5 | Narration length measured twice with different results (scraper 22.3 s vs UI 29.5 s) | UI message "video esteso a N s", planned scene count does not match audio | Two TTS/duration implementations (architecture discipline) | 5 | 8 | 4 | 160 | UI extends duration | Package 2: one shared implementation (decision pending) | Open | ACT |
 | F58 | P4 | "&" (and similar characters) in agency names break TTS | Narration fails or mispronounced | Unsanitised text to TTS | 6 | 4 | 3 | 72 | Sanitiser, test_tts_sanitize 9 PASS | Keep test in suite | Verified | watch |
 | F59 | P4,P7 | "Genera voiceover" calls draft/resync, which can overwrite server job data with the UI state | Good job data replaced by stale UI values | resync trusts the UI | 7 | 3 | 6 | 126 | UI cause fixed (F54); server-side guard postponed | Decide server guard after F54 live check | Open | ACT |
+| F60 | P4 | Standard-video acceptance rule (>=5 usable photos AND >=4 environment types) rejects a listing a human would accept, or accepts a weak one | Lost video for a good listing, or a poor video produced | Rule is a proposal to be tested (Michele 2026-10-12); category labels still unstable (F56) | 5 | 4 | 4 | 80 | Rejection happens before narration/TTS cost; reason + counts stored in the job (failure_code, failure_reason, selection_report.acceptance) | Run the ~30 real listings (Phase 1), list every rejection and judge it; tune thresholds only on that evidence | Built, not run live | watch |
 
 **FMEA rules**: re-rate a row after each action (new O/D); add a row after every incident, bug or test failure; review the whole table at each gate and at the checkpoint; never delete a row, mark it closed with date and evidence.
 
@@ -249,3 +250,5 @@ Status words as in the first version of this plan. New required tests derived fr
 
 
 Scores for F54-F59 added 2026-10-12 are proposals until reviewed by Michele. Tests still not run live: F54 live re-check; F56 repeatability test.
+
+Update 2026-10-12 (3B): F02 (fewer than 6 usable photos) now has a stricter, earlier control (acceptance rule before narration); its test status stays 'not run live' until the Phase 1 listings have been run. F60 added (proposal scores).

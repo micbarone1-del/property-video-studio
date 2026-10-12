@@ -1631,6 +1631,13 @@ async def create_job_from_url(
         raise HTTPException(status_code=400, detail=f"Could not read listing: {extraction['error']}")
     extraction["photos"] = await asyncio.to_thread(scraper.resolve_uncategorized_photos, extraction["photos"])
 
+    # 2026-10-12 (3B): standard-video acceptance rule BEFORE narration/TTS is paid for. Premium is unchanged.
+    acceptance = None
+    if not premium:
+        acceptance = scraper.check_listing_acceptance(extraction["photos"])
+        if not acceptance["ok"]:
+            return JSONResponse(status_code=422, content={"detail": acceptance["message"], "code": acceptance["code"], "reason": acceptance})
+
     agency_name = None
     if agency_id:
         _agency = cost_model.get_agency(agency_id)
@@ -1668,6 +1675,8 @@ async def create_job_from_url(
 
     selection = await asyncio.to_thread(scraper.download_selected_photos, selection, img_dir)
     selection_report = scraper.build_selection_report(extraction["photos"], selection, narration["scene_count"], premium=premium)
+    if acceptance is not None:
+        selection_report["acceptance"] = acceptance
     # BUG FIXED: this check previously only looked at selection["gaps"],
     # computed BEFORE the download attempt. Confirmed real case: a
     # listing's entire photo CDN batch returned 404 during download -
@@ -2017,10 +2026,27 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
         if payload.features:
             description_full += "\n\nCaratteristiche: " + ", ".join(payload.features)
 
-        scene_category_order = scraper.derive_available_category_order([
-            {"category": p.category if p.category in scraper.CATEGORIES else "uncategorized"}
-            for p in payload.photos
-        ])
+        photos_for_selection = []
+        for p in payload.photos:
+            cat = p.category if p.category in scraper.CATEGORIES else "uncategorized"
+            photos_for_selection.append({"url": p.url, "category": cat})
+        photos_for_selection = await asyncio.to_thread(scraper.resolve_uncategorized_photos, photos_for_selection)
+
+        # 2026-10-12 (3B): standard-video acceptance rule BEFORE narration/TTS is paid for.
+        acceptance = scraper.check_listing_acceptance(photos_for_selection)
+        if not acceptance["ok"]:
+            JOBS[job_id].update({"status": "failed", "message": acceptance["message"],
+                                 "failure_code": acceptance["code"], "failure_reason": acceptance})
+            _save_job(job_id)
+            await _send_partner_webhook(job_id, "failed")
+            await _notify_operator(job_id, "Relinx job failed",
+                subject=f"Job Relinx rifiutato: {payload.property_name}",
+                body_html=f"<p><b>{payload.property_name}</b> - {acceptance['message']}</p>"
+                          f"<p>Job ID: {job_id}, external_ref: {payload.external_ref}</p>",
+                push_message=f"{payload.property_name} - rifiutato (foto insufficienti)", tags=["x"])
+            return
+
+        scene_category_order = scraper.derive_available_category_order(photos_for_selection)
 
         narration = await asyncio.to_thread(
             scraper.generate_narration_and_derive_scenes,
@@ -2038,12 +2064,6 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
                 push_message=f"{payload.property_name} - fallito (narrazione)", tags=["x"])
             return
 
-        photos_for_selection = []
-        for p in payload.photos:
-            cat = p.category if p.category in scraper.CATEGORIES else "uncategorized"
-            photos_for_selection.append({"url": p.url, "category": cat})
-        photos_for_selection = await asyncio.to_thread(scraper.resolve_uncategorized_photos, photos_for_selection)
-
         selection = scraper.select_photos_for_scene_count(photos_for_selection, narration["scene_count"])
 
         job_dir = JOBS_DIR / job_id
@@ -2052,6 +2072,7 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
 
         selection = await asyncio.to_thread(scraper.download_selected_photos, selection, img_dir)
         selection_report = scraper.build_selection_report(photos_for_selection, selection, narration["scene_count"])
+        selection_report["acceptance"] = acceptance
         total_downloaded = sum(len(ps) for ps in selection["selected"].values())
         if selection["gaps"] or total_downloaded == 0:
             shutil.rmtree(str(job_dir), ignore_errors=True)
