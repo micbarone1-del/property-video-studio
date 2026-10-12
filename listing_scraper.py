@@ -209,6 +209,46 @@ def try_upgrade_resolution(image_url: str) -> dict:
     return {"url": image_url, "upgraded": False}
 
 
+# ── Shared photo fetch (2026-10-12, 3A) ─────────────────────────────────────
+# ONE place that downloads a photo, used by download_photo(), rank_photos_by_quality()
+# and classify_uncategorized_photo() -- they used to each call requests.get() on their
+# own. try_upgrade_resolution() only checks the "upgraded" URL with a HEAD request, but
+# the real GET can still answer 403 ("Bad Parameters"); the original URL is kept in
+# photo["original_url"] and tried second, so one bad upgraded URL no longer fails a job.
+
+def fetch_photo_bytes(url: str, fallback_url: str = None, timeout: int = 20, attempts: int = 1) -> dict:
+    """Returns {"ok", "content", "url_used", "used_fallback", "error"}.
+    Per URL: transient failures (timeout, connection error, HTTP 429/5xx) are retried up
+    to `attempts` times with a short backoff; other 4xx are permanent for that URL."""
+    urls = [url]
+    if fallback_url and fallback_url != url:
+        urls.append(fallback_url)
+    errors = []
+    for idx, u in enumerate(urls):
+        last_error = "unknown"
+        permanent = False
+        for attempt in range(attempts):
+            try:
+                resp = requests.get(u, timeout=timeout)
+                if resp.status_code == 429 or resp.status_code >= 500:
+                    last_error = f"HTTP {resp.status_code}"
+                else:
+                    resp.raise_for_status()  # other 4xx -> permanent for this URL
+                    return {"ok": True, "content": resp.content, "url_used": u,
+                            "used_fallback": idx > 0, "error": None}
+            except requests.HTTPError as e:
+                last_error = f"download failed: {e}"
+                permanent = True
+                break
+            except Exception as e:
+                last_error = str(e)
+            if attempt < attempts - 1:
+                time.sleep(1.5 * (attempt + 1))
+        errors.append(last_error if permanent else f"download failed after {attempts} attempts: {last_error}")
+    return {"ok": False, "content": None, "url_used": None, "used_fallback": False,
+            "error": " | fallback: ".join(errors)}
+
+
 # ── Core extraction ─────────────────────────────────────────────────────────
 
 def extract_listing(url: str, attempt_resolution_upgrade: bool = True) -> dict:
@@ -267,6 +307,7 @@ def extract_listing(url: str, attempt_resolution_upgrade: bool = True) -> dict:
             if p.get("category") not in CATEGORIES:
                 p["category"] = "uncategorized"
             if attempt_resolution_upgrade and p.get("url"):
+                p["original_url"] = p["url"]   # 2026-10-12: kept so a failing upgraded URL can fall back to it
                 upgrade_result = try_upgrade_resolution(p["url"])
                 p["url"] = upgrade_result["url"]
                 p["resolution_upgraded"] = upgrade_result["upgraded"]
@@ -285,7 +326,7 @@ def extract_listing(url: str, attempt_resolution_upgrade: bool = True) -> dict:
 
 # ── Uncategorized-photo fallback via existing vision QC ─────────────────────
 
-def classify_uncategorized_photo(image_url: str) -> str:
+def classify_uncategorized_photo(image_url: str, fallback_url: str = None) -> str:
     """
     For any photo whose label/caption from the source page didn't map
     confidently to one of our categories, classifies the room type
@@ -319,9 +360,10 @@ def classify_uncategorized_photo(image_url: str) -> str:
     """
     try:
         import base64
-        resp = requests.get(image_url, timeout=15)
-        resp.raise_for_status()
-        b64 = base64.b64encode(resp.content).decode("utf-8")
+        fetched = fetch_photo_bytes(image_url, fallback_url, timeout=15)
+        if not fetched["ok"]:
+            raise RuntimeError(fetched["error"])
+        b64 = base64.b64encode(fetched["content"]).decode("utf-8")
 
         client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
         prompt = (
@@ -355,7 +397,7 @@ def resolve_uncategorized_photos(photos: list) -> list:
     """Runs the vision-QC fallback on every 'uncategorized' photo, in place."""
     for p in photos:
         if p.get("category") == "uncategorized":
-            p["category"] = classify_uncategorized_photo(p["url"])
+            p["category"] = classify_uncategorized_photo(p["url"], p.get("original_url"))
     return photos
 
 
@@ -374,33 +416,22 @@ def resolve_uncategorized_photos(photos: list) -> list:
 DOWNLOAD_ATTEMPTS = 3
 
 
-def download_photo(photo_url: str, output_dir: Path, filename_stem: str) -> dict:
+def download_photo(photo_url: str, output_dir: Path, filename_stem: str, fallback_url: str = None) -> dict:
     """
     Downloads one scraped photo. Returns:
-      {"ok": bool, "path": str | None, "error": str | None}
+      {"ok": bool, "path": str | None, "error": str | None, "url_used": str | None, "used_fallback": bool}
+    2026-10-12: transient failures (timeouts, connection errors, HTTP 429/5xx) are retried
+    with a short backoff; permanent ones (other 4xx, e.g. 404) are not. If the (possibly
+    upgraded) URL fails, fallback_url (the original one) is tried -- see fetch_photo_bytes().
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     dest_path = output_dir / f"{filename_stem}.jpg"
-    # 2026-10-12: transient failures (timeouts, connection errors, HTTP 429/5xx) are retried
-    # with a short backoff; permanent ones (other 4xx, e.g. 404) are not. A single network
-    # blip used to fail a whole job ("All 5 selected photo(s) failed to download").
-    last_error = "unknown"
-    for attempt in range(DOWNLOAD_ATTEMPTS):
-        try:
-            resp = requests.get(photo_url, timeout=20)
-            if resp.status_code == 429 or resp.status_code >= 500:
-                last_error = f"HTTP {resp.status_code}"
-            else:
-                resp.raise_for_status()  # other 4xx -> permanent, handled below without retry
-                dest_path.write_bytes(resp.content)
-                return {"ok": True, "path": str(dest_path), "error": None}
-        except requests.HTTPError as e:
-            return {"ok": False, "path": None, "error": f"download failed: {e}"}
-        except Exception as e:
-            last_error = str(e)
-        if attempt < DOWNLOAD_ATTEMPTS - 1:
-            time.sleep(1.5 * (attempt + 1))
-    return {"ok": False, "path": None, "error": f"download failed after {DOWNLOAD_ATTEMPTS} attempts: {last_error}"}
+    fetched = fetch_photo_bytes(photo_url, fallback_url, timeout=20, attempts=DOWNLOAD_ATTEMPTS)
+    if not fetched["ok"]:
+        return {"ok": False, "path": None, "error": fetched["error"], "url_used": None, "used_fallback": False}
+    dest_path.write_bytes(fetched["content"])
+    return {"ok": True, "path": str(dest_path), "error": None,
+            "url_used": fetched["url_used"], "used_fallback": fetched["used_fallback"]}
 
 
 def download_selected_photos(selection: dict, output_dir: Path) -> dict:
@@ -420,9 +451,11 @@ def download_selected_photos(selection: dict, output_dir: Path) -> dict:
         kept = []
         for i, p in enumerate(photos):
             stem = f"{category}_{i:02d}"
-            result = download_photo(p["url"], output_dir, stem)
+            result = download_photo(p["url"], output_dir, stem, p.get("original_url"))
             if result["ok"]:
                 p["local_path"] = result["path"]
+                p["url_used"] = result["url_used"]
+                p["used_fallback"] = result["used_fallback"]
                 kept.append(p)
             else:
                 download_failures.append({"category": category, "url": p["url"], "error": result["error"]})
@@ -430,6 +463,67 @@ def download_selected_photos(selection: dict, output_dir: Path) -> dict:
 
     selection["download_failures"] = download_failures
     return selection
+
+
+# ── Selection report (2026-10-12, 3A) ───────────────────────────────────────
+# Saved in every job built from a listing/partner payload (job["selection_report"]) so it is
+# possible to say AFTER the fact which photos existed, which were chosen, why a category was
+# not used, whether the quality ranking really ran, and which downloads failed and why.
+
+def build_selection_report(photos: list, selection: dict, scene_count_requested=None, premium: bool = False) -> dict:
+    from datetime import datetime
+    candidates = {}
+    seen = set()
+    for p in photos:
+        u = p.get("url")
+        if u in seen:
+            continue
+        seen.add(u)
+        candidates.setdefault(p.get("category") or "uncategorized", []).append(u)
+
+    selected = {}
+    for cat, plist in selection.get("selected", {}).items():
+        selected[cat] = [{
+            "url": p.get("url"), "original_url": p.get("original_url"),
+            "url_used": p.get("url_used"), "used_fallback": bool(p.get("used_fallback", False)),
+            "resolution_upgraded": p.get("resolution_upgraded"),
+            "rank_position": p.get("rank_position"), "rank_status": p.get("rank_status"),
+        } for p in plist]
+
+    used = {("outdoor" if c in ("outdoor_early", "outdoor_late") else c)
+            for c, plist in selection.get("selected", {}).items() if plist}
+    available = [c for c in PRIORITY_ORDER if candidates.get(c)]
+    ranking = {}
+    for p in photos:
+        c = p.get("category")
+        if c and p.get("rank_status") and c not in ranking:
+            ranking[c] = p["rank_status"]
+
+    report = {
+        "generated_at": datetime.utcnow().isoformat(),
+        "premium": bool(premium),
+        "scene_count_requested": scene_count_requested,
+        "photos_total": len(seen),
+        "candidates_by_category": {c: len(v) for c, v in candidates.items()},
+        "candidate_urls": candidates,
+        "categories_available": available,
+        "categories_used": [c for c in available if c in used],
+        "categories_available_not_used": [c for c in available if c not in used],
+        "selected": selected,
+        "total_selected": selection.get("total_selected"),
+        "ranking_by_category": ranking,
+        "resolution_upgraded_count": sum(1 for p in photos if p.get("resolution_upgraded")),
+        "fallback_used_count": sum(1 for lst in selected.values() for s in lst if s["used_fallback"]),
+        "gaps": list(selection.get("gaps", [])),
+        "download_failures": list(selection.get("download_failures", [])),
+    }
+    log.info(f"[Scraper] selection report: scenes_requested={scene_count_requested} "
+             f"candidates={report['candidates_by_category']} used={report['categories_used']} "
+             f"not_used={report['categories_available_not_used']} ranking={ranking} "
+             f"fallback_used={report['fallback_used_count']} download_failures={len(report['download_failures'])}")
+    for f in report["download_failures"]:
+        log.warning(f"[Scraper] photo download failed ({f.get('category')}): {f.get('url')} -> {f.get('error')}")
+    return report
 
 
 # ── Narration/caption auto-generation from scraped description ─────────────
@@ -1039,6 +1133,14 @@ Return ONLY a JSON array of integers, the photo numbers ordered best to worst, e
 """
 
 
+def _tag_rank(photos: list, status: str) -> list:
+    """Records on each photo dict how it was ordered (shown later in selection_report)."""
+    for i, p in enumerate(photos):
+        p["rank_status"] = status
+        p["rank_position"] = i + 1
+    return photos
+
+
 def rank_photos_by_quality(category: str, candidates: list, max_to_compare: int = 6) -> list:
     """
     Ranks candidate photos for a category by real visual quality, per the
@@ -1057,7 +1159,7 @@ def rank_photos_by_quality(category: str, candidates: list, max_to_compare: int 
     selection if it errors.
     """
     if len(candidates) <= 1:
-        return candidates
+        return _tag_rank(candidates, "single_candidate")
 
     pool = candidates[:max_to_compare]
     remainder = candidates[max_to_compare:]
@@ -1067,9 +1169,10 @@ def rank_photos_by_quality(category: str, candidates: list, max_to_compare: int 
         client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
         content = [{"type": "text", "text": QUALITY_RANKING_PROMPT.format(category=category, n=len(pool))}]
         for i, photo in enumerate(pool):
-            resp = requests.get(photo["url"], timeout=15)
-            resp.raise_for_status()
-            b64 = base64.b64encode(resp.content).decode("utf-8")
+            fetched = fetch_photo_bytes(photo["url"], photo.get("original_url"), timeout=15)
+            if not fetched["ok"]:
+                raise RuntimeError(fetched["error"])
+            b64 = base64.b64encode(fetched["content"]).decode("utf-8")
             content.append({"type": "text", "text": f"Photo {i + 1}:"})
             content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}})
 
@@ -1078,17 +1181,21 @@ def rank_photos_by_quality(category: str, candidates: list, max_to_compare: int 
         raw = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
         order_match = re.search(r"\[[\d,\s]+\]", raw)
         if not order_match:
-            return candidates
+            return _tag_rank(candidates, "fallback_original_order: unparseable model reply")
         order = json.loads(order_match.group(0))
         ranked = [pool[i - 1] for i in order if 1 <= i <= len(pool)]
         ranked_ids = {id(p) for p in ranked}
         for p in pool:
             if id(p) not in ranked_ids:
                 ranked.append(p)  # safety: include anything the model's ranking missed
-        return ranked + remainder
+        result = ranked + remainder
+        for i, p in enumerate(result):
+            p["rank_status"] = "ranked" if i < len(ranked) else "not_compared"
+            p["rank_position"] = i + 1
+        return result
     except Exception as e:
         log.warning(f"[Scraper] Quality ranking failed for {category}, using original order: {e}")
-        return candidates
+        return _tag_rank(candidates, "fallback_original_order: " + str(e)[:160])
 
 
 def select_photos_for_scene_count(photos: list, scene_count: int) -> dict:

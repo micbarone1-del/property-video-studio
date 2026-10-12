@@ -1667,6 +1667,7 @@ async def create_job_from_url(
     img_dir.mkdir(parents=True)
 
     selection = await asyncio.to_thread(scraper.download_selected_photos, selection, img_dir)
+    selection_report = scraper.build_selection_report(extraction["photos"], selection, narration["scene_count"], premium=premium)
     # BUG FIXED: this check previously only looked at selection["gaps"],
     # computed BEFORE the download attempt. Confirmed real case: a
     # listing's entire photo CDN batch returned 404 during download -
@@ -1816,6 +1817,8 @@ async def create_job_from_url(
         "source_url": url,
         "source_price": extraction.get("price"),
         "source_address": extraction.get("address"),
+        "source_description": extraction.get("description"),   # 2026-10-12: original listing text, kept for audits
+        "selection_report": selection_report,
     }
     _save_job(job_id)
 
@@ -2048,6 +2051,7 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
         img_dir.mkdir(parents=True, exist_ok=True)
 
         selection = await asyncio.to_thread(scraper.download_selected_photos, selection, img_dir)
+        selection_report = scraper.build_selection_report(photos_for_selection, selection, narration["scene_count"])
         total_downloaded = sum(len(ps) for ps in selection["selected"].values())
         if selection["gaps"] or total_downloaded == 0:
             shutil.rmtree(str(job_dir), ignore_errors=True)
@@ -2133,6 +2137,8 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
             "narration_text": narration["narration_text"],
             "narration_path": job_narration_path,
             "narration_duration_secs": narration["video_duration_secs"],
+            "source_description": description_full,
+            "selection_report": selection_report,
         })
         _save_job(job_id)
         await _send_new_partner_job_alert(job_id)
