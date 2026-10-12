@@ -116,6 +116,16 @@ _PRON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pronuncia
 _pron_cache = {"mtime": None, "rules": []}
 
 
+def sanitize_for_tts(text):
+    """2026-10-12: the Google voices are driven with SSML, so a raw '&' or '<' in the text made the whole request
+    invalid (HTTP 400) and failed the job - e.g. the agency name "Engel & Völkers Roma" (every job of that agency).
+    '&' is spoken as 'e'; '<' and '>' are dropped. Plain text only, like pronunciation_fixes.json."""
+    import re
+    text = re.sub(r"\s*&\s*", " e ", text)
+    text = text.replace("<", " ").replace(">", " ")
+    return re.sub(r"[ \t]{2,}", " ", text)
+
+
 def apply_pronunciation_fixes(text):
     import re, json
     try:
@@ -170,6 +180,7 @@ def generate_speech(
         return False
 
     text = apply_pronunciation_fixes(text)  # 2026-10-08: single choke point for all TTS callers
+    text = sanitize_for_tts(text)  # 2026-10-12: SSML-safe plain text (see sanitize_for_tts)
     print(f"Generating speech for: \"{text[:30]}...\"")
     
     # 2. Process Text for Pauses (SSML Injection)
