@@ -1293,6 +1293,7 @@ async function editJob(jobId, baseJobId) {
 
 
     completedScenes = job.scenes || [];
+    scenesCont.replaceChildren();  // 2026-10-12: svuota le schede del job precedente, altrimenti saveSceneData() le copia sopra ai valori appena caricati
     renderScenes();
     closeJobPreview();
     document.getElementById('scenes-container').scrollIntoView({behavior:'smooth'});
