@@ -527,6 +527,9 @@
   </section>
 
 
+  <!-- 2026-10-15 (Patch A): red warning when clips were made on fal.ai instead of the direct Luma API -->
+  <div id="fal-warning" role="alert" style="display:none;font-size:.86rem;font-weight:600;color:#fff;background:var(--danger);margin:12px 0;padding:12px 14px;border-radius:var(--radius)"></div>
+
   <!-- ⑤ Progress -->
   <section id="progress-section">
     <p class="sec-label">Progress</p>
@@ -694,6 +697,7 @@ async function generateNarration(extraSecsNeeded = 0) {
         const jobRes = await authFetch(`${API_BASE}/jobs/${currentJobId}`);
         if (jobRes.ok) {
           const jobData = await jobRes.json();
+          renderFalWarning(jobData);
           freshStatus = jobData.status;
           currentJobStatus = freshStatus;
         }
@@ -2814,6 +2818,7 @@ genBtn.addEventListener('click', async () => {
       const jobRes = await authFetch(`${API_BASE}/jobs/${currentJobId}`);
       if (jobRes.ok) {
         const jobData = await jobRes.json();
+        renderFalWarning(jobData);
         jobStatus = jobData.status;
       }
     } catch(_) {}
@@ -2855,6 +2860,7 @@ genBtn.addEventListener('click', async () => {
       const jobRes = await authFetch(`${API_BASE}/jobs/${currentJobId}`);
       if (jobRes.ok) {
         const jobData = await jobRes.json();
+        renderFalWarning(jobData);
         jobHasNarration = !!jobData.narration_path;
       }
     } catch(_) {}
@@ -3104,6 +3110,7 @@ function startPolling(jobId) {
 
 
       updateProgress(job.progress, job.message);
+      renderFalWarning(job);
       if (job.scenes && job.scenes.length) renderSceneProgress(job.scenes);
 
 
@@ -3248,6 +3255,27 @@ async function submitApproval() {
 
 
 // ── UI helpers ─────────────────────────────────────────────────────────────────
+// 2026-10-15 (Patch A): red warning when any clip of the job was made on fal.ai instead of the
+// direct Luma API (job.fal_usage comes from GET /jobs/{id}). Plain text only, never HTML.
+function renderFalWarning(job) {
+  const el = document.getElementById('fal-warning');
+  if (!el) return;
+  const u = job && job.fal_usage;
+  if (!u || !u.fal_clips) { el.style.display = 'none'; el.textContent = ''; return; }
+  const scenes  = u.clips.map(c => c.index + 1).join(', ');
+  const models  = [...new Set(u.clips.map(c => c.model))].join(', ');
+  const reasons = [...new Set(u.clips.map(c => c.reason).filter(Boolean))].join('; ');
+  let t = `⚠ ATTENZIONE FAL: ${u.fal_clips} clip generat${u.fal_clips === 1 ? 'o' : 'i'} su fal.ai invece che su Luma diretto (scena/e ${scenes}; modello: ${models}).`;
+  if (reasons) t += ` Motivo: ${reasons}.`;
+  if (u.est_usd_on_fal) {
+    t += ` Costo stimato su fal: ~$${u.est_usd_on_fal.toFixed(2)}`;
+    t += u.est_usd_if_direct ? ` invece di ~$${u.est_usd_if_direct.toFixed(2)} con Luma diretto.` : '.';
+  }
+  if (u.level === 'high') t += ' Veo/LTX: qualità e costo diversi da Luma, controlla il video.';
+  el.textContent = t;
+  el.style.display = 'block';
+}
+
 function updateProgress(pct, msg) {
   document.getElementById('prog-bar').style.width = pct + '%';
   document.getElementById('prog-pct').textContent  = pct + '%';

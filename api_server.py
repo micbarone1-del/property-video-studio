@@ -2322,6 +2322,14 @@ def get_job(job_id: str):
         raise HTTPException(status_code=404, detail="Job not found")
     job = JOBS[job_id].copy()
     job.pop("output_path", None)
+    # 2026-10-15 (Patch A): which clips came from fal.ai instead of the direct Luma API,
+    # read from the per-clip sidecars; read-only, no job state is changed.
+    try:
+        import clip_provenance
+        job["fal_usage"] = clip_provenance.summarize(JOBS_DIR / job_id, job.get("scenes_config") or [])
+    except Exception as e:
+        log.warning(f"[Job {job_id}] fal_usage summary failed (non-fatal): {e}")
+        job["fal_usage"] = None
     return job
 
 
@@ -2375,7 +2383,14 @@ async def get_clip(job_id: str, scene_index: int, request: Request):
     """
     if job_id not in JOBS:
         raise HTTPException(status_code=404, detail="Job not found")
-    clip_path = JOBS_DIR / job_id / "clips" / f"scene_{scene_index:03d}.mp4"
+    # 2026-10-15 (Patch A): after a rework the scene's clip lives under its NEW scene_id
+    # (sc_xxxx.mp4), not scene_NNN.mp4, so the preview kept showing the OLD clip. One shared
+    # resolver (same order as the reassemble step): scene_id file first, then legacy scene_NNN.
+    import clip_provenance
+    _cfg = JOBS[job_id].get("scenes_config") or []
+    _sid = (_cfg[scene_index].get("scene_id") if 0 <= scene_index < len(_cfg) else None)
+    clip_path = clip_provenance.clip_file_for_scene(JOBS_DIR / job_id, scene_index, _sid) \
+        or (JOBS_DIR / job_id / "clips" / f"scene_{scene_index:03d}.mp4")
     if not clip_path.exists():
         for job_dir in JOBS_DIR.glob(f"{job_id}*"):
             candidate = job_dir / "clips" / f"scene_{scene_index:03d}.mp4"

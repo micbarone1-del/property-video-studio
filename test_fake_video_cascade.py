@@ -53,4 +53,29 @@ faults({"luma_direct": ["failed"], "luma_fal": ["failed"]}); reset_outbox(); out
 ok = vg.generate_video_single(img, 5, out, model_tier="luma")
 fs = [c["endpoint"] for c in calls("fal_subscribe")]
 check("V4 Luma accepted-then-failed on both: escalates to Veo (KNOWN GAP, backlog 59 -- asserts current behavior)", ok and any("veo" in e for e in fs), (ok, fs))
+
+# ---- Patch A (2026-10-15): which model made the clip, and the FAL_FALLBACK_ENABLED switch
+import clip_provenance as _cp
+m1 = _cp.read(os.path.join(st, "c1.mp4"))
+check("V7 direct Luma clip: sidecar says luma-ray-3.2-direct, not a fal substitute", m1 and m1["model"] == "luma-ray-3.2-direct" and m1["fal_substitute"] is False, m1)
+
+faults({"luma_direct": ["http_402"]}); reset_outbox(); out = os.path.join(st, "c5.mp4")
+ok = vg.generate_video_single(img, 5, out, model_tier="luma")
+m5 = _cp.read(out)
+check("V5 HTTP 402 with fallback ON: clip made on fal Ray 2, sidecar flags it with the 402 reason", ok and m5 and m5["model"] == "luma-ray-2-fallback" and m5["fal_substitute"] is True and "402" in (m5["reason"] or ""), (ok, m5))
+
+vg.FAL_FALLBACK_ENABLED = False
+faults({"luma_direct": ["http_402"]}); reset_outbox(); out = os.path.join(st, "c6.mp4")
+ok = vg.generate_video_single(img, 5, out, model_tier="luma")
+check("V6 HTTP 402 with FAL_FALLBACK_ENABLED=false: stops, no fal call at all, no file, no sidecar", (not ok) and len(calls("fal_subscribe")) == 0 and not os.path.exists(out) and _cp.read(out) is None, (ok, [c["endpoint"] for c in calls("fal_subscribe")]))
+vg.FAL_FALLBACK_ENABLED = True
+
+faults({"luma_direct": ["http_402"]}); reset_outbox(); out = os.path.join(st, "c8.mp4")
+ok = vg.generate_video_single(img, 5, out, model_tier="luma")
+m8 = _cp.read(out)
+check("V8 after switching back ON the fallback works again and a later direct success overwrites the note", ok and m8 and m8["fal_substitute"] is True)
+reset_outbox(); out = os.path.join(st, "c8.mp4")
+ok = vg.generate_video_single(img, 5, out, model_tier="luma")
+m8b = _cp.read(out)
+check("V8b same clip regenerated on the direct API: sidecar overwritten, no longer flagged", ok and m8b and m8b["model"] == "luma-ray-3.2-direct" and m8b["fal_substitute"] is False, m8b)
 print("RESULT:", "ALL PASS" if all(res) else "FAILURES", f"({sum(res)}/{len(res)})")

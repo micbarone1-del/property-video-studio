@@ -103,11 +103,39 @@ TIER_COST_PER_CLIP = {
 #     an exact 8s clip, just didn't scale down for the valid 4s/6s options.
 USD_TO_EUR = 0.92  # matches the rate already used for VPS_MONTHLY_EUR
 
+# USD price points, defined ONCE (2026-10-15): VIDEO_COST_PER_SEC_EUR and
+# clip_price_usd() below both read these, so the two can never drift apart.
+LUMA_RAY2_FAL_USD_PER_CLIP = 2.00   # fal.ai Luma Ray 2, 1080p, one 5 s clip (4 x 0.50)
+LUMA_DIRECT_USD_PER_CLIP   = 1.20   # Luma direct API Ray 3.2 1080p SDR, one 5 s clip
+                                    # (Luma billing page, 7 Oct 2026: -1.20 per ray-3.2 usage line)
+VEO_FAST_USD_PER_SEC       = 0.10   # Veo 3.1 Fast, no audio
+VEO_STANDARD_USD_PER_SEC   = 0.20   # Veo 3.1 Standard, no audio
+
 VIDEO_COST_PER_SEC_EUR = {
-    "luma":        (0.50 / 5) * 4 * USD_TO_EUR,   # ~0.368 EUR/s at 1080p
-    "premium":     0.10 * USD_TO_EUR,              # ~0.092 EUR/s, Veo 3.1 Fast, no audio
-    "premium_veo": 0.20 * USD_TO_EUR,              # ~0.184 EUR/s, Veo 3.1 Standard, no audio
+    "luma":        (LUMA_RAY2_FAL_USD_PER_CLIP / 5) * USD_TO_EUR,   # ~0.368 EUR/s at 1080p
+    "premium":     VEO_FAST_USD_PER_SEC * USD_TO_EUR,              # ~0.092 EUR/s, Veo 3.1 Fast, no audio
+    "premium_veo": VEO_STANDARD_USD_PER_SEC * USD_TO_EUR,          # ~0.184 EUR/s, Veo 3.1 Standard, no audio
 }
+
+
+def clip_price_usd(used_model, duration_secs=5):
+    """USD price of ONE clip made by the model that actually produced it
+    (the `used_model` name from video_generation). None if unknown. Used to
+    tell the operator what a fal.ai fallback really costs; it does NOT change
+    the job cost accounting above (which prices the luma tier at the fal
+    Ray 2 rate for every clip -- see backlog)."""
+    m = used_model or ""
+    if m == "luma-ray-3.2-direct":
+        return LUMA_DIRECT_USD_PER_CLIP
+    if m in ("luma-ray-2", "luma-ray-2-fallback"):
+        return LUMA_RAY2_FAL_USD_PER_CLIP
+    if m == "veo-3.1-standard":
+        return round(VEO_STANDARD_USD_PER_SEC * float(duration_secs or 5), 2)
+    if m.startswith("veo-3.1"):
+        return round(VEO_FAST_USD_PER_SEC * float(duration_secs or 5), 2)
+    if m == "ltx-emergency":
+        return round(LTX_COST_PER_CLIP / USD_TO_EUR, 2)
+    return None
 
 
 def video_cost_for_clip(model_tier: str, duration_secs) -> float:

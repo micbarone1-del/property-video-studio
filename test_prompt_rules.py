@@ -14,5 +14,7 @@ check("R2 mirror reflections: no person/figure/face/camera operator", all(w in r
 check("R3 old mirror rule and no-people rule still there", "no mirrors or reflective surfaces that were not already present" in rules and "no people, no human shadows or silhouettes" in rules)
 check("R4 only one definition of the Luma rules (no parallel copy)", len(re.findall(r"no human shadows", src)) == 1)
 check("R5 constant still used by the Luma prompt", 'f"{motion}, {pace}, {_LUMA_RULES}"' in src)
+check("R6 operator shadow/reflection rule defined once and used by BOTH the Luma and the Veo rules", src.count("photographer, camera operator, camera or tripod") == 1 and src.count("_NO_OPERATOR_TRACES") == 3)
+check("R7 wording covers shadow, silhouette, reflection, floor/wall/ceiling/mirror", all(w in src for w in ("no new shadow appears", "no shadow, silhouette or reflection", "cast on any floor, wall, ceiling, window or mirror")))
 print("ALL PASS" if not fails else f"{fails} FAIL")
 sys.exit(1 if fails else 0)

@@ -26,6 +26,7 @@ import logging
 import requests
 import threading
 import fal_client
+import clip_provenance
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -301,6 +302,15 @@ _VEO_INTENSITY_TOKENS = {
     "energetic":    "confident and purposeful, excited about the space",
 }
 
+# Shared by every model's rules (2026-10-15): a camera operator's shadow or
+# reflection kept showing up in clips. Defined once, used in _VEO_RULES and
+# _LUMA_RULES so the wording cannot drift between models.
+_NO_OPERATOR_TRACES = (
+    "every shadow in the frame stays exactly as in the source photo and no new shadow appears, "
+    "no shadow, silhouette or reflection of a photographer, camera operator, camera or tripod "
+    "is cast on any floor, wall, ceiling, window or mirror"
+)
+
 _VEO_RULES = (
     "No people, no human hands, arms, legs, fingers, or body parts visible in any frame. "
     "No wind effects on any surface. "
@@ -313,7 +323,8 @@ _VEO_RULES = (
     "do not generate or reveal any content that was not visible in the original image. "
     "Maximum camera movement is 30 degrees in any direction. "
     "No new rooms, corridors, spaces, or architectural elements not present in the source photo. "
-    "No flickering, no morphing of walls, floors, ceilings, or furniture."
+    "No flickering, no morphing of walls, floors, ceilings, or furniture. "
+    "Also, " + _NO_OPERATOR_TRACES + "."
 )
 
 # ── LUMA RAY 2 — structured movement tokens ────────────────────────────────────
@@ -370,7 +381,8 @@ _LUMA_RULES = (
     "with no person, no human figure, no face and no camera operator in any reflection, "
     "no falling objects, no floating particles, no leaves, "
     "walls, floors, ceilings and furniture stay solid and unchanged, "
-    "no warping, no morphing, no distortion of any surface"
+    "no warping, no morphing, no distortion of any surface, "
+    + _NO_OPERATOR_TRACES
 )
 
 # Lyra frozen-scene prompt (lighting only — Lyra controls camera via parameters)
@@ -689,6 +701,11 @@ LUMA_DIRECT = os.environ.get("LUMA_DIRECT", "false").strip().lower() == "true"
 # 2026-10-09 (stage 4b): per-thread note that Luma rejected the INPUT (HTTP 400/422).
 # generate_video_single reads it to avoid escalating to pricier models for the same bad input.
 _LUMA_STATE = threading.local()
+# 2026-10-15 (Patch A): when the direct Luma API fails (e.g. HTTP 402, credits or budget
+# used up), the code used to switch to fal.ai Luma Ray 2 (2.00 USD per clip, vs 1.20 USD
+# direct) silently. Still ON by default; set FAL_FALLBACK_ENABLED=false in .env to stop
+# the clip with a clear error instead. Either way the UI now shows a red warning.
+FAL_FALLBACK_ENABLED = os.environ.get("FAL_FALLBACK_ENABLED", "true").strip().lower() != "false"
 LUMA_DIRECT_API_URL = "https://agents.lumalabs.ai/v1/generations"  # Agents API, not classic Dream Machine
 _LUMA_DIRECT_POLL_INTERVAL_SECS = 4
 _LUMA_DIRECT_MAX_WAIT_SECS = 300  # 5 min ceiling, same spirit as _subscribe_with_timeout
@@ -750,6 +767,10 @@ def _generate_luma_direct(image_url: str, prompt: str, duration: int, aspect_rat
         if resp.status_code not in (200, 201):
             if resp.status_code in (400, 422):
                 _LUMA_STATE.bad_input = True
+            _LUMA_STATE.direct_error = (
+                f"Luma diretto: HTTP {resp.status_code}"
+                + (" - crediti o budget Luma esauriti" if resp.status_code == 402 else "")
+            )
             log.error(f"[VideoGen] Luma direct create failed: HTTP {resp.status_code} {resp.text[:300]}")
             return None
         gen = resp.json()
@@ -1018,11 +1039,19 @@ def generate_video_single(
             # no warping, no hallucination, on the same photo that caused
             # persistent problems with Veo. New default recommendation.
             _LUMA_STATE.bad_input = False
+            _LUMA_STATE.direct_error = None
             if LUMA_DIRECT:
                 video_url  = _generate_luma_direct(image_url, final_prompt, duration, aspect_ratio=luma_aspect_ratio)
                 used_model = "luma-ray-3.2-direct"
                 if not video_url:
-                    log.warning("[VideoGen] Luma direct failed — falling back to fal.ai Luma Ray 2")
+                    if not getattr(_LUMA_STATE, "direct_error", None):
+                        _LUMA_STATE.direct_error = "Luma diretto non riuscito (vedi log)"
+                    if not FAL_FALLBACK_ENABLED:
+                        log.error(f"[VideoGen] {_LUMA_STATE.direct_error}; FAL_FALLBACK_ENABLED=false -> "
+                                  "NOT falling back to fal.ai, the operator must look at this scene")
+                        return False
+                    log.warning(f"[VideoGen] Luma direct failed ({_LUMA_STATE.direct_error}) — falling back to fal.ai Luma Ray 2 "
+                                "(costs more per clip than the direct API, see cost_tracker.clip_price_usd)")
                     video_url  = _generate_luma(image_url, final_prompt, duration, aspect_ratio=luma_aspect_ratio)
                     used_model = "luma-ray-2-fallback"
             else:
@@ -1112,6 +1141,8 @@ def generate_video_single(
             if not download_video(video_url, output_path):
                 return False
 
+        clip_provenance.write(output_path, used_model, model_tier,
+                              reason=getattr(_LUMA_STATE, "direct_error", None) if model_tier == "luma" else None)
         log.info(f"[VideoGen] ✓ model_used={used_model} output={output_path}")
         return True
 
