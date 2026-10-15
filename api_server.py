@@ -1391,7 +1391,8 @@ async def generate_narration(
         narration_path = str(job_dir / "narration.mp3")
 
 
-        from narration import generate_narration_audio, calculate_scene_durations, suggest_pause_padding, SENTENCE_PAUSE_MS
+        from narration import (generate_narration_audio, calculate_scene_durations, suggest_pause_padding,
+                               SENTENCE_PAUSE_MS, FIXED_SCENE_SECS_BY_TIER, evaluate_fixed_durations)
 
         # Pause-padding persistence (2026-07-16 fix): "Aggiungi pause" used to
         # just regenerate identical audio with the default pause, so the
@@ -1409,9 +1410,16 @@ async def generate_narration(
         else:
             sentence_pause_ms = base_pause_ms
 
+        # 2026-10-15 (Michele): tiers with ONE fixed scene length (Luma: 5 s, never 9 s)
+        # keep their durations and get the sentence/scene synchronisation instead of
+        # a duration redistribution. Other tiers keep the existing behaviour.
+        _tier = job.get("model_tier", "standard")
+        _fixed_secs = FIXED_SCENE_SECS_BY_TIER.get(_tier)
+        _scene_secs = [_fixed_secs] * len(job.get("scenes_config", [])) if _fixed_secs else None
+
         result = await asyncio.to_thread(
             generate_narration_audio, narration_text, narration_path,
-            voice_id or None, sentence_pause_ms
+            voice_id or None, sentence_pause_ms, _scene_secs
         )
 
 
@@ -1428,26 +1436,31 @@ async def generate_narration(
         # (and did) propose "4s" for a Luma job - invalid, Luma only accepts
         # 5s/9s. Now mirrors the same tier logic already used for the UI
         # sliders (getDurationRangeForTier in ui.html).
-        _tier = job.get("model_tier", "standard")
         if _tier == "luma":
-            _valid_durations = [5, 9]
+            _valid_durations = [5]   # 2026-10-15: 9 s is not used (hallucination risk); not reached for Luma any more, see _fixed_secs above
         elif _tier == "eco":
             _valid_durations = [6, 8, 10, 12, 14, 16, 18, 20]
         else:  # premium / premium_veo / standard (all Veo-backed)
             _valid_durations = [4, 6, 8]
 
-        distribution = calculate_scene_durations(
-            narration_duration_secs=result["duration_secs"],
-            scene_count=n_scenes,
-            current_durations=current_durations,
-            valid_durations=_valid_durations,
-        )
+        if _fixed_secs:
+            distribution = evaluate_fixed_durations(
+                result["duration_secs"], [_fixed_secs] * n_scenes, result["sync"]
+            )
+        else:
+            distribution = calculate_scene_durations(
+                narration_duration_secs=result["duration_secs"],
+                scene_count=n_scenes,
+                current_durations=current_durations,
+                valid_durations=_valid_durations,
+            )
 
 
         job["narration_text"] = narration_text
         job["narration_path"] = narration_path
         job["narration_duration_secs"] = result["duration_secs"]
         job["narration_sentence_timings"] = result.get("sentence_timings", [])
+        job["narration_sync"] = result.get("sync")   # 2026-10-15: per-sentence scene alignment (fixed-length tiers only)
         job["sentence_pause_ms"] = sentence_pause_ms
 
         # 2026-07-24: real cost-tracking gap -- this endpoint makes a real,

@@ -44,6 +44,16 @@ NARRATION_PADDING_SECS = LEAD_SECS + TRAIL_SECS   # = 2.0s total (2026-07-21: wa
 # current total video duration, triggering the red warning + fix options.
 TOO_SHORT_THRESHOLD_SECS = 4.0
 
+# 2026-10-15 (Michele): predictable, synchronised narration for tiers whose
+# scenes have ONE fixed length (Luma: 5 s only -- 9 s clips are not used, they
+# risk hallucinations). The scene lengths never change; instead the pauses in
+# the speech are adjusted so a sentence starts when "its" scene starts.
+FIXED_SCENE_SECS_BY_TIER = {"luma": 5}
+SYNC_SNAP_WINDOW_SECS = 2.0   # a sentence that would start up to this long BEFORE a scene cut is delayed to the cut
+MAX_OVERFLOW_SECS     = 2.0   # speech may run this long past the end of the scenes (absorbed by the trailing blank buffer)
+SYNC_SPILL_WARN_SECS  = 2.0   # warn when a sentence that opens a scene runs this long into the next scene
+WORDS_PER_SEC         = 2.4   # only used to turn "cut N seconds" into a rough word count (measured ~0.35-0.55 s/word on Leda)
+
 
 def split_into_sentences(text: str) -> list[str]:
     """
@@ -71,11 +81,133 @@ def split_into_sentences(text: str) -> list[str]:
     return sentences if sentences else [text]
 
 
+def plan_sentence_sync(
+    sentence_ms:       list,
+    scene_secs:        list,
+    sentence_pause_ms: int = SENTENCE_PAUSE_MS,
+) -> dict:
+    """
+    Pure function (no audio, no network): given the MEASURED length of each
+    sentence and the fixed scene lengths, decides how much EXTRA silence to put
+    before each sentence so that a sentence which would start just before a scene
+    cut starts exactly on the cut instead.
+
+    Timeline: narration time 0 == start of scene 0 (assembly adds the blank lead
+    around the video, see _overlay_narration_audio), so the cut between scenes
+    k-1 and k is at sum(scene_secs[:k]) seconds of narration time.
+
+    Rules (deterministic):
+      - sentence 0 starts at 0.
+      - every other sentence starts at previous end + sentence_pause_ms. If the
+        next scene cut is at most SYNC_SNAP_WINDOW_SECS later, the sentence is
+        delayed to that cut (extra pause = the difference, never more than the
+        window). A sentence that already starts after a cut is never moved earlier.
+      - nothing is ever cut from the audio.
+    """
+    cuts = []
+    acc = 0.0
+    for d in scene_secs:
+        cuts.append(acc)
+        acc += float(d)
+    total_video = acc
+    base_pause = sentence_pause_ms / 1000.0
+
+    def scene_of(t):
+        k = 0
+        for i, c in enumerate(cuts):
+            if t + 1e-6 >= c:
+                k = i
+        return k
+
+    rows = []
+    extras_ms = []
+    t = 0.0
+    for j, dur_ms in enumerate(sentence_ms):
+        extra = 0.0
+        if j > 0:
+            nxt = next((c for c in cuts if c > t + 1e-6), None)
+            if nxt is not None and (nxt - t) <= SYNC_SNAP_WINDOW_SECS:
+                extra = nxt - t
+                t = nxt
+        k = scene_of(t)
+        end = t + dur_ms / 1000.0
+        scene_end = cuts[k] + float(scene_secs[k]) if k < len(scene_secs) else total_video
+        rows.append({
+            "index": j,
+            "scene": k,
+            "start_secs": round(t, 2),
+            "end_secs": round(end, 2),
+            "offset_in_scene_secs": round(t - cuts[k], 2),
+            "extra_pause_secs": round(extra, 2),
+            "spill_secs": round(max(0.0, end - scene_end), 2),
+        })
+        extras_ms.append(int(round(extra * 1000)))
+        t = end + base_pause
+
+    speech_end = rows[-1]["end_secs"] if rows else 0.0
+    overflow = max(0.0, speech_end - total_video)
+    warnings = []
+    for r in rows:
+        if r["offset_in_scene_secs"] <= 0.05 and r["spill_secs"] > SYNC_SPILL_WARN_SECS:
+            warnings.append(
+                f"La frase {r['index']+1} (scena {r['scene']+1}) supera la scena di {r['spill_secs']:.1f}s: accorciala o spezzala"
+            )
+    return {
+        "rows": rows,
+        "extra_pause_ms": extras_ms,
+        "speech_end_secs": round(speech_end, 2),
+        "total_video_secs": round(total_video, 2),
+        "overflow_secs": round(overflow, 2),
+        "too_long": overflow > MAX_OVERFLOW_SECS,
+        "warnings": warnings,
+    }
+
+
+def evaluate_fixed_durations(narration_duration_secs: float, scene_durations: list, sync: dict) -> dict:
+    """
+    Same return shape as calculate_scene_durations(), for tiers with fixed scene
+    lengths: the scene durations are NEVER changed and the video is never
+    "extended". Speech running past the scenes is absorbed by the trailing blank
+    buffer up to MAX_OVERFLOW_SECS; beyond that the text must be shortened.
+    """
+    current_total = sum(scene_durations)
+    overflow = sync["overflow_secs"]
+    too_long = sync["too_long"]
+    silence = current_total - narration_duration_secs
+    too_short = (not too_long) and narration_duration_secs > 0 and silence > TOO_SHORT_THRESHOLD_SECS
+    n_pauses = sum(1 for r in sync["rows"] if r["extra_pause_secs"] > 0.05)
+    if too_long:
+        cut = overflow - MAX_OVERFLOW_SECS + 0.5
+        msg = (f"Narrazione troppo lunga: finisce {overflow:.1f}s dopo l'ultima scena "
+               f"(il buffer finale ne assorbe al massimo {MAX_OVERFLOW_SECS:.0f}s). "
+               f"Accorcia il testo di circa {cut:.0f}s (circa {max(1, round(cut * WORDS_PER_SEC))} parole)")
+    elif too_short:
+        msg = (f"Narrazione troppo breve per la durata video attuale — {round(silence)}s di silenzio previsti")
+    else:
+        msg = (f"Narrazione sincronizzata con le scene ({n_pauses} pause aggiunte per allinearla; "
+               f"{overflow:.1f}s oltre l'ultima scena, assorbiti dal buffer)" if overflow > 0.05 else
+               f"Narrazione sincronizzata con le scene ({n_pauses} pause aggiunte per allinearla)")
+    return {
+        "narration_duration_secs": round(narration_duration_secs, 1),
+        "target_total_secs":       current_total,
+        "current_total_secs":      current_total,
+        "new_scene_durations":     list(scene_durations),
+        "needs_extension":         False,
+        "too_short":               too_short,
+        "too_long":                too_long,
+        "fixed_durations":         True,
+        "max_overflow_secs":       MAX_OVERFLOW_SECS,
+        "sync":                    sync,
+        "message":                 msg,
+    }
+
+
 def generate_narration_audio(
     text:            str,
     output_path:     str,
     voice_id:        str = None,
     sentence_pause_ms: int = SENTENCE_PAUSE_MS,
+    scene_secs:      list = None,
 ) -> dict:
     """
     Generates the full narration as sentence-split TTS calls, concatenated
@@ -112,19 +244,27 @@ def generate_narration_audio(
 
             clip = AudioSegment.from_file(sentence_path)
             sentence_clips.append(clip)
-            sentence_timings.append({
-                "index": i,
-                "text": sentence,
-                "start_ms": current_offset_ms,
-                "duration_ms": len(clip),
-            })
-            current_offset_ms += len(clip) + sentence_pause_ms
+
+        # 2026-10-15: with fixed scene lengths (scene_secs given), the extra
+        # silence before each sentence comes from plan_sentence_sync() so each
+        # sentence starts on its scene cut; otherwise every gap is the plain pause.
+        sync = None
+        extras_ms = [0] * len(sentence_clips)
+        if scene_secs:
+            sync = plan_sentence_sync([len(c) for c in sentence_clips], scene_secs, sentence_pause_ms)
+            extras_ms = sync["extra_pause_ms"]
 
         # Concatenate all sentences with silence gaps between them
-        silence = AudioSegment.silent(duration=sentence_pause_ms)
         combined = sentence_clips[0]
-        for clip in sentence_clips[1:]:
-            combined = combined + silence + clip
+        current_offset_ms = 0
+        sentence_timings.append({"index": 0, "text": sentences[0], "start_ms": 0, "duration_ms": len(sentence_clips[0])})
+        current_offset_ms = len(sentence_clips[0])
+        for i in range(1, len(sentence_clips)):
+            gap = sentence_pause_ms + extras_ms[i]
+            combined = combined + AudioSegment.silent(duration=gap) + sentence_clips[i]
+            current_offset_ms += gap
+            sentence_timings.append({"index": i, "text": sentences[i], "start_ms": current_offset_ms, "duration_ms": len(sentence_clips[i])})
+            current_offset_ms += len(sentence_clips[i])
 
         combined.export(output_path, format="mp3")
         total_duration_secs = len(combined) / 1000.0
@@ -137,6 +277,7 @@ def generate_narration_audio(
             "duration_secs": total_duration_secs,
             "sentence_count": len(sentences),
             "sentence_timings": sentence_timings,
+            "sync": sync,
             "output_path": output_path,
         }
 

@@ -754,14 +754,25 @@ function renderNarrationResult(data) {
   resultEl.style.display = 'block';
 
 
-  const isProblem = data.needs_extension || data.too_short;
+  const isProblem = data.needs_extension || data.too_short || data.too_long;
   resultEl.style.background = isProblem ? '#fdf0ef' : '#edf7f1';
   resultEl.style.border = `1px solid ${isProblem ? '#f5c6c2' : '#b7dfca'}`;
   resultEl.style.color = isProblem ? 'var(--danger)' : 'var(--ok)';
 
 
   let html = `<div style="font-weight:600;margin-bottom:6px">${data.message}</div>`;
-  html += `<div style="font-size:.78rem;opacity:.85">Nuove durate scene proposte: ${data.new_scene_durations.join('s, ')}s</div>`;
+  if (data.fixed_durations && data.sync) {
+    // 2026-10-15: fixed-length tiers (Luma 5 s): scenes unchanged, show where each sentence starts
+    const rows = data.sync.rows.map(r => {
+      
+      return `<div>Frase ${r.index + 1} → scena ${r.scene + 1}, inizia a +${r.offset_in_scene_secs}s${r.extra_pause_secs > 0.05 ? ` <b>(pausa +${r.extra_pause_secs}s)</b>` : ''}</div>`;
+    }).join('');
+    html += `<div style="font-size:.78rem;opacity:.85">Durate scene invariate (${data.new_scene_durations[0]}s ciascuna)</div>`;
+    html += `<div style="font-size:.74rem;opacity:.8;margin-top:6px;max-height:140px;overflow:auto">${rows}</div>`;
+    (data.sync.warnings || []).forEach(w => { html += `<div style="font-size:.78rem;margin-top:4px">⚠ ${w}</div>`; });
+  } else {
+    html += `<div style="font-size:.78rem;opacity:.85">Nuove durate scene proposte: ${data.new_scene_durations.join('s, ')}s</div>`;
+  }
 
 
   if (data.too_short) {
@@ -2170,7 +2181,7 @@ function onSpaceTypeChange(index, value) {
 // kept receiving invalid durations like 4s, 8s, etc. This caused repeated
 // "Input should be '5s' or '9s'" rejections from fal.ai.
 function getDurationRangeForTier(tier) {
-  if (tier === 'luma') return {min: 5, max: 9, step: 4, def: 5, minLabel: '5s', maxLabel: '9s'};
+  if (tier === 'luma') return {min: 5, max: 5, step: 1, def: 5, minLabel: '5s', maxLabel: '5s'}; // 2026-10-15: Luma is used at 5 s only (9 s clips risk hallucinations); same value as FIXED_SCENE_SECS_BY_TIER in narration.py
   if (tier === 'eco')  return {min: 6, max: 20, step: 2, def: 8, minLabel: '6s', maxLabel: '20s'};
   return {min: 4, max: 8, step: 2, def: 6, minLabel: '4s', maxLabel: '8s'}; // premium/premium_veo/standard (Veo-backed)
 }
@@ -2539,11 +2550,15 @@ function checkNarrationDurationMatch() {
 
   const statusEl = document.getElementById('narration-status');
   const tooShort = (currentTotal - narrationSecs) > 4.0; // TOO_SHORT_THRESHOLD_SECS in narration.py (2026-10-15: no padding term any more)
-  const needsExtension = targetTotal > currentTotal;
+  // 2026-10-15: fixed-length tiers report how much overrun the trailing buffer absorbs (server value, narration.py MAX_OVERFLOW_SECS); 0 for the others
+  const allowedOverflow = narrationDistribution.max_overflow_secs || 0;
+  const needsExtension = (targetTotal - currentTotal) > allowedOverflow;
 
 
   if (needsExtension) {
-    statusEl.textContent = `⚠ Le scene attuali (${currentTotal}s) sono più corte della narrazione (${narrationSecs}s) — il video verrà esteso`;
+    statusEl.textContent = allowedOverflow > 0
+      ? `⚠ La narrazione (${narrationSecs}s) supera le scene (${currentTotal}s) di più di ${allowedOverflow}s — accorcia il testo`
+      : `⚠ Le scene attuali (${currentTotal}s) sono più corte della narrazione (${narrationSecs}s) — il video verrà esteso`;
     statusEl.style.color = 'var(--danger)';
   } else if (tooShort) {
     statusEl.textContent = `⚠ Le scene attuali (${currentTotal}s) superano la narrazione di troppo — ${Math.round(currentTotal - narrationSecs)}s di silenzio previsti`;
