@@ -202,6 +202,82 @@ def evaluate_fixed_durations(narration_duration_secs: float, scene_durations: li
     }
 
 
+def synthesize_sentences(text: str, voice_id: str = None, tmp_parent: str = None) -> dict:
+    """
+    TTS step only: one real TTS call per sentence, returned as in-memory audio.
+    2026-10-15: split out of generate_narration_audio() so the manual workflow and the
+    URL/Relinx workflow share ONE voice-generation path, and so the clips can be
+    re-assembled (e.g. with a different scene count) without paying for TTS again.
+    Returns {"ok", "sentences", "clips", "error"}.
+    """
+    import tempfile, shutil
+    from voice_generation import generate_speech as generate_voice
+    from pydub import AudioSegment
+
+    sentences = split_into_sentences(text)
+    if not sentences:
+        return {"ok": False, "error": "Empty narration text", "sentences": [], "clips": []}
+
+    log.info(f"[Narration] Splitting into {len(sentences)} sentences for TTS generation")
+    tmp_dir = Path(tempfile.mkdtemp(prefix="_narration_sentences_", dir=tmp_parent))
+    clips = []
+    try:
+        for i, sentence in enumerate(sentences):
+            sentence_path = str(tmp_dir / f"sentence_{i:03d}.mp3")
+            ok = generate_voice(sentence, sentence_path, voice_id=voice_id)
+            if not ok or not os.path.exists(sentence_path):
+                log.error(f"[Narration] Failed to generate sentence {i}: {sentence[:50]}")
+                return {"ok": False, "error": f"TTS failed on sentence {i+1}", "sentences": sentences, "clips": []}
+            clips.append(AudioSegment.from_file(sentence_path))
+        return {"ok": True, "error": None, "sentences": sentences, "clips": clips}
+    finally:
+        shutil.rmtree(str(tmp_dir), ignore_errors=True)
+
+
+def assemble_narration(
+    sentences:         list,
+    clips:             list,
+    output_path:       str,
+    sentence_pause_ms: int = SENTENCE_PAUSE_MS,
+    scene_secs:        list = None,
+) -> dict:
+    """
+    Assembly step (no TTS): concatenates the sentence clips with the plain pause and,
+    when scene_secs is given (fixed scene lengths), the extra silence that
+    plan_sentence_sync() asks for so each sentence starts on its scene cut.
+    """
+    from pydub import AudioSegment
+
+    sync = None
+    extras_ms = [0] * len(clips)
+    if scene_secs:
+        sync = plan_sentence_sync([len(c) for c in clips], scene_secs, sentence_pause_ms)
+        extras_ms = sync["extra_pause_ms"]
+
+    combined = clips[0]
+    sentence_timings = [{"index": 0, "text": sentences[0], "start_ms": 0, "duration_ms": len(clips[0])}]
+    offset_ms = len(clips[0])
+    for i in range(1, len(clips)):
+        gap = sentence_pause_ms + extras_ms[i]
+        combined = combined + AudioSegment.silent(duration=gap) + clips[i]
+        offset_ms += gap
+        sentence_timings.append({"index": i, "text": sentences[i], "start_ms": offset_ms, "duration_ms": len(clips[i])})
+        offset_ms += len(clips[i])
+
+    combined.export(output_path, format="mp3")
+    total_duration_secs = len(combined) / 1000.0
+    log.info(f"[Narration] Generated {len(sentences)} sentences, "
+             f"total duration {total_duration_secs:.1f}s -> {output_path}")
+    return {
+        "ok": True,
+        "duration_secs": total_duration_secs,
+        "sentence_count": len(sentences),
+        "sentence_timings": sentence_timings,
+        "sync": sync,
+        "output_path": output_path,
+    }
+
+
 def generate_narration_audio(
     text:            str,
     output_path:     str,
@@ -211,87 +287,17 @@ def generate_narration_audio(
 ) -> dict:
     """
     Generates the full narration as sentence-split TTS calls, concatenated
-    with explicit silence gaps. Returns a dict with success status,
-    actual measured duration, and per-sentence timing (useful for
-    debugging or future features like highlighting the active sentence).
+    with explicit silence gaps (synthesize_sentences + assemble_narration).
+    Returns a dict with success status, actual measured duration, per-sentence
+    timing and, for fixed-length scenes, the sentence/scene sync plan.
 
-    This is the ONLY function that should generate narration audio —
-    it replaces the old per-scene voiceover generation entirely.
+    This is the ONLY code path that generates narration audio, for BOTH the manual
+    workflow and the URL/Relinx workflow (listing_scraper._measure_tts_duration).
     """
-    from voice_generation import generate_speech as generate_voice
-    from pydub import AudioSegment
-
-    sentences = split_into_sentences(text)
-    if not sentences:
-        return {"ok": False, "error": "Empty narration text", "duration_secs": 0}
-
-    log.info(f"[Narration] Splitting into {len(sentences)} sentences for TTS generation")
-
-    tmp_dir = Path(output_path).parent / "_narration_sentences"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-
-    sentence_clips = []
-    sentence_timings = []
-    current_offset_ms = 0
-
-    try:
-        for i, sentence in enumerate(sentences):
-            sentence_path = str(tmp_dir / f"sentence_{i:03d}.mp3")
-            ok = generate_voice(sentence, sentence_path, voice_id=voice_id)
-            if not ok or not os.path.exists(sentence_path):
-                log.error(f"[Narration] Failed to generate sentence {i}: {sentence[:50]}")
-                return {"ok": False, "error": f"TTS failed on sentence {i+1}", "duration_secs": 0}
-
-            clip = AudioSegment.from_file(sentence_path)
-            sentence_clips.append(clip)
-
-        # 2026-10-15: with fixed scene lengths (scene_secs given), the extra
-        # silence before each sentence comes from plan_sentence_sync() so each
-        # sentence starts on its scene cut; otherwise every gap is the plain pause.
-        sync = None
-        extras_ms = [0] * len(sentence_clips)
-        if scene_secs:
-            sync = plan_sentence_sync([len(c) for c in sentence_clips], scene_secs, sentence_pause_ms)
-            extras_ms = sync["extra_pause_ms"]
-
-        # Concatenate all sentences with silence gaps between them
-        combined = sentence_clips[0]
-        current_offset_ms = 0
-        sentence_timings.append({"index": 0, "text": sentences[0], "start_ms": 0, "duration_ms": len(sentence_clips[0])})
-        current_offset_ms = len(sentence_clips[0])
-        for i in range(1, len(sentence_clips)):
-            gap = sentence_pause_ms + extras_ms[i]
-            combined = combined + AudioSegment.silent(duration=gap) + sentence_clips[i]
-            current_offset_ms += gap
-            sentence_timings.append({"index": i, "text": sentences[i], "start_ms": current_offset_ms, "duration_ms": len(sentence_clips[i])})
-            current_offset_ms += len(sentence_clips[i])
-
-        combined.export(output_path, format="mp3")
-        total_duration_secs = len(combined) / 1000.0
-
-        log.info(f"[Narration] Generated {len(sentences)} sentences, "
-                 f"total duration {total_duration_secs:.1f}s → {output_path}")
-
-        return {
-            "ok": True,
-            "duration_secs": total_duration_secs,
-            "sentence_count": len(sentences),
-            "sentence_timings": sentence_timings,
-            "sync": sync,
-            "output_path": output_path,
-        }
-
-    finally:
-        # Cleanup individual sentence files — only the combined output matters
-        for f in tmp_dir.glob("sentence_*.mp3"):
-            try:
-                f.unlink()
-            except Exception:
-                pass
-        try:
-            tmp_dir.rmdir()
-        except Exception:
-            pass
+    syn = synthesize_sentences(text, voice_id, tmp_parent=str(Path(output_path).parent))
+    if not syn["ok"]:
+        return {"ok": False, "error": syn["error"], "duration_secs": 0}
+    return assemble_narration(syn["sentences"], syn["clips"], output_path, sentence_pause_ms, scene_secs)
 
 
 def calculate_scene_durations(

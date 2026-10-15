@@ -1841,7 +1841,8 @@ async def create_job_from_url(
         "awaiting_scenes": [],
         "narration_text": narration["narration_text"],
         "narration_path": job_narration_path,
-        "narration_duration_secs": narration["video_duration_secs"],
+        "narration_duration_secs": narration["speech_duration_secs"],   # 2026-10-15: was the VIDEO length, mislabelled
+        "narration_sync": narration.get("sync"),
         "source_url": url,
         "source_price": extraction.get("price"),
         "source_address": extraction.get("address"),
@@ -2178,7 +2179,8 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
             "claude_usage": claude_usage,
             "narration_text": narration["narration_text"],
             "narration_path": job_narration_path,
-            "narration_duration_secs": narration["video_duration_secs"],
+            "narration_duration_secs": narration["speech_duration_secs"],   # 2026-10-15: was the VIDEO length, mislabelled
+            "narration_sync": narration.get("sync"),
             "source_description": description_full,
             "selection_report": selection_report,
         })

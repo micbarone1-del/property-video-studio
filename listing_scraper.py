@@ -714,12 +714,13 @@ Return ONLY the shortened narration text (no JSON, no markdown, no preamble)."""
 TTS_MEASURE_ATTEMPTS = 3
 
 
-def _measure_tts_duration(text: str, voice_id: str = None, attempts: int = TTS_MEASURE_ATTEMPTS) -> dict:
+def _measure_tts_duration(text: str, voice_id: str = None, attempts: int = TTS_MEASURE_ATTEMPTS, scene_secs: list = None) -> dict:
     """2026-10-12: retries the real TTS measurement on transient failure (backoff 2 s, 4 s).
-    A single provider hiccup used to fail the whole job ("TTS measurement failed on initial narration")."""
+    A single provider hiccup used to fail the whole job ("TTS measurement failed on initial narration").
+    2026-10-15: scene_secs (fixed scene lengths) makes the audio come out already synchronised with the scenes."""
     last = {"ok": False, "duration_secs": None, "audio_path": None}
     for n in range(attempts):
-        last = _measure_tts_duration_once(text, voice_id)
+        last = _measure_tts_duration_once(text, voice_id, scene_secs)
         if last.get("ok"):
             return last
         log.warning(f"[Scraper] TTS measurement attempt {n + 1}/{attempts} failed")
@@ -728,27 +729,48 @@ def _measure_tts_duration(text: str, voice_id: str = None, attempts: int = TTS_M
     return last
 
 
-def _measure_tts_duration_once(text: str, voice_id: str = None) -> dict:
-    """Generates real TTS audio and measures its actual duration — the
+def _measure_tts_duration_once(text: str, voice_id: str = None, scene_secs: list = None) -> dict:
+    """Generates the real narration audio and measures its actual duration -- the
     only reliable way to know how long narration text will actually take
     to speak. Never estimated from word/character count for any decision
-    that matters — every scene-count and fit decision below is made from
-    this real measurement, not a guess."""
+    that matters.
+
+    2026-10-15 (Michele): this used to make ONE TTS call on the whole text, a different
+    mechanism from the manual workflow (no pauses between sentences, no scene sync). It now
+    goes through the single shared narration path (narration.synthesize_sentences /
+    assemble_narration), so both workflows produce the same kind of audio. The sentence clips
+    are returned so a different scene count can be applied later without paying for TTS again."""
     import tempfile
-    from voice_generation import generate_speech
-    from pydub import AudioSegment
+    from narration import synthesize_sentences, assemble_narration
 
     with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
         tmp_path = f.name
     try:
-        ok = generate_speech(text, tmp_path, voice_id=voice_id)
-        if not ok or not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
+        syn = synthesize_sentences(text, voice_id)
+        if not syn["ok"]:
+            return {"ok": False, "duration_secs": None, "audio_path": None, "error": syn.get("error")}
+        res = assemble_narration(syn["sentences"], syn["clips"], tmp_path, scene_secs=scene_secs)
+        if not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
             return {"ok": False, "duration_secs": None, "audio_path": None}
-        duration_secs = len(AudioSegment.from_file(tmp_path)) / 1000.0
-        return {"ok": True, "duration_secs": duration_secs, "audio_path": tmp_path}
+        return {"ok": True, "duration_secs": res["duration_secs"], "audio_path": tmp_path,
+                "sync": res.get("sync"), "sentences": syn["sentences"], "clips": syn["clips"]}
     except Exception as e:
         log.error(f"[Scraper] TTS measurement failed: {e}")
         return {"ok": False, "duration_secs": None, "audio_path": None, "error": str(e)}
+
+
+def _resync_measurement(measurement: dict, scene_count: int):
+    """Re-assembles the already generated sentence clips for a given scene count (no TTS call).
+    Returns (audio_path, duration_secs, sync) or None when the clips are not available."""
+    import tempfile
+    from narration import assemble_narration
+    if not measurement.get("clips"):
+        return None
+    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+        tmp_path = f.name
+    res = assemble_narration(measurement["sentences"], measurement["clips"], tmp_path,
+                             scene_secs=[SCENE_CLIP_SECS] * scene_count)
+    return tmp_path, res["duration_secs"], res.get("sync")
 
 
 def _fade_out_and_trim(audio_path: str, target_secs: float, search_window_secs: float = 4.0) -> str:
@@ -860,29 +882,35 @@ SCENE_CLIP_SECS = 5        # Luma Ray 2's native duration — zero snapping dist
 # below and build_final_audio_track() (now only used by this file's own
 # standalone __main__ test block, not the live pipeline) keep working
 # unchanged -- only the VALUES are now shared, not independently redefined.
-from narration import LEAD_SECS, TRAIL_SECS
+from narration import LEAD_SECS, TRAIL_SECS, MAX_OVERFLOW_SECS, TOO_SHORT_THRESHOLD_SECS
 LEAD_SILENCE_SECS  = LEAD_SECS    # was an independent 1.0 -- now the same 1.0 as narration.py
 TRAIL_SILENCE_SECS = TRAIL_SECS   # was an independent 2.0 -- now the same 1.0 (the WhatsApp-trim evidence behind narration.py's value applies equally to scraped videos)
-MIN_SCENES = 5             # 25s — tightened from an earlier 4-8 range per explicit requirement to
-MAX_SCENES = 7             # 35s — stay "roughly 30s", not drift as wide as 20-40s
-TARGET_SCENES = 6          # 30s — the anchor; derived scene count should land here in the common case
-MIN_SPEECH_SECS_FOR_RANGE = (MIN_SCENES * SCENE_CLIP_SECS) - LEAD_SILENCE_SECS - TRAIL_SILENCE_SECS  # 22s
-MAX_SPEECH_SECS_FOR_RANGE = (MAX_SCENES * SCENE_CLIP_SECS) - LEAD_SILENCE_SECS - TRAIL_SILENCE_SECS  # 32s
+MIN_SCENES = 5             # 25s
+MAX_SCENES = 7             # 35s -- stay "roughly 30s", not drift as wide as 20-40s
+TARGET_SCENES = 6          # 30s -- the anchor; derived scene count should land here in the common case
+
+# 2026-10-15 (Michele): the lead/trail blank frames are added AROUND the scenes at assembly time
+# (api_server._overlay_narration_audio), they are not carved out of the scene time. So the speech has to fit
+# scenes*5 s, may be at most TOO_SHORT_THRESHOLD_SECS shorter, and may run MAX_OVERFLOW_SECS past the last
+# scene (absorbed by the trailing blank). Same two numbers narration.py uses for the manual workflow.
+def _speech_band(scenes: int):
+    return (scenes * SCENE_CLIP_SECS - TOO_SHORT_THRESHOLD_SECS, scenes * SCENE_CLIP_SECS + MAX_OVERFLOW_SECS)
+
+MIN_SPEECH_SECS_FOR_RANGE, MAX_SPEECH_SECS_FOR_RANGE = _speech_band(MIN_SCENES)[0], _speech_band(MAX_SCENES)[1]
 
 # 2026-10-12 (3B, Michele's decision): the STANDARD video is always exactly 6 scenes = 30 s (facade, living,
-# kitchen, bedroom, bathroom, balcony/garden). The narration must therefore fit 6 x 5 s minus the 1 s lead and
-# 1 s trail silence: speech band 24-28 s. Premium keeps its own wider band.
+# kitchen, bedroom, bathroom, balcony/garden). 2026-10-15: speech band 26-32 s (was 24-28 with the buffers counted twice).
+# Premium keeps its own wider band.
 STANDARD_SCENES = TARGET_SCENES
-STANDARD_MIN_SPEECH_SECS = 24.0
-STANDARD_MAX_SPEECH_SECS = (STANDARD_SCENES * SCENE_CLIP_SECS) - LEAD_SILENCE_SECS - TRAIL_SILENCE_SECS  # 28s
+STANDARD_MIN_SPEECH_SECS, STANDARD_MAX_SPEECH_SECS = _speech_band(STANDARD_SCENES)
 
 # 2026-07-24 (backlog item 35): premium ~1-minute template. Same
 # tightened-band mechanism as the standard format, just a wider target --
 # a manual per-job toggle, URL-scrape only per explicit product decision.
 MIN_SCENES_PREMIUM = 11    # ~55s
 MAX_SCENES_PREMIUM = 13    # ~65s
-MIN_SPEECH_SECS_FOR_RANGE_PREMIUM = (MIN_SCENES_PREMIUM * SCENE_CLIP_SECS) - LEAD_SILENCE_SECS - TRAIL_SILENCE_SECS
-MAX_SPEECH_SECS_FOR_RANGE_PREMIUM = (MAX_SCENES_PREMIUM * SCENE_CLIP_SECS) - LEAD_SILENCE_SECS - TRAIL_SILENCE_SECS
+MIN_SPEECH_SECS_FOR_RANGE_PREMIUM = _speech_band(MIN_SCENES_PREMIUM)[0]
+MAX_SPEECH_SECS_FOR_RANGE_PREMIUM = _speech_band(MAX_SCENES_PREMIUM)[1]
 
 # Premium sequence: outdoor appears twice -- once right after the facade,
 # once again at the closing, per explicit product decision. Represented
@@ -953,8 +981,8 @@ def generate_narration_and_derive_scenes(
         "highlight reel, while still avoiding an exhaustive room-by-room list."
         if premium else
         "This is a SHORT-format video (~30 seconds) -- mention only 2-3 standout features of the property rather than "
-        "describing every room; a brief highlight, not an exhaustive tour. The finished narration must take about 26 seconds "
-        "to speak aloud (roughly 65-75 Italian words in total, including the opening and the closing line)."
+        "describing every room; a brief highlight, not an exhaustive tour. The finished narration must take about 29 seconds "
+        "to speak aloud (roughly 68-78 Italian words in total, including the opening and the closing line)."
     )
 
     if scene_category_order:
@@ -988,7 +1016,10 @@ def generate_narration_and_derive_scenes(
                 "scene_count": None, "video_duration_secs": None, "tts_calls_used": 0,
                 "was_trimmed": False, "error": "empty narration returned"}
 
-    measurement = _measure_tts_duration(narration_text, voice_id)
+    # 2026-10-15: the standard video has a FIXED scene count, so the audio is built already synchronised with it.
+    # Premium derives its scene count from the speech, so it is measured plain first and synchronised afterwards.
+    _fixed_scene_secs = None if premium else [SCENE_CLIP_SECS] * STANDARD_SCENES
+    measurement = _measure_tts_duration(narration_text, voice_id, scene_secs=_fixed_scene_secs)
     tts_calls_used = 1
     if not measurement["ok"]:
         return {"ok": False, "narration_text": narration_text, "audio_path": None,
@@ -998,6 +1029,7 @@ def generate_narration_and_derive_scenes(
 
     speech_secs = measurement["duration_secs"]
     audio_path = measurement["audio_path"]
+    sync = measurement.get("sync")
     was_trimmed = False
 
     # Single correction pass if outside the tightened band — symmetric:
@@ -1020,10 +1052,11 @@ def generate_narration_and_derive_scenes(
                                                  messages=[{"role": "user", "content": shorten_prompt}]))
             revised = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
             if revised:
-                remeasure = _measure_tts_duration(revised, voice_id)
+                remeasure = _measure_tts_duration(revised, voice_id, scene_secs=_fixed_scene_secs)
                 tts_calls_used += 1
                 if remeasure["ok"]:
                     narration_text, speech_secs, audio_path = revised, remeasure["duration_secs"], remeasure["audio_path"]
+                    measurement, sync = remeasure, remeasure.get("sync")
         except Exception as e:
             log.warning(f"[Scraper] Shorten pass failed, proceeding as-is: {e}")
 
@@ -1033,6 +1066,7 @@ def generate_narration_and_derive_scenes(
             audio_path = _fade_out_and_trim(audio_path, _max_speech)
             speech_secs = _max_speech
             was_trimmed = True
+            sync = None   # the audio was cut after the sync plan was made: the plan no longer describes it
 
     elif speech_secs < _min_speech:
         target_speech = _min_speech + 3.0  # margin above the floor
@@ -1046,10 +1080,11 @@ def generate_narration_and_derive_scenes(
                                                  messages=[{"role": "user", "content": extend_prompt}]))
             revised = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
             if revised:
-                remeasure = _measure_tts_duration(revised, voice_id)
+                remeasure = _measure_tts_duration(revised, voice_id, scene_secs=_fixed_scene_secs)
                 tts_calls_used += 1
                 if remeasure["ok"]:
                     narration_text, speech_secs, audio_path = revised, remeasure["duration_secs"], remeasure["audio_path"]
+                    measurement, sync = remeasure, remeasure.get("sync")
         except Exception as e:
             log.warning(f"[Scraper] Extend pass failed, proceeding as-is "
                         f"(may result in a shorter-than-usual video — acceptable if the listing "
@@ -1060,7 +1095,9 @@ def generate_narration_and_derive_scenes(
         # more trailing silence than usual, which is preferable to padding
         # with unsupported claims.
 
-    needed_secs = speech_secs + LEAD_SILENCE_SECS + TRAIL_SILENCE_SECS
+    # 2026-10-15: the lead/trail blank frames are added around the scenes, so the scenes only need to cover the speech
+    # (minus the MAX_OVERFLOW_SECS the trailing blank absorbs). It used to add 2 s here, counting the buffers twice.
+    needed_secs = max(0.0, speech_secs - MAX_OVERFLOW_SECS)
     scene_count = math.ceil(needed_secs / SCENE_CLIP_SECS)
     scene_count = max(_min_scenes, min(_max_scenes, scene_count))
 
@@ -1075,15 +1112,27 @@ def generate_narration_and_derive_scenes(
     # unreachable (i.e. already at MIN_SCENES).
     if scene_count > _min_scenes and audio_path:
         lower_scene_count = scene_count - 1
-        max_speech_for_lower = (lower_scene_count * SCENE_CLIP_SECS) - LEAD_SILENCE_SECS - TRAIL_SILENCE_SECS
+        max_speech_for_lower = _speech_band(lower_scene_count)[1]
         if speech_secs > max_speech_for_lower:
             trim_amount = speech_secs - max_speech_for_lower
             audio_path = _fade_out_and_trim(audio_path, max_speech_for_lower)
             speech_secs = max_speech_for_lower
             scene_count = lower_scene_count
             was_trimmed = True
+            sync = None
             log.info(f"[Scraper] Trimmed {trim_amount:.1f}s to fit {lower_scene_count} scenes "
                      f"instead of {lower_scene_count + 1} (avoids excess trailing silence)")
+
+    if premium and not was_trimmed:
+        for _ in range(3):   # pauses added by the sync can push the speech past the last scene: add a scene (11 -> 13 at most) and re-assemble
+            resynced = _resync_measurement(measurement, scene_count)
+            if not resynced:
+                break
+            audio_path, speech_secs, sync = resynced
+            wanted = max(_min_scenes, min(_max_scenes, math.ceil(max(0.0, speech_secs - MAX_OVERFLOW_SECS) / SCENE_CLIP_SECS)))
+            if wanted <= scene_count:
+                break
+            scene_count = wanted
 
     video_duration_secs = scene_count * SCENE_CLIP_SECS
 
@@ -1096,6 +1145,7 @@ def generate_narration_and_derive_scenes(
         "video_duration_secs": video_duration_secs,
         "tts_calls_used": tts_calls_used,
         "was_trimmed": was_trimmed,
+        "sync": sync,
         "error": None,
     }
 

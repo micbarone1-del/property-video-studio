@@ -59,10 +59,18 @@ check("D6 no file left on failure", not (d / "p.jpg").exists())
 # TTS measurement retries
 vg = types.ModuleType("voice_generation"); pd = types.ModuleType("pydub")
 class Seg:
-    def __len__(self): return 5000
+    # 2026-10-15: minimal stand-in for pydub segments; the URL workflow now builds its audio through narration.py
+    # (sentence clips + silences + export), so the stand-in must support those operations too
+    def __init__(self, ms=5000): self.ms = ms
+    def __len__(self): return self.ms
+    def __add__(self, o): return Seg(self.ms + len(o))
+    def export(self, path, format=None):
+        open(path, "wb").write(b"mp3"); return self
 class AS:
     @staticmethod
     def from_file(p): return Seg()
+    @staticmethod
+    def silent(duration=0): return Seg(duration)
 pd.AudioSegment = AS
 sys.modules["voice_generation"] = vg; sys.modules["pydub"] = pd
 def make_tts(results):
@@ -87,6 +95,15 @@ check("T2 exception then ok", r["ok"] and len(calls) == 2, r)
 sleeps.clear(); calls = make_tts([False, False, False])
 r = ls._measure_tts_duration("ciao")
 check("T3 always failing: 3 attempts, ok False, no exception", (not r["ok"]) and len(calls) == 3 and r["duration_secs"] is None, r)
+
+# 2026-10-15: shared narration path (sentence clips, sync, re-assembly without TTS)
+sleeps.clear(); calls = make_tts([True, True])
+r = ls._measure_tts_duration("Ciao a tutti. Benvenuti qui.", scene_secs=[5, 5])
+check("T4 two sentences -> two TTS calls, synced audio returned with its clips", r["ok"] and len(calls) == 2 and r["sync"] is not None and len(r["clips"]) == 2 and abs(r["duration_secs"] - 10.38) < 0.01, r.get("duration_secs"))
+calls_before = len(calls)
+rs = ls._resync_measurement(r, 3)
+check("T5 re-assembly for another scene count needs no TTS call", rs is not None and len(calls) == calls_before and rs[2]["rows"][0]["start_secs"] == 0.0, rs)
+check("T6 re-assembly without clips (nothing to reuse) returns None", ls._resync_measurement({"ok": True}, 3) is None)
 
 # captions switched off
 sel = {"selected": {"living": [{"local_path": "a.jpg"}], "kitchen": [{"local_path": "b.jpg"}]}}

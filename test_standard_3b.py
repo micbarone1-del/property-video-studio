@@ -39,8 +39,8 @@ r = ls.check_listing_acceptance([])
 check("A8 empty list rejected without crash", (not r["ok"]) and r["usable_photos"] == 0 and "nessuno" in r["message"], r)
 check("A9 message states what is required and what was found", "almeno 5 foto" in ls.check_listing_acceptance(ph("living",2))["message"] and "soggiorno" in ls.check_listing_acceptance(ph("living",2))["message"])
 
-# ---- fixed 6 scenes, band 24-28
-check("B1 constants", ls.STANDARD_SCENES == 6 and ls.STANDARD_MIN_SPEECH_SECS == 24.0 and ls.STANDARD_MAX_SPEECH_SECS == 28.0, (ls.STANDARD_SCENES, ls.STANDARD_MAX_SPEECH_SECS))
+# ---- fixed 6 scenes, speech band 26-32 (2026-10-15: scenes*5 - 4 .. scenes*5 + 2; the lead/trail blank is added around the scenes)
+check("B1 constants", ls.STANDARD_SCENES == 6 and ls.STANDARD_MIN_SPEECH_SECS == 26.0 and ls.STANDARD_MAX_SPEECH_SECS == 32.0, (ls.STANDARD_SCENES, ls.STANDARD_MAX_SPEECH_SECS))
 
 prompts = []
 class Msgs:
@@ -53,34 +53,55 @@ class FakeClient:
 ls.anthropic.Anthropic = FakeClient
 ls._track_claude = lambda r: r
 queue = []; trims = []
-def fake_measure(text, voice_id=None, attempts=1):
-    return {"ok": True, "duration_secs": queue.pop(0), "audio_path": "/tmp/fake.mp3"}
+measure_calls = []
+def fake_measure(text, voice_id=None, attempts=1, scene_secs=None):
+    measure_calls.append(scene_secs)
+    return {"ok": True, "duration_secs": queue.pop(0), "audio_path": "/tmp/fake.mp3", "sync": {"marker": len(measure_calls)}}
 ls._measure_tts_duration = fake_measure
 def fake_trim(path, target, search_window_secs=4.0):
     trims.append(target); return path
 ls._fade_out_and_trim = fake_trim
 
 def run(durations, premium=False):
-    queue[:] = list(durations); trims.clear(); prompts.clear()
+    queue[:] = list(durations); trims.clear(); prompts.clear(); measure_calls.clear()
     return ls.generate_narration_and_derive_scenes("desc", "via X", "100", None, premium, "Agenzia Test", ["living"])
 
-o = run([26.0])
-check("N1 26 s speech -> exactly 6 scenes / 30 s, one TTS call", o["ok"] and o["scene_count"] == 6 and o["video_duration_secs"] == 30 and o["tts_calls_used"] == 1 and not o["was_trimmed"], o)
-o = run([21.0, 25.0])
-check("N2 21 s speech (below 24) -> extend pass, 6 scenes", o["ok"] and o["scene_count"] == 6 and o["tts_calls_used"] == 2 and abs(o["speech_duration_secs"]-25.0) < 1e-6, o)
-o = run([33.0, 27.0])
-check("N3 33 s speech (above 28) -> shorten pass, 6 scenes", o["ok"] and o["scene_count"] == 6 and o["tts_calls_used"] == 2 and not o["was_trimmed"], o)
-o = run([33.0, 31.0])
-check("N4 still too long after the pass -> hard cap at 28 s, still 6 scenes", o["scene_count"] == 6 and o["was_trimmed"] and trims == [28.0] and o["speech_duration_secs"] == 28.0, (o, trims))
-o = run([24.0]); o2 = run([28.0])
-check("N5 band edges 24 and 28 accepted without correction", o["tts_calls_used"] == 1 and o["scene_count"] == 6 and o2["tts_calls_used"] == 1 and o2["scene_count"] == 6)
-o = run([28.0]); check("N6 28 s needs no trim (1+28+1 = 30)", not o["was_trimmed"] and trims == [])
-run([26.0])
-check("N7 standard prompt asks for about 26 seconds / 65-75 words", any("about 26 seconds" in p for p in prompts))
+o = run([28.0])
+check("N1 28 s speech -> exactly 6 scenes / 30 s, one TTS call", o["ok"] and o["scene_count"] == 6 and o["video_duration_secs"] == 30 and o["tts_calls_used"] == 1 and not o["was_trimmed"], o)
+o = run([21.0, 29.0])
+check("N2 21 s speech (below 26) -> extend pass, 6 scenes", o["ok"] and o["scene_count"] == 6 and o["tts_calls_used"] == 2 and abs(o["speech_duration_secs"]-29.0) < 1e-6, o)
+o = run([36.0, 30.0])
+check("N3 36 s speech (above 32) -> shorten pass, 6 scenes", o["ok"] and o["scene_count"] == 6 and o["tts_calls_used"] == 2 and not o["was_trimmed"], o)
+o = run([36.0, 35.0])
+check("N4 still too long after the pass -> hard cap at 32 s, still 6 scenes", o["scene_count"] == 6 and o["was_trimmed"] and trims == [32.0] and o["speech_duration_secs"] == 32.0 and o["sync"] is None, (o, trims))
+o = run([26.0]); o2 = run([32.0])
+check("N5 band edges 26 and 32 accepted without correction", o["tts_calls_used"] == 1 and o["scene_count"] == 6 and o2["tts_calls_used"] == 1 and o2["scene_count"] == 6)
+o = run([32.0]); check("N6 32 s needs no trim (30 s of scenes + 2 s absorbed by the trailing blank)", not o["was_trimmed"] and trims == [])
+run([29.0])
+check("N7 standard prompt asks for about 29 seconds / 68-78 words", any("about 29 seconds" in p and "68-78" in p for p in prompts))
 o = run([53.0], premium=True)
 check("N8 premium unchanged: 53 s speech (its own band floor) -> 11 scenes, no correction, no trim", o["scene_count"] == 11 and o["tts_calls_used"] == 1 and not o["was_trimmed"], o)
 o = run([20.0, 21.0], premium=True)
 check("N9 premium below its own band still gets its extend pass (11 scenes minimum)", o["tts_calls_used"] == 2 and o["scene_count"] == 11, o)
+
+# ---- 2026-10-15: shared narration path / sync wiring
+o = run([29.0])
+check("N10 standard: audio is built synchronised with 6 fixed 5 s scenes (scene_secs passed to the measurement)", measure_calls == [[5]*6], measure_calls)
+check("N11 the sync plan is returned to the caller", o["sync"] == {"marker": 1}, o["sync"])
+o = run([55.0], premium=True)
+check("N12 premium: first measured plain (scene count not known yet)", measure_calls == [None], measure_calls)
+resyncs = []
+def fake_resync(meas, n):
+    resyncs.append(n); return ("/tmp/re.mp3", RESYNC_SECS[0], {"resynced_for": n})
+ls._resync_measurement = fake_resync
+RESYNC_SECS = [60.0]
+o = run([55.0], premium=True)
+check("N13 premium: re-synchronised, the pauses need a 12th scene, no extra TTS call", resyncs == [11, 12] and o["scene_count"] == 12 and o["sync"] == {"resynced_for": 12} and o["tts_calls_used"] == 1 and abs(o["speech_duration_secs"] - 60.0) < 1e-6, (resyncs, o["scene_count"]))
+resyncs.clear(); RESYNC_SECS[0] = 68.0
+o = run([55.0], premium=True)
+check("N14 premium: scene count never above the premium maximum (13), last re-assembly matches it", o["scene_count"] == 13 and resyncs[-1] == 13 and o["sync"] == {"resynced_for": 13}, (resyncs, o["scene_count"]))
+check("N15 api_server stores the real speech length (not the video length) and the sync plan, in both URL paths",
+      open("api_server.py").read().count('"narration_duration_secs": narration["speech_duration_secs"]') == 2 and open("api_server.py").read().count('"narration_sync": narration.get("sync")') == 2)
 
 # ---- selection always yields 6 photos for 6 scenes (ranking stubbed: single candidates -> no vision call)
 ls.rank_photos_by_quality = lambda cat, c, max_to_compare=6: ls._tag_rank(c, "single_candidate")
