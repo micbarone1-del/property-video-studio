@@ -53,7 +53,7 @@ import time
 import logging
 import threading
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 
 import requests
 import anthropic
@@ -166,7 +166,7 @@ def check_listing_acceptance(photos: list) -> dict:
 
 
 SUPPORTED_DOMAINS = {"immobiliare.it", "www.immobiliare.it", "idealista.it", "www.idealista.it",
-                     "casa.it", "www.casa.it"}
+                     "casa.it", "www.casa.it", "annunci.getrix.it"}
 
 BASE_DIR = Path(__file__).parent
 REQUESTED_SITES_FILE = BASE_DIR / "scraper_site_requests.json"
@@ -225,6 +225,7 @@ _RESOLUTION_UPGRADE_PATTERNS = [
     (r"/m-c\.jpg$", "/xl.jpg"),
     (r"/m-c\.jpg$", "/original.jpg"),
     (r"-c\.jpg$", ".jpg"),
+    (r"_th\.jpg$", "_hd.jpg"),   # 2026-10-15: annunci.getrix.it serves thumbnails as _th and full size as _hd
 ]
 
 
@@ -361,7 +362,9 @@ def extract_listing(url: str, attempt_resolution_upgrade: bool = True) -> dict:
 
         for p in data.get("photos", []):
             if p.get("url"):
-                p["url"] = normalize_photo_url(p["url"])
+                # 2026-10-15: some sites (annunci.getrix.it) write photo paths relative to the page ("/foto/7039/x_th.jpg");
+                # made absolute here, in the single extraction point, so every site benefits.
+                p["url"] = normalize_photo_url(urljoin(url, p["url"]))
             if p.get("category") not in CATEGORIES:
                 p["category"] = "uncategorized"
             if attempt_resolution_upgrade and p.get("url"):

@@ -42,5 +42,29 @@ check("N8 extract_listing: complete URL still upgraded as before", p1["url"].end
 ex2 = ls.extract_listing("https://www.immobiliare.it/annunci/1/", attempt_resolution_upgrade=False)
 check("N9 normalisation also runs when the upgrade is switched off", ex2["photos"][0]["url"].endswith("/m-c.jpg"), ex2["photos"][0])
 
+# ── 2026-10-15: annunci.getrix.it support (relative photo paths, _th -> _hd) ─────────────────────────
+check("G1 getrix listing domain is supported", ls.is_supported_domain("https://annunci.getrix.it/annuncio.asp?id=6CD4AA7D-3CAD-4855-9A5F-A97FCEA10910"))
+check("G2 other unknown sites are still refused", not ls.is_supported_domain("https://www.example-portal.it/annuncio/1"))
+check("G3 upgrade table has _th -> _hd", (r"_th\.jpg$", "_hd.jpg") in ls._RESOLUTION_UPGRADE_PATTERNS)
+import importlib
+ls = importlib.reload(ls)
+ls.anthropic.Anthropic = FakeClient
+ls._track_claude = lambda r: r
+data["photos"] = [{"url": "/foto/7039/2592173963_th.jpg", "label_it": "", "category": "uncategorized"},
+                  {"url": "//annunci.getrix.it/foto/7039/2592173962.jpg", "label_it": "", "category": "uncategorized"},
+                  {"url": "https://pwm.im-cdn.it/image/2025963124/m-c.jpg", "label_it": "Cucina", "category": "kitchen"}]
+heads = []
+class R200:
+    status_code = 200
+def fake_head(u, timeout=5):
+    heads.append(u); return R200()
+ls.requests.head = fake_head
+ex = ls.extract_listing("https://annunci.getrix.it/annuncio.asp?id=6CD4AA7D")
+q = ex["photos"]
+check("G4 relative path becomes absolute and is upgraded to _hd", ex["ok"] and q[0]["url"] == "https://annunci.getrix.it/foto/7039/2592173963_hd.jpg" and q[0]["original_url"] == "https://annunci.getrix.it/foto/7039/2592173963_th.jpg", q[0])
+check("G5 protocol-relative path becomes https", q[1]["url"] == "https://annunci.getrix.it/foto/7039/2592173962.jpg", q[1])
+check("G6 immobiliare absolute URL unaffected by the join", q[2]["original_url"] == "https://pwm.im-cdn.it/image/2025963124/m-c.jpg", q[2])
+check("G7 the _hd candidate was verified with a HEAD request", "https://annunci.getrix.it/foto/7039/2592173963_hd.jpg" in heads, heads)
+
 print(f"\nRESULT: {'ALL PASS' if not fails else 'FAILURES'} ({total - len(fails)}/{total})")
 sys.exit(1 if fails else 0)
