@@ -2534,16 +2534,16 @@ function checkNarrationDurationMatch() {
   const sliders = [...scenesCont.querySelectorAll('.sc-duration')];
   const currentTotal = sliders.reduce((sum, s) => sum + parseInt(s.value || 0), 0);
   const narrationSecs = narrationDistribution.narration_duration_secs;
-  const targetTotal = narrationSecs + 2.0; // NARRATION_PADDING_SECS, matches narration.py (2026-07-21: widened 1.5 -> 2.0 for the WhatsApp-trimming buffer increase)
+  const targetTotal = narrationSecs; // 2026-10-15: matches narration.py calculate_scene_durations() -- lead/trail blank frames are added around the scenes, not counted inside them
 
 
   const statusEl = document.getElementById('narration-status');
-  const tooShort = (currentTotal - narrationSecs) > (4.0 + 2.0); // TOO_SHORT_THRESHOLD + NARRATION_PADDING_SECS (2026-07-21: widened 1.5 -> 2.0)
+  const tooShort = (currentTotal - narrationSecs) > 4.0; // TOO_SHORT_THRESHOLD_SECS in narration.py (2026-10-15: no padding term any more)
   const needsExtension = targetTotal > currentTotal;
 
 
   if (needsExtension) {
-    statusEl.textContent = `⚠ Le scene attuali (${currentTotal}s) sono più corte della narrazione (${narrationSecs}s + pausa) — il video verrà esteso`;
+    statusEl.textContent = `⚠ Le scene attuali (${currentTotal}s) sono più corte della narrazione (${narrationSecs}s) — il video verrà esteso`;
     statusEl.style.color = 'var(--danger)';
   } else if (tooShort) {
     statusEl.textContent = `⚠ Le scene attuali (${currentTotal}s) superano la narrazione di troppo — ${Math.round(currentTotal - narrationSecs)}s di silenzio previsti`;

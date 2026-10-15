@@ -176,12 +176,18 @@ def calculate_scene_durations(
     if valid_durations is None:
         valid_durations = [4, 5, 6, 8, 9]  # union of Veo (4/6/8) and Luma (5/9) valid values
 
-    target_total = narration_duration_secs + NARRATION_PADDING_SECS
+    # 2026-10-15 (Michele: narration was over-estimated): the lead/trail blank
+    # frames are ADDED AROUND the scenes at assembly time (_overlay_narration_audio:
+    # lead + video + trail), they are not carved out of the scene time. So the
+    # scenes only need to cover the speech itself. The old "speech + 2 s" target
+    # counted the buffer twice (once here, once as real blank frames), extended
+    # videos that did not need it, and paid for ~2 extra seconds of Luma.
+    target_total = narration_duration_secs
 
     current_total = sum(current_durations) if current_durations else scene_count * 6
 
     too_short = narration_duration_secs > 0 and (
-        current_total - narration_duration_secs > TOO_SHORT_THRESHOLD_SECS + NARRATION_PADDING_SECS
+        current_total - narration_duration_secs > TOO_SHORT_THRESHOLD_SECS
     )
     needs_extension = target_total > current_total
 
@@ -218,7 +224,13 @@ def calculate_scene_durations(
 
     while actual_total < target_total and len(new_durations) <= 20:
         bumped = False
-        for i, d in enumerate(new_durations):
+        # 2026-10-15: bump the LAST scene first (it used to be the FIRST), so
+        # the extra seconds land at the end and every earlier scene keeps its
+        # position: bumping scene 1 shifted all later pictures by the extra
+        # time and desynchronised them from the narration (seen on the villa
+        # test: bathroom spoken at 49 s but shown from 54 s).
+        for i in range(len(new_durations) - 1, -1, -1):
+            d = new_durations[i]
             larger = [v for v in valid_durations if v > d]
             if larger:
                 new_durations[i] = min(larger)

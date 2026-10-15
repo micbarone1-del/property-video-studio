@@ -366,6 +366,8 @@ _LUMA_RULES = (
     "no new rooms, doorways, corridors or architectural elements, "
     "no doors or drawers opening, no furniture moving, "
     "no mirrors or reflective surfaces that were not already present, "
+    "any mirror, glass or shiny surface that is visible must reflect only the empty room exactly as in the source photo, "
+    "with no person, no human figure, no face and no camera operator in any reflection, "
     "no falling objects, no floating particles, no leaves, "
     "walls, floors, ceilings and furniture stay solid and unchanged, "
     "no warping, no morphing, no distortion of any surface"

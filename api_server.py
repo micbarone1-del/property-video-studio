@@ -202,9 +202,11 @@ def _overlay_narration_audio(video_path: str, narration_path: str, transition_st
     narration = AudioFileClip(narration_path)
     fps = video.fps or 24
 
-    # Time the narration needs in total: lead-in + speech + trail-out
-    needed   = LEAD_SECS + narration.duration + TRAIL_SECS
-    overflow = max(0.0, needed - video.duration)
+    # 2026-10-15: the lead/trail blank frames are concatenated AROUND the video,
+    # so only speech that runs past the END OF THE VIDEO needs extra trailing
+    # padding (it used to compare lead + speech + trail against the video
+    # length, counting the buffers a second time and adding ~2 s of dead air).
+    overflow = max(0.0, narration.duration - video.duration)
 
     lead_pad  = LEAD_SECS
     trail_pad = TRAIL_SECS + overflow   # trailing padding absorbs the overflow
