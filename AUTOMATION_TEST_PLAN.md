@@ -282,3 +282,5 @@ Update 2026-10-22 (midday): F69 deployed (2041128), still NOT verified on a real
 Update 2026-10-22 (11:10): Patch D deployed (5443fa0); second real test a7e7ef2b still fell back to single_text (spoken split gave 5 sentences, not 6): F68 real test still FAILED, fallback worked (no job lost). Patch E built (stop added, sentence named, sentences logged), test_scene_script 78 PASS, NOT deployed.
 
 Update 2026-10-22 (11:20): Patch E deployed (befc2ae); third real test, draft 32245700: F68 first real PASS on the main criterion (`narration_mode == per_scene`, 6 sentences, no fallback). Sync not yet clean (sentence 2 spills 2.21 s; tighten pass invisible in the log). Patch F (log only) built, NOT deployed. F68 stays open until a listening check and a clean sync.
+
+Update 2026-10-22 (11:30): Patch F deployed (20ca01d); fourth real test c75f022c per_scene; tighten rewrite rejected by the fact check (lost 'in vendita'): fact check worked as designed (invariant: no false claim spoken). Patch G (tighten prompt keeps mandatory words), test_scene_script 79 PASS, NOT deployed. F68 still open.

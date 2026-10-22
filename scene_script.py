@@ -252,7 +252,7 @@ def spill_problems(sync: dict, scene_count: int = SCENES) -> list:
     return bad
 
 
-def build_tighten_prompt(sentences: list, bad: list, description: str) -> str:
+def build_tighten_prompt(sentences: list, bad: list, description: str, agency_name: str = None) -> str:
     lines = []
     for idx, over in bad:
         target = max(6, len(words(sentences[idx])) - max(2, int(round(over * WORDS_PER_SEC)) + 1))
@@ -260,6 +260,7 @@ def build_tighten_prompt(sentences: list, bad: list, description: str) -> str:
     return f"""Below are 6 Italian voiceover sentences, one per 5-second scene of a video. Some are too long to be spoken in their scene:
 {chr(10).join(lines)}
 
+MUST-KEEP words (live test c75f022c: a shortened sentence 1 lost 'in vendita' and the whole rewrite was thrown away): if you rewrite sentence 1 it must still say 'in vendita' or 'in affitto' exactly as the current sentence does, and name the agency{(' (' + agency_name + ')') if agency_name else ''}; if you rewrite sentence 6 it must still name the agency{(' (' + agency_name + ')') if agency_name else ''} and invite to contact it. Shorten by dropping details (condition adjectives, secondary facts), never these words.
 Keep every OTHER sentence exactly unchanged. Keep every fact only if it is in the listing text. Do not add facts, do not say the price, do not name floors.
 Return ONLY the JSON array of the 6 strings, nothing else.
 

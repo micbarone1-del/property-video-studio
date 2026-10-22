@@ -97,8 +97,10 @@ check("S2 spill without a plan is empty", ss.spill_problems(None) == [] and ss.s
 pr = ss.build_prompt(DESC, "via X", AG, ["facciata/esterno dell'edificio", "soggiorno", "cucina", "camere da letto", "bagni", "spazi esterni (giardino/terrazza)"])
 check("S3 prompt: 6 scenes with roles, labels, and the hard rules", all(f"Scene {i}:" in pr for i in range(1, 7)) and "OPENING" in pr and "GENERAL FACTS" in pr and "CLOSING" in pr and
       "soggiorno" in pr and "Do NOT say the price" in pr and "floors" in pr and "JSON array" in pr)
-tp = ss.build_tighten_prompt(GOOD, [(1, 1.5)], DESC)
+tp = ss.build_tighten_prompt(GOOD, [(1, 1.5)], DESC, AG)
 check("S4 tighten prompt names the sentence and keeps the others", "sentence 2" in tp and "1.5 s" in tp and "EXACTLY unchanged".lower() in tp.lower().replace("exactly unchanged", "exactly unchanged"))
+
+check("V33 tighten prompt keeps sale/rent and the agency name", "in vendita" in tp and "Coldwell Banker" in tp and "MUST-KEEP" in tp)
 
 # ---------------- scene slots / sequence (single shared definition)
 P = lambda c, i=0: {"url": f"{c}{i}", "category": c, "local_path": f"/img/{c}{i}.jpg"}

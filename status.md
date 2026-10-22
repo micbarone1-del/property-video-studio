@@ -664,3 +664,5 @@ Draft job 4374ebc4 (Immobiliare URL, agency Sinergie Immobiliari): the per-scene
 **Patch D deployed 5443fa0, restarted 10:55, second real test (draft a7e7ef2b): still single_text**, now because the text split into 5 spoken sentences instead of 6 (a sentence without final stop / starting with a digit is merged by the splitter). Patch E (built, NOT deployed): final stop added by parse, exact sentence named, sentences logged on rejection. test_scene_script 78 PASS (sandbox).
 
 **Patch E deployed befc2ae, third real test (draft 32245700): per_scene works** (6 sentences, one TTS pass, speech ends 30.74 s). Sync still imperfect: sentence 2 runs 2.2 s into scene 3 and the tighten pass left no trace in the log. Patch F (log only, built, NOT deployed) will say why.
+
+**Patch F deployed 20ca01d; fourth real test (draft c75f022c): per_scene.** The new log showed why tightening never worked: the rewrite of sentence 1 lost 'in vendita' and was rejected by the fact check. Patch G (tighten prompt MUST-KEEP rules, built, NOT deployed). Michele asks for more flexible sentence length after this cycle (see backlog 77).

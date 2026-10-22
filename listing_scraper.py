@@ -971,7 +971,7 @@ def _tighten_scene_script(sentences: list, bad: list, description: str, address:
     from narration import split_into_sentences
     try:
         client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-        revised = ss.parse(_claude_text_reply(client, ss.build_tighten_prompt(sentences, bad, description)))
+        revised = ss.parse(_claude_text_reply(client, ss.build_tighten_prompt(sentences, bad, description, agency_name)))
     except Exception as e:
         log.warning(f"[Scraper] Tighten pass failed, keeping the first script: {e}")
         return None
