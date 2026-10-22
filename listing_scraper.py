@@ -976,11 +976,16 @@ def _tighten_scene_script(sentences: list, bad: list, description: str, address:
         log.warning(f"[Scraper] Tighten pass failed, keeping the first script: {e}")
         return None
     if not revised or len(revised) != len(sentences):
+        log.warning(f"[Scraper] Tighten rewrite not used: the reply was not {len(sentences)} sentences ({revised})")
         return None
     changed = {i for i, _ in bad}
-    if any(revised[i] != sentences[i] for i in range(len(sentences)) if i not in changed):
+    moved = [i + 1 for i in range(len(sentences)) if i not in changed and revised[i] != sentences[i]]
+    if moved:
+        log.warning(f"[Scraper] Tighten rewrite not used: it changed sentences that must stay as they are: {moved} ({revised})")
         return None
-    if ss.validate(revised, description, agency_name, price, split_fn=split_into_sentences):
+    problems = ss.validate(revised, description, agency_name, price, split_fn=split_into_sentences)
+    if problems:
+        log.warning(f"[Scraper] Tighten rewrite not used: it fails the fact check: {problems} ({revised})")
         return None
     return revised
 
@@ -1113,6 +1118,7 @@ def generate_narration_and_derive_scenes(
         bad = _ss.spill_problems(sync, STANDARD_SCENES)
         if bad and tts_calls_used < 2:
             revised_sents = _tighten_scene_script(scene_script_sentences, bad, description, address, price, agency_name)
+            log.info(f"[Scraper] Tighten pass: sentences too long {bad} -> rewrite {'received' if revised_sents else 'not usable'}")
             if revised_sents:
                 remeasure = _measure_tts_duration(" ".join(revised_sents), voice_id, scene_secs=_fixed_scene_secs)
                 tts_calls_used += 1
@@ -1122,6 +1128,8 @@ def generate_narration_and_derive_scenes(
                     speech_secs, audio_path = remeasure["duration_secs"], remeasure["audio_path"]
                     measurement, sync = remeasure, remeasure.get("sync")
                     script_tightened = True
+                else:
+                    log.info(f"[Scraper] Tighten pass: rewrite measured but not better (remaining too long: {_ss.spill_problems(remeasure.get('sync'), STANDARD_SCENES)}), first script kept")
 
     # Single correction pass if outside the tightened band — symmetric:
     # both directions are actively corrected, not just clamped.
