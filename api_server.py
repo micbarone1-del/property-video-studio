@@ -1663,10 +1663,19 @@ async def create_job_from_url(
             agency_name = _agency.get("name")
     scene_category_order = scraper.derive_available_category_order(extraction["photos"])
 
+    # 2026-10-22 (Patch B): the standard video is always 6 scenes, so its photos are selected FIRST and the narration
+    # is written per scene knowing which room each scene shows. The selection is reused below (no second selection).
+    pre_selection, scene_sequence = None, None
+    if not premium:
+        pre_selection = await asyncio.to_thread(
+            scraper.select_photos_for_scene_count, extraction["photos"], scraper.STANDARD_SCENES
+        )
+        scene_sequence = scraper.standard_scene_sequence(pre_selection)
+
     narration = await asyncio.to_thread(
         scraper.generate_narration_and_derive_scenes,
         extraction["description"], extraction["address"], extraction["price"], voice_id or None,
-        premium, agency_name, scene_category_order,
+        premium, agency_name, scene_category_order, scene_sequence,
     )
     if not narration["ok"]:
         raise HTTPException(status_code=500, detail=f"Narration generation failed: {narration['error']}")
@@ -1681,6 +1690,8 @@ async def create_job_from_url(
         selection = await asyncio.to_thread(
             scraper.select_photos_for_scene_count_premium, extraction["photos"], narration["scene_count"]
         )
+    elif pre_selection is not None and narration["scene_count"] == scraper.STANDARD_SCENES:
+        selection = pre_selection
     else:
         selection = await asyncio.to_thread(
             scraper.select_photos_for_scene_count, extraction["photos"], narration["scene_count"]
@@ -1843,6 +1854,8 @@ async def create_job_from_url(
         "narration_path": job_narration_path,
         "narration_duration_secs": narration["speech_duration_secs"],   # 2026-10-15: was the VIDEO length, mislabelled
         "narration_sync": narration.get("sync"),
+        "narration_mode": narration.get("narration_mode"),   # 2026-10-22 (Patch B): per_scene | single_text
+        "narration_script_fallback": narration.get("script_fallback_reason"),
         "source_url": url,
         "source_price": extraction.get("price"),
         "source_address": extraction.get("address"),
@@ -2069,10 +2082,17 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
 
         scene_category_order = scraper.derive_available_category_order(photos_for_selection)
 
+        # 2026-10-22 (Patch B): same as the URL workflow -- standard photos are selected first (6 scenes), the
+        # narration is written per scene for the rooms those scenes show, and the selection is reused below.
+        pre_selection = await asyncio.to_thread(
+            scraper.select_photos_for_scene_count, photos_for_selection, scraper.STANDARD_SCENES
+        )
+        scene_sequence = scraper.standard_scene_sequence(pre_selection)
+
         narration = await asyncio.to_thread(
             scraper.generate_narration_and_derive_scenes,
             description_full, None, None, payload.voice_id or None, False,
-            agency.get("name"), scene_category_order,
+            agency.get("name"), scene_category_order, scene_sequence,
         )
         if not narration["ok"]:
             JOBS[job_id].update({"status": "failed", "message": f"Narration generation failed: {narration['error']}"})
@@ -2085,7 +2105,10 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
                 push_message=f"{payload.property_name} - fallito (narrazione)", tags=["x"])
             return
 
-        selection = scraper.select_photos_for_scene_count(photos_for_selection, narration["scene_count"])
+        if narration["scene_count"] == scraper.STANDARD_SCENES:
+            selection = pre_selection
+        else:
+            selection = scraper.select_photos_for_scene_count(photos_for_selection, narration["scene_count"])
 
         job_dir = JOBS_DIR / job_id
         img_dir = job_dir / "images"
@@ -2181,6 +2204,8 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
             "narration_path": job_narration_path,
             "narration_duration_secs": narration["speech_duration_secs"],   # 2026-10-15: was the VIDEO length, mislabelled
             "narration_sync": narration.get("sync"),
+            "narration_mode": narration.get("narration_mode"),   # 2026-10-22 (Patch B): per_scene | single_text
+            "narration_script_fallback": narration.get("script_fallback_reason"),
             "source_description": description_full,
             "selection_report": selection_report,
         })

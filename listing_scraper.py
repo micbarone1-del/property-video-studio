@@ -932,9 +932,62 @@ _PREMIUM_EXPAND_PRIORITY = ["outdoor_early", "outdoor_late", "bedrooms", "living
 _PREMIUM_EXTRA_CATEGORIES = ["laundry", "office", "garage"]
 
 
+def _claude_text_reply(client, prompt: str, max_tokens: int = 1024) -> str:
+    response = _track_claude(client.messages.create(model=MODEL, max_tokens=max_tokens,
+                                                    messages=[{"role": "user", "content": prompt}]))
+    return "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
+
+
+def _write_standard_scene_script(description: str, address: str, price: str, agency_name: str, sequence: list) -> dict:
+    """2026-10-22 (Patch B): one sentence per scene for the standard video (see scene_script.py). Up to 2 Claude
+    attempts; the second one is told why the first was rejected by the fact check. Never raises.
+    Returns {"ok", "sentences", "attempts", "problems", "error"}; ok=False means 'use the single-text narration'."""
+    import scene_script as ss
+    from narration import split_into_sentences
+    labels = [CATEGORY_ITALIAN_LABELS.get(c, c) for c in sequence]
+    base_prompt = ss.build_prompt(description, address, agency_name, labels)
+    feedback, problems = "", []
+    try:
+        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        for attempt in (1, 2):
+            sentences = ss.parse(_claude_text_reply(client, base_prompt + feedback))
+            problems = (["the reply was not a JSON array of strings"] if sentences is None else
+                        ss.validate(sentences, description, agency_name, price, split_fn=split_into_sentences))
+            if not problems:
+                return {"ok": True, "sentences": sentences, "attempts": attempt, "problems": [], "error": None}
+            feedback = ("\n\nYour previous answer was REJECTED for these reasons. Fix all of them, return the full JSON array again:\n- "
+                        + "\n- ".join(problems))
+        return {"ok": False, "sentences": None, "attempts": 2, "problems": problems,
+                "error": "per-scene script rejected by the fact check twice"}
+    except Exception as e:
+        return {"ok": False, "sentences": None, "attempts": 0, "problems": problems, "error": f"per-scene script failed: {e}"}
+
+
+def _tighten_scene_script(sentences: list, bad: list, description: str, address: str, price: str, agency_name: str):
+    """One rewrite of ONLY the sentences that are spoken too long for their scene. Returns the new 6 sentences when
+    they pass the same fact check AND the untouched sentences are really unchanged; otherwise None."""
+    import scene_script as ss
+    from narration import split_into_sentences
+    try:
+        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        revised = ss.parse(_claude_text_reply(client, ss.build_tighten_prompt(sentences, bad, description)))
+    except Exception as e:
+        log.warning(f"[Scraper] Tighten pass failed, keeping the first script: {e}")
+        return None
+    if not revised or len(revised) != len(sentences):
+        return None
+    changed = {i for i, _ in bad}
+    if any(revised[i] != sentences[i] for i in range(len(sentences)) if i not in changed):
+        return None
+    if ss.validate(revised, description, agency_name, price, split_fn=split_into_sentences):
+        return None
+    return revised
+
+
 def generate_narration_and_derive_scenes(
     description: str, address: str = None, price: str = None, voice_id: str = None,
     premium: bool = False, agency_name: str = None, scene_category_order: list = None,
+    scene_sequence: list = None,
 ) -> dict:
     """
     Writes ONE natural narration (no artificial length target), measures
@@ -995,21 +1048,38 @@ def generate_narration_and_derive_scenes(
     else:
         scene_order_instruction = ""
 
-    prompt = NARRATION_PROMPT.format(
-        description=description, address=address or "non specificato", price=price or "non specificato",
-        agency_instruction=agency_instruction, opening_instruction=opening_instruction,
-        feature_scope_instruction=feature_scope_instruction, closing_instruction=closing_instruction,
-        scene_order_instruction=scene_order_instruction,
-    )
-    try:
-        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-        response = _track_claude(client.messages.create(model=MODEL, max_tokens=2048,
-                                             messages=[{"role": "user", "content": prompt}]))
-        narration_text = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
-    except Exception as e:
-        return {"ok": False, "narration_text": "", "audio_path": None, "speech_duration_secs": None,
-                "scene_count": None, "video_duration_secs": None, "tts_calls_used": 0,
-                "was_trimmed": False, "error": f"initial narration generation failed: {e}"}
+    # 2026-10-22 (Patch B, Michele): the STANDARD video gets one sentence per scene, written knowing which room each
+    # scene shows (scene_script.py). Used only when the caller passes the 6-scene sequence; anything else (premium,
+    # no sequence, a script the fact check rejects twice) keeps the single-text path below, unchanged.
+    per_scene = False
+    script_info = None
+    narration_text = None
+    if (not premium) and scene_sequence and len(scene_sequence) == STANDARD_SCENES:
+        script_info = _write_standard_scene_script(description, address, price, agency_name, scene_sequence)
+        if script_info["ok"]:
+            narration_text = " ".join(script_info["sentences"])
+            per_scene = True
+        else:
+            log.warning(f"[Scraper] Per-scene script not used, falling back to the single-text narration: "
+                        f"{script_info.get('error')} {script_info.get('problems')}")
+
+    client = None
+    if not per_scene:
+        prompt = NARRATION_PROMPT.format(
+            description=description, address=address or "non specificato", price=price or "non specificato",
+            agency_instruction=agency_instruction, opening_instruction=opening_instruction,
+            feature_scope_instruction=feature_scope_instruction, closing_instruction=closing_instruction,
+            scene_order_instruction=scene_order_instruction,
+        )
+        try:
+            client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+            response = _track_claude(client.messages.create(model=MODEL, max_tokens=2048,
+                                                 messages=[{"role": "user", "content": prompt}]))
+            narration_text = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
+        except Exception as e:
+            return {"ok": False, "narration_text": "", "audio_path": None, "speech_duration_secs": None,
+                    "scene_count": None, "video_duration_secs": None, "tts_calls_used": 0,
+                    "was_trimmed": False, "error": f"initial narration generation failed: {e}"}
 
     if not narration_text:
         return {"ok": False, "narration_text": "", "audio_path": None, "speech_duration_secs": None,
@@ -1032,6 +1102,26 @@ def generate_narration_and_derive_scenes(
     sync = measurement.get("sync")
     was_trimmed = False
 
+    # Per-scene mode: sentences 1-5 must be spoken within their own scene. If the real TTS shows some are too long,
+    # ONE rewrite pass shortens only those sentences (the others stay unchanged), then the audio is measured again.
+    # Adopted only if it is valid and no worse; otherwise the first version stays. Same two-TTS-call budget as before.
+    scene_script_sentences = script_info["sentences"] if per_scene else None
+    script_tightened = False
+    if per_scene:
+        import scene_script as _ss
+        bad = _ss.spill_problems(sync, STANDARD_SCENES)
+        if bad and tts_calls_used < 2:
+            revised_sents = _tighten_scene_script(scene_script_sentences, bad, description, address, price, agency_name)
+            if revised_sents:
+                remeasure = _measure_tts_duration(" ".join(revised_sents), voice_id, scene_secs=_fixed_scene_secs)
+                tts_calls_used += 1
+                if remeasure["ok"] and len(_ss.spill_problems(remeasure.get("sync"), STANDARD_SCENES)) <= len(bad):
+                    scene_script_sentences = revised_sents
+                    narration_text = " ".join(revised_sents)
+                    speech_secs, audio_path = remeasure["duration_secs"], remeasure["audio_path"]
+                    measurement, sync = remeasure, remeasure.get("sync")
+                    script_tightened = True
+
     # Single correction pass if outside the tightened band — symmetric:
     # both directions are actively corrected, not just clamped.
     if premium:
@@ -1045,20 +1135,21 @@ def generate_narration_and_derive_scenes(
         target_speech = _max_speech - 2.0  # margin under the ceiling, not right at the edge
         naive_target_words = len(narration_text.split()) * (target_speech / speech_secs)
         target_words = max(15, int(naive_target_words * 0.85))  # models tend to undershoot cuts
-        try:
-            shorten_prompt = SHORTEN_PROMPT.format(actual_secs=speech_secs, target_secs=target_speech,
-                                                     target_words=target_words, narration=narration_text)
-            response = _track_claude(client.messages.create(model=MODEL, max_tokens=2048,
-                                                 messages=[{"role": "user", "content": shorten_prompt}]))
-            revised = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
-            if revised:
-                remeasure = _measure_tts_duration(revised, voice_id, scene_secs=_fixed_scene_secs)
-                tts_calls_used += 1
-                if remeasure["ok"]:
-                    narration_text, speech_secs, audio_path = revised, remeasure["duration_secs"], remeasure["audio_path"]
-                    measurement, sync = remeasure, remeasure.get("sync")
-        except Exception as e:
-            log.warning(f"[Scraper] Shorten pass failed, proceeding as-is: {e}")
+        if not per_scene:   # per-scene mode never rewrites the whole text (it would break one-sentence-per-scene)
+            try:
+                shorten_prompt = SHORTEN_PROMPT.format(actual_secs=speech_secs, target_secs=target_speech,
+                                                         target_words=target_words, narration=narration_text)
+                response = _track_claude(client.messages.create(model=MODEL, max_tokens=2048,
+                                                     messages=[{"role": "user", "content": shorten_prompt}]))
+                revised = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
+                if revised:
+                    remeasure = _measure_tts_duration(revised, voice_id, scene_secs=_fixed_scene_secs)
+                    tts_calls_used += 1
+                    if remeasure["ok"]:
+                        narration_text, speech_secs, audio_path = revised, remeasure["duration_secs"], remeasure["audio_path"]
+                        measurement, sync = remeasure, remeasure.get("sync")
+            except Exception as e:
+                log.warning(f"[Scraper] Shorten pass failed, proceeding as-is: {e}")
 
         if speech_secs > _max_speech and audio_path:
             # still over after one pass — hard cap and fade-trim rather
@@ -1068,7 +1159,7 @@ def generate_narration_and_derive_scenes(
             was_trimmed = True
             sync = None   # the audio was cut after the sync plan was made: the plan no longer describes it
 
-    elif speech_secs < _min_speech:
+    elif speech_secs < _min_speech and not per_scene:
         target_speech = _min_speech + 3.0  # margin above the floor
         words_per_second = len(narration_text.split()) / speech_secs  # measured from this narration, not a hardcoded estimate -- 2026-10-02 fix: WORDS_PER_SECOND_ESTIMATE was referenced but never defined anywhere, crashing with NameError (500 on /v1/videos) any time narration landed below the minimum speech length
         extra_words = int((target_speech - speech_secs) * words_per_second)
@@ -1147,6 +1238,12 @@ def generate_narration_and_derive_scenes(
         "was_trimmed": was_trimmed,
         "sync": sync,
         "error": None,
+        # 2026-10-22 (Patch B): how the text was produced. "per_scene" = one sentence per scene, fact-checked;
+        # "single_text" = the previous one-text path (premium, or the per-scene script was rejected / unavailable).
+        "narration_mode": "per_scene" if per_scene else "single_text",
+        "script_attempts": (script_info or {}).get("attempts"),
+        "script_tightened": script_tightened,
+        "script_fallback_reason": ((script_info or {}).get("error") if (script_info and not per_scene) else None),
     }
 
 
@@ -1230,20 +1327,35 @@ def build_standard_video_scenes_config(selection: dict, captions: dict, clip_dur
     scraping (see download_selected_photos).
     """
     scenes = []
-    for category in PRIORITY_ORDER:
-        photos = selection["selected"].get(category, [])
-        for photo in photos:
-            scenes.append({
-                "caption": _scene_caption(captions, category),
-                "voiceover": "",  # continuous narration track applied separately, not per-scene
-                "space_type": _CATEGORY_TO_SPACE_TYPE.get(category, "large"),
-                "pov_movement": _CATEGORY_TO_POV_MOVEMENT.get(category, "gentle_arc"),
-                "duration": clip_duration_secs,
-                "local_image_path": photo.get("local_path"),
-                "category": category,
-                "remove_watermark": True,
-            })
+    for category, photo in standard_scene_slots(selection):
+        scenes.append({
+            "caption": _scene_caption(captions, category),
+            "voiceover": "",  # continuous narration track applied separately, not per-scene
+            "space_type": _CATEGORY_TO_SPACE_TYPE.get(category, "large"),
+            "pov_movement": _CATEGORY_TO_POV_MOVEMENT.get(category, "gentle_arc"),
+            "duration": clip_duration_secs,
+            "local_image_path": photo.get("local_path"),
+            "category": category,
+            "remove_watermark": True,
+        })
     return scenes
+
+
+def standard_scene_slots(selection: dict) -> list:
+    """2026-10-22 (Patch B): the ONE place that says which scene shows which category, in video order:
+    (category, photo) per selected photo, walking PRIORITY_ORDER. Both build_standard_video_scenes_config()
+    and the per-scene narration (generate_narration_and_derive_scenes) read it, so the sentence written for
+    scene N is about the room scene N really shows."""
+    slots = []
+    for category in PRIORITY_ORDER:
+        for photo in selection["selected"].get(category, []):
+            slots.append((category, photo))
+    return slots
+
+
+def standard_scene_sequence(selection: dict) -> list:
+    """Just the categories of standard_scene_slots(), e.g. ['exterior','living','kitchen','bedrooms','bathrooms','outdoor']."""
+    return [category for category, _ in standard_scene_slots(selection)]
 
 
 # ── Photo selection: priority order + gap detection ─────────────────────────
