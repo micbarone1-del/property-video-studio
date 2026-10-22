@@ -592,6 +592,7 @@ def _load_jobs_from_disk():
 _load_jobs_from_disk()
 from job_recovery import recover_orphans as _recover_orphans, atomic_write_json as _atomic_write_json
 import rework_policy as _rwp
+import scene_rework as _sr  # 2026-10-22: the ONE rework engine (backlog 75)
 from job_recovery import clip_is_valid as _reusable_clip, audio_is_valid as _reusable_audio, image_is_valid as _reusable_image
 
 # 2026-10-08 (task 4): a job left running/queued by a restart has no thread
@@ -1471,23 +1472,14 @@ async def generate_narration(
         # rework-cost pattern (calculate_rework_cost + format_cost_display)
         # already used for scene reworks and the audio-only-rework feature,
         # rather than a separate, parallel cost calculation.
-        from cost_tracker import calculate_rework_cost, format_cost_display
-        narration_cost = calculate_rework_cost(
-            scenes_redone=[],
-            models_used=[],
+        # 2026-10-22: the fold-into-cost_actual step now lives in scene_rework
+        # (one copy for scene reworks, audio-only reworks and this endpoint).
+        _sr.record_rework_cost(
+            job,
+            [{"duration": 0, "had_voiceover": True, "voiceover_chars": len(narration_text)}],
+            job.get("model_tier", "premium"),
             redo_video=False,
-            redo_audio=True,
-            audio_chars=len(narration_text),
-            model_tier=job.get("model_tier", "premium"),
         )
-        job.setdefault("reworks", []).append(narration_cost)
-        original_raw = job.get("cost_actual_raw")
-        if original_raw:
-            job["cost_actual"] = format_cost_display(original_raw, previous_reworks=job["reworks"])
-        else:
-            legacy_total = (job.get("cost_actual") or {}).get("grand_total_eur", 0)
-            pseudo_raw = {"type": "actual", "total_eur": legacy_total, "model_tier": job.get("model_tier", "premium")}
-            job["cost_actual"] = format_cost_display(pseudo_raw, previous_reworks=job["reworks"])
 
         _save_job(job_id)
 
@@ -2859,183 +2851,88 @@ async def reset_rework_budget(job_id: str, note: str = Form("")):
     return {"job_id": job_id, "rework_counts": {}, "rework_rounds": 0, "needs_operator": None}
 
 
-async def run_redo_scene(job_id: str, scene_id: str):
-    """Regenerates ONE scene in place, then reassembles the whole job.
-    Everything happens inside the job's own directory — no siblings.
-    """
-    def update(status, progress, message):
-        JOBS[job_id].update({"status": status, "progress": progress, "message": message})
+def _redo_deps(job_id: str):
+    """The real outside world for scene_rework.redo_scenes (tests inject fakes)."""
+    import types as _types
+    from voice_generation import generate_speech as _gen_speech
+
+    def progress(pct, message):
+        JOBS[job_id].update({"status": "running", "progress": pct, "message": message})
         _save_job(job_id)
-        log.info(f"[Job {job_id}] {progress}% — {message}")
+        log.info(f"[Job {job_id}] {pct}% — {message}")
+
+    def audio_seconds(path):
+        try:
+            from pydub import AudioSegment
+            return len(AudioSegment.from_file(path)) / 1000.0
+        except Exception as e:
+            log.warning(f"[Job {job_id}] Could not measure audio {path}: {e}")
+            return None
+
+    def enhance(src, dst):
+        from image_enhance import enhance_image
+        return enhance_image(src, dst, True, True)
+
+    def generate_video(*args, **kwargs):
+        from video_generation import generate_video_single
+        return generate_video_single(*args, **kwargs)
+
+    return _types.SimpleNamespace(
+        generate_speech=_gen_speech, audio_seconds=audio_seconds, enhance=enhance,
+        generate_video=generate_video, to_thread=asyncio.to_thread,
+        save=lambda: _save_job(job_id), progress=progress, log=log,
+    )
 
 
+async def _run_redo(job_id: str, scene_ids: list, *, video: bool, strict: bool,
+                    policy: bool, label: str):
+    """2026-10-22 (backlog 75, architecture discipline): the ONE runner behind
+    every rework entry point. The per-scene work (voiceover, clip length,
+    photo, clip, scene status) is scene_rework.redo_scenes; this adds what only
+    the server can do: rework budget bookkeeping (policy), cost record, the
+    single reassembly, the failure notice and the job lock.
+      run_redo_scene       video=True  strict=True  policy=False  (a scene being ADDED)
+      run_redo_scenes_batch video=True  strict=False policy=True   (QC redo + "Rifai")
+      run_redo_audio_only  video=False strict=False policy=True   (voice only, no video cost)
+    """
     try:
         job = JOBS[job_id]
         job_dir = JOBS_DIR / job_id
-        scenes_config = job.get("scenes_config", [])
-        scene_idx = next((i for i, s in enumerate(scenes_config) if s.get("scene_id") == scene_id), None)
-        if scene_idx is None:
-            raise ValueError(f"Scene {scene_id} not found")
-        scene = scenes_config[scene_idx]
+        if policy:
+            if video:
+                _rwp.count(job, scene_ids)
+            _rwp.begin(job, scene_ids, "video" if video else "audio")
+            _save_job(job_id)
 
-
-        lighting  = job.get("lighting", "bright_natural")
-        intensity = job.get("intensity", "natural_pace")
-        model_tier = job.get("model_tier", "premium")
-        do_video_upscale = job.get("do_video_upscale", True)
-
-
-        voiceover = scene.get("voiceover", "").strip()
-        user_duration = int(scene.get("duration", 10))
-        actual_duration = user_duration
-
-
-        # ── Step 1: TTS ──────────────────────────────────────────────────
-        audio_dir = job_dir / "audio"
-        audio_dir.mkdir(exist_ok=True)
-        audio_out = str(audio_dir / f"{scene_id}.mp3")
-
-
-        if voiceover:
-            update("running", 15, f"Rework: rigenero voiceover…")
-            from voice_generation import generate_speech as generate_voice
-            ok_audio = await asyncio.to_thread(
-                generate_voice, voiceover, audio_out,
-                voice_id=job.get("voice_id") or None  # 2026-10-08: was a global env var that ignored the job voice
-            )
-            if ok_audio and Path(audio_out).exists():
-                try:
-                    from pydub import AudioSegment
-                    seg = AudioSegment.from_file(audio_out)
-                    audio_secs = len(seg) / 1000.0
-                    buffered   = audio_secs + 2.0
-                    actual_duration = max(4, min(8, int(((buffered + 1.99) // 2) * 2)))
-                    log.info(f"[Job {job_id}] Scene {scene_id}: audio={audio_secs:.1f}s → clip={actual_duration}s")
-                except Exception as e:
-                    log.warning(f"[Job {job_id}] Could not measure audio: {e}")
-
-
-        # ── Step 2: find or create enhanced source image ──────────────────
-        img_dir = job_dir / "images"
-        enhanced_dir = job_dir / "enhanced"
-        enhanced_dir.mkdir(exist_ok=True)
-
-
-        source_img = None
-        for ext in [".jpg", ".jpeg", ".png", ".webp"]:
-            candidate = img_dir / f"{scene_id}{ext}"
-            if candidate.exists():
-                source_img = candidate
-                break
-        # BUG FIXED: jobs created before the scene_id naming convention store
-        # their images as legacy scene_NNN.ext (index-based) instead of
-        # {scene_id}.ext. Confirmed real: redo always failed with "No source
-        # image found" on any older job. Fall back to the legacy name and
-        # self-heal by copying it to the new name, same pattern already used
-        # correctly in run_reassemble_only for clips/audio.
-        if not source_img:
-            for ext in [".jpg", ".jpeg", ".png", ".webp"]:
-                legacy_candidate = img_dir / f"scene_{scene_idx:03d}{ext}"
-                if legacy_candidate.exists():
-                    new_name = img_dir / f"{scene_id}{ext}"
-                    shutil.copy2(str(legacy_candidate), str(new_name))
-                    source_img = new_name
-                    log.info(f"[Job {job_id}] Migrated legacy image scene_{scene_idx:03d}{ext} → {scene_id}{ext}")
-                    break
-        if not source_img:
-            raise ValueError(f"No source image found for scene {scene_id}")
-
-
-        enhanced_img = enhanced_dir / f"{scene_id}_enhanced.jpg"
-        if not enhanced_img.exists():
-            from image_enhance import enhance_image
-            update("running", 25, "Rework: miglioro immagine…")
-            await asyncio.to_thread(enhance_image, str(source_img), str(enhanced_img), True, True)
-        img_for_generation = str(enhanced_img) if enhanced_img.exists() else str(source_img)
-
-
-        # ── Step 3: video generation ───────────────────────────────────────
-        clips_dir = job_dir / "clips"
-        clips_dir.mkdir(exist_ok=True)
-        clip_out = str(clips_dir / f"{scene_id}.mp4")
-
-
-        update("running", 40, f"Rework: rigenero clip ({actual_duration}s)…")
-        from video_generation import generate_video_single
-        ok_video = await asyncio.to_thread(
-            generate_video_single,
-            img_for_generation, actual_duration, clip_out,
-            space_type=scene.get("space_type", "large"),
-            pov_movement=scene.get("pov_movement", "walk_in_explore"),
-            lighting=lighting,
-            intensity=intensity,
-            model_tier=model_tier,
-            output_format=job.get("output_format", "landscape"),  # 2026-07-27, backlog item 37
-            do_video_upscale=do_video_upscale,
-        )
-
-
-        if not ok_video:
-            raise RuntimeError("Video generation failed")
-
-
-        # Update scene status
-        statuses = job.get("scenes", [])
-        found = False
-        for s in statuses:
-            if s.get("scene_id") == scene_id:
-                s.update({"video": "ok", "audio": "ok" if voiceover else "skipped", "duration_used": actual_duration})
-                found = True
-                break
-        if not found:
-            statuses.append({
-                "scene_id": scene_id, "index": scene_idx,
-                "caption": scene.get("caption", ""), "video": "ok",
-                "audio": "ok" if voiceover else "skipped",
-                "duration_used": actual_duration, "qc_verdict": "pass",
-            })
-        job["scenes"] = statuses
+        result = await _sr.redo_scenes(job, job_dir, scene_ids, _redo_deps(job_id),
+                                       video=video, strict=strict, label=label)
+        _sr.record_rework_cost(job, result["redone"], job.get("model_tier", "premium"), video)
         _save_job(job_id)
 
-        # ── Rework cost tracking ─────────────────────────────────────────
-        # Prices this redo the same way a fresh clip in this job's tier
-        # would be priced, then folds it into a running total alongside
-        # the original job cost (cost_tracker.calculate_rework_cost).
-        from cost_tracker import calculate_rework_cost, format_cost_display
-        pricing_scene = dict(scene)
-        pricing_scene["duration"] = actual_duration
-        rework_cost = calculate_rework_cost(
-            scenes_redone=[pricing_scene],
-            models_used=[model_tier],
-            redo_video=True,
-            redo_audio=bool(voiceover),
-            audio_chars=len(voiceover) if voiceover else 0,
-            model_tier=model_tier,
-        )
-        job.setdefault("reworks", []).append(rework_cost)
-        original_raw = job.get("cost_actual_raw")
-        if original_raw:
-            job["cost_actual"] = format_cost_display(original_raw, previous_reworks=job["reworks"])
-        else:
-            # Job predates cost_actual_raw being stored -- fall back to its
-            # existing formatted total as a single baseline so the rework
-            # still shows a running total instead of silently vanishing.
-            legacy_total = (job.get("cost_actual") or {}).get("grand_total_eur", 0)
-            pseudo_raw = {"type": "actual", "total_eur": legacy_total, "model_tier": model_tier}
-            job["cost_actual"] = format_cost_display(pseudo_raw, previous_reworks=job["reworks"])
-        _save_job(job_id)
-
-
-        # ── Step 4: reassemble using ALL current scenes ────────────────────
         await run_reassemble_only(job_id)
-
+        if policy:
+            _rwp.end(JOBS[job_id])
+            _save_job(job_id)
+            if video:
+                await _rework_after(job_id, result["failed"])
 
     except Exception as e:
-        log.error(f"[Job {job_id}] redo_scene failed: {e}", exc_info=True)
+        log.error(f"[Job {job_id}] redo (video={video}) failed: {e}", exc_info=True)
         JOBS[job_id].update({"status": "failed", "message": f"Errore: {str(e)[:200]}"})
         _save_job(job_id)
     finally:
+        try:
+            if _rwp.end(JOBS.get(job_id)):
+                _save_job(job_id)
+        except Exception:
+            pass
         _release_job_lock(job_id)
+
+
+async def run_redo_scene(job_id: str, scene_id: str):
+    """Regenerates ONE scene in place (used when a scene is added), then
+    reassembles the whole job. Thin wrapper: see _run_redo()."""
+    await _run_redo(job_id, [scene_id], video=True, strict=True, policy=False, label="Rework")
 
 
 
@@ -3280,9 +3177,9 @@ async def release_job(job_id: str):
 # ══════════════════════════════════════════════════════════════════════════════
 # Batch redo (NEW SOLID JOB MODEL) — multiple scenes, one locked operation,
 # one reassembly. Replaces the legacy /rework endpoint below for the main
-# "Genera video" button's rework path (2026-07-16 migration). Duplicates
-# run_redo_scene's per-scene steps rather than sharing code with it, so the
-# already-tested single-scene redo path can't regress from this change.
+# "Genera video" button's rework path (2026-07-16 migration). Until 2026-10-22
+# this duplicated run_redo_scene's per-scene steps; all three redo runners now
+# share ONE engine (scene_rework.redo_scenes via _run_redo).
 # ══════════════════════════════════════════════════════════════════════════════
 
 
@@ -3437,283 +3334,16 @@ async def redo_scenes_batch(
 
 async def run_redo_scenes_batch(job_id: str, scene_ids: list):
     """Regenerates MULTIPLE scenes in one locked operation, then reassembles
-    once at the end. See redo_scenes_batch() above for context.
-    """
-    def update(status, progress, message):
-        JOBS[job_id].update({"status": status, "progress": progress, "message": message})
-        _save_job(job_id)
-        log.info(f"[Job {job_id}] {progress}% — {message}")
-
-    try:
-        job = JOBS[job_id]
-        job_dir = JOBS_DIR / job_id
-        scenes_config = job.get("scenes_config", [])
-        lighting  = job.get("lighting", "bright_natural")
-        intensity = job.get("intensity", "natural_pace")
-        model_tier = job.get("model_tier", "premium")
-        do_video_upscale = job.get("do_video_upscale", True)
-
-        n = max(len(scene_ids), 1)
-        redone_results = []
-        statuses = job.get("scenes", [])
-        failed_ids = []
-        _rwp.count(job, scene_ids)
-        _rwp.begin(job, scene_ids, "video")
-        _save_job(job_id)
-
-        for idx, scene_id in enumerate(scene_ids):
-            scene_idx = next((i for i, s in enumerate(scenes_config) if s.get("scene_id") == scene_id), None)
-            if scene_idx is None:
-                log.warning(f"[Job {job_id}] Batch redo: scene {scene_id} not found, skipping")
-                continue
-            scene = scenes_config[scene_idx]
-
-            voiceover = scene.get("voiceover", "").strip()
-            user_duration = int(scene.get("duration", 10))
-            actual_duration = user_duration
-
-            audio_dir = job_dir / "audio"
-            audio_dir.mkdir(exist_ok=True)
-            audio_out = str(audio_dir / f"{scene_id}.mp3")
-
-            if voiceover:
-                update("running", int(5 + (idx/n)*80), f"Rework: rigenero voiceover ({idx+1}/{n})…")
-                from voice_generation import generate_speech as generate_voice
-                ok_audio = await asyncio.to_thread(
-                    generate_voice, voiceover, audio_out,
-                    voice_id=job.get("voice_id") or None  # 2026-10-08: was a global env var that ignored the job voice
-                )
-                if ok_audio and Path(audio_out).exists():
-                    try:
-                        from pydub import AudioSegment
-                        seg = AudioSegment.from_file(audio_out)
-                        audio_secs = len(seg) / 1000.0
-                        buffered   = audio_secs + 2.0
-                        actual_duration = max(4, min(8, int(((buffered + 1.99) // 2) * 2)))
-                    except Exception as e:
-                        log.warning(f"[Job {job_id}] Could not measure audio for {scene_id}: {e}")
-
-            img_dir = job_dir / "images"
-            enhanced_dir = job_dir / "enhanced"
-            enhanced_dir.mkdir(exist_ok=True)
-
-            source_img = None
-            for ext in [".jpg", ".jpeg", ".png", ".webp"]:
-                candidate = img_dir / f"{scene_id}{ext}"
-                if candidate.exists():
-                    source_img = candidate
-                    break
-            if not source_img:
-                for ext in [".jpg", ".jpeg", ".png", ".webp"]:
-                    legacy_candidate = img_dir / f"scene_{scene_idx:03d}{ext}"
-                    if legacy_candidate.exists():
-                        new_name = img_dir / f"{scene_id}{ext}"
-                        shutil.copy2(str(legacy_candidate), str(new_name))
-                        source_img = new_name
-                        break
-            if not source_img:
-                log.error(f"[Job {job_id}] Batch redo: no source image for scene {scene_id}, skipping")
-                failed_ids.append(scene_id)
-                continue
-
-            enhanced_img = enhanced_dir / f"{scene_id}_enhanced.jpg"
-            if not enhanced_img.exists():
-                from image_enhance import enhance_image
-                update("running", int(10 + (idx/n)*80), f"Rework: miglioro immagine ({idx+1}/{n})…")
-                await asyncio.to_thread(enhance_image, str(source_img), str(enhanced_img), True, True)
-            img_for_generation = str(enhanced_img) if enhanced_img.exists() else str(source_img)
-
-            clips_dir = job_dir / "clips"
-            clips_dir.mkdir(exist_ok=True)
-            clip_out = str(clips_dir / f"{scene_id}.mp4")
-
-            update("running", int(15 + (idx/n)*80), f"Rework: rigenero clip {idx+1}/{n} ({actual_duration}s)…")
-            from video_generation import generate_video_single
-            ok_video = await asyncio.to_thread(
-                generate_video_single,
-                img_for_generation, actual_duration, clip_out,
-                space_type=scene.get("space_type", "large"),
-                pov_movement=scene.get("pov_movement", "walk_in_explore"),
-                lighting=lighting,
-                intensity=intensity,
-                model_tier=model_tier,
-                output_format=job.get("output_format", "landscape"),  # 2026-07-27, backlog item 37
-                do_video_upscale=do_video_upscale,
-            )
-            if not ok_video:
-                log.error(f"[Job {job_id}] Batch redo: video generation failed for scene {scene_id}")
-                failed_ids.append(scene_id)
-                continue
-
-            found = False
-            for s in statuses:
-                if s.get("scene_id") == scene_id:
-                    s.update({"video": "ok", "audio": "ok" if voiceover else "skipped", "duration_used": actual_duration})
-                    found = True
-                    break
-            if not found:
-                statuses.append({
-                    "scene_id": scene_id, "index": scene_idx,
-                    "caption": scene.get("caption", ""), "video": "ok",
-                    "audio": "ok" if voiceover else "skipped",
-                    "duration_used": actual_duration, "qc_verdict": "pass",
-                })
-
-            redone_results.append({
-                "duration": actual_duration,
-                "had_voiceover": bool(voiceover),
-                "voiceover_chars": len(voiceover) if voiceover else 0,
-            })
-
-        job["scenes"] = statuses
-        _save_job(job_id)
-
-        if redone_results:
-            from cost_tracker import calculate_rework_cost, format_cost_display
-            pricing_scenes = [{"duration": r["duration"]} for r in redone_results]
-            total_voiceover_chars = sum(r["voiceover_chars"] for r in redone_results)
-            any_voiceover = any(r["had_voiceover"] for r in redone_results)
-            rework_cost = calculate_rework_cost(
-                scenes_redone=pricing_scenes,
-                models_used=[model_tier] * len(pricing_scenes),
-                redo_video=True,
-                redo_audio=any_voiceover,
-                audio_chars=total_voiceover_chars,
-                model_tier=model_tier,
-            )
-            job.setdefault("reworks", []).append(rework_cost)
-            original_raw = job.get("cost_actual_raw")
-            if original_raw:
-                job["cost_actual"] = format_cost_display(original_raw, previous_reworks=job["reworks"])
-            else:
-                legacy_total = (job.get("cost_actual") or {}).get("grand_total_eur", 0)
-                pseudo_raw = {"type": "actual", "total_eur": legacy_total, "model_tier": model_tier}
-                job["cost_actual"] = format_cost_display(pseudo_raw, previous_reworks=job["reworks"])
-            _save_job(job_id)
-
-        await run_reassemble_only(job_id)
-        _rwp.end(JOBS[job_id])
-        _save_job(job_id)
-        await _rework_after(job_id, failed_ids)
-
-    except Exception as e:
-        log.error(f"[Job {job_id}] batch redo failed: {e}", exc_info=True)
-        JOBS[job_id].update({"status": "failed", "message": f"Errore: {str(e)[:200]}"})
-        _save_job(job_id)
-    finally:
-        try:
-            if _rwp.end(JOBS.get(job_id)):
-                _save_job(job_id)
-        except Exception:
-            pass
-        _release_job_lock(job_id)
+    once at the end. See redo_scenes_batch() above for context. Thin wrapper:
+    see _run_redo()."""
+    await _run_redo(job_id, scene_ids, video=True, strict=False, policy=True, label="Rework")
 
 
 async def run_redo_audio_only(job_id: str, scene_ids: list):
-    """2026-07-23: regenerates ONLY the TTS audio for the given scenes,
-    reusing their EXISTING video clips untouched -- no Luma/Veo cost at
-    all, just the cheap ElevenLabs TTS charge. Mirrors the relevant slice
-    of run_redo_scenes_batch() above but skips every video-generation
-    step entirely, and reassembles via the SAME shared
-    run_reassemble_only() every other path uses -- no separate assembly
-    logic, per the architecture-discipline principle.
-    """
-    def update(status, progress, message):
-        JOBS[job_id].update({"status": status, "progress": progress, "message": message})
-        _save_job(job_id)
-        log.info(f"[Job {job_id}] {progress}% -- {message}")
-
-    try:
-        job = JOBS[job_id]
-        job_dir = JOBS_DIR / job_id
-        scenes_config = job.get("scenes_config", [])
-        statuses = job.get("scenes", [])
-
-        n = max(len(scene_ids), 1)
-        redone_results = []
-        _rwp.begin(job, scene_ids, "audio")
-        _save_job(job_id)
-
-        for idx, scene_id in enumerate(scene_ids):
-            scene_idx = next((i for i, s in enumerate(scenes_config) if s.get("scene_id") == scene_id), None)
-            if scene_idx is None:
-                log.warning(f"[Job {job_id}] Audio-only redo: scene {scene_id} not found, skipping")
-                continue
-            scene = scenes_config[scene_idx]
-            voiceover = scene.get("voiceover", "").strip()
-
-            if not voiceover:
-                log.warning(f"[Job {job_id}] Audio-only redo: scene {scene_id} has no voiceover text, nothing to regenerate, skipping")
-                continue
-
-            audio_dir = job_dir / "audio"
-            audio_dir.mkdir(exist_ok=True)
-            audio_out = str(audio_dir / f"{scene_id}.mp3")
-
-            update("running", int(10 + (idx/n)*80), f"Rework audio: rigenero voiceover ({idx+1}/{n})...")
-            from voice_generation import generate_speech as generate_voice
-            ok_audio = await asyncio.to_thread(
-                generate_voice, voiceover, audio_out,
-                voice_id=job.get("voice_id") or None  # 2026-10-08: was a global env var that ignored the job voice
-            )
-            if not ok_audio or not Path(audio_out).exists():
-                log.error(f"[Job {job_id}] Audio-only redo: TTS generation failed for scene {scene_id}")
-                continue
-
-            found = False
-            for s in statuses:
-                if s.get("scene_id") == scene_id:
-                    s["audio"] = "ok"
-                    found = True
-                    break
-            if not found:
-                statuses.append({
-                    "scene_id": scene_id, "index": scene_idx,
-                    "caption": scene.get("caption", ""), "video": "ok",
-                    "audio": "ok", "qc_verdict": "pass",
-                })
-
-            redone_results.append({"voiceover_chars": len(voiceover)})
-
-        job["scenes"] = statuses
-        _save_job(job_id)
-
-        if redone_results:
-            from cost_tracker import calculate_rework_cost, format_cost_display
-            total_voiceover_chars = sum(r["voiceover_chars"] for r in redone_results)
-            rework_cost = calculate_rework_cost(
-                scenes_redone=[],
-                models_used=[],
-                redo_video=False,
-                redo_audio=True,
-                audio_chars=total_voiceover_chars,
-                model_tier=job.get("model_tier", "premium"),
-            )
-            job.setdefault("reworks", []).append(rework_cost)
-            original_raw = job.get("cost_actual_raw")
-            if original_raw:
-                job["cost_actual"] = format_cost_display(original_raw, previous_reworks=job["reworks"])
-            else:
-                legacy_total = (job.get("cost_actual") or {}).get("grand_total_eur", 0)
-                pseudo_raw = {"type": "actual", "total_eur": legacy_total, "model_tier": job.get("model_tier", "premium")}
-                job["cost_actual"] = format_cost_display(pseudo_raw, previous_reworks=job["reworks"])
-            _save_job(job_id)
-
-        await run_reassemble_only(job_id)
-        _rwp.end(JOBS[job_id])
-        _save_job(job_id)
-
-    except Exception as e:
-        log.error(f"[Job {job_id}] audio-only redo failed: {e}", exc_info=True)
-        JOBS[job_id].update({"status": "failed", "message": f"Errore: {str(e)[:200]}"})
-        _save_job(job_id)
-    finally:
-        try:
-            if _rwp.end(JOBS.get(job_id)):
-                _save_job(job_id)
-        except Exception:
-            pass
-        _release_job_lock(job_id)
+    """2026-07-23: regenerates ONLY the TTS audio for the given scenes, reusing
+    their EXISTING video clips untouched -- no Luma/Veo cost, just the cheap
+    ElevenLabs charge. Thin wrapper: see _run_redo() (2026-10-22)."""
+    await _run_redo(job_id, scene_ids, video=False, strict=False, policy=True, label="Rework audio")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3899,9 +3529,9 @@ async def run_pipeline(
                         # Snap to nearest valid duration, minimum 6s
                         audio_secs   = tts_qc.get("duration_seconds", 0)
                         if audio_secs > 0:
-                            buffered = audio_secs + 2.0
-                            # Snap to even number, min 6, max 20
-                            snapped  = max(6, min(20, int(round(buffered / 2) * 2)))
+                            # 2026-10-22: the rule lives in scene_rework (one definition,
+                            # also used by every rework): +2 s, even, min 6, max 20.
+                            snapped  = _sr.clip_seconds_for_audio(audio_secs, user_duration)
                             log.info(
                                 f"[Job {job_id}] Scene {i}: audio={audio_secs:.1f}s "
                                 f"→ clip duration={snapped}s"
