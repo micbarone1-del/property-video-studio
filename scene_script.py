@@ -158,7 +158,15 @@ def parse(raw: str):
         return None
     if not isinstance(data, list) or not all(isinstance(x, str) for x in data):
         return None
-    return [re.sub(r"\s+", " ", x).strip() for x in data]
+    out = []
+    for x in data:
+        x = re.sub(r"\s+", " ", x).strip()
+        # 2026-10-22: a sentence without a final stop is joined to the next one by the spoken-sentence splitter
+        # (live test a7e7ef2b: "splits into 5 sentences instead of 6"). Adding the stop is safe and changes no word.
+        if x and x[-1] not in ".!?":
+            x = x.rstrip(";:,- ") + "."   # also a ';' or ':' at the end does not end a sentence for the splitter
+        out.append(x)
+    return out
 
 
 def validate(sentences: list, description: str, agency_name: str = None, price: str = None, split_fn=None) -> list:
@@ -220,6 +228,12 @@ def validate(sentences: list, description: str, agency_name: str = None, price: 
             problems.append(f"{tag}: must name the agency ({agency_name})")
 
     if split_fn is not None and not problems:
+        # name the exact boundary the splitter cannot see (splits only on . ! ? followed by a capital letter)
+        for i, sent in enumerate(sentences):
+            if i > 0 and not re.match(r"[A-ZÀ-Ü]", sent):
+                problems.append(f"scene {i + 1}: must start with a capital letter (not a digit or lowercase): write numbers inside the sentence, not at its start")
+        if problems:
+            return problems
         joined = " ".join(sentences)
         parts = split_fn(joined)
         if len(parts) != SCENES:

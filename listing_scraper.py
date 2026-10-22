@@ -955,6 +955,7 @@ def _write_standard_scene_script(description: str, address: str, price: str, age
                         ss.validate(sentences, description, agency_name, price, split_fn=split_into_sentences))
             if not problems:
                 return {"ok": True, "sentences": sentences, "attempts": attempt, "problems": [], "error": None}
+            log.warning(f"[Scraper] Per-scene script attempt {attempt} rejected: {problems} | sentences: {sentences}")
             feedback = ("\n\nYour previous answer was REJECTED for these reasons. Fix all of them, return the full JSON array again:\n- "
                         + "\n- ".join(problems))
         return {"ok": False, "sentences": None, "attempts": 3, "problems": problems,

@@ -76,11 +76,14 @@ check("V25 no agency name known: the agency check is skipped", val(with_(0, "Pre
 check("V26 two sentences inside one scene rejected", any("more than one sentence" in p for p in val(with_(3, "La cucina è abitabile. Ha molti armadi."))))
 check("V27 sentence must end with a full stop", any("full stop" in p for p in val(with_(3, "La cucina è abitabile!"))))
 check("V28 too short rejected", any("too short" in p for p in val(with_(3, "Cucina."))))
+check("V30 a sentence starting with a digit is named (splitter cannot see the boundary)", any("scene 2: must start with a capital letter" in p for p in ss.validate(with_(1, "650 metri quadri con giardino di 3000 metri."), DESC, AG, PRICE, split_fn=lambda t: ["a"] * 5)))
+check("V31 parse adds the missing final stop", ss.parse('["Una frase senza punto", "Altra frase."]') == ["Una frase senza punto.", "Altra frase."])
+check("V32 a final semicolon becomes a stop", ss.parse('["Una frase;", "Altra."]')[0] == "Una frase.")
 check("V29 the spoken split must give 6 sentences", any("splits into 7" in p for p in ss.validate(GOOD, DESC, AG, PRICE, split_fn=lambda t: ["a"] * 7)))
 check("V30 an unrelated real split of the good script gives 6", len(N.split_into_sentences(" ".join(GOOD))) == 6)
 
 # ---------------- parse
-check("P1 plain JSON array", ss.parse('["a b c d.", "e"]') == ["a b c d.", "e"])
+check("P1 plain JSON array", ss.parse('["a b c d.", "e"]') == ["a b c d.", "e."])
 check("P2 fenced JSON array", ss.parse('```json\n["x y z w."]\n```') == ["x y z w."])
 check("P3 text around the array", ss.parse('Ecco: ["uno due tre quattro."] fine') == ["uno due tre quattro."])
 check("P4 garbage / object / mixed types -> None", ss.parse("niente") is None and ss.parse('{"a": 1}') is None and ss.parse('[1, 2]') is None and ss.parse("") is None)
