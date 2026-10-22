@@ -41,11 +41,14 @@ check("V2 five sentences rejected", any("exactly 6" in p for p in val(GOOD[:5]))
 check("V3 seven sentences rejected", any("exactly 6" in p for p in val(GOOD + ["Altro."])))
 check("V4 non-list rejected", ss.validate(None, DESC)[0].startswith("expected exactly 6"))
 long14 = "Una due tre quattro cinque sei sette otto nove dieci undici dodici tredici quattordici."
-check("V5 scene 1-5: 14 words ok, 15 too long", not any("words" in p for p in val(with_(1, "La villa unifamiliare è ristrutturata, con 650 metri quadri e giardino di 3000 metri."))) and
-      any("maximum 14" in p for p in val(with_(1, long14 + " Altra parola."))))
+check("V5 scene 1-5: 14 words ok, 16 accepted (soft margin 2), 17 too long", not any("words" in p for p in val(with_(1, "La villa unifamiliare è ristrutturata, con 650 metri quadri e giardino di 3000 metri."))) and
+      not any("words" in p for p in val(with_(1, long14 + " Altra parola."))) and
+      any("maximum 14" in p for p in val(with_(1, long14 + " Altra parola qui."))))
 S17 = "Il giardino e la terrazza completano la proprietà: contattate Coldwell Banker per ricevere tutte le maggiori informazioni."
 check("V6 scene 6 may be up to 17 words, the same sentence is too long in scenes 1-5", not any("maximum" in p for p in val(with_(5, S17))) and any("maximum 14" in p for p in val(with_(2, S17))))
-check("V7 scene 6 with 18 words rejected", any("maximum 17" in p for p in val(with_(5, "Il giardino e la terrazza completano la proprietà e la rendono molto comoda: contattate Coldwell Banker per ricevere maggiori informazioni."))))
+S18 = "Il giardino e la terrazza completano la proprietà e la rendono molto comoda: contattate Coldwell Banker per ricevere maggiori informazioni."
+check("V7 scene 6: 19 words accepted (soft margin 2), 20 words rejected", not any("words" in p for p in val(with_(5, S17 + " Grazie mille.")))  and
+      any("maximum 17" in p for p in val(with_(5, S18))))
 check("V8 number not in the listing rejected", any("number 700" in p for p in val(with_(1, "La villa unifamiliare di 700 metri quadri è ristrutturata."))))
 check("V9 number in the listing accepted (650, 3000, 5, 4)", val(with_(1, "La villa ha 650 metri quadri e un giardino di 3000 metri quadri.")) == [])
 check("V10 number word not in the listing rejected (sei bagni)", any("number word" in p for p in val(with_(4, "La zona notte dispone di sette camere da letto."))))
@@ -146,11 +149,12 @@ bad_price = with_(1, "La villa costa 1.680.000 euro in vendita.")
 o = run([J(bad_price), J(GOOD)], [(28.5, {})])
 check("O5 first script rejected (price) -> second attempt accepted, told why", o["narration_mode"] == "per_scene" and o["script_attempts"] == 2 and len(prompts) == 2 and "REJECTED" in prompts[1] and "price" in prompts[1], (o.get("narration_mode"), o.get("script_attempts")))
 
-o = run([J(bad_price), J(bad_price), "Testo narrazione di prova " * 12], [(28.5, {})])
-check("O6 two rejections -> single-text fallback, job still ok, reason recorded", o["ok"] and o["narration_mode"] == "single_text" and o["script_fallback_reason"] and "fact check" in o["script_fallback_reason"] and o["tts_calls_used"] == 1, o)
-check("O7 the fallback used the previous single-text prompt (3rd Claude call)", len(prompts) == 3 and "voiceover script" in prompts[2])
+o = run([J(bad_price), J(bad_price), J(bad_price), "Testo narrazione di prova " * 12], [(28.5, {})])
+check("O6 three rejections -> single-text fallback, job still ok, reason recorded", o["ok"] and o["narration_mode"] == "single_text" and o["script_fallback_reason"] and "fact check" in o["script_fallback_reason"] and o["tts_calls_used"] == 1, o)
+check("O7 the fallback used the previous single-text prompt (4th Claude call)", len(prompts) == 4 and "voiceover script" in prompts[3])
 
-o = run([J(["non json"]) if False else "not json at all", "still not json", "Testo narrazione " * 12], [(28.5, {})])
+check("O5b first two rejected, third accepted", run([J(bad_price), J(bad_price), J(GOOD)], [(28.5, {})])["script_attempts"] == 3)
+o = run([J(["non json"]) if False else "not json at all", "still not json", "again not json", "Testo narrazione " * 12], [(28.5, {})])
 check("O8 unparseable replies -> fallback, not a crash", o["ok"] and o["narration_mode"] == "single_text")
 o = run([RuntimeError("boom"), "Testo narrazione " * 12], [(28.5, {})])
 check("O9 Claude error on the script -> fallback to single text, not a failed job", o["ok"] and o["narration_mode"] == "single_text" and "boom" in (o["script_fallback_reason"] or ""), o.get("script_fallback_reason"))

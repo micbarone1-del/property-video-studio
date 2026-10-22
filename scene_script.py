@@ -26,6 +26,9 @@ SCENES = 6
 MAX_WORDS = 14            # hard ceiling for scenes 1-5 (about 5 s of speech); the target is 12-13
 MAX_WORDS_LAST = 17       # scene 6 may run into the trailing blank (narration.MAX_OVERFLOW_SECS absorbs up to 2 s)
 MIN_WORDS = 4
+SOFT_WORDS = 2            # 2026-10-22: words are only a proxy for seconds (live test: the model wrote 15-16 words
+                          # twice and the whole script was discarded). Up to this many words over the ceiling are
+                          # accepted here; the REAL check is the measured audio (spill_problems + one tighten pass).
 SPILL_TOLERANCE_SECS = 0.8   # a sentence that ends more than this after its scene ends gets shortened
 WORDS_PER_SEC = 2.4
 
@@ -97,18 +100,18 @@ def build_prompt(description: str, address: str, agency_name: str, labels: list)
         role = SENTENCE_ROLES[i]
         if role == "opening":
             what = (f"OPENING. Shows: {label}. The agency presents the property: '{agency_name or 'L agenzia'} presenta ...'. "
-                    f"Say clearly 'in vendita' or 'in affitto' (as the listing says), the property type and the zone. 12-13 words.")
+                    f"Say clearly 'in vendita' or 'in affitto' (as the listing says), the property type and the zone. AT MOST 12 words.")
         elif role == "general":
             what = (f"GENERAL FACTS. Shows: {label}. Do NOT describe this room: give the most important general facts of the "
                     f"property that the listing text states (size in square metres, plot size, number of rooms/levels, "
-                    f"condition such as 'ristrutturata'). 12-13 words.")
+                    f"condition such as 'ristrutturata'). AT MOST 12 words.")
         elif role == "room":
             what = (f"ROOM. Shows: {label}. One sentence about this kind of room. Include a detail ONLY if the listing text states it "
                     f"for this room or for the property; if it states nothing about it, just say what the room is, in a plain "
-                    f"neutral sentence. 8-12 words.")
+                    f"neutral sentence. AT MOST 10 words.")
         else:
             what = (f"CLOSING. Shows: {label}. Mention a feature of this space only if the listing text states it, then invite to "
-                    f"contact {agency_name or 'the agency'} by name for more information. Up to 16 words.")
+                    f"contact {agency_name or 'the agency'} by name for more information. AT MOST 15 words.")
         scene_lines.append(f"Scene {i + 1}: {what}")
     scenes_txt = "\n".join(scene_lines)
     return f"""You write the Italian voiceover of a 30-second real estate video. The video has exactly 6 scenes of 5 seconds. You write EXACTLY ONE sentence per scene, in scene order, so the sentence is spoken while that scene is on screen.
@@ -133,7 +136,7 @@ HARD RULES:
 - Objective, calm, factual tone. No promotional adjectives (prestigioso, esclusivo, meraviglioso, splendido, ...) unless the listing itself uses that word.
 - Ignore any text about the agency's own history or values: describe only this property.
 - Avoid legal jargon such as 'nuda proprietà'.
-- The word limits above are real: a sentence is spoken in about 5 seconds, so keep to them.
+- The word limits above are real: a sentence is spoken in about 5 seconds. Count the words of EVERY sentence before you answer; a sentence over its maximum is rejected. Short is better: leave out a fact rather than exceed the limit.
 """
 
 
@@ -176,7 +179,7 @@ def validate(sentences: list, description: str, agency_name: str = None, price: 
         if not s or n_words < MIN_WORDS:
             problems.append(f"{tag}: too short or empty")
             continue
-        if n_words > limit:
+        if n_words > limit + SOFT_WORDS:
             problems.append(f"{tag}: {n_words} words, maximum {limit}")
         if "\n" in s or not s.endswith("."):
             problems.append(f"{tag}: must be one sentence ending with a full stop")

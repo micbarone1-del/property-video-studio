@@ -939,8 +939,8 @@ def _claude_text_reply(client, prompt: str, max_tokens: int = 1024) -> str:
 
 
 def _write_standard_scene_script(description: str, address: str, price: str, agency_name: str, sequence: list) -> dict:
-    """2026-10-22 (Patch B): one sentence per scene for the standard video (see scene_script.py). Up to 2 Claude
-    attempts; the second one is told why the first was rejected by the fact check. Never raises.
+    """2026-10-22 (Patch B): one sentence per scene for the standard video (see scene_script.py). Up to 3 Claude
+    attempts (2026-10-22: was 2); each retry is told why the previous one was rejected by the fact check. Never raises.
     Returns {"ok", "sentences", "attempts", "problems", "error"}; ok=False means 'use the single-text narration'."""
     import scene_script as ss
     from narration import split_into_sentences
@@ -949,7 +949,7 @@ def _write_standard_scene_script(description: str, address: str, price: str, age
     feedback, problems = "", []
     try:
         client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-        for attempt in (1, 2):
+        for attempt in (1, 2, 3):
             sentences = ss.parse(_claude_text_reply(client, base_prompt + feedback))
             problems = (["the reply was not a JSON array of strings"] if sentences is None else
                         ss.validate(sentences, description, agency_name, price, split_fn=split_into_sentences))
@@ -957,8 +957,8 @@ def _write_standard_scene_script(description: str, address: str, price: str, age
                 return {"ok": True, "sentences": sentences, "attempts": attempt, "problems": [], "error": None}
             feedback = ("\n\nYour previous answer was REJECTED for these reasons. Fix all of them, return the full JSON array again:\n- "
                         + "\n- ".join(problems))
-        return {"ok": False, "sentences": None, "attempts": 2, "problems": problems,
-                "error": "per-scene script rejected by the fact check twice"}
+        return {"ok": False, "sentences": None, "attempts": 3, "problems": problems,
+                "error": "per-scene script rejected by the fact check 3 times"}
     except Exception as e:
         return {"ok": False, "sentences": None, "attempts": 0, "problems": problems, "error": f"per-scene script failed: {e}"}
 
