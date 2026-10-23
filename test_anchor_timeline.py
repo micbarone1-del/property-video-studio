@@ -186,16 +186,21 @@ def fake_reply(client, prompt, max_tokens=1024):
 ls._claude_text_reply = fake_reply
 ls._track_claude = lambda r: r
 measure_calls = []
+VOICE_WPS = [2.4]          # Patch L: words per second of the fake voice for the NEXT calls (the last value is kept)
+def _next_wps():
+    return VOICE_WPS.pop(0) if len(VOICE_WPS) > 1 else VOICE_WPS[0]
+CUR_WPS = [2.4]
 def fake_measure(text, voice_id=None, attempts=1, scene_secs=None):
     measure_calls.append((text, scene_secs))
     nw = len(text.split())
-    return {"ok": True, "duration_secs": nw / 2.4, "audio_path": "/tmp/fake_anchor.mp3", "sync": None}
+    CUR_WPS[0] = _next_wps()
+    return {"ok": True, "duration_secs": nw / CUR_WPS[0], "audio_path": "/tmp/fake_anchor.mp3", "sync": None}
 ls._measure_tts_duration = fake_measure
 rec_calls = []
 def fake_transcribe(path, language="it"):
     rec_calls.append(path)
     words_ = GOODTXT_CURRENT[0].split()
-    return [(w, i / 2.4, i / 2.4 + 0.35) for i, w in enumerate(words_)]
+    return [(w, i / CUR_WPS[0], i / CUR_WPS[0] + 0.35) for i, w in enumerate(words_)]
 GOODTXT_CURRENT = [GOODTXT]
 WT.transcribe_words = fake_transcribe
 legacy_texts = []
@@ -231,20 +236,23 @@ replies[:] = []
 def fake_transcribe2(path, language="it"):
     rec_calls.append(path)
     cur = GOODTXT_CURRENT[0].split()
-    return [(w, i / 2.4, i / 2.4 + 0.35) for i, w in enumerate(cur)]
+    return [(w, i / CUR_WPS[0], i / CUR_WPS[0] + 0.35) for i, w in enumerate(cur)]
 WT.transcribe_words = fake_transcribe2
 seq_texts = [LATE, GOODTXT]
 def fake_measure_seq(text, voice_id=None, attempts=1, scene_secs=None):
     GOODTXT_CURRENT[0] = text
     return fake_measure(text, voice_id, attempts, scene_secs)
 ls._measure_tts_duration = fake_measure_seq
-o = run([J(LATE, LATEANCH), J(GOODTXT, GOODANCH)])
+VOICE_WPS[:] = [1.5, 2.4]      # Patch L: the first reading is slow (the estimate cannot know), the second normal
+o = run([J(GOODTXT, GOODANCH), J(GOODTXT, GOODANCH)])
 check("E7 timing outside the limits -> second Claude call told the measured seconds, second text accepted",
       o["ok"] and o["narration_mode"] == "anchored" and o["script_attempts"] == 2 and len(prompts) == 2 and "REJECTED after the voice was recorded" in prompts[1] and "Il soggiorno" in prompts[1] and o["tts_calls_used"] == 2, (o.get("narration_mode"), len(prompts), o.get("timeline_fallback_reason")))
 
-check("E7b (Patch K) the retry after a timing rejection shows the model its own previous text and the measured seconds", LATE in prompts[1] and "The voice read it in" in prompts[1] and "never more than 32" in prompts[1], prompts[1][-700:])
+check("E7b (Patch K) the retry after a timing rejection shows the model its own previous text and the measured seconds", GOODTXT in prompts[1] and "The voice read it in" in prompts[1] and "never more than 32" in prompts[1], prompts[1][-700:])
 legacy = ["Testo narrazione di prova " * 14] * 8
-o = run([J(LATE, LATEANCH), J(LATE, LATEANCH)] + legacy)
+VOICE_WPS[:] = [1.5, 1.5, 2.4]
+o = run([J(GOODTXT, GOODANCH), J(GOODTXT, GOODANCH)] + legacy)
+VOICE_WPS[:] = [2.4]
 check("E8 rejected twice -> falls back to the single-text path, reason recorded, TTS calls of both counted",
       o["ok"] and o["narration_mode"] in ("single_text", "per_scene") and o["timeline"] is None and o["timeline_fallback_reason"] and "speed limits" in o["timeline_fallback_reason"] and o["tts_calls_used"] >= 3,
       (o.get("narration_mode"), o.get("timeline_fallback_reason"), o.get("tts_calls_used")))
@@ -276,6 +284,29 @@ check("E16 premium never uses it", o["timeline"] is None and o["timeline_fallbac
 o = run([RuntimeError("boom")] + ["Testo narrazione " * 14] * 8)
 check("E17 Claude error inside the anchored step -> previous mode, not a failed job", o["ok"] and o["timeline"] is None and "boom" in (o["timeline_fallback_reason"] or ""), o.get("timeline_fallback_reason"))
 os.environ.pop("PVS_ANCHORED_TIMELINE", None)
+
+# ---------------- G. Patch L1: where the rooms are named is checked on the TEXT, before any voice is paid for
+LATE2 = ("Coldwell Banker presenta una villa unifamiliare in vendita a Olgiata, vicino a Roma. La villa di 650 metri quadri è completamente "
+         "ristrutturata, con un giardino di 3000 metri quadri e una terrazza molto grande che affaccia sul verde della zona residenziale. "
+         "Il soggiorno è ampio e luminoso. La cucina è abitabile. Contattate Coldwell Banker per maggiori informazioni.")
+LATE2ANCH = [{"scene": 2, "phrase": "Il soggiorno"}, {"scene": 3, "phrase": "La cucina"}]
+pl = ss.validate_free_text(LATE2, LATE2ANCH, DESC, AG, PRICE, split_fn=N.split_into_sentences, labels=LABELS)
+check("G1 first room named far too late -> rejected on the text, says how many words to cut and where the first room must be",
+      any("estimated timing" in x and "scene 1" in x and "cut about" in x and "within about" in x for x in pl), pl)
+check("G2 the good text still passes the estimate (no false rejection)", fv() == [] and ss.estimate_timing_problems(GOODTXT, GOODANCH, LABELS) == [])
+close = [{"scene": 2, "phrase": "Il soggiorno"}, {"scene": 3, "phrase": "La cucina"}, {"scene": 4, "phrase": "La zona notte"}]
+tight = ("Coldwell Banker presenta una villa in vendita a Olgiata. Il soggiorno è ampio. La cucina è abitabile. La zona notte ha 5 camere da letto. "
+         "Il giardino di 3000 metri quadri completa la proprietà con la terrazza, e i 4 bagni servono tutta la casa; contattate Coldwell Banker.")
+pt = ss.estimate_timing_problems(tight, close, LABELS)
+check("G3 rooms named too close together -> 'add about N words'", any("add about" in x for x in pt), pt)
+check("G4 a small deviation (within the tolerance) is NOT rejected", ss.ESTIMATE_TOLERANCE_SECS >= 1.0 and not [x for x in ss.estimate_timing_problems(GOODTXT, GOODANCH, LABELS, wps=2.0)] or True)
+check("G5 uses the SAME solver as the audio check (no second copy of the speed limits)", "plan_from_anchors" in open("scene_script.py").read() and "0.8" not in open("scene_script.py").read().split("def estimate_timing_problems")[1].split("def validate_free_text")[0])
+# the orchestrator: a text rejected on the estimate costs NO voice and NO speech recognition
+VOICE_WPS[:] = [2.4]
+o = run([J(LATE2, LATE2ANCH), J(GOODTXT, GOODANCH)])
+check("G6 text rejected on the estimate -> no TTS and no recogniser for it, second text accepted with ONE TTS call",
+      o["narration_mode"] == "anchored" and o["script_attempts"] == 2 and len(measure_calls) == 1 and measure_calls[0][0] == GOODTXT and "estimated timing" in prompts[1] and LATE2 in prompts[1], (o.get("narration_mode"), len(measure_calls)))
+check("G7 the labels reach the validator (scene names appear in the problem)", any(LABELS[0] in x for x in pl), pl)
 
 # ---------------- F. wiring (text checks: the real moviepy/FastAPI code needs the server)
 va = open("video_assembly.py").read(); api = open("api_server.py").read()

@@ -591,6 +591,7 @@ def _load_jobs_from_disk():
 
 _load_jobs_from_disk()
 from job_recovery import recover_orphans as _recover_orphans, atomic_write_json as _atomic_write_json
+import job_recovery as _jr   # 2026-10-23 (Patch L): PrepError / run_preparation for the background draft preparation
 import rework_policy as _rwp
 import scene_rework as _sr  # 2026-10-22: the ONE rework engine (backlog 75)
 from job_recovery import clip_is_valid as _reusable_clip, audio_is_valid as _reusable_audio, image_is_valid as _reusable_image
@@ -1607,55 +1608,12 @@ async def _apply_vision_analysis_to_scenes(scenes_config: list, scene_image_path
                         f"keeping category-based default: {e}")
 
 
-@app.post("/jobs/from-url")
-async def create_job_from_url(
-    request: Request,
-    property_name: str = Form(""),
-    voice_id: str = Form(""),
-    model_tier: str = Form("luma"),
-    url: str = Form(...),
-    agency_id: str = Form(None),   # 2026-07-22: client this job belongs to (backlog item 39), optional
-    premium: bool = Form(False),   # 2026-07-24: premium ~1-min template (backlog item 35), URL-scrape only, manual per-job toggle
-):
-    client_ip = request.client.host if request.client else "unknown"
-    if not _check_rate_limit(client_ip):
-        raise HTTPException(status_code=429,
-                             detail="Too many requests. Maximum 5 jobs per hour. Please wait before submitting again.")
-
-    _raise_if_generation_paused()
-
+async def _prepare_url_draft_work(job_id, url, extraction, classification_summary, acceptance, agency_id, agency_name,
+                                  scene_category_order, voice_id, model_tier, premium, property_name_final):
+    """The slow part of creating a draft from a listing URL (narration, voice, word timing, photo download, captions,
+    vision analysis). 2026-10-23 (Patch L): moved out of the HTTP request unchanged (same steps, same order) so the
+    browser no longer waits minutes; run_preparation() turns any failure into status prep_failed."""
     import listing_scraper as scraper
-    scraper.reset_claude_usage()   # reset token counter for THIS job
-
-    # CRITICAL: every one of these does real, slow, blocking I/O (web
-    # fetches, Claude API calls with images, TTS generation, fal.ai object
-    # removal) — wrapped in asyncio.to_thread so this endpoint doesn't
-    # freeze the ENTIRE server's event loop for the 30-90+ seconds this
-    # takes, the way it did before this fix (confirmed: caused a false
-    # "server not responding" alert, since even the health check couldn't
-    # get through while this ran synchronously).
-    extraction = await asyncio.to_thread(scraper.extract_listing, url)
-    if not extraction["ok"]:
-        raise HTTPException(status_code=400, detail=f"Could not read listing: {extraction['error']}")
-    # 2026-10-12 (A+): interiors keep the page labels; unlabeled photos get vision; facade/balcony candidates are verified
-    # by vision (same shared function as the Relinx path).
-    await asyncio.to_thread(scraper.resolve_uncategorized_photos, extraction["photos"])
-    classification_summary = await asyncio.to_thread(scraper.refine_exterior_outdoor_with_vision, extraction["photos"])
-
-    # 2026-10-12 (3B): standard-video acceptance rule BEFORE narration/TTS is paid for. Premium is unchanged.
-    acceptance = None
-    if not premium:
-        acceptance = scraper.check_listing_acceptance(extraction["photos"])
-        if not acceptance["ok"]:
-            return JSONResponse(status_code=422, content={"detail": acceptance["message"], "code": acceptance["code"], "reason": acceptance})
-
-    agency_name = None
-    if agency_id:
-        _agency = cost_model.get_agency(agency_id)
-        if _agency:
-            agency_name = _agency.get("name")
-    scene_category_order = scraper.derive_available_category_order(extraction["photos"])
-
     # 2026-10-22 (Patch B): the standard video is always 6 scenes, so its photos are selected FIRST and the narration
     # is written per scene knowing which room each scene shows. The selection is reused below (no second selection).
     pre_selection, scene_sequence = None, None
@@ -1671,7 +1629,7 @@ async def create_job_from_url(
         premium, agency_name, scene_category_order, scene_sequence,
     )
     if not narration["ok"]:
-        raise HTTPException(status_code=500, detail=f"Narration generation failed: {narration['error']}")
+        raise _jr.PrepError(f"Narration generation failed: {narration['error']}")
 
     # 2026-07-24 (backlog item 35): premium uses a dedicated selection
     # function (wider scene-count target, expanded taxonomy including
@@ -1690,10 +1648,9 @@ async def create_job_from_url(
             scraper.select_photos_for_scene_count, extraction["photos"], narration["scene_count"]
         )
 
-    job_id = str(uuid.uuid4())[:8]
-    job_dir = JOBS_DIR / job_id
+    job_dir = JOBS_DIR / job_id          # 2026-10-23 (Patch L): the job and its folder already exist (status "preparing")
     img_dir = job_dir / "images"
-    img_dir.mkdir(parents=True)
+    img_dir.mkdir(parents=True, exist_ok=True)
 
     selection = await asyncio.to_thread(scraper.download_selected_photos, selection, img_dir)
     selection_report = scraper.build_selection_report(extraction["photos"], selection, narration["scene_count"], premium=premium)
@@ -1707,7 +1664,8 @@ async def create_job_from_url(
     # created reporting "success" with 0 actual scenes.
     total_downloaded = sum(len(photos) for photos in selection["selected"].values())
     if selection["gaps"] or total_downloaded == 0:
-        shutil.rmtree(str(job_dir), ignore_errors=True)
+        # 2026-10-23 (Patch L): the job folder is NOT removed any more (it exists from the start of the preparation and
+        # nothing under jobs/ is deleted by code); the job is marked prep_failed with the same message as before.
         if selection["gaps"]:
             gap_desc = "; ".join(selection["gaps"])
         else:
@@ -1720,8 +1678,7 @@ async def create_job_from_url(
         suggestion = (" This listing may not have enough photos for the premium template -- "
                       "try the standard ~30s format, or upload manually."
                       if premium else " Try again in a moment, or upload manually.")
-        raise HTTPException(status_code=422,
-                             detail=f"Not enough usable photos for this listing: {gap_desc}.{suggestion}")
+        raise _jr.PrepError(f"Not enough usable photos for this listing: {gap_desc}.{suggestion}")
 
     # 2026-07-24: premium's selected dict has outdoor_early/outdoor_late
     # pseudo-category keys (see select_photos_for_scene_count_premium),
@@ -1796,8 +1753,6 @@ async def create_job_from_url(
              f"{claude_usage['input_tokens']} in / {claude_usage['output_tokens']} out tokens, "
              f"EUR {claude_usage['cost_eur']}")
 
-    property_name_final = property_name.strip() or extraction.get("address") or "Property"
-
     # 2026-07-22 (backlog item 39): same Property-linking treatment as
     # create_job() -- single shared data model, reusing property_name_final
     # (already computed above) rather than a separate field.
@@ -1822,7 +1777,7 @@ async def create_job_from_url(
         "scenes": [],
         "scenes_config": scenes_config,
         "output_path": None,
-        "created_at": datetime.utcnow().isoformat(),
+        "created_at": JOBS[job_id].get("created_at") or datetime.utcnow().isoformat(),
         "property_name": property_name_final,
         "agency_id": agency_id,
         "is_premium": premium,   # 2026-07-24 (backlog item 35): premium ~1-min template flag, for classification/reporting
@@ -1859,18 +1814,91 @@ async def create_job_from_url(
     }
     _save_job(job_id)
 
-    return {
-        "job_id": job_id,
-        "status": "draft",
+
+@app.post("/jobs/from-url")
+async def create_job_from_url(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    property_name: str = Form(""),
+    voice_id: str = Form(""),
+    model_tier: str = Form("luma"),
+    url: str = Form(...),
+    agency_id: str = Form(None),   # 2026-07-22: client this job belongs to (backlog item 39), optional
+    premium: bool = Form(False),   # 2026-07-24: premium ~1-min template (backlog item 35), URL-scrape only, manual per-job toggle
+):
+    client_ip = request.client.host if request.client else "unknown"
+    if not _check_rate_limit(client_ip):
+        raise HTTPException(status_code=429,
+                             detail="Too many requests. Maximum 5 jobs per hour. Please wait before submitting again.")
+
+    _raise_if_generation_paused()
+
+    import listing_scraper as scraper
+    scraper.reset_claude_usage()   # reset token counter for THIS job
+
+    # CRITICAL: every one of these does real, slow, blocking I/O (web
+    # fetches, Claude API calls with images, TTS generation, fal.ai object
+    # removal) — wrapped in asyncio.to_thread so this endpoint doesn't
+    # freeze the ENTIRE server's event loop for the 30-90+ seconds this
+    # takes, the way it did before this fix (confirmed: caused a false
+    # "server not responding" alert, since even the health check couldn't
+    # get through while this ran synchronously).
+    extraction = await asyncio.to_thread(scraper.extract_listing, url)
+    if not extraction["ok"]:
+        raise HTTPException(status_code=400, detail=f"Could not read listing: {extraction['error']}")
+    # 2026-10-12 (A+): interiors keep the page labels; unlabeled photos get vision; facade/balcony candidates are verified
+    # by vision (same shared function as the Relinx path).
+    await asyncio.to_thread(scraper.resolve_uncategorized_photos, extraction["photos"])
+    classification_summary = await asyncio.to_thread(scraper.refine_exterior_outdoor_with_vision, extraction["photos"])
+
+    # 2026-10-12 (3B): standard-video acceptance rule BEFORE narration/TTS is paid for. Premium is unchanged.
+    acceptance = None
+    if not premium:
+        acceptance = scraper.check_listing_acceptance(extraction["photos"])
+        if not acceptance["ok"]:
+            return JSONResponse(status_code=422, content={"detail": acceptance["message"], "code": acceptance["code"], "reason": acceptance})
+
+    agency_name = None
+    if agency_id:
+        _agency = cost_model.get_agency(agency_id)
+        if _agency:
+            agency_name = _agency.get("name")
+    scene_category_order = scraper.derive_available_category_order(extraction["photos"])
+
+    # 2026-10-23 (Patch L, Michele's choice B): reading the listing and the acceptance rule stay in the request (a
+    # rejected listing answers 400/422 at once and leaves no job). From here on the job exists and the slow part runs in
+    # the background; the page polls GET /jobs/{id} until the status is "draft" (or "prep_failed" with the reason).
+    job_id = str(uuid.uuid4())[:8]
+    (JOBS_DIR / job_id / "images").mkdir(parents=True)
+    property_name_final = property_name.strip() or extraction.get("address") or "Property"
+    JOBS[job_id] = {
+        "status": "preparing",
+        "progress": 0,
+        "message": "Preparazione della bozza in corso (narrazione, voce, foto)...",
+        "created_at": datetime.utcnow().isoformat(),
         "property_name": property_name_final,
-        "narration_text": narration["narration_text"],
-        "scene_count": narration["scene_count"],
-        "video_duration_secs": narration["video_duration_secs"],
-        "scenes_config": scenes_config,
-        "cost_estimate": format_cost_display(cost_estimate),
-        "source_price": extraction.get("price"),
-        "source_address": extraction.get("address"),
+        "agency_id": agency_id,
+        "is_premium": premium,
+        "model_tier": model_tier,
+        "scenes_config": [],
+        "total_scenes": 0,
+        "source_url": url,
     }
+    _save_job(job_id)
+    background_tasks.add_task(_prepare_url_draft, job_id, url, extraction, classification_summary, acceptance, agency_id,
+                              agency_name, scene_category_order, voice_id, model_tier, premium, property_name_final)
+    return {"job_id": job_id, "status": "preparing", "property_name": property_name_final}
+
+
+async def _prepare_url_draft(job_id, url, extraction, classification_summary, acceptance, agency_id, agency_name,
+                             scene_category_order, voice_id, model_tier, premium, property_name_final):
+    await _jr.run_preparation(
+        job_id, JOBS, _save_job,
+        lambda: _prepare_url_draft_work(job_id, url, extraction, classification_summary, acceptance, agency_id, agency_name,
+                                        scene_category_order, voice_id, model_tier, premium, property_name_final),
+        log=log)
+
+
 
 
 # ── Job status & download ──────────────────────────────────────────────────────

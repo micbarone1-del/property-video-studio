@@ -296,6 +296,8 @@ TARGET_SPEECH_SECS = 28       # duration requirement written in the prompt
 MAX_SPEECH_SECS = 32          # never more than this (6 clips at 0.8x last at most ~35 s with the cross-fades)
 OPENING_MAX_WORDS = 13        # sentence 1 is spoken over scene 1 (about 5-6 s)
 ROOM_SPACING_WORDS = 11       # about one new room every 11 words (~5 s of voice)
+ESTIMATE_WORDS_PER_SEC = 2.2  # 2026-10-23 (Patch L): measured 2.14 words/s overall (pauses included) on the first anchored drafts
+ESTIMATE_TOLERANCE_SECS = 1.0 # the text-level timing estimate only rejects clips that are MORE than this outside the limits
 
 
 def build_anchored_prompt(description: str, address: str, agency_name: str, labels: list) -> str:
@@ -315,7 +317,7 @@ Address: {address or 'not specified'}
 Agency: {agency}
 
 STRUCTURE (ONE natural flowing narration, not a list of sentences about rooms):
-- Open with the agency presenting the property ("{agency_name or "L'agenzia"} presenta ..."), saying clearly "in vendita" or "in affitto" (as the listing says), the property type and the zone. KEEP IT SHORT, at most {OPENING_MAX_WORDS} words: it is spoken over scene 1, which lasts only about 5 seconds. No size and no rooms in the opening.
+- Open with the agency presenting the property ("{agency_name or "L'agenzia"} presenta ..."), saying clearly "in vendita" or "in affitto" (as the listing says), the property type and the zone. KEEP IT SHORT, at most {OPENING_MAX_WORDS} words: it is spoken over scene 1, which lasts only about 5 seconds. No size and no rooms in the opening. The FIRST room (scene 2) must be named within about 14 words from the start of the whole text, so the second sentence is short and leads straight to it. (The text is rejected automatically when a room is named too late or two rooms too close together: about 8 to 13 words between two consecutive rooms.)
 - Then continue as one natural flow with the most important general facts and the details the listing states. Name the rooms of scenes 2 to 6 inside this flow, in the ORDER of the scenes, about one new room every {ROOM_SPACING_WORDS} words (every ~5 seconds, the length of a picture). Two rooms may share a sentence, but the second one must be named at least 9 words after the first.
 - You do NOT have to name every room: there is no time. Name 3 to 5 rooms, the ones with something worth saying (special features first).
 - Objective positive adjectives are welcome (for example luminoso, ampio, funzionale, curato, silenzioso, panoramico) when the listing text supports them: they make the description less bare. Never invent a quality.
@@ -367,8 +369,49 @@ def parse_anchored(raw: str):
     return text, out
 
 
+def estimate_timing_problems(text: str, anchors: list, labels: list = None, scenes: int = SCENES,
+                             wps: float = ESTIMATE_WORDS_PER_SEC, tolerance: float = ESTIMATE_TOLERANCE_SECS) -> list:
+    """Patch L (2026-10-23): checks WHERE the rooms are named BEFORE any voice is paid for. The time of each named room
+    is estimated from its word position (position / wps) and the SAME solver that later runs on the real audio
+    (scene_timing.plan_from_anchors, so no second copy of the speed/cut constants) says whether the clips fit.
+    Only clips more than `tolerance` seconds outside the limits are reported (the estimate is not exact); the real
+    check on the measured audio stays the last word. Returns problem strings with word counts the model can act on."""
+    import word_align as wa
+    import scene_timing as st
+    tk = wa.tokens(text)
+    if not tk or wps <= 0:
+        return []
+    times = [None] * scenes
+    for a in anchors or []:
+        sc = a.get("scene")
+        if not isinstance(sc, int) or sc < 2 or sc > scenes:
+            continue
+        hits = wa.find_phrase(tk, a.get("phrase", ""))
+        if len(hits) == 1:
+            times[sc - 1] = hits[0] / wps
+    plan = st.plan_from_anchors(times, len(tk) / wps, [st.DEFAULT_SRC_SECS] * scenes)
+    out = []
+    for p in plan["problems"]:
+        if p["seconds_over"] <= tolerance:
+            continue
+        i = p["clip"]
+        name = labels[i] if labels and i < len(labels) else f"scene {i + 1}"
+        lo, hi = p["allowed_visible"]
+        w = max(1, int(round(p["seconds_over"] * wps)))
+        if p["kind"] == "too_slow":
+            msg = (f"estimated timing: scene {i + 1} ({name}) would stay on screen about {p['visible_secs']:.1f} s but at most {hi:.1f} s: "
+                   f"the text spoken before the room of the next scene is named is about {w} words too long: cut about {w} words there, or name that room earlier")
+        else:
+            msg = (f"estimated timing: scene {i + 1} ({name}) would stay on screen only about {p['visible_secs']:.1f} s but at least {lo:.1f} s: "
+                   f"add about {w} words (a real fact from the listing) before the room of the next scene is named, or name that room later")
+        if i == 0:
+            msg += f" (the first room must be named within about {int(round((hi + st.LEAD_BEFORE_WORD) * wps))} words from the start of the text)"
+        out.append(msg)
+    return out[:2]     # a bad first clip shifts every later one: the model fixes the first problems, the next check reports the rest
+
+
 def validate_free_text(text: str, anchors: list, description: str, agency_name: str = None, price: str = None,
-                       split_fn=None, scenes: int = SCENES) -> list:
+                       split_fn=None, scenes: int = SCENES, labels: list = None) -> list:
     """Problems of the free narration (empty list = accepted). Same fact check as validate(), per spoken sentence."""
     import word_align as wa
     problems = []
@@ -423,6 +466,8 @@ def validate_free_text(text: str, anchors: list, description: str, agency_name: 
         if hits[0] <= last_pos:
             problems.append(f"anchor scene {sc}: '{phrase}' comes before the phrase of an earlier scene: rooms must be named in the order of the scenes")
         last_pos = max(last_pos, hits[0])
+    if not problems:     # Patch L: only when the text is otherwise valid (a wrong text needs rewriting anyway)
+        problems.extend(estimate_timing_problems(text, anchors, labels, scenes))
     return problems
 
 

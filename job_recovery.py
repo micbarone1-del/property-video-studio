@@ -14,7 +14,7 @@ from pathlib import Path
 
 import rework_policy
 
-ORPHAN_STATES = ("running", "queued")
+ORPHAN_STATES = ("running", "queued", "preparing")   # 2026-10-23 (Patch L): "preparing" = draft being built in the background
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp")
 
 
@@ -52,7 +52,12 @@ def probe_duration(path):
 
 
 def classify_orphan(job, job_dir):
-    """Returns (new_status, message) for a job found running/queued at startup."""
+    """Returns (new_status, message) for a job found running/queued/preparing at startup."""
+    if job.get("status") == "preparing":
+        # 2026-10-23 (Patch L): the background preparation of a draft died with the server. Nothing expensive was spent
+        # (Claude, voice, word timing only): the draft is simply created again from the same listing.
+        return "prep_failed", ("Preparazione della bozza interrotta da un riavvio del server. "
+                               "Ricrea la bozza dallo stesso annuncio.")
     out = job.get("output_path")
     if out and Path(out).is_file() and (probe_duration(out) or 0) > 0:
         return "done", ("Il server e' stato riavviato durante un'operazione: "
@@ -124,3 +129,47 @@ def image_is_valid(path):
         return True
     except Exception:
         return False
+
+
+# ── Patch L (2026-10-23): background preparation of a draft created from a listing URL ────────────────────
+
+class PrepError(Exception):
+    """A failure of the draft preparation with a message meant for the operator (same texts the HTTP errors had)."""
+    def __init__(self, detail):
+        super().__init__(detail)
+        self.detail = detail
+
+
+async def run_preparation(job_id, jobs, save_fn, work, log=None):
+    """Runs the slow part of a draft (an awaitable factory `work`) and ALWAYS leaves the job in a final state:
+    `work` fills jobs[job_id] and sets status "draft" itself; any failure here becomes status "prep_failed" with the
+    reason in `message` (and `prep_error`). Never raises (it runs after the HTTP response, nobody could catch it)."""
+    try:
+        await work()
+        job = jobs.get(job_id)
+        if job is not None and job.get("status") == "preparing":
+            # the work returned without finishing the job: never leave it "preparing" forever
+            job["status"] = "prep_failed"
+            job["message"] = job["prep_error"] = "La preparazione della bozza non e' stata completata. Ricrea la bozza."
+            save_fn(job_id)
+    except PrepError as e:
+        _mark_prep_failed(job_id, jobs, save_fn, str(e.detail), log)
+    except Exception as e:      # noqa: BLE001 - last line of defence for a background task
+        if log is not None:
+            log.exception(f"[Job {job_id}] draft preparation crashed")
+        _mark_prep_failed(job_id, jobs, save_fn, f"Errore imprevisto durante la preparazione: {e}", log)
+
+
+def _mark_prep_failed(job_id, jobs, save_fn, detail, log):
+    job = jobs.get(job_id)
+    if job is None:
+        return
+    job["status"] = "prep_failed"
+    job["message"] = detail
+    job["prep_error"] = detail
+    if log is not None:
+        log.warning(f"[Job {job_id}] draft preparation failed: {detail}")
+    try:
+        save_fn(job_id)
+    except Exception:           # noqa: BLE001
+        pass

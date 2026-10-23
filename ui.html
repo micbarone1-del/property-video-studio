@@ -935,6 +935,8 @@ async function loadLibrary() {
       awaiting_approval:  { icon: '⚠', cls: 'lib-review',  label: 'Revisione QC' },
       queued:             { icon: '○', cls: 'lib-queued',  label: 'In coda' },
       draft:              { icon: '✎', cls: 'lib-queued',  label: 'Bozza' },
+      preparing:          { icon: '⏳', cls: 'lib-running', label: 'In preparazione' },
+      prep_failed:        { icon: '✗', cls: 'lib-failed',  label: 'Preparazione fallita' },
       interrupted:        { icon: '⏸', cls: 'lib-review',  label: 'Interrotto' },
       stopped:            { icon: '⏹', cls: 'lib-failed',  label: 'Fermato' },
     };
@@ -1169,6 +1171,30 @@ function closeJobPreview() {
 }
 
 
+// 2026-10-23 (Patch L): waits for a draft being prepared in the background. Transient network errors do not stop it
+// (the work continues on the server whatever the browser does); gives up showing a hint after 15 minutes.
+async function waitForDraft(jobId, statusEl) {
+  const started = Date.now();
+  while (true) {
+    await new Promise(r => setTimeout(r, 3000));
+    const secs = Math.round((Date.now() - started) / 1000);
+    if (secs > 900) {
+      return { ok: false, message: `la preparazione dura più di 15 minuti: controlla la Library (job ${jobId}) o riprova.` };
+    }
+    try {
+      const res = await authFetch(`/jobs/${jobId}`);
+      if (!res.ok) { statusEl.textContent = `Preparazione in corso (${secs}s)...`; continue; }
+      const job = await res.json();
+      if (job.status === 'draft') return { ok: true, job };
+      if (job.status === 'prep_failed') return { ok: false, message: job.message || 'preparazione fallita' };
+      statusEl.textContent = `Preparazione della bozza in corso — narrazione, voce, foto (${secs}s)...`;
+    } catch (e) {
+      statusEl.textContent = `Preparazione in corso (${secs}s) — connessione instabile, continuo a controllare...`;
+    }
+  }
+}
+
+
 // ── Automated URL workflow (Phase 1: human-in-the-loop) ─────────────────────
 async function startFromUrl() {
   const urlInput = document.getElementById('url-workflow-input');
@@ -1184,7 +1210,7 @@ async function startFromUrl() {
 
   btn.disabled = true;
   statusEl.style.color = 'var(--muted)';
-  statusEl.textContent = 'Estrazione in corso — foto, narrazione, scene (può richiedere 30-60s)...';
+  statusEl.textContent = 'Lettura annuncio in corso (circa 30 s), poi la bozza si prepara in background...';
 
   try {
     const formData = new FormData();
@@ -1203,7 +1229,16 @@ async function startFromUrl() {
       return;
     }
 
-    statusEl.textContent = `✓ Creato: ${data.scene_count} scene, ${data.video_duration_secs}s — caricamento nell'editor...`;
+    // 2026-10-23 (Patch L): the server answers at once with the job id and prepares the draft in the background
+    // (narration, voice, photos: minutes). Poll its status instead of keeping one long request open.
+    const prepared = await waitForDraft(data.job_id, statusEl);
+    if (!prepared.ok) {
+      statusEl.textContent = `Errore: ${prepared.message}`;
+      statusEl.style.color = 'var(--danger)';
+      btn.disabled = false;
+      return;
+    }
+    statusEl.textContent = `✓ Creato: ${prepared.job.total_scenes || ''} scene — caricamento nell'editor...`;
     statusEl.style.color = 'var(--ok)';
 
     // Reuse the EXISTING job-loading function — same editable form every

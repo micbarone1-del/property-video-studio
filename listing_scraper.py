@@ -1025,7 +1025,7 @@ def _anchored_narration(description: str, address: str, price: str, voice_id: st
                 log.warning(f"[Scraper] Anchored narration attempt {attempt}: {reason}")
                 continue
             text, anchors = parsed
-            problems = ss.validate_free_text(text, anchors, description, agency_name, price, split_fn=split_into_sentences)
+            problems = ss.validate_free_text(text, anchors, description, agency_name, price, split_fn=split_into_sentences, labels=labels)
             if problems:
                 reason = f"text rejected: {problems}"
                 feedback = (f"\n\nYour previous text was (edit THIS text, do not start from zero):\n{text}\n\n"
