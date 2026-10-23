@@ -296,8 +296,9 @@ TARGET_SPEECH_SECS = 28       # duration requirement written in the prompt
 MAX_SPEECH_SECS = 32          # never more than this (6 clips at 0.8x last at most ~35 s with the cross-fades)
 OPENING_MAX_WORDS = 13        # sentence 1 is spoken over scene 1 (about 5-6 s)
 ROOM_SPACING_WORDS = 11       # about one new room every 11 words (~5 s of voice)
-ESTIMATE_WORDS_PER_SEC = 2.2  # 2026-10-23 (Patch L): measured 2.14 words/s overall (pauses included) on the first anchored drafts
-ESTIMATE_TOLERANCE_SECS = 1.0 # the text-level timing estimate only rejects clips that are MORE than this outside the limits
+ESTIMATE_WORDS_PER_SEC = 2.05 # 2026-10-23 (Patch N): measured 2.09 words/s on the draft 6cb22349 (2.14 on the first drafts); 2.2 was optimistic
+ESTIMATE_TOLERANCE_SECS = 0.5 # Patch N: was 1.0, which let through a text that the real voice then missed by 0.95 s and 1.32 s
+ESTIMATE_PREFIX = "estimated timing:"   # every message of estimate_timing_problems starts with this (the orchestrator tells them apart)
 
 
 def build_anchored_prompt(description: str, address: str, agency_name: str, labels: list) -> str:
@@ -318,7 +319,7 @@ Agency: {agency}
 
 STRUCTURE (ONE natural flowing narration, not a list of sentences about rooms):
 - Open with the agency presenting the property ("{agency_name or "L'agenzia"} presenta ..."), saying clearly "in vendita" or "in affitto" (as the listing says), the property type and the zone. KEEP IT SHORT, at most {OPENING_MAX_WORDS} words: it is spoken over scene 1, which lasts only about 5 seconds. No size and no rooms in the opening. The FIRST room (scene 2) must be named within about 14 words from the start of the whole text, so the second sentence is short and leads straight to it. (The text is rejected automatically when a room is named too late or two rooms too close together: about 8 to 13 words between two consecutive rooms.)
-- Then continue as one natural flow with the most important general facts and the details the listing states. Name the rooms of scenes 2 to 6 inside this flow, in the ORDER of the scenes, about one new room every {ROOM_SPACING_WORDS} words (every ~5 seconds, the length of a picture). Two rooms may share a sentence, but the second one must be named at least 9 words after the first.
+- Then continue as one natural flow with the most important general facts and the details the listing states. Name the rooms of scenes 2 to 6 inside this flow, in the ORDER of the scenes, about one new room every {ROOM_SPACING_WORDS} words (every ~5 seconds, the length of a picture). Two rooms may share a sentence, but the second one must be named at least 9 words after the first: after naming a room, say something about it (a real fact from the listing) BEFORE naming the next one, never "la cucina, seguita da due camere da letto".
 - You do NOT have to name every room: there is no time. Name 3 to 5 rooms, the ones with something worth saying (special features first).
 - Objective positive adjectives are welcome (for example luminoso, ampio, funzionale, curato, silenzioso, panoramico) when the listing text supports them: they make the description less bare. Never invent a quality.
 - Last, a short invitation (at most 7 words) to contact {agency_name or 'the agency'} by name for more information. The LAST room you name (usually the garden or outdoor spaces, scene 6) must be named early enough that at most about 12 words follow it, the invitation included: so it is named in the second-to-last sentence or at the start of the last one, never followed by a long list.
@@ -406,14 +407,14 @@ def estimate_timing_problems(text: str, anchors: list, labels: list = None, scen
                     last_pos = h[0] if len(h) == 1 else None
         if p["kind"] == "too_slow" and last_pos is not None:
             allowed = max(1, int((hi - st.LEAD_BEFORE_WORD - st.END_TAIL_SECS) * wps))
-            msg = (f"estimated timing: after the room of the LAST scene ({name}) is named, the text goes on for {len(tk) - last_pos} words "
+            msg = (f"{ESTIMATE_PREFIX} after the room of the LAST scene ({name}) is named, the text goes on for {len(tk) - last_pos} words "
                    f"(about {p['visible_secs']:.1f} s on screen) but only about {allowed} words may follow from its first word to the end of the text, "
                    f"the invitation to contact the agency included: name that room earlier (not in the last sentence) and keep the invitation to at most 7 words")
         elif p["kind"] == "too_slow":
-            msg = (f"estimated timing: scene {i + 1} ({name}) would stay on screen about {p['visible_secs']:.1f} s but at most {hi:.1f} s: "
+            msg = (f"{ESTIMATE_PREFIX} scene {i + 1} ({name}) would stay on screen about {p['visible_secs']:.1f} s but at most {hi:.1f} s: "
                    f"the text spoken before the room of the next scene is named is about {w} words too long: cut about {w} words there, or name that room earlier")
         else:
-            msg = (f"estimated timing: scene {i + 1} ({name}) would stay on screen only about {p['visible_secs']:.1f} s but at least {lo:.1f} s: "
+            msg = (f"{ESTIMATE_PREFIX} scene {i + 1} ({name}) would stay on screen only about {p['visible_secs']:.1f} s but at least {lo:.1f} s: "
                    f"add about {w} words (a real fact from the listing) before the room of the next scene is named, or name that room later")
         if i == 0:
             msg += f" (the first room must be named within about {int(round((hi + st.LEAD_BEFORE_WORD) * wps))} words from the start of the text)"

@@ -119,11 +119,11 @@ AG = "Coldwell Banker"; PRICE = "€ 1.680.000"
 SEQ = ["exterior", "living", "kitchen", "bedrooms", "bathrooms", "outdoor"]
 LABELS = [ls.CATEGORY_ITALIAN_LABELS.get(c, c) for c in SEQ]
 GOODTXT = ("Coldwell Banker presenta una villa in vendita a Olgiata. "
-           "Il soggiorno è ampio e la villa di 650 metri quadri è ristrutturata. "
+           "Il soggiorno è ampio; la villa di 650 metri quadri è ristrutturata. "
            "La cucina è abitabile e dà sul giardino di 3000 metri quadri. "
            "La zona notte ha 5 camere da letto e una casa ampia. "
-           "I 4 bagni completano gli spazi interni e servono tutta la casa. "
-           "Il giardino e la terrazza chiudono la proprietà: contattate Coldwell Banker per informazioni.")
+           "I 4 bagni completano gli spazi interni della casa. "
+           "Il giardino e la terrazza chiudono la proprietà: contattate Coldwell Banker.")
 GOODANCH = [{"scene": 2, "phrase": "Il soggiorno"}, {"scene": 3, "phrase": "La cucina"}, {"scene": 4, "phrase": "La zona notte"},
             {"scene": 5, "phrase": "I 4 bagni"}, {"scene": 6, "phrase": "Il giardino"}]
 def fv(text=GOODTXT, anchors=GOODANCH, **kw):
@@ -257,8 +257,8 @@ check("E8 rejected three times (Patch M: ANCHORED_MAX_ATTEMPTS = 3) -> falls bac
       o["ok"] and o["narration_mode"] in ("single_text", "per_scene") and o["timeline"] is None and o["timeline_fallback_reason"] and "speed limits" in o["timeline_fallback_reason"] and o["tts_calls_used"] >= 3,
       (o.get("narration_mode"), o.get("timeline_fallback_reason"), o.get("tts_calls_used")))
 
-o = run(["not json", "still not json"] + ["Testo narrazione " * 14] * 8)
-check("E9 unusable replies twice -> fallback, no crash", o["ok"] and o["timeline"] is None and o["timeline_fallback_reason"], o.get("timeline_fallback_reason"))
+o = run(["not json"] * ls.ANCHORED_MAX_ATTEMPTS + ["Testo narrazione " * 14] * 8)
+check("E9 unusable replies on every attempt -> fallback, no crash", o["ok"] and o["timeline"] is None and o["timeline_fallback_reason"], o.get("timeline_fallback_reason"))
 bad = J(GOODTXT.replace("650", "999"), GOODANCH)
 o = run([bad, J(GOODTXT, GOODANCH)])
 check("E10 fact check failure on attempt 1 -> attempt 2 told why", o["narration_mode"] == "anchored" and o["script_attempts"] == 2 and "999" in prompts[1] and len(measure_calls) == 1)
@@ -324,7 +324,40 @@ FIX = ("Gallo Immobiliare presenta in vendita una proprietà nel Rione San Saba,
 FA = [{"scene": 2, "phrase": "Il luminoso salone"}, {"scene": 3, "phrase": "La cucina"}, {"scene": 4, "phrase": "Due camere da letto"},
       {"scene": 5, "phrase": "I servizi"}, {"scene": 6, "phrase": "Il giardino terrazzato"}]
 check("G9 (Patch M) the same text with the last room named earlier and a short tail passes the estimate", ss.estimate_timing_problems(FIX, FA, GL) == [], ss.estimate_timing_problems(FIX, FA, GL))
-check("G10 (Patch M) the prompt tells the model how many words may follow the last room", "at most about 12 words follow it" in ss.build_anchored_prompt("x", "y", "Z", GL) and ls.ANCHORED_MAX_ATTEMPTS == 3)
+check("G10 (Patch M) the prompt tells the model how many words may follow the last room", "at most about 12 words follow it" in ss.build_anchored_prompt("x", "y", "Z", GL) and ls.ANCHORED_MAX_ATTEMPTS == 7)
+
+# ---------------- H. Patch N (2026-10-23): stricter estimate + the measured retries are no longer used up by the estimate
+check("H1 estimate constants: 2.05 words/s, tolerance 0.5 s; every estimate message starts with the shared prefix",
+      ss.ESTIMATE_WORDS_PER_SEC == 2.05 and ss.ESTIMATE_TOLERANCE_SECS == 0.5 and all(x.startswith(ss.ESTIMATE_PREFIX) for x in ss.estimate_timing_problems(LATE2, LATE2ANCH, LABELS)))
+REAL3 = ("Gallo Immobiliare presenta in vendita una proprietà nel Rione San Saba, via Girolamo Dandini. Lo spazioso soggiorno e la sala pranzo separata caratterizzano gli ambienti principali. "
+         "La cucina è funzionale, seguita da due camere da letto. Due servizi e una lavanderia garantiscono praticità. Completano la proprietà il giardino terrazzato, le aree verdi, garage e cantina. Contattate Gallo Immobiliare.")
+RA3 = [{"scene": 2, "phrase": "soggiorno"}, {"scene": 3, "phrase": "cucina"}, {"scene": 4, "phrase": "camere da letto"}, {"scene": 6, "phrase": "giardino terrazzato"}]
+p3 = ss.estimate_timing_problems(REAL3, RA3, GL)
+check("H2 the real text of draft 6cb22349 (attempt 3, which the voice rejected) is now caught BEFORE the voice: first room too late and kitchen/bedrooms too close",
+      any("scene 1" in x and "cut about" in x for x in p3) and any("scene 3" in x and "add about" in x for x in p3), p3)
+check("H3 the prompt forbids naming the next room right after the previous one", 'never "la cucina, seguita da due camere da letto"' in ss.build_anchored_prompt("x", "y", "Z", GL))
+check("H4 limits: 7 Claude calls, 3 voiced texts, 2 estimate-only retries", (ls.ANCHORED_MAX_ATTEMPTS, ls.ANCHORED_MAX_MEASURED, ls.ANCHORED_SOFT_RETRIES) == (7, 3, 2))
+
+# estimate objects twice -> the third text goes to the real voice anyway (the audio is the judge)
+VOICE_WPS[:] = [2.4]; GOODTXT_CURRENT[0] = LATE2
+o = run([J(LATE2, LATE2ANCH), J(LATE2, LATE2ANCH), J(GOODTXT, GOODANCH)])
+check("H5 two estimate-only rejections, the third text is voiced and accepted (one TTS call, 3 Claude calls)",
+      o["narration_mode"] == "anchored" and len(prompts) == 3 and len(measure_calls) == 1 and measure_calls[0][0] == GOODTXT, (o.get("narration_mode"), len(prompts), len(measure_calls)))
+GOODTXT_CURRENT[0] = LATE2
+o = run([J(LATE2, LATE2ANCH)] * 3)
+check("H6 the same estimate-only text three times: the real voice decides on the third (it IS voiced), then fallback if the audio really is out",
+      len(measure_calls) >= 1 and measure_calls[0][0] == LATE2 and len(prompts) >= 3, (len(prompts), len(measure_calls)))
+# the case of draft 6cb22349: the estimate used all attempts, the measured feedback never happened. Now it does.
+VOICE_WPS[:] = [1.5, 2.4]
+o = run([J(LATE2, LATE2ANCH), J(LATE2, LATE2ANCH), J(GOODTXT, GOODANCH), J(GOODTXT, GOODANCH)])
+check("H7 estimate rejects twice, the third text is voiced and rejected on the MEASURED seconds, the fourth Claude call receives those seconds and is accepted",
+      o["narration_mode"] == "anchored" and o["script_attempts"] == 4 and len(measure_calls) == 2 and "REJECTED after the voice was recorded" in prompts[3] and "The voice read it in" in prompts[3], (o.get("narration_mode"), o.get("script_attempts"), len(measure_calls)))
+VOICE_WPS[:] = [1.5, 1.5, 1.5, 2.4]
+o = run([J(GOODTXT, GOODANCH)] * 5 + legacy)
+VOICE_WPS[:] = [2.4]
+check("H8 at most 3 texts are voiced; then the previous modes take over, reason and TTS calls recorded",
+      o["timeline"] is None and "speed limits" in (o["timeline_fallback_reason"] or "") and sum(1 for p in prompts if "REJECTED after the voice was recorded" in p) == 2 and len(measure_calls) >= 3, (len(measure_calls), len(prompts)))
+VOICE_WPS[:] = [2.4]
 
 # ---------------- F. wiring (text checks: the real moviepy/FastAPI code needs the server)
 va = open("video_assembly.py").read(); api = open("api_server.py").read()

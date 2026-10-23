@@ -994,7 +994,9 @@ def _tighten_scene_script(sentences: list, bad: list, description: str, address:
 # OFF by default: set PVS_ANCHORED_TIMELINE=1 in .env (and restart) to try it. When it is on and the standard 6-scene
 # sequence is known, the narration is a free text whose room phrases are timed on the real audio; every failure
 # (text rejected twice, no speech recogniser, plan outside the speed limits) falls back to the previous modes.
-ANCHORED_MAX_ATTEMPTS = 3      # 2026-10-23 (Patch M): a text rejected on the ESTIMATE costs only a Claude call (no voice), so one more try
+ANCHORED_MAX_ATTEMPTS = 7      # 2026-10-23 (Patch N): total Claude calls (was 3 in Patch M, where the estimate used them all up before any voice was measured)
+ANCHORED_MAX_MEASURED = 3      # Patch N: texts that may be voiced and measured (each costs one TTS call + one speech recognition)
+ANCHORED_SOFT_RETRIES = 2      # Patch N: a text rejected ONLY on the estimate is rewritten at most this many times in a row, then the real voice decides
 ANCHORED_MIN_COVERAGE = 0.6      # share of the written words that must be found in the recorded audio
 
 
@@ -1015,6 +1017,7 @@ def _anchored_narration(description: str, address: str, price: str, voice_id: st
     n = len(scene_sequence)
     base_prompt = ss.build_anchored_prompt(description, address, agency_name, labels)
     feedback, reason = "", "not attempted"
+    measured, soft = 0, 0
     try:
         client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
         for attempt in range(1, ANCHORED_MAX_ATTEMPTS + 1):
@@ -1026,6 +1029,12 @@ def _anchored_narration(description: str, address: str, price: str, voice_id: st
                 continue
             text, anchors = parsed
             problems = ss.validate_free_text(text, anchors, description, agency_name, price, split_fn=split_into_sentences, labels=labels)
+            if problems and all(x.startswith(ss.ESTIMATE_PREFIX) for x in problems) and (soft >= ANCHORED_SOFT_RETRIES or attempt == ANCHORED_MAX_ATTEMPTS):
+                # Patch N: only the ESTIMATE objects and it has had its tries: the measured audio is the real judge
+                log.info(f"[Scraper] Anchored narration attempt {attempt}: only the estimate objects ({problems}), sending the text to the real voice")
+                problems = []
+            elif problems and all(x.startswith(ss.ESTIMATE_PREFIX) for x in problems):
+                soft += 1
             if problems:
                 reason = f"text rejected: {problems}"
                 feedback = (f"\n\nYour previous text was (edit THIS text, do not start from zero):\n{text}\n\n"
@@ -1035,6 +1044,8 @@ def _anchored_narration(description: str, address: str, price: str, voice_id: st
                 continue
             meas = _measure_tts_duration(text, voice_id)
             tts_calls += 1
+            measured += 1
+            soft = 0       # after a real measurement the next text gets its own estimate tries
             if not meas["ok"]:
                 return {"ok": False, "reason": "TTS measurement failed", "tts_calls": tts_calls}
             recognised = wt.transcribe_words(meas["audio_path"])
@@ -1071,7 +1082,7 @@ def _anchored_narration(description: str, address: str, price: str, voice_id: st
             wps = len(ss.words(text)) / max(speech_secs, 1.0)
             reason = f"timing outside the speed limits: {plan['problems']}"
             feedback = ss.build_anchor_feedback(plan["problems"], infos, labels, wps, previous_text=text, speech_secs=speech_secs)
-            if attempt == ANCHORED_MAX_ATTEMPTS:
+            if attempt == ANCHORED_MAX_ATTEMPTS or measured >= ANCHORED_MAX_MEASURED:
                 break
         return {"ok": False, "reason": reason, "tts_calls": tts_calls}
     except Exception as e:
