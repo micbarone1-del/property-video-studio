@@ -240,17 +240,27 @@ def assemble_narration(
     output_path:       str,
     sentence_pause_ms: int = SENTENCE_PAUSE_MS,
     scene_secs:        list = None,
+    gaps_ms:           list = None,
 ) -> dict:
     """
     Assembly step (no TTS): concatenates the sentence clips with the plain pause and,
     when scene_secs is given (fixed scene lengths), the extra silence that
     plan_sentence_sync() asks for so each sentence starts on its scene cut.
+
+    gaps_ms (2026-10-23, scene_timing.plan_timeline): the EXACT silence before each sentence
+    (gaps_ms[0] ignored). When given it replaces both the plain pause and scene_secs: the
+    sentence-driven timeline decides every gap, the scenes then follow the voice.
     """
     from pydub import AudioSegment
 
     sync = None
     extras_ms = [0] * len(clips)
-    if scene_secs:
+    if gaps_ms is not None:
+        if len(gaps_ms) != len(clips):
+            raise ValueError(f"gaps_ms has {len(gaps_ms)} values for {len(clips)} sentences")
+        sentence_pause_ms = 0
+        extras_ms = [int(g) for g in gaps_ms]
+    elif scene_secs:
         sync = plan_sentence_sync([len(c) for c in clips], scene_secs, sentence_pause_ms)
         extras_ms = sync["extra_pause_ms"]
 

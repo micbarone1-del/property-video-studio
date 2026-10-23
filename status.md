@@ -666,3 +666,7 @@ Draft job 4374ebc4 (Immobiliare URL, agency Sinergie Immobiliari): the per-scene
 **Patch E deployed befc2ae, third real test (draft 32245700): per_scene works** (6 sentences, one TTS pass, speech ends 30.74 s). Sync still imperfect: sentence 2 runs 2.2 s into scene 3 and the tighten pass left no trace in the log. Patch F (log only, built, NOT deployed) will say why.
 
 **Patch F deployed 20ca01d; fourth real test (draft c75f022c): per_scene.** The new log showed why tightening never worked: the rewrite of sentence 1 lost 'in vendita' and was rejected by the fact check. Patch G (tighten prompt MUST-KEEP rules, built, NOT deployed). Michele asks for more flexible sentence length after this cycle (see backlog 77).
+
+**Patch G deployed 21572d8; fifth real test (draft 6e3d0d40): per_scene, tighten rewrite keeps 'in vendita' but is rejected because it also shortened an unflagged sentence.** Patch H (unflagged sentences may be shortened) was built but NEVER deployed and is WITHDRAWN (superseded by backlog 82). Finding: kitchen sentence lands on the bedroom scene when the previous sentence spills 2.7 s (see backlog 77).
+
+**2026-10-23 Patch I (calculation only, no behaviour change): `scene_timing.py` + optional `gaps_ms` in `narration.assemble_narration` + `test_scene_timing.py` 36 PASS (sandbox).** Sentence-driven timeline design in backlog 82; Patch J (wiring) not started. Finding from code (unverified on a finished video): the old sync ignored the 0.5 s cross-fade. Patch H withdrawn (never deployed). Rollback point 21572d8.
