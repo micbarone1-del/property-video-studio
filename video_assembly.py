@@ -423,9 +423,14 @@ if __name__ == "__main__":
         if final_path:
             print(f"\nProcess completed successfully. Final video at: {final_path}")
 
-def assemble_property_video(scenes_config, video_clip_paths, audio_paths, image_paths, output_path, property_name, transition_style="fade", output_format="landscape", logo_path=None, show_captions=False):
+def assemble_property_video(scenes_config, video_clip_paths, audio_paths, image_paths, output_path, property_name, transition_style="fade", output_format="landscape", logo_path=None, show_captions=False, scene_target_secs=None):
     """Assembles the final property video with the selected transition style.
     Supports: cut, fade, slide_left, slide_right.
+
+    2026-10-23 (Patch J, backlog 82): scene_target_secs (optional, one number per clip in the same order as video_clip_paths)
+    is the length each clip must have ON THE TIMELINE (cross-fade overlap included), decided from the measured voice by
+    scene_timing.plan_from_anchors. The clip is sped up or slowed down to that length (speed = real length / target); nothing
+    is cut. None = every clip keeps its own length (all other jobs, unchanged).
     """
     try:
         from moviepy import (
@@ -435,7 +440,8 @@ def assemble_property_video(scenes_config, video_clip_paths, audio_paths, image_
         import moviepy.video.fx as vfx
         import os, math
 
-        TRANSITION_DURATION = 0.5  # seconds of overlap for fade/slide
+        # 2026-10-23: ONE value shared with scene_timing (the timeline calculation must use the very same overlap)
+        from scene_timing import TRANSITION_SECS as TRANSITION_DURATION   # seconds of overlap for fade/slide (0.5)
         # 2026-07-17: canvas now depends on the job's chosen output format
         # (exactly two supported: landscape or portrait) instead of always
         # being hardcoded landscape -- see api_server.py's
@@ -483,6 +489,10 @@ def assemble_property_video(scenes_config, video_clip_paths, audio_paths, image_
                     continue
             else:
                 clip = VideoFileClip(str(video_path)).without_audio()  # strip fal.ai ambient audio
+                _target = scene_target_secs[i] if (scene_target_secs and i < len(scene_target_secs)) else None
+                if _target and _target > 0 and abs(clip.duration - _target) > 0.02:
+                    print(f"[Assemble] scene {i}: clip {clip.duration:.2f}s -> {_target:.2f}s on the timeline (speed {clip.duration / _target:.3f}x)")
+                    clip = clip.with_effects([vfx.MultiplySpeed(final_duration=_target)])
                 if audio_path and os.path.exists(str(audio_path)):
                     ac = AudioFileClip(str(audio_path))
                     available = max(0.5, clip.duration - SCENE_AUDIO_LEAD_SECS - SCENE_AUDIO_TRAIL_SECS)

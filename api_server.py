@@ -1462,6 +1462,7 @@ async def generate_narration(
         job["narration_duration_secs"] = result["duration_secs"]
         job["narration_sentence_timings"] = result.get("sentence_timings", [])
         job["narration_sync"] = result.get("sync")   # 2026-10-15: per-sentence scene alignment (fixed-length tiers only)
+        job["timeline"] = None   # 2026-10-23 (Patch J): new audio -> any anchor-driven timeline calculated for the old audio is void
         job["sentence_pause_ms"] = sentence_pause_ms
 
         # 2026-07-24: real cost-tracking gap -- this endpoint makes a real,
@@ -1848,6 +1849,8 @@ async def create_job_from_url(
         "narration_sync": narration.get("sync"),
         "narration_mode": narration.get("narration_mode"),   # 2026-10-22 (Patch B): per_scene | single_text
         "narration_script_fallback": narration.get("script_fallback_reason"),
+        "timeline": narration.get("timeline"),   # 2026-10-23 (Patch J): anchor-driven timeline (None = classic 5 s clips)
+        "timeline_fallback": narration.get("timeline_fallback_reason"),
         "source_url": url,
         "source_price": extraction.get("price"),
         "source_address": extraction.get("address"),
@@ -2198,6 +2201,8 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
             "narration_sync": narration.get("sync"),
             "narration_mode": narration.get("narration_mode"),   # 2026-10-22 (Patch B): per_scene | single_text
             "narration_script_fallback": narration.get("script_fallback_reason"),
+            "timeline": narration.get("timeline"),   # 2026-10-23 (Patch J)
+            "timeline_fallback": narration.get("timeline_fallback_reason"),
             "source_description": description_full,
             "selection_report": selection_report,
         })
@@ -3099,6 +3104,19 @@ async def run_reassemble_only(job_id: str):
             raise RuntimeError("Nessuna clip disponibile per l'assemblaggio")
 
 
+        # 2026-10-23 (Patch J, backlog 82): anchor-driven timeline. Only when the job carries one, every scene has its clip
+        # (a missing clip would shift the targets) and the scene count is the one the timeline was calculated for.
+        _targets = None
+        _tl = job.get("timeline")
+        if _tl and _tl.get("mode") == "anchored":
+            _t = _tl.get("targets") or []
+            if len(_t) == len(scenes_config) == len(clip_paths):
+                _targets = [float(x) for x in _t]
+                log.info(f"[Job {job_id}] Anchor-driven timeline: clip targets {_targets}")
+            else:
+                log.warning(f"[Job {job_id}] Anchor-driven timeline NOT applied: {len(_t)} targets, {len(scenes_config)} scenes, "
+                            f"{len(clip_paths)} clips -> normal assembly")
+
         output_path = str(job_dir / f"{job.get('property_name','Property').replace(' ','_')}_final.mp4")
         # 2026-07-22 (backlog item 7): resolve this job's client logo, if
         # any, from the shared agency record -- reads job["agency_id"]
@@ -3123,6 +3141,7 @@ async def run_reassemble_only(job_id: str):
             output_format=job.get("output_format", "landscape"),
             logo_path=_logo_path,
             show_captions=job.get("show_captions", False),  # 2026-10-08: default OFF
+            scene_target_secs=_targets,   # 2026-10-23 (Patch J): None for every job without an anchor-driven timeline
         )
         if not ok:
             raise RuntimeError("Assemblaggio fallito")

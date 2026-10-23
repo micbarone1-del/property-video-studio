@@ -17,7 +17,7 @@ def mk(speech_secs, groups=None):
 # --- constants: one definition each
 
 src = open("video_assembly.py").read()
-check("C1 cross-fade constant in video_assembly is 0.5 like scene_timing.TRANSITION_SECS", "TRANSITION_DURATION = 0.5" in src and T.TRANSITION_SECS == 0.5)
+check("C1 video_assembly takes its cross-fade overlap FROM scene_timing (one value, 0.5)", "from scene_timing import TRANSITION_SECS as TRANSITION_DURATION" in src and "TRANSITION_DURATION = 0.5" not in src and T.TRANSITION_SECS == 0.5)
 check("C2 base pause is the narration one", T.PAUSE_MS == N.SENTENCE_PAUSE_MS)
 
 # --- normal case: six sentences of 4.5 s, one per scene

@@ -990,6 +990,94 @@ def _tighten_scene_script(sentences: list, bad: list, description: str, address:
     return revised
 
 
+# ── Anchor-driven timeline (2026-10-23, backlog 82, Patch J) ────────────────────────────────────────────────
+# OFF by default: set PVS_ANCHORED_TIMELINE=1 in .env (and restart) to try it. When it is on and the standard 6-scene
+# sequence is known, the narration is a free text whose room phrases are timed on the real audio; every failure
+# (text rejected twice, no speech recogniser, plan outside the speed limits) falls back to the previous modes.
+ANCHORED_MAX_ATTEMPTS = 2
+ANCHORED_MIN_COVERAGE = 0.6      # share of the written words that must be found in the recorded audio
+
+
+def anchored_timeline_enabled() -> bool:
+    return os.environ.get("PVS_ANCHORED_TIMELINE", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _anchored_narration(description: str, address: str, price: str, voice_id: str, agency_name: str, scene_sequence: list) -> dict:
+    """Free narration + room anchors + real timing. Returns {"ok": True, "result": <dict in the shape of
+    generate_narration_and_derive_scenes>, "tts_calls": n} or {"ok": False, "reason": str, "tts_calls": n}. Never raises."""
+    import scene_script as ss
+    import scene_timing as st
+    import word_align as wa
+    import word_timing as wt
+    from narration import split_into_sentences
+    tts_calls = 0
+    labels = [CATEGORY_ITALIAN_LABELS.get(c, c) for c in scene_sequence]
+    n = len(scene_sequence)
+    base_prompt = ss.build_anchored_prompt(description, address, agency_name, labels)
+    feedback, reason = "", "not attempted"
+    try:
+        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        for attempt in range(1, ANCHORED_MAX_ATTEMPTS + 1):
+            parsed = ss.parse_anchored(_claude_text_reply(client, base_prompt + feedback, max_tokens=1500))
+            if parsed is None:
+                reason = "the reply was not the expected JSON object"
+                feedback = "\n\nYour previous answer was not a JSON object with \"text\" and \"anchors\". Return exactly that object."
+                log.warning(f"[Scraper] Anchored narration attempt {attempt}: {reason}")
+                continue
+            text, anchors = parsed
+            problems = ss.validate_free_text(text, anchors, description, agency_name, price, split_fn=split_into_sentences)
+            if problems:
+                reason = f"text rejected: {problems}"
+                feedback = ("\n\nYour previous answer was REJECTED for these reasons. Fix all of them, return the full JSON object again:\n- "
+                            + "\n- ".join(problems))
+                log.warning(f"[Scraper] Anchored narration attempt {attempt} rejected: {problems} | text: {text}")
+                continue
+            meas = _measure_tts_duration(text, voice_id)
+            tts_calls += 1
+            if not meas["ok"]:
+                return {"ok": False, "reason": "TTS measurement failed", "tts_calls": tts_calls}
+            recognised = wt.transcribe_words(meas["audio_path"])
+            if recognised is None:
+                return {"ok": False, "reason": "word timing (speech recogniser) not available", "tts_calls": tts_calls}
+            tk = wa.tokens(text)
+            al = wa.align(tk, recognised)
+            if al["coverage"] < ANCHORED_MIN_COVERAGE:
+                return {"ok": False, "reason": f"only {al['coverage']:.0%} of the text was found in the audio", "tts_calls": tts_calls}
+            anchor_times, infos = [None] * n, []
+            for a in anchors:
+                if a["scene"] - 1 >= n:
+                    continue
+                idx = wa.find_phrase(tk, a["phrase"])[0]
+                t = al["times"][idx][0]
+                anchor_times[a["scene"] - 1] = t
+                infos.append({"scene": a["scene"], "phrase": a["phrase"], "word_at": round(t, 3)})
+            speech_secs = max(float(meas["duration_secs"]), float(al["end"]))
+            plan = st.plan_from_anchors(anchor_times, speech_secs, [SCENE_CLIP_SECS] * n)
+            log.info(f"[Scraper] Anchored narration attempt {attempt}: speech {speech_secs:.1f}s, anchors {infos}, "
+                     f"ok={plan['ok']}, speeds {[c['speed'] for c in plan['clips']]}")
+            if plan["ok"]:
+                timeline = {"mode": "anchored", "targets": plan["targets"], "cuts": plan["cuts"], "speeds": [c["speed"] for c in plan["clips"]],
+                            "video_secs": plan["video_secs"], "anchors": infos, "anchor_offsets": plan["anchors"],
+                            "align_coverage": round(al["coverage"], 3), "speech_secs": round(speech_secs, 3)}
+                result = {
+                    "ok": True, "narration_text": text, "audio_path": meas["audio_path"], "speech_duration_secs": speech_secs,
+                    "scene_count": n, "video_duration_secs": plan["video_secs"], "tts_calls_used": tts_calls, "was_trimmed": False,
+                    "sync": None, "error": None, "narration_mode": "anchored", "script_attempts": attempt, "script_tightened": False,
+                    "script_fallback_reason": None, "timeline": timeline,
+                }
+                return {"ok": True, "result": result, "tts_calls": tts_calls}
+            wps = len(ss.words(text)) / max(speech_secs, 1.0)
+            reason = f"timing outside the speed limits: {plan['problems']}"
+            feedback = ss.build_anchor_feedback(plan["problems"], infos, labels, wps)
+            if attempt == ANCHORED_MAX_ATTEMPTS:
+                break
+        return {"ok": False, "reason": reason, "tts_calls": tts_calls}
+    except Exception as e:
+        log.warning(f"[Scraper] Anchored narration failed: {e}")
+        return {"ok": False, "reason": f"error: {e}", "tts_calls": tts_calls}
+
+
+
 def generate_narration_and_derive_scenes(
     description: str, address: str = None, price: str = None, voice_id: str = None,
     premium: bool = False, agency_name: str = None, scene_category_order: list = None,
@@ -1057,6 +1145,17 @@ def generate_narration_and_derive_scenes(
     # 2026-10-22 (Patch B, Michele): the STANDARD video gets one sentence per scene, written knowing which room each
     # scene shows (scene_script.py). Used only when the caller passes the 6-scene sequence; anything else (premium,
     # no sequence, a script the fact check rejects twice) keeps the single-text path below, unchanged.
+    # 2026-10-23 (Patch J): the anchor-driven timeline is tried first when it is switched on; any failure falls through
+    # to the modes below, unchanged. The TTS calls it spent are added to the count.
+    anchored_calls, anchored_fallback = 0, None
+    if anchored_timeline_enabled() and (not premium) and scene_sequence and len(scene_sequence) == STANDARD_SCENES:
+        _an = _anchored_narration(description, address, price, voice_id, agency_name, scene_sequence)
+        anchored_calls = _an["tts_calls"]
+        if _an["ok"]:
+            return _an["result"]
+        anchored_fallback = _an["reason"]
+        log.warning(f"[Scraper] Anchored timeline not used, falling back to the previous narration modes: {anchored_fallback}")
+
     per_scene = False
     script_info = None
     narration_text = None
@@ -1096,7 +1195,7 @@ def generate_narration_and_derive_scenes(
     # Premium derives its scene count from the speech, so it is measured plain first and synchronised afterwards.
     _fixed_scene_secs = None if premium else [SCENE_CLIP_SECS] * STANDARD_SCENES
     measurement = _measure_tts_duration(narration_text, voice_id, scene_secs=_fixed_scene_secs)
-    tts_calls_used = 1
+    tts_calls_used = 1 + anchored_calls
     if not measurement["ok"]:
         return {"ok": False, "narration_text": narration_text, "audio_path": None,
                 "speech_duration_secs": None, "scene_count": None, "video_duration_secs": None,
@@ -1116,7 +1215,7 @@ def generate_narration_and_derive_scenes(
     if per_scene:
         import scene_script as _ss
         bad = _ss.spill_problems(sync, STANDARD_SCENES)
-        if bad and tts_calls_used < 2:
+        if bad and (tts_calls_used - anchored_calls) < 2:
             revised_sents = _tighten_scene_script(scene_script_sentences, bad, description, address, price, agency_name)
             log.info(f"[Scraper] Tighten pass: sentences too long {bad} -> rewrite {'received' if revised_sents else 'not usable'}")
             if revised_sents:
@@ -1253,6 +1352,8 @@ def generate_narration_and_derive_scenes(
         "script_attempts": (script_info or {}).get("attempts"),
         "script_tightened": script_tightened,
         "script_fallback_reason": ((script_info or {}).get("error") if (script_info and not per_scene) else None),
+        "timeline": None,
+        "timeline_fallback_reason": anchored_fallback,   # 2026-10-23 (Patch J): why the anchor-driven timeline was not used (None = not tried)
     }
 
 

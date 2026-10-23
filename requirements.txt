@@ -21,6 +21,9 @@ pydub==0.25.1
 audioop-lts
 elevenlabs==1.3.0
 
+# Word timing for the anchor-driven timeline (2026-10-23, backlog 82): local speech recogniser, free, CPU
+faster-whisper==1.2.1
+
 # Data
 pandas==3.0.3
 openpyxl==3.1.2

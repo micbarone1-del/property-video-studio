@@ -112,3 +112,111 @@ def plan_timeline(sentence_ms, groups, src_secs=None, *, pause_ms=PAUSE_MS, min_
         "video_secs": round(video_secs, 3), "speech_end_secs": sentences[-1]["voice_end"],
         "problems": problems, "ok": not problems,
     }
+
+
+# ── Anchor-driven timeline (2026-10-23, backlog 82, Patch J) ─────────────────────────────────────────────────
+# Michele's refinement (2026-10-23): the requirement is NOT "one sentence per scene" but "when the voice NAMES a room,
+# that room is on screen". The text stays one natural narration; only the moment a room is named (an ANCHOR: the time
+# of the first word of the phrase that names it, measured on the real audio) pins that scene's picture. Scenes that are
+# not named (there is no time for every room in a standard video) just take the space between their neighbours.
+# Same cross-fade model as plan_timeline: the CUT between two clips is the middle of their overlap.
+
+LEAD_BEFORE_WORD = 0.35     # the new picture should be fully visible just before the room word: cut = word start - 0.35
+EARLY_MAX = 1.0             # a cut may fall at most this much EARLIER than that preferred moment
+LATE_MAX = 0.4              # ... or this much LATER (a picture that arrives after the word is worse than one before it)
+END_TAIL_SECS = 0.2         # picture kept after the last word (the 1 s blank trail is added later by assembly)
+MAX_EXTRA_END_SECS = 8.0    # the video may run at most this long after the voice ended (a very short text)
+
+
+def plan_from_anchors(anchor_times, speech_end_secs, src_secs=None, *, transition=TRANSITION_SECS,
+                      speed_min=SPEED_MIN, speed_max=SPEED_MAX, lead_before=LEAD_BEFORE_WORD,
+                      early=EARLY_MAX, late=LATE_MAX, tail=END_TAIL_SECS, max_extra_end=MAX_EXTRA_END_SECS):
+    """anchor_times: one entry per scene/clip, None = not named (or scene 0, which always starts at 0); otherwise the time
+    (seconds on the narration) at which the phrase that names the room starts.
+    speech_end_secs: when the voice ends. src_secs: real length of each generated clip (None -> 5 s each).
+
+    Picks the cuts closest to the preferred moments that keep EVERY clip inside the speed limits, by interval
+    propagation along the chain of cuts (exact, no search). Returns
+    {"ok", "feasible", "cuts", "clips", "targets", "video_secs", "speech_end_secs", "anchors", "problems"}.
+    When no plan can keep every speed inside the limits, ok=False and the closest plan is still returned with the
+    problems listed (clip, speed, kind, seconds_over), so the caller can rewrite the text instead of drifting."""
+    n = len(anchor_times)
+    if n < 1 or speech_end_secs is None or speech_end_secs <= 0:
+        raise ValueError("anchor_times must not be empty and speech_end_secs must be > 0")
+    if src_secs is None:
+        src_secs = [DEFAULT_SRC_SECS] * n
+    if len(src_secs) != n:
+        raise ValueError(f"src_secs has {len(src_secs)} values for {n} clips")
+    half = transition / 2.0
+
+    def edges(i):
+        return (half if i > 0 else 0.0) + (half if i < n - 1 else 0.0)
+
+    vis_lo = [src_secs[i] / speed_max - edges(i) for i in range(n)]    # shortest visible time (fastest allowed speed)
+    vis_hi = [src_secs[i] / speed_min - edges(i) for i in range(n)]    # longest visible time (slowest allowed speed)
+
+    # preferred cuts: c_0 = 0, c_n = speech end + tail, named scenes just before their word, the others spread evenly
+    pref = [None] * (n + 1)
+    pref[0] = 0.0
+    pref[n] = float(speech_end_secs) + tail
+    for i in range(1, n):
+        if anchor_times[i] is not None:
+            pref[i] = max(0.0, float(anchor_times[i]) - lead_before)
+    known = [i for i in range(n + 1) if pref[i] is not None]
+    for a, b in zip(known, known[1:]):
+        for i in range(a + 1, b):
+            pref[i] = pref[a] + (pref[b] - pref[a]) * (i - a) / (b - a)
+
+    INF = float("inf")
+    win = [(0.0, 0.0)] + [((pref[i] - early, pref[i] + late) if (i < n and anchor_times[i] is not None) else (-INF, INF))
+                          for i in range(1, n)] + [(pref[n], pref[n] + max_extra_end)]
+
+    # backward pass: the interval each cut can take so that every later clip can still be inside its limits
+    R = [None] * (n + 1)
+    R[n] = win[n]
+    feasible = True
+    for i in range(n - 1, -1, -1):
+        lo = max(win[i][0], R[i + 1][0] - vis_hi[i])
+        hi = min(win[i][1], R[i + 1][1] - vis_lo[i])
+        if lo > hi + 1e-9:
+            feasible = False
+            break
+        R[i] = (lo, hi)
+
+    cuts = [0.0] * (n + 1)
+    if feasible:
+        for i in range(1, n + 1):
+            lo = max(R[i][0], cuts[i - 1] + vis_lo[i - 1])
+            hi = min(R[i][1], cuts[i - 1] + vis_hi[i - 1])
+            if lo > hi + 1e-9:          # cannot happen when the backward pass succeeded; kept as a safety net
+                feasible = False
+                break
+            cuts[i] = min(max(pref[i], lo), hi)
+    if not feasible:
+        cuts = [0.0] * (n + 1)
+        for i in range(1, n + 1):
+            cuts[i] = max(cuts[i - 1] + 0.5, pref[i])      # closest plan: preferred moments, kept in order
+
+    clips, problems = [], []
+    for i in range(n):
+        visible = cuts[i + 1] - cuts[i]
+        d = visible + edges(i)
+        speed = src_secs[i] / d
+        in_range = (speed_min - 1e-3) <= speed <= (speed_max + 1e-3)
+        clips.append({"index": i, "start": round(cuts[i] - (half if i > 0 else 0.0), 3), "duration": round(d, 3),
+                      "speed": round(speed, 4), "in_range": in_range, "src_secs": src_secs[i],
+                      "visible_secs": round(visible, 3)})
+        if not in_range:
+            too_slow = speed < speed_min
+            problems.append({"clip": i, "speed": round(speed, 3), "kind": "too_slow" if too_slow else "too_fast",
+                             "visible_secs": round(visible, 3), "allowed_visible": [round(vis_lo[i], 3), round(vis_hi[i], 3)],
+                             "seconds_over": round(visible - vis_hi[i], 3) if too_slow else round(vis_lo[i] - visible, 3)})
+    anchors = []
+    for i in range(1, n):
+        if anchor_times[i] is not None:
+            anchors.append({"scene": i, "word_at": round(float(anchor_times[i]), 3), "cut": round(cuts[i], 3),
+                            "picture_full_at": round(cuts[i] + half, 3),
+                            "offset_secs": round(cuts[i] + half - float(anchor_times[i]), 3)})   # < 0: picture before the word
+    return {"ok": not problems, "feasible": feasible, "cuts": [round(c, 3) for c in cuts], "clips": clips,
+            "targets": [c["duration"] for c in clips], "video_secs": round(cuts[n], 3),
+            "speech_end_secs": round(float(speech_end_secs), 3), "anchors": anchors, "problems": problems}

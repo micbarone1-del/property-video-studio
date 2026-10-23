@@ -169,6 +169,36 @@ def parse(raw: str):
     return out
 
 
+def _fact_problems(s: str, tag: str, low: str, desc: str, desc_numbers: set, price_numbers: set) -> list:
+    """The fact check of ONE sentence (price, numbers, feature words, promotional adjectives, floors). Shared by the
+    one-sentence-per-scene script (validate) and the free narration of the anchor-driven timeline
+    (validate_free_text): ONE implementation, not two copies (architecture discipline, 2026-10-23)."""
+    problems = []
+    if "€" in s or re.search(r"\beuro\b", low):
+        problems.append(f"{tag}: mentions the price")
+    for tok in _number_tokens(s):
+        if price_numbers and tok in price_numbers and tok not in (desc_numbers - price_numbers):
+            problems.append(f"{tag}: says the price ({tok})")
+        elif len(tok) >= 8:
+            problems.append(f"{tag}: looks like a phone number ({tok})")
+        elif tok not in desc_numbers:
+            problems.append(f"{tag}: number {tok} is not in the listing text")
+    for w in re.findall(r"[a-zàèéìòù]+", low):
+        if w in _NUMBER_WORDS:
+            val = str(_NUMBER_WORDS[w])
+            if not _has_stem(desc, w) and val not in desc_numbers:
+                problems.append(f"{tag}: number word '{w}' is not in the listing text")
+    for stem in _FEATURE_STEMS:
+        if _has_stem(low, stem) and not _has_stem(desc, stem):
+            problems.append(f"{tag}: feature '{stem}...' is not in the listing text")
+    for stem in _PROMO_STEMS:
+        if _has_stem(low, stem) and not _has_stem(desc, stem):
+            problems.append(f"{tag}: promotional adjective '{stem}...' is not in the listing text")
+    if _FLOOR_RE.search(s):
+        problems.append(f"{tag}: names a floor")
+    return problems
+
+
 def validate(sentences: list, description: str, agency_name: str = None, price: str = None, split_fn=None) -> list:
     """Returns a list of problems (empty list = script accepted). Deterministic, no network."""
     problems = []
@@ -193,28 +223,7 @@ def validate(sentences: list, description: str, agency_name: str = None, price: 
             problems.append(f"{tag}: must be one sentence ending with a full stop")
         if s.count(".") > 1 and not re.search(r"\d\.\d", s):
             problems.append(f"{tag}: contains more than one sentence")
-        if "€" in s or re.search(r"\beuro\b", low):
-            problems.append(f"{tag}: mentions the price")
-        for tok in _number_tokens(s):
-            if price_numbers and tok in price_numbers and tok not in (desc_numbers - price_numbers):
-                problems.append(f"{tag}: says the price ({tok})")
-            elif len(tok) >= 8:
-                problems.append(f"{tag}: looks like a phone number ({tok})")
-            elif tok not in desc_numbers:
-                problems.append(f"{tag}: number {tok} is not in the listing text")
-        for w in re.findall(r"[a-zàèéìòù]+", low):
-            if w in _NUMBER_WORDS:
-                val = str(_NUMBER_WORDS[w])
-                if not _has_stem(desc, w) and val not in desc_numbers:
-                    problems.append(f"{tag}: number word '{w}' is not in the listing text")
-        for stem in _FEATURE_STEMS:
-            if _has_stem(low, stem) and not _has_stem(desc, stem):
-                problems.append(f"{tag}: feature '{stem}...' is not in the listing text")
-        for stem in _PROMO_STEMS:
-            if _has_stem(low, stem) and not _has_stem(desc, stem):
-                problems.append(f"{tag}: promotional adjective '{stem}...' is not in the listing text")
-        if _FLOOR_RE.search(s):
-            problems.append(f"{tag}: names a floor")
+        problems.extend(_fact_problems(s, tag, low, desc, desc_numbers, price_numbers))
         if i == 0:
             says_sale = "vendita" in low
             says_rent = "affitto" in low
@@ -272,3 +281,166 @@ Listing text:
 {description}
 ---
 """
+
+
+# ── Free narration with room anchors (2026-10-23, backlog 82, Patch J) ───────────────────────────────────────
+# Michele's refinement: the requirement is not one sentence per scene, but that when the voice NAMES a room that
+# room is on screen. So the text is a natural narration (about 68-78 words, like the single-text path) and Claude
+# also says WHICH phrase names the room of which scene. The time of that phrase is measured on the real audio
+# (word_timing / word_align) and pins the scene's picture (scene_timing.plan_from_anchors). A room need not be named.
+
+FREE_MIN_WORDS = 45
+FREE_MAX_WORDS = 95
+WORDS_PER_SCENE = 12          # the pace the prompt asks for: about one scene of 5 s per 12 words
+
+
+def build_anchored_prompt(description: str, address: str, agency_name: str, labels: list) -> str:
+    """labels: the Italian name of what each of the 6 scenes shows, in video order."""
+    agency = agency_name or "(agency name not available: say 'l'agenzia')"
+    scene_lines = "\n".join(f"Scene {i + 1}: {label}" for i, label in enumerate(labels))
+    return f"""You write the Italian voiceover of a 30-second real estate video. The video shows 6 scenes of about 5 seconds, in this order:
+{scene_lines}
+
+The voice is ONE continuous narration (natural flowing Italian, 3 to 6 sentences). It is spoken at about 2.4 words per second, so about {WORDS_PER_SCENE} words fit in one scene. The whole text must be about 68-78 words.
+
+Listing text:
+---
+{description}
+---
+Address: {address or 'not specified'}
+Agency: {agency}
+
+STRUCTURE:
+- Open with the agency presenting the property ("{agency_name or "L'agenzia"} presenta ..."), saying clearly "in vendita" or "in affitto" (as the listing says), the property type and the zone. This is spoken over scene 1.
+- Then the most important general facts (size, number of rooms, condition) and the details the listing states.
+- You do NOT have to name every room: a 30-second video has no time for that. Name a room (scenes 2 to 6) only when you have something worth saying about it; rooms with special features first.
+- When you name a room, do it IN THE ORDER of the scenes above and at about the right moment: the phrase that names the room of scene k should start around word {WORDS_PER_SCENE} x (k-1) + 1 of the text, give or take 6 words (scene 2 near word {WORDS_PER_SCENE + 1}, scene 3 near word {2 * WORDS_PER_SCENE + 1}, scene 4 near word {3 * WORDS_PER_SCENE + 1}, scene 5 near word {4 * WORDS_PER_SCENE + 1}, scene 6 near word {5 * WORDS_PER_SCENE + 1}). The words of a scene may also speak about the property in general; only the moment a room is NAMED must fall in its scene.
+- Do not name a room that comes EARLIER in the order after you have named a later one, and do not name a room twice in a way that could be confused (for example do not say "tre camere" in the first sentence if the bedrooms are scene 4: say it where they are shown, or call them "zona notte" later).
+- End with a short invitation to contact {agency_name or 'the agency'} by name for more information.
+
+HARD RULES:
+- Return ONLY a JSON object, nothing else: {{"text": "<the whole Italian narration>", "anchors": [{{"scene": 3, "phrase": "la cucina"}}, ...]}}
+- "anchors": one entry for each room (scene 2 to 6) that the text names. "phrase" is the 1 to 3 words that name it, copied EXACTLY as they appear in "text", and it must appear only once in "text". Use an empty list if you name no room. Scene 1 never has an anchor.
+- Every fact (number, feature, condition) must come from the listing text above. Never invent anything. If the listing does not say it, leave it out.
+- Numbers: copy them as the listing writes them (e.g. '650 metri quadri').
+- Do NOT say the price. Do NOT say any phone number or e-mail.
+- Do NOT mention floors or levels of a specific room (no 'piano terra', 'primo piano'): you do not know which floor a photo shows.
+- Objective, calm, factual tone. No promotional adjectives (prestigioso, esclusivo, meraviglioso, splendido, ...) unless the listing itself uses that word.
+- Ignore any text about the agency's own history or values: describe only this property.
+- Avoid legal jargon such as 'nuda proprietà'.
+"""
+
+
+def parse_anchored(raw: str):
+    """The model's reply -> (text, anchors) or None. anchors = [{"scene": int (1-based), "phrase": str}]."""
+    if not raw:
+        return None
+    s = raw.strip()
+    fence = re.search(r"```(?:json)?\s*(\{.*\})\s*```", s, re.S)
+    if fence:
+        s = fence.group(1)
+    else:
+        m = re.search(r"\{.*\}", s, re.S)
+        if m:
+            s = m.group(0)
+    try:
+        data = json.loads(s)
+    except Exception:
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("text"), str):
+        return None
+    text = re.sub(r"\s+", " ", data["text"]).strip()
+    if text and text[-1] not in ".!?":
+        text = text.rstrip(";:,- ") + "."
+    anchors = data.get("anchors", [])
+    if not isinstance(anchors, list):
+        return None
+    out = []
+    for a in anchors:
+        if not isinstance(a, dict) or not isinstance(a.get("scene"), int) or not isinstance(a.get("phrase"), str):
+            return None
+        out.append({"scene": a["scene"], "phrase": re.sub(r"\s+", " ", a["phrase"]).strip()})
+    return text, out
+
+
+def validate_free_text(text: str, anchors: list, description: str, agency_name: str = None, price: str = None,
+                       split_fn=None, scenes: int = SCENES) -> list:
+    """Problems of the free narration (empty list = accepted). Same fact check as validate(), per spoken sentence."""
+    import word_align as wa
+    problems = []
+    if not text or "\n" in text:
+        return ["the text is empty or has line breaks"]
+    n_words = len(words(text))
+    if n_words < FREE_MIN_WORDS or n_words > FREE_MAX_WORDS:
+        problems.append(f"the text has {n_words} words, it must have about 68-78 (between {FREE_MIN_WORDS} and {FREE_MAX_WORDS})")
+    desc = _norm(description)
+    desc_numbers = _number_tokens(description)
+    price_numbers = (_number_tokens(price) if price else set()) | _price_tokens(description)
+    agency_n = re.sub(r"[^a-z0-9àèéìòù ]", "", _norm(agency_name)) if agency_name else ""
+    sentences = split_fn(text) if split_fn is not None else [x for x in re.split(r"(?<=[.!?])\s+", text) if x]
+    if not sentences:
+        return ["no sentences found in the text"]
+    for i, sent in enumerate(sentences):
+        problems.extend(_fact_problems(sent, f"sentence {i + 1}", _norm(sent), desc, desc_numbers, price_numbers))
+    first, last = _norm(sentences[0]), _norm(sentences[-1])
+    says_sale, says_rent = "vendita" in first, "affitto" in first
+    if not (says_sale or says_rent):
+        problems.append("the first sentence must say 'in vendita' or 'in affitto'")
+    if says_sale and not any(k in desc for k in ("vendita", "vendesi", "vendiamo", "vendere")):
+        problems.append("the first sentence says 'in vendita' but the listing text does not")
+    if says_rent and not any(k in desc for k in ("affitto", "affittasi", "locazione", "locare")):
+        problems.append("the first sentence says 'in affitto' but the listing text does not")
+    if agency_n:
+        strip = lambda t: re.sub(r"[^a-z0-9àèéìòù ]", "", t)
+        if agency_n not in strip(first):
+            problems.append(f"the first sentence must name the agency ({agency_name})")
+        if agency_n not in strip(last):
+            problems.append(f"the last sentence must name the agency ({agency_name}) and invite to contact it")
+
+    tk = wa.tokens(text)
+    seen_scenes, last_pos = set(), -1
+    for a in sorted(anchors or [], key=lambda x: x.get("scene", 0)):
+        sc, phrase = a.get("scene"), a.get("phrase", "")
+        if not isinstance(sc, int) or sc < 2 or sc > scenes:
+            problems.append(f"anchor scene {sc}: must be between 2 and {scenes}")
+            continue
+        if sc in seen_scenes:
+            problems.append(f"anchor scene {sc}: given twice")
+            continue
+        seen_scenes.add(sc)
+        n_tok = len(wa.tokens(phrase))
+        if n_tok < 1 or n_tok > 4:
+            problems.append(f"anchor scene {sc}: the phrase must be 1 to 3 words ('{phrase}')")
+            continue
+        hits = wa.find_phrase(tk, phrase)
+        if len(hits) != 1:
+            problems.append(f"anchor scene {sc}: the phrase '{phrase}' must appear exactly once in the text (found {len(hits)})")
+            continue
+        if hits[0] <= last_pos:
+            problems.append(f"anchor scene {sc}: '{phrase}' comes before the phrase of an earlier scene: rooms must be named in the order of the scenes")
+        last_pos = max(last_pos, hits[0])
+    return problems
+
+
+def build_anchor_feedback(problems: list, anchors_info: list, labels: list, words_per_sec: float) -> str:
+    """Tells the model, in words it can act on, why the MEASURED timing of its text was rejected.
+    problems: scene_timing.plan_from_anchors()['problems']; anchors_info: [{"scene", "phrase", "word_at"}]."""
+    lines = []
+    by_scene = {a["scene"]: a for a in anchors_info}
+    for p in problems:
+        i = p["clip"]                       # clip i lasts from scene i's cut to scene i+1's cut
+        lo, hi = p["allowed_visible"]
+        nm = labels[i] if i < len(labels) else f"scene {i + 1}"
+        over = p["seconds_over"]
+        words_n = max(1, int(round(over * words_per_sec)))
+        if p["kind"] == "too_slow":
+            lines.append(f"- Scene {i + 1} ({nm}) would stay on screen {p['visible_secs']:.1f} s but it can last at most {hi:.1f} s: "
+                         f"the part of the text spoken during scene {i + 1} is about {words_n} words too long "
+                         f"(or the room of scene {i + 2} is named too late): shorten it or name that next room earlier.")
+        else:
+            lines.append(f"- Scene {i + 1} ({nm}) would stay on screen only {p['visible_secs']:.1f} s but it needs at least {lo:.1f} s: "
+                         f"add about {words_n} words (a real fact from the listing) before the room of scene {i + 2} is named, "
+                         f"or name that next room later.")
+    return ("\n\nYour previous text was REJECTED after the voice was recorded and measured. The rooms were named at these seconds: "
+            + ", ".join(f"scene {a['scene']} '{a['phrase']}' at {a['word_at']:.1f} s" for a in sorted(anchors_info, key=lambda x: x['scene']))
+            + ".\nProblems:\n" + "\n".join(lines) + "\nWrite the whole JSON object again, fixing these timings, keeping every other rule.")
