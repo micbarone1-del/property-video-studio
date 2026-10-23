@@ -296,6 +296,7 @@ TARGET_SPEECH_SECS = 28       # duration requirement written in the prompt
 MAX_SPEECH_SECS = 32          # never more than this (6 clips at 0.8x last at most ~35 s with the cross-fades)
 OPENING_MAX_WORDS = 13        # sentence 1 is spoken over scene 1 (about 5-6 s)
 ROOM_SPACING_WORDS = 11       # about one new room every 11 words (~5 s of voice)
+MAX_ANCHORS = 3               # 2026-10-23 (Patch O): 30 s cannot name every room: 2-3 highlights, the other scenes simply fill the time between them
 ESTIMATE_WORDS_PER_SEC = 2.05 # 2026-10-23 (Patch N): measured 2.09 words/s on the draft 6cb22349 (2.14 on the first drafts); 2.2 was optimistic
 ESTIMATE_TOLERANCE_SECS = 0.5 # Patch N: was 1.0, which let through a text that the real voice then missed by 0.95 s and 1.32 s
 ESTIMATE_PREFIX = "estimated timing:"   # every message of estimate_timing_problems starts with this (the orchestrator tells them apart)
@@ -318,9 +319,10 @@ Address: {address or 'not specified'}
 Agency: {agency}
 
 STRUCTURE (ONE natural flowing narration, not a list of sentences about rooms):
-- Open with the agency presenting the property ("{agency_name or "L'agenzia"} presenta ..."), saying clearly "in vendita" or "in affitto" (as the listing says), the property type and the zone. KEEP IT SHORT, at most {OPENING_MAX_WORDS} words: it is spoken over scene 1, which lasts only about 5 seconds. No size and no rooms in the opening. The FIRST room (scene 2) must be named within about 14 words from the start of the whole text, so the second sentence is short and leads straight to it. (The text is rejected automatically when a room is named too late or two rooms too close together: about 8 to 13 words between two consecutive rooms.)
-- Then continue as one natural flow with the most important general facts and the details the listing states. Name the rooms of scenes 2 to 6 inside this flow, in the ORDER of the scenes, about one new room every {ROOM_SPACING_WORDS} words (every ~5 seconds, the length of a picture). Two rooms may share a sentence, but the second one must be named at least 9 words after the first: after naming a room, say something about it (a real fact from the listing) BEFORE naming the next one, never "la cucina, seguita da due camere da letto".
-- You do NOT have to name every room: there is no time. Name 3 to 5 rooms, the ones with something worth saying (special features first).
+- Open with the agency presenting the property ("{agency_name or "L'agenzia"} presenta ..."), saying clearly "in vendita" or "in affitto" (as the listing says), the property type and the zone. KEEP IT SHORT, at most {OPENING_MAX_WORDS} words: it is spoken over scene 1, which lasts only about 5 seconds. No size and no rooms in the opening.
+- WHERE a highlight must be named: each scene lasts about 5 seconds (about 10 words), so the room of scene 2 is named around word 10 of the whole text, scene 3 around word 19, scene 4 around word 29, scene 5 around word 38, scene 6 around word 48 (give or take 4 words). A highlight named far from its place is rejected automatically, so write the sentences before it with that length in mind.
+- Then continue as one natural flow with the most important general facts and the details the listing states. There is NO time to name every room: choose 2 or 3 HIGHLIGHTS among the rooms of scenes 2 to 6 (never more than {MAX_ANCHORS}): the ones with the most worth saying (special features first, for example the garden, a terrace, a particular living room). The rooms you do not name are simply not named: their pictures fill the time between the named ones.
+- Name the highlights in the ORDER of the scenes. After naming a highlight, say something about it (a real fact from the listing) for about 12 to 20 words BEFORE the next highlight or the invitation: two highlights must be at least 12 words apart. Never "la cucina, seguita da due camere da letto". (The text is rejected automatically when a highlight is named too late or two are too close together.)
 - Objective positive adjectives are welcome (for example luminoso, ampio, funzionale, curato, silenzioso, panoramico) when the listing text supports them: they make the description less bare. Never invent a quality.
 - Last, a short invitation (at most 7 words) to contact {agency_name or 'the agency'} by name for more information. The LAST room you name (usually the garden or outdoor spaces, scene 6) must be named early enough that at most about 12 words follow it, the invitation included: so it is named in the second-to-last sentence or at the start of the last one, never followed by a long list.
 - Do not name a room that comes EARLIER in the order after you have named a later one, and do not name a room twice (do not say "tre camere" in the opening if the bedrooms are a later scene: say it where they are shown).
@@ -478,6 +480,8 @@ def validate_free_text(text: str, anchors: list, description: str, agency_name: 
         if hits[0] <= last_pos:
             problems.append(f"anchor scene {sc}: '{phrase}' comes before the phrase of an earlier scene: rooms must be named in the order of the scenes")
         last_pos = max(last_pos, hits[0])
+    if len([a for a in (anchors or []) if isinstance(a, dict)]) > MAX_ANCHORS:
+        problems.append(f"{len(anchors)} rooms are named: there is no time for that in 30 seconds, name at most {MAX_ANCHORS} highlights (2 or 3) and leave the other rooms out")
     if not problems:     # Patch L: only when the text is otherwise valid (a wrong text needs rewriting anyway)
         problems.extend(estimate_timing_problems(text, anchors, labels, scenes))
     return problems

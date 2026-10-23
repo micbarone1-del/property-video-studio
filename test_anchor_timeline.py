@@ -119,16 +119,15 @@ AG = "Coldwell Banker"; PRICE = "€ 1.680.000"
 SEQ = ["exterior", "living", "kitchen", "bedrooms", "bathrooms", "outdoor"]
 LABELS = [ls.CATEGORY_ITALIAN_LABELS.get(c, c) for c in SEQ]
 GOODTXT = ("Coldwell Banker presenta una villa in vendita a Olgiata. "
-           "Il soggiorno è ampio; la villa di 650 metri quadri è ristrutturata. "
-           "La cucina è abitabile e dà sul giardino di 3000 metri quadri. "
-           "La zona notte ha 5 camere da letto e una casa ampia. "
-           "I 4 bagni completano gli spazi interni della casa. "
-           "Il giardino e la terrazza chiudono la proprietà: contattate Coldwell Banker.")
-GOODANCH = [{"scene": 2, "phrase": "Il soggiorno"}, {"scene": 3, "phrase": "La cucina"}, {"scene": 4, "phrase": "La zona notte"},
-            {"scene": 5, "phrase": "I 4 bagni"}, {"scene": 6, "phrase": "Il giardino"}]
+           "Il soggiorno è ampio e luminoso; la villa di 650 metri quadri è completamente ristrutturata. "
+           "Ogni ambiente è curato nei dettagli e funzionale. "
+           "La zona notte ha 5 camere da letto e 4 bagni. "
+           "Gli spazi interni sono ampi e silenziosi. "
+           "Il giardino di 3000 metri quadri chiude la proprietà: contattate Coldwell Banker.")
+GOODANCH = [{"scene": 2, "phrase": "Il soggiorno"}, {"scene": 4, "phrase": "La zona notte"}, {"scene": 6, "phrase": "Il giardino"}]   # Patch O: 3 highlights
 def fv(text=GOODTXT, anchors=GOODANCH, **kw):
     return ss.validate_free_text(text, anchors, kw.get("desc", DESC), kw.get("agency", AG), kw.get("price", PRICE), split_fn=N.split_into_sentences)
-check("C1 a good free text with 5 room anchors is accepted", fv() == [], fv())
+check("C1 a good free text with 3 highlight anchors is accepted", fv() == [], fv())
 check("C2 no anchors at all is accepted (nothing named)", fv(anchors=[]) == [])
 check("C3 price spoken -> rejected (same fact check as the per-scene script)", any("price" in p for p in fv(text=GOODTXT.replace("ristrutturata.", "ristrutturata, a 1.680.000 euro."))))
 check("C4 a number not in the listing -> rejected", any("999" in p for p in fv(text=GOODTXT.replace("650", "999"))))
@@ -136,8 +135,8 @@ check("C5 a feature not in the listing -> rejected", any("piscin" in p for p in 
 check("C6 first sentence must say sale/rent", any("in vendita" in p for p in fv(text=GOODTXT.replace("in vendita ", ""))))
 check("C7 agency named at start and end", any("first sentence must name the agency" in p for p in fv(text=GOODTXT.replace("Coldwell Banker presenta", "Si presenta"))) and
       any("last sentence must name the agency" in p for p in fv(text=GOODTXT.replace("contattate Coldwell Banker", "contattateci"))))
-check("C8 floors are rejected", any("floor" in p for p in fv(text=GOODTXT.replace("La cucina", "La cucina al piano terra"))))
-check("C9 rooms named out of order are rejected", any("order" in p for p in fv(anchors=[{"scene": 2, "phrase": "La cucina"}, {"scene": 3, "phrase": "Il soggiorno"}])))
+check("C8 floors are rejected", any("floor" in p for p in fv(text=GOODTXT.replace("La zona notte", "La zona notte al piano terra"))))
+check("C9 rooms named out of order are rejected", any("order" in p for p in fv(anchors=[{"scene": 2, "phrase": "La zona notte"}, {"scene": 4, "phrase": "Il soggiorno"}])))
 check("C10 a phrase that is not in the text is rejected", any("exactly once" in p for p in fv(anchors=[{"scene": 2, "phrase": "La mansarda"}])))
 check("C11 a phrase that appears twice is rejected", any("exactly once" in p for p in fv(anchors=[{"scene": 2, "phrase": "Coldwell Banker"}])))
 check("C12 scene 1 / scene 7 / duplicates are rejected", any("between 2 and 6" in p for p in fv(anchors=[{"scene": 1, "phrase": "La cucina"}])) and
@@ -220,7 +219,7 @@ check("E1 happy path: anchored mode, one Claude call, one TTS call, 6 scenes", o
       o["tts_calls_used"] == 1 and o["scene_count"] == 6 and o["script_attempts"] == 1, (o.get("narration_mode"), o.get("timeline_fallback_reason")))
 check("E2 the TTS is the plain narration (no fixed 5 s scene grid)", measure_calls and measure_calls[0][1] is None and o["narration_text"] == GOODTXT)
 check("E3 the timeline carries 6 targets inside the speed limits and the anchor times",
-      len(tl.get("targets", [])) == 6 and all(0.8 - 1e-3 <= s <= 1.25 + 1e-3 for s in tl.get("speeds", [])) and [a["scene"] for a in tl.get("anchors", [])] == [2, 3, 4, 5, 6], tl)
+      len(tl.get("targets", [])) == 6 and all(0.8 - 1e-3 <= s <= 1.25 + 1e-3 for s in tl.get("speeds", [])) and [a["scene"] for a in tl.get("anchors", [])] == [2, 4, 6], tl)
 check("E4 video length comes from the plan, not 6 x 5 s", abs(o["video_duration_secs"] - tl.get("video_secs", -1)) < 1e-6 and o["sync"] is None)
 check("E5 the audio file handed on is the one that was measured", o["audio_path"] == "/tmp/fake_anchor.mp3" and rec_calls == ["/tmp/fake_anchor.mp3"])
 check("E6 result keys the API stores are all present", all(k in o for k in ["narration_text", "audio_path", "speech_duration_secs", "scene_count", "video_duration_secs", "tts_calls_used",
@@ -335,7 +334,7 @@ RA3 = [{"scene": 2, "phrase": "soggiorno"}, {"scene": 3, "phrase": "cucina"}, {"
 p3 = ss.estimate_timing_problems(REAL3, RA3, GL)
 check("H2 the real text of draft 6cb22349 (attempt 3, which the voice rejected) is now caught BEFORE the voice: first room too late and kitchen/bedrooms too close",
       any("scene 1" in x and "cut about" in x for x in p3) and any("scene 3" in x and "add about" in x for x in p3), p3)
-check("H3 the prompt forbids naming the next room right after the previous one", 'never "la cucina, seguita da due camere da letto"' in ss.build_anchored_prompt("x", "y", "Z", GL))
+check("H3 the prompt forbids naming the next room right after the previous one", 'Never "la cucina, seguita da due camere da letto"' in ss.build_anchored_prompt("x", "y", "Z", GL))
 check("H4 limits: 7 Claude calls, 3 voiced texts, 2 estimate-only retries", (ls.ANCHORED_MAX_ATTEMPTS, ls.ANCHORED_MAX_MEASURED, ls.ANCHORED_SOFT_RETRIES) == (7, 3, 2))
 
 # estimate objects twice -> the third text goes to the real voice anyway (the audio is the judge)
@@ -358,6 +357,25 @@ VOICE_WPS[:] = [2.4]
 check("H8 at most 3 texts are voiced; then the previous modes take over, reason and TTS calls recorded",
       o["timeline"] is None and "speed limits" in (o["timeline_fallback_reason"] or "") and sum(1 for p in prompts if "REJECTED after the voice was recorded" in p) == 2 and len(measure_calls) >= 3, (len(measure_calls), len(prompts)))
 VOICE_WPS[:] = [2.4]
+
+# ---------------- I. Patch O (2026-10-23): 2-3 highlights, not every room (draft d0492ebb: 5 rooms in 28 s never fitted)
+five = [{"scene": 2, "phrase": "Il soggiorno"}, {"scene": 3, "phrase": "La cucina"}, {"scene": 4, "phrase": "La zona notte"}, {"scene": 5, "phrase": "I 4 bagni"}, {"scene": 6, "phrase": "Il giardino"}]
+t5 = ("Coldwell Banker presenta una villa in vendita a Olgiata. Il soggiorno è ampio e luminoso; la villa di 650 metri quadri è ristrutturata. "
+      "La cucina è abitabile e dà sul giardino di 3000 metri quadri. La zona notte ha 5 camere da letto e una casa ampia. "
+      "I 4 bagni completano gli spazi interni. Il giardino e la terrazza chiudono la proprietà: contattate Coldwell Banker.")
+p5 = ss.validate_free_text(t5, five, DESC, AG, PRICE, split_fn=N.split_into_sentences, labels=LABELS)
+check("I1 more than 3 named rooms -> rejected as a HARD problem (not an estimate message), says how many to keep",
+      any("at most 3 highlights" in x for x in p5) and not any(x.startswith(ss.ESTIMATE_PREFIX) for x in p5), p5)
+check("I2 three highlights are accepted", ss.MAX_ANCHORS == 3 and fv() == [], fv())
+pr = ss.build_anchored_prompt("x", "y", "Z", GL)
+check("I3 the prompt asks for 2 or 3 highlights, gives the place of each scene, and no longer asks for 3 to 5 rooms",
+      "2 or 3 HIGHLIGHTS" in pr and "never more than 3" in pr and "scene 6 around word 48" in pr and "Name 3 to 5 rooms" not in pr and "about one new room every" not in pr, pr[900:1700])
+two = [{"scene": 3, "phrase": "Ogni ambiente"}, {"scene": 6, "phrase": "Il giardino"}]
+check("I4 two highlights that are NOT scene 2 are fine (no anchor for scene 2 is required)", ss.estimate_timing_problems(GOODTXT, two, LABELS) == [])
+VOICE_WPS[:] = [2.4]; GOODTXT_CURRENT[0] = t5
+o = run([J(t5, five), J(GOODTXT, GOODANCH)])
+check("I5 a text naming 5 rooms is sent back WITHOUT voice (no TTS) and told to keep at most 3; the next text is accepted",
+      o["narration_mode"] == "anchored" and len(measure_calls) == 1 and measure_calls[0][0] == GOODTXT and "at most 3 highlights" in prompts[1], (o.get("narration_mode"), len(measure_calls)))
 
 # ---------------- F. wiring (text checks: the real moviepy/FastAPI code needs the server)
 va = open("video_assembly.py").read(); api = open("api_server.py").read()
