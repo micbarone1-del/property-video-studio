@@ -250,10 +250,10 @@ check("E7 timing outside the limits -> second Claude call told the measured seco
 
 check("E7b (Patch K) the retry after a timing rejection shows the model its own previous text and the measured seconds", GOODTXT in prompts[1] and "The voice read it in" in prompts[1] and "never more than 32" in prompts[1], prompts[1][-700:])
 legacy = ["Testo narrazione di prova " * 14] * 8
-VOICE_WPS[:] = [1.5, 1.5, 2.4]
-o = run([J(GOODTXT, GOODANCH), J(GOODTXT, GOODANCH)] + legacy)
+VOICE_WPS[:] = [1.5, 1.5, 1.5, 2.4]
+o = run([J(GOODTXT, GOODANCH), J(GOODTXT, GOODANCH), J(GOODTXT, GOODANCH)] + legacy)
 VOICE_WPS[:] = [2.4]
-check("E8 rejected twice -> falls back to the single-text path, reason recorded, TTS calls of both counted",
+check("E8 rejected three times (Patch M: ANCHORED_MAX_ATTEMPTS = 3) -> falls back to the single-text path, reason recorded, TTS calls of both counted",
       o["ok"] and o["narration_mode"] in ("single_text", "per_scene") and o["timeline"] is None and o["timeline_fallback_reason"] and "speed limits" in o["timeline_fallback_reason"] and o["tts_calls_used"] >= 3,
       (o.get("narration_mode"), o.get("timeline_fallback_reason"), o.get("tts_calls_used")))
 
@@ -307,6 +307,24 @@ o = run([J(LATE2, LATE2ANCH), J(GOODTXT, GOODANCH)])
 check("G6 text rejected on the estimate -> no TTS and no recogniser for it, second text accepted with ONE TTS call",
       o["narration_mode"] == "anchored" and o["script_attempts"] == 2 and len(measure_calls) == 1 and measure_calls[0][0] == GOODTXT and "estimated timing" in prompts[1] and LATE2 in prompts[1], (o.get("narration_mode"), len(measure_calls)))
 check("G7 the labels reach the validator (scene names appear in the problem)", any(LABELS[0] in x for x in pl), pl)
+
+# Patch M: the real texts of job 2320769d (attempt 1 and 2 were rejected on the estimate: the tail after the last room was too long)
+GL = ["facciata", "salone", "cucina", "camere da letto", "bagni", "spazi esterni"]
+REAL1 = ("Gallo Immobiliare presenta in vendita una proprietà nel Rione San Saba, via Girolamo Dandini. Il luminoso salone si affaccia su spazi generosi. "
+         "La cucina è funzionale e ben organizzata. Due camere da letto completano gli interni. I servizi sono doppi. Completa la proprietà un giardino terrazzato "
+         "di mq. 60 e ulteriori spazi esterni, oltre a garage e cantina. Contattate Gallo Immobiliare per una visita.")
+RA = [{"scene": 2, "phrase": "Il luminoso salone"}, {"scene": 3, "phrase": "La cucina"}, {"scene": 4, "phrase": "Due camere da letto"},
+      {"scene": 5, "phrase": "I servizi"}, {"scene": 6, "phrase": "un giardino terrazzato"}]
+pr = ss.estimate_timing_problems(REAL1, RA, GL)
+check("G8 (Patch M) the real rejected text: the message says how many words follow the last room and how many may follow",
+      len(pr) == 1 and "LAST scene" in pr[0] and "21 words" in pr[0] and "only about 11 words" in pr[0] and "at most 7 words" in pr[0], pr)
+FIX = ("Gallo Immobiliare presenta in vendita una proprietà nel Rione San Saba, via Girolamo Dandini. Il luminoso salone si affaccia su spazi generosi. "
+       "La cucina è funzionale e ben organizzata. Due camere da letto completano gli interni. I servizi sono doppi e curati nei dettagli. "
+       "Il giardino terrazzato di 60 mq. Contattate Gallo Immobiliare per informazioni.")
+FA = [{"scene": 2, "phrase": "Il luminoso salone"}, {"scene": 3, "phrase": "La cucina"}, {"scene": 4, "phrase": "Due camere da letto"},
+      {"scene": 5, "phrase": "I servizi"}, {"scene": 6, "phrase": "Il giardino terrazzato"}]
+check("G9 (Patch M) the same text with the last room named earlier and a short tail passes the estimate", ss.estimate_timing_problems(FIX, FA, GL) == [], ss.estimate_timing_problems(FIX, FA, GL))
+check("G10 (Patch M) the prompt tells the model how many words may follow the last room", "at most about 12 words follow it" in ss.build_anchored_prompt("x", "y", "Z", GL) and ls.ANCHORED_MAX_ATTEMPTS == 3)
 
 # ---------------- F. wiring (text checks: the real moviepy/FastAPI code needs the server)
 va = open("video_assembly.py").read(); api = open("api_server.py").read()

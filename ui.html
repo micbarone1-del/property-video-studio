@@ -935,8 +935,6 @@ async function loadLibrary() {
       awaiting_approval:  { icon: '⚠', cls: 'lib-review',  label: 'Revisione QC' },
       queued:             { icon: '○', cls: 'lib-queued',  label: 'In coda' },
       draft:              { icon: '✎', cls: 'lib-queued',  label: 'Bozza' },
-      preparing:          { icon: '⏳', cls: 'lib-running', label: 'In preparazione' },
-      prep_failed:        { icon: '✗', cls: 'lib-failed',  label: 'Preparazione fallita' },
       interrupted:        { icon: '⏸', cls: 'lib-review',  label: 'Interrotto' },
       stopped:            { icon: '⏹', cls: 'lib-failed',  label: 'Fermato' },
     };
@@ -1183,6 +1181,7 @@ async function waitForDraft(jobId, statusEl) {
     }
     try {
       const res = await authFetch(`/jobs/${jobId}`);
+      if (res.status === 404) return { ok: false, message: 'la preparazione è andata persa (riavvio del server?): ricrea la bozza dallo stesso annuncio.' };
       if (!res.ok) { statusEl.textContent = `Preparazione in corso (${secs}s)...`; continue; }
       const job = await res.json();
       if (job.status === 'draft') return { ok: true, job };
@@ -1210,7 +1209,7 @@ async function startFromUrl() {
 
   btn.disabled = true;
   statusEl.style.color = 'var(--muted)';
-  statusEl.textContent = 'Lettura annuncio in corso (circa 30 s), poi la bozza si prepara in background...';
+  statusEl.textContent = 'Preparazione avviata: lettura annuncio, narrazione, voce, foto (alcuni minuti)...';
 
   try {
     const formData = new FormData();
@@ -1238,7 +1237,7 @@ async function startFromUrl() {
       btn.disabled = false;
       return;
     }
-    statusEl.textContent = `✓ Creato: ${prepared.job.total_scenes || ''} scene — caricamento nell'editor...`;
+    statusEl.textContent = `✓ Bozza pronta: ${prepared.job.total_scenes || ''} scene — caricamento nell'editor...`;
     statusEl.style.color = 'var(--ok)';
 
     // Reuse the EXISTING job-loading function — same editable form every

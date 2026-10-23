@@ -321,7 +321,7 @@ STRUCTURE (ONE natural flowing narration, not a list of sentences about rooms):
 - Then continue as one natural flow with the most important general facts and the details the listing states. Name the rooms of scenes 2 to 6 inside this flow, in the ORDER of the scenes, about one new room every {ROOM_SPACING_WORDS} words (every ~5 seconds, the length of a picture). Two rooms may share a sentence, but the second one must be named at least 9 words after the first.
 - You do NOT have to name every room: there is no time. Name 3 to 5 rooms, the ones with something worth saying (special features first).
 - Objective positive adjectives are welcome (for example luminoso, ampio, funzionale, curato, silenzioso, panoramico) when the listing text supports them: they make the description less bare. Never invent a quality.
-- Last, a short invitation (at most 8 words) to contact {agency_name or 'the agency'} by name for more information.
+- Last, a short invitation (at most 7 words) to contact {agency_name or 'the agency'} by name for more information. The LAST room you name (usually the garden or outdoor spaces, scene 6) must be named early enough that at most about 12 words follow it, the invitation included: so it is named in the second-to-last sentence or at the start of the last one, never followed by a long list.
 - Do not name a room that comes EARLIER in the order after you have named a later one, and do not name a room twice (do not say "tre camere" in the opening if the bedrooms are a later scene: say it where they are shown).
 
 HARD RULES:
@@ -398,7 +398,18 @@ def estimate_timing_problems(text: str, anchors: list, labels: list = None, scen
         name = labels[i] if labels and i < len(labels) else f"scene {i + 1}"
         lo, hi = p["allowed_visible"]
         w = max(1, int(round(p["seconds_over"] * wps)))
-        if p["kind"] == "too_slow":
+        last_pos = None
+        if i == scenes - 1:
+            for a in anchors or []:
+                if a.get("scene") == scenes:
+                    h = wa.find_phrase(tk, a.get("phrase", ""))
+                    last_pos = h[0] if len(h) == 1 else None
+        if p["kind"] == "too_slow" and last_pos is not None:
+            allowed = max(1, int((hi - st.LEAD_BEFORE_WORD - st.END_TAIL_SECS) * wps))
+            msg = (f"estimated timing: after the room of the LAST scene ({name}) is named, the text goes on for {len(tk) - last_pos} words "
+                   f"(about {p['visible_secs']:.1f} s on screen) but only about {allowed} words may follow from its first word to the end of the text, "
+                   f"the invitation to contact the agency included: name that room earlier (not in the last sentence) and keep the invitation to at most 7 words")
+        elif p["kind"] == "too_slow":
             msg = (f"estimated timing: scene {i + 1} ({name}) would stay on screen about {p['visible_secs']:.1f} s but at most {hi:.1f} s: "
                    f"the text spoken before the room of the next scene is named is about {w} words too long: cut about {w} words there, or name that room earlier")
         else:

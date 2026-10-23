@@ -1,6 +1,7 @@
-"""Patch L2 (2026-10-23): creating a draft from a listing URL no longer keeps the browser waiting for minutes.
-The request reads the listing and applies the acceptance rule, then answers with the job id (status "preparing");
-the slow part runs in the background and ends in "draft" or "prep_failed". No network, no audio, no API key.
+"""Patch L2/M (2026-10-23): creating a draft from a listing URL no longer keeps the browser waiting for minutes.
+The request only registers a preparation TICKET (in memory, not a job) and answers at once; reading the listing, the acceptance
+rule and everything else run in the background and end in a real job (draft) or in a failed ticket: a rejected listing leaves
+no job and no folder. No network, no audio, no API key.
 Run: python3 test_url_draft_background.py"""
 import os, sys, asyncio, ast, builtins, re, subprocess, tempfile, json
 sys.path.insert(0, os.getcwd())
@@ -64,19 +65,14 @@ except Exception:
     raised = True
 check("A6 a job that vanished does not crash the task", not raised)
 
-# ---------------- B. restart recovery
-check("B1 'preparing' is an orphan state", "preparing" in jr.ORPHAN_STATES)
+# ---------------- B. restart recovery (tickets are never on disk, so nothing 'preparing' can be left behind)
+check("B1 'preparing' is NOT an orphan state any more (a ticket lives in memory only)", "preparing" not in jr.ORPHAN_STATES)
 with tempfile.TemporaryDirectory() as d:
-    jobs = {"p1": {"status": "preparing", "property_name": "Casa", "created_at": "x"},
-            "r1": {"status": "running", "property_name": "Run", "scenes_config": [], "created_at": "y"},
+    jobs = {"r1": {"status": "running", "property_name": "Run", "scenes_config": [], "created_at": "y"},
             "d1": {"status": "draft", "property_name": "Dr", "created_at": "z"}}
     saved.clear()
     rec = jr.recover_orphans(jobs, d, saved.append)
-    by = {r["job_id"]: r for r in rec}
-    check("B2 a job left 'preparing' by a restart becomes prep_failed with a clear message and is saved",
-          jobs["p1"]["status"] == "prep_failed" and "riavvio" in jobs["p1"]["message"] and "p1" in saved and by["p1"]["new"] == "prep_failed", jobs["p1"])
-    check("B3 no partner webhook is triggered for it (only 'failed' triggers one)", by["p1"]["new"] != "failed" and by["p1"]["has_callback"] is False)
-    check("B4 other statuses behave as before (running with no images -> failed; draft untouched)", jobs["r1"]["status"] == "failed" and jobs["d1"]["status"] == "draft")
+    check("B2 other statuses behave as before (running with no images -> failed; draft untouched)", jobs["r1"]["status"] == "failed" and jobs["d1"]["status"] == "draft" and [r["job_id"] for r in rec] == ["r1"])
 
 # ---------------- C. api_server.py wiring (it cannot be imported here: no fastapi)
 src = open("api_server.py").read()
@@ -86,25 +82,30 @@ def fn(name):
         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name: return n
     return None
 def seg(name): return ast.get_source_segment(src, fn(name))
-ep, worker, runner = seg("create_job_from_url"), seg("_prepare_url_draft_work"), seg("_prepare_url_draft")
-check("C1 the three functions exist", bool(ep and worker and runner))
+ep, worker, runner, getj = seg("create_job_from_url"), seg("_prepare_url_draft_work"), seg("_prepare_url_draft"), seg("get_job")
+check("C1 the functions exist", bool(ep and worker and runner and getj))
 check("C2 the endpoint takes BackgroundTasks and schedules the preparation", "background_tasks: BackgroundTasks" in ep and "background_tasks.add_task(_prepare_url_draft" in ep)
-check("C3 the endpoint answers with the job id and status 'preparing'", '"status": "preparing"' in ep and "return {\"job_id\": job_id" in ep)
-i_acc, i_job = ep.index("check_listing_acceptance"), ep.index('"status": "preparing"')
-check("C4 option B: reading the listing and the acceptance rule happen BEFORE the job exists (a rejected listing leaves no job)",
-      ep.index("extract_listing") < i_acc < i_job and "status_code=422" in ep and "status_code=400" in ep and ep.index("check_listing_acceptance") < ep.index("mkdir"))
-check("C5 the slow steps moved to the worker (narration, download, captions, vision, cost)",
+check("C3 the endpoint answers at once with the id and status 'preparing'", 'return {"job_id": job_id, "status": "preparing"}' in ep)
+check("C4 the endpoint does NOT read the listing, create a job or touch the disk (only a ticket in memory)",
+      all(k not in ep for k in ["extract_listing", "check_listing_acceptance", "JOBS[", "mkdir", "_save_job", "resolve_uncategorized_photos"]) and "INTAKES[job_id] = {" in ep)
+check("C4b the quick checks stay in the request: rate limit (429) and generation paused", "status_code=429" in ep and "_raise_if_generation_paused()" in ep)
+i_ext, i_acc, i_mk, i_job = worker.index("extract_listing"), worker.index("check_listing_acceptance"), worker.index("mkdir"), worker.index("JOBS[job_id] = {")
+check("C5 order inside the worker: read listing -> acceptance rule -> folder created -> job registered LAST (a rejected listing leaves no folder, no job)", i_ext < i_acc < i_mk < i_job)
+check("C5b a rejected listing raises PrepError with the same message the 422 carried (and keeps code/reason on the ticket)",
+      'raise _jr.PrepError(acceptance["message"])' in worker and 'INTAKES[job_id]["code"]' in worker and "status_code" not in worker)
+check("C5c an unreadable listing raises PrepError with the same text the 400 had", 'PrepError(f"Could not read listing: {extraction[\'error\']}")' in worker)
+check("C6 the slow steps are in the worker (narration, download, captions, vision, cost) and not in the endpoint",
       all(k in worker for k in ["generate_narration_and_derive_scenes", "download_selected_photos", "generate_captions_for_categories", "_apply_vision_analysis_to_scenes", "estimate_job_cost"]) and
       not any(k in ep for k in ["generate_narration_and_derive_scenes", "download_selected_photos", "generate_captions_for_categories", "_apply_vision_analysis_to_scenes"]))
-check("C6 the worker ends by setting status 'draft' and saving, with the same stored fields as before",
-      '"status": "draft"' in worker and "_save_job(job_id)" in worker and all(k in worker for k in
+check("C7 the worker ends by registering the job as 'draft' with the same stored fields as before, saving it, then closing the ticket",
+      '"status": "draft"' in worker and "_save_job(job_id)" in worker and worker.index("_save_job(job_id)") < worker.index('INTAKES[job_id]["status"] = "draft"') and all(k in worker for k in
       ['"narration_text"', '"narration_path"', '"narration_mode"', '"timeline"', '"timeline_fallback"', '"selection_report"', '"claude_usage"', '"cost_estimate"', '"source_url"', '"scenes_config"', '"property_id"']))
-check("C7 keeps the creation time of the stub (list order stays stable)", 'JOBS[job_id].get("created_at")' in worker)
 check("C8 nothing is deleted by the code: no rmtree anywhere in the URL creation path", "rmtree" not in ep and "rmtree" not in worker)
 check("C9 the worker raises PrepError (not HTTPException: nobody could catch it after the response)", "PrepError" in worker and "HTTPException" not in worker)
-check("C10 the runner goes through the ONE shared state machine", "_jr.run_preparation" in runner and "import job_recovery as _jr" in src)
-check("C11 exactly one implementation: the narration call is not duplicated in the endpoint", ep.count("generate_narration") == 0 and worker.count("generate_narration_and_derive_scenes") == 1)
-check("C12 the Relinx adapter is untouched by this patch (still calls its own creation path)", "partner" in src and src.count("def _prepare_url_draft_work") == 1)
+check("C10 the runner goes through the ONE shared state machine, on the tickets, saving nothing", "_jr.run_preparation" in runner and "INTAKES" in runner and "import job_recovery as _jr" in src)
+check("C11 exactly one implementation: no job-stub code left from Patch L", '"status": "preparing"' in ep and src.count('"status": "preparing",') == 1 and "JOBS[job_id].get(" not in worker)
+check("C12 GET /jobs/{id} answers from the ticket while the id is not a job yet, then from the job", "INTAKES" in getj and getj.index("INTAKES") < getj.index("404"))
+check("C13 the tickets dict exists at module level", "INTAKES: dict = {}" in src)
 
 def undefined_names(source, func_names):
     t = ast.parse(source)
@@ -133,16 +134,16 @@ def undefined_names(source, func_names):
                 if isinstance(x, ast.Name) and isinstance(x.ctx, ast.Load) and x.id not in loc and x.id not in glob:
                     bad.append((f.name, x.id, x.lineno))
     return bad
-bad = undefined_names(src, {"create_job_from_url", "_prepare_url_draft_work", "_prepare_url_draft"})
-check("C13 no undefined name in the three functions (a name lost in the move would only fail at run time)", not bad, bad)
-check("C14 the name check really catches an undefined name (self-test)", undefined_names("def f():\n    return nope_x\n", {"f"}) == [("f", "nope_x", 2)])
+bad = undefined_names(src, {"create_job_from_url", "_prepare_url_draft_work", "_prepare_url_draft", "get_job"})
+check("C14 no undefined name in the four functions (a name lost in the move would only fail at run time)", not bad, bad)
+check("C15 the name check really catches an undefined name (self-test)", undefined_names("def f():\n    return nope_x\n", {"f"}) == [("f", "nope_x", 2)])
 
 # ---------------- D. the page
 ui = open("ui.html").read()
 check("D1 the page polls the job status after the POST", "async function waitForDraft" in ui and "authFetch(`/jobs/${jobId}`)" in ui and "await waitForDraft(data.job_id" in ui)
-check("D2 handles both final states and keeps polling through network errors",
-      "job.status === 'draft'" in ui and "job.status === 'prep_failed'" in ui and "connessione instabile" in ui and "catch (e)" in ui.split("async function waitForDraft")[1].split("async function startFromUrl")[0])
-check("D3 the library shows both new statuses", "preparing:" in ui and "prep_failed:" in ui)
+check("D2 handles both final states, tells a lost ticket (404) and keeps polling through network errors",
+      "job.status === 'draft'" in ui and "job.status === 'prep_failed'" in ui and "res.status === 404" in ui and "connessione instabile" in ui and "catch (e)" in ui.split("async function waitForDraft")[1].split("async function startFromUrl")[0])
+check("D3 the library has no status for tickets (they are not jobs)", "preparing:" not in ui and "prep_failed:" not in ui.split("const statusMap")[1].split("};")[0])
 check("D4 the old fields of the synchronous answer are no longer read (scene_count / video_duration_secs)", "data.scene_count" not in ui.split("async function startFromUrl")[1].split("let _editJobSeq")[0])
 m = re.findall(r"<script>(.*?)</script>", ui, re.S)
 with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as f:

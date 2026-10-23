@@ -14,7 +14,7 @@ from pathlib import Path
 
 import rework_policy
 
-ORPHAN_STATES = ("running", "queued", "preparing")   # 2026-10-23 (Patch L): "preparing" = draft being built in the background
+ORPHAN_STATES = ("running", "queued")
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp")
 
 
@@ -52,12 +52,7 @@ def probe_duration(path):
 
 
 def classify_orphan(job, job_dir):
-    """Returns (new_status, message) for a job found running/queued/preparing at startup."""
-    if job.get("status") == "preparing":
-        # 2026-10-23 (Patch L): the background preparation of a draft died with the server. Nothing expensive was spent
-        # (Claude, voice, word timing only): the draft is simply created again from the same listing.
-        return "prep_failed", ("Preparazione della bozza interrotta da un riavvio del server. "
-                               "Ricrea la bozza dallo stesso annuncio.")
+    """Returns (new_status, message) for a job found running/queued at startup."""
     out = job.get("output_path")
     if out and Path(out).is_file() and (probe_duration(out) or 0) > 0:
         return "done", ("Il server e' stato riavviato durante un'operazione: "

@@ -1608,12 +1608,48 @@ async def _apply_vision_analysis_to_scenes(scenes_config: list, scene_image_path
                         f"keeping category-based default: {e}")
 
 
-async def _prepare_url_draft_work(job_id, url, extraction, classification_summary, acceptance, agency_id, agency_name,
-                                  scene_category_order, voice_id, model_tier, premium, property_name_final):
-    """The slow part of creating a draft from a listing URL (narration, voice, word timing, photo download, captions,
-    vision analysis). 2026-10-23 (Patch L): moved out of the HTTP request unchanged (same steps, same order) so the
-    browser no longer waits minutes; run_preparation() turns any failure into status prep_failed."""
+# 2026-10-23 (Patch M): draft preparations in progress or failed. NOT jobs: nothing is written under jobs/ and nothing shows
+# in the library until the draft is complete (a listing that is unreadable, not accepted or fails leaves no job and no
+# folder). GET /jobs/{id} answers from here while the id is not a job yet. Lost at a restart (the page then says so).
+INTAKES: dict = {}
+
+
+async def _prepare_url_draft_work(job_id, url, property_name, agency_id, voice_id, model_tier, premium):
+    """Everything that follows the quick checks of POST /jobs/from-url: reading the listing, photo classification, the
+    acceptance rule, narration, voice, word timing, photo download, captions, vision analysis. 2026-10-23 (Patch L/M):
+    runs in the background (the browser used to wait minutes and give up); run_preparation() turns any failure into
+    status prep_failed on the INTAKES ticket. The job is created only at the very end."""
     import listing_scraper as scraper
+    scraper.reset_claude_usage()   # reset token counter for THIS job
+
+    # every one of these does real, slow, blocking I/O (web fetches, Claude API calls with images, TTS, fal.ai):
+    # wrapped in asyncio.to_thread so the event loop (health check, other pages) stays free.
+    extraction = await asyncio.to_thread(scraper.extract_listing, url)
+    if not extraction["ok"]:
+        raise _jr.PrepError(f"Could not read listing: {extraction['error']}")
+    # 2026-10-12 (A+): interiors keep the page labels; unlabeled photos get vision; facade/balcony candidates are verified
+    # by vision (same shared function as the Relinx path).
+    await asyncio.to_thread(scraper.resolve_uncategorized_photos, extraction["photos"])
+    classification_summary = await asyncio.to_thread(scraper.refine_exterior_outdoor_with_vision, extraction["photos"])
+
+    # 2026-10-12 (3B): standard-video acceptance rule BEFORE narration/TTS is paid for. Premium is unchanged.
+    acceptance = None
+    if not premium:
+        acceptance = scraper.check_listing_acceptance(extraction["photos"])
+        if not acceptance["ok"]:
+            INTAKES[job_id]["code"] = acceptance.get("code")
+            INTAKES[job_id]["reason"] = acceptance
+            raise _jr.PrepError(acceptance["message"])
+
+    agency_name = None
+    if agency_id:
+        _agency = cost_model.get_agency(agency_id)
+        if _agency:
+            agency_name = _agency.get("name")
+    scene_category_order = scraper.derive_available_category_order(extraction["photos"])
+    property_name_final = property_name.strip() or extraction.get("address") or "Property"
+    INTAKES[job_id]["property_name"] = property_name_final
+
     # 2026-10-22 (Patch B): the standard video is always 6 scenes, so its photos are selected FIRST and the narration
     # is written per scene knowing which room each scene shows. The selection is reused below (no second selection).
     pre_selection, scene_sequence = None, None
@@ -1648,7 +1684,7 @@ async def _prepare_url_draft_work(job_id, url, extraction, classification_summar
             scraper.select_photos_for_scene_count, extraction["photos"], narration["scene_count"]
         )
 
-    job_dir = JOBS_DIR / job_id          # 2026-10-23 (Patch L): the job and its folder already exist (status "preparing")
+    job_dir = JOBS_DIR / job_id          # 2026-10-23 (Patch M): the folder is created here, only once the listing is accepted
     img_dir = job_dir / "images"
     img_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1664,8 +1700,8 @@ async def _prepare_url_draft_work(job_id, url, extraction, classification_summar
     # created reporting "success" with 0 actual scenes.
     total_downloaded = sum(len(photos) for photos in selection["selected"].values())
     if selection["gaps"] or total_downloaded == 0:
-        # 2026-10-23 (Patch L): the job folder is NOT removed any more (it exists from the start of the preparation and
-        # nothing under jobs/ is deleted by code); the job is marked prep_failed with the same message as before.
+        # 2026-10-23 (Patch L/M): the folder is NOT removed any more (nothing under jobs/ is deleted by code); the
+        # preparation ticket is marked prep_failed with the same message as before and no job is registered.
         if selection["gaps"]:
             gap_desc = "; ".join(selection["gaps"])
         else:
@@ -1777,7 +1813,7 @@ async def _prepare_url_draft_work(job_id, url, extraction, classification_summar
         "scenes": [],
         "scenes_config": scenes_config,
         "output_path": None,
-        "created_at": JOBS[job_id].get("created_at") or datetime.utcnow().isoformat(),
+        "created_at": datetime.utcnow().isoformat(),
         "property_name": property_name_final,
         "agency_id": agency_id,
         "is_premium": premium,   # 2026-07-24 (backlog item 35): premium ~1-min template flag, for classification/reporting
@@ -1813,6 +1849,7 @@ async def _prepare_url_draft_work(job_id, url, extraction, classification_summar
         "selection_report": selection_report,
     }
     _save_job(job_id)
+    INTAKES[job_id]["status"] = "draft"      # the ticket is done; GET /jobs/{id} now answers from JOBS
 
 
 @app.post("/jobs/from-url")
@@ -1833,72 +1870,27 @@ async def create_job_from_url(
 
     _raise_if_generation_paused()
 
-    import listing_scraper as scraper
-    scraper.reset_claude_usage()   # reset token counter for THIS job
-
-    # CRITICAL: every one of these does real, slow, blocking I/O (web
-    # fetches, Claude API calls with images, TTS generation, fal.ai object
-    # removal) — wrapped in asyncio.to_thread so this endpoint doesn't
-    # freeze the ENTIRE server's event loop for the 30-90+ seconds this
-    # takes, the way it did before this fix (confirmed: caused a false
-    # "server not responding" alert, since even the health check couldn't
-    # get through while this ran synchronously).
-    extraction = await asyncio.to_thread(scraper.extract_listing, url)
-    if not extraction["ok"]:
-        raise HTTPException(status_code=400, detail=f"Could not read listing: {extraction['error']}")
-    # 2026-10-12 (A+): interiors keep the page labels; unlabeled photos get vision; facade/balcony candidates are verified
-    # by vision (same shared function as the Relinx path).
-    await asyncio.to_thread(scraper.resolve_uncategorized_photos, extraction["photos"])
-    classification_summary = await asyncio.to_thread(scraper.refine_exterior_outdoor_with_vision, extraction["photos"])
-
-    # 2026-10-12 (3B): standard-video acceptance rule BEFORE narration/TTS is paid for. Premium is unchanged.
-    acceptance = None
-    if not premium:
-        acceptance = scraper.check_listing_acceptance(extraction["photos"])
-        if not acceptance["ok"]:
-            return JSONResponse(status_code=422, content={"detail": acceptance["message"], "code": acceptance["code"], "reason": acceptance})
-
-    agency_name = None
-    if agency_id:
-        _agency = cost_model.get_agency(agency_id)
-        if _agency:
-            agency_name = _agency.get("name")
-    scene_category_order = scraper.derive_available_category_order(extraction["photos"])
-
-    # 2026-10-23 (Patch L, Michele's choice B): reading the listing and the acceptance rule stay in the request (a
-    # rejected listing answers 400/422 at once and leaves no job). From here on the job exists and the slow part runs in
-    # the background; the page polls GET /jobs/{id} until the status is "draft" (or "prep_failed" with the reason).
+    # 2026-10-23 (Patch M): the request only registers a preparation ticket and answers at once; reading the listing (about
+    # 3 minutes on a real listing: the browser gave up) and everything after it run in the background. No job, no folder
+    # and no library entry exist until the draft is complete; a rejected or failed listing leaves nothing behind.
     job_id = str(uuid.uuid4())[:8]
-    (JOBS_DIR / job_id / "images").mkdir(parents=True)
-    property_name_final = property_name.strip() or extraction.get("address") or "Property"
-    JOBS[job_id] = {
+    INTAKES[job_id] = {
         "status": "preparing",
-        "progress": 0,
-        "message": "Preparazione della bozza in corso (narrazione, voce, foto)...",
-        "created_at": datetime.utcnow().isoformat(),
-        "property_name": property_name_final,
-        "agency_id": agency_id,
-        "is_premium": premium,
-        "model_tier": model_tier,
-        "scenes_config": [],
-        "total_scenes": 0,
+        "message": "Preparazione della bozza in corso (lettura annuncio, narrazione, voce, foto)...",
+        "property_name": property_name.strip(),
         "source_url": url,
+        "created_at": datetime.utcnow().isoformat(),
+        "is_intake": True,
     }
-    _save_job(job_id)
-    background_tasks.add_task(_prepare_url_draft, job_id, url, extraction, classification_summary, acceptance, agency_id,
-                              agency_name, scene_category_order, voice_id, model_tier, premium, property_name_final)
-    return {"job_id": job_id, "status": "preparing", "property_name": property_name_final}
+    background_tasks.add_task(_prepare_url_draft, job_id, url, property_name, agency_id, voice_id, model_tier, premium)
+    return {"job_id": job_id, "status": "preparing"}
 
 
-async def _prepare_url_draft(job_id, url, extraction, classification_summary, acceptance, agency_id, agency_name,
-                             scene_category_order, voice_id, model_tier, premium, property_name_final):
+async def _prepare_url_draft(job_id, url, property_name, agency_id, voice_id, model_tier, premium):
     await _jr.run_preparation(
-        job_id, JOBS, _save_job,
-        lambda: _prepare_url_draft_work(job_id, url, extraction, classification_summary, acceptance, agency_id, agency_name,
-                                        scene_category_order, voice_id, model_tier, premium, property_name_final),
+        job_id, INTAKES, lambda _jid: None,     # tickets live in memory only: nothing to save
+        lambda: _prepare_url_draft_work(job_id, url, property_name, agency_id, voice_id, model_tier, premium),
         log=log)
-
-
 
 
 # ── Job status & download ──────────────────────────────────────────────────────
@@ -2368,6 +2360,8 @@ def list_jobs():
 
 @app.get("/jobs/{job_id}")
 def get_job(job_id: str):
+    if job_id not in JOBS and job_id in INTAKES:       # 2026-10-23 (Patch M): draft still being prepared (or failed)
+        return dict(INTAKES[job_id])
     if job_id not in JOBS:
         raise HTTPException(status_code=404, detail="Job not found")
     job = JOBS[job_id].copy()

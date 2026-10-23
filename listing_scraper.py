@@ -994,7 +994,7 @@ def _tighten_scene_script(sentences: list, bad: list, description: str, address:
 # OFF by default: set PVS_ANCHORED_TIMELINE=1 in .env (and restart) to try it. When it is on and the standard 6-scene
 # sequence is known, the narration is a free text whose room phrases are timed on the real audio; every failure
 # (text rejected twice, no speech recogniser, plan outside the speed limits) falls back to the previous modes.
-ANCHORED_MAX_ATTEMPTS = 2
+ANCHORED_MAX_ATTEMPTS = 3      # 2026-10-23 (Patch M): a text rejected on the ESTIMATE costs only a Claude call (no voice), so one more try
 ANCHORED_MIN_COVERAGE = 0.6      # share of the written words that must be found in the recorded audio
 
 
