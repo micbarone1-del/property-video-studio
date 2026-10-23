@@ -1028,7 +1028,8 @@ def _anchored_narration(description: str, address: str, price: str, voice_id: st
             problems = ss.validate_free_text(text, anchors, description, agency_name, price, split_fn=split_into_sentences)
             if problems:
                 reason = f"text rejected: {problems}"
-                feedback = ("\n\nYour previous answer was REJECTED for these reasons. Fix all of them, return the full JSON object again:\n- "
+                feedback = (f"\n\nYour previous text was (edit THIS text, do not start from zero):\n{text}\n\n"
+                            "It was REJECTED for these reasons. Fix all of them, return the full JSON object again:\n- "
                             + "\n- ".join(problems))
                 log.warning(f"[Scraper] Anchored narration attempt {attempt} rejected: {problems} | text: {text}")
                 continue
@@ -1053,8 +1054,9 @@ def _anchored_narration(description: str, address: str, price: str, voice_id: st
                 infos.append({"scene": a["scene"], "phrase": a["phrase"], "word_at": round(t, 3)})
             speech_secs = max(float(meas["duration_secs"]), float(al["end"]))
             plan = st.plan_from_anchors(anchor_times, speech_secs, [SCENE_CLIP_SECS] * n)
-            log.info(f"[Scraper] Anchored narration attempt {attempt}: speech {speech_secs:.1f}s, anchors {infos}, "
-                     f"ok={plan['ok']}, speeds {[c['speed'] for c in plan['clips']]}")
+            log.info(f"[Scraper] Anchored narration attempt {attempt}: {len(ss.words(text))} words, speech {speech_secs:.1f}s "
+                     f"({len(ss.words(text)) / max(speech_secs, 1.0):.2f} words/s), anchors {infos}, "
+                     f"ok={plan['ok']}, speeds {[c['speed'] for c in plan['clips']]} | text: {text}")
             if plan["ok"]:
                 timeline = {"mode": "anchored", "targets": plan["targets"], "cuts": plan["cuts"], "speeds": [c["speed"] for c in plan["clips"]],
                             "video_secs": plan["video_secs"], "anchors": infos, "anchor_offsets": plan["anchors"],
@@ -1068,7 +1070,7 @@ def _anchored_narration(description: str, address: str, price: str, voice_id: st
                 return {"ok": True, "result": result, "tts_calls": tts_calls}
             wps = len(ss.words(text)) / max(speech_secs, 1.0)
             reason = f"timing outside the speed limits: {plan['problems']}"
-            feedback = ss.build_anchor_feedback(plan["problems"], infos, labels, wps)
+            feedback = ss.build_anchor_feedback(plan["problems"], infos, labels, wps, previous_text=text, speech_secs=speech_secs)
             if attempt == ANCHORED_MAX_ATTEMPTS:
                 break
         return {"ok": False, "reason": reason, "tts_calls": tts_calls}

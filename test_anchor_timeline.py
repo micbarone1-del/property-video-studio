@@ -118,12 +118,12 @@ DESC = ("Villa in vendita a Roma, Olgiata. Abbiamo il piacere di proporre villa 
 AG = "Coldwell Banker"; PRICE = "€ 1.680.000"
 SEQ = ["exterior", "living", "kitchen", "bedrooms", "bathrooms", "outdoor"]
 LABELS = [ls.CATEGORY_ITALIAN_LABELS.get(c, c) for c in SEQ]
-GOODTXT = ("Coldwell Banker presenta una villa unifamiliare in vendita a Olgiata, vicino a Roma. "
+GOODTXT = ("Coldwell Banker presenta una villa in vendita a Olgiata. "
            "Il soggiorno è ampio e la villa di 650 metri quadri è ristrutturata. "
            "La cucina è abitabile e dà sul giardino di 3000 metri quadri. "
-           "La zona notte ha 5 camere da letto e una casa molto ampia. "
-           "I 4 bagni completano gli spazi interni della casa e servono tutti. "
-           "Il giardino e la terrazza chiudono la proprietà: contattate Coldwell Banker per maggiori informazioni.")
+           "La zona notte ha 5 camere da letto e una casa ampia. "
+           "I 4 bagni completano gli spazi interni e servono tutta la casa. "
+           "Il giardino e la terrazza chiudono la proprietà: contattate Coldwell Banker per informazioni.")
 GOODANCH = [{"scene": 2, "phrase": "Il soggiorno"}, {"scene": 3, "phrase": "La cucina"}, {"scene": 4, "phrase": "La zona notte"},
             {"scene": 5, "phrase": "I 4 bagni"}, {"scene": 6, "phrase": "Il giardino"}]
 def fv(text=GOODTXT, anchors=GOODANCH, **kw):
@@ -146,13 +146,22 @@ check("C12 scene 1 / scene 7 / duplicates are rejected", any("between 2 and 6" i
 check("C13 a text that is far too short or too long is rejected", any("words" in p for p in fv(text="Coldwell Banker presenta una villa in vendita. Contattate Coldwell Banker.", anchors=[])) and
       any("words" in p for p in fv(text=GOODTXT + " " + GOODTXT, anchors=[])))
 pr = ss.build_anchored_prompt(DESC, "largo Olgiata 15", AG, LABELS)
-check("C14 prompt: scenes, JSON format, in vendita, agency, order rule, pace", "Scene 3: " + LABELS[2] in pr and '"anchors"' in pr and "in vendita" in pr and AG in pr and "IN THE ORDER" in pr and "word 13" in pr and "Do NOT say the price" in pr)
+check("C14 prompt: scenes, JSON format, in vendita, agency, order rule, pace", "Scene 3: " + LABELS[2] in pr and '"anchors"' in pr and "in vendita" in pr and AG in pr and "ORDER of the scenes" in pr and "Do NOT say the price" in pr)
+check("C14b prompt (Patch K): duration requirement in seconds AND words, natural flow (no sentence-per-room), hard word limit, adjectives rule", "about 28 seconds" in pr and "NEVER more than 32 seconds" in pr and "56-66 words" in pr and "more than 72 words" in pr
+      and "at most 13 words" in pr and "ONE natural flowing narration" in pr and "NEVER name two rooms in the same sentence" not in pr and "word 13" not in pr
+      and "Objective positive adjectives are welcome" in pr and "splendida" in pr and "luminoso" in pr)
+check("C14c limits: 72 words accepted, 73 rejected, wording quotes the duration", ss.FREE_MAX_WORDS == 72 and any("28 seconds" in p and "never more than 32" in p for p in fv(text=GOODTXT + " " + GOODTXT, anchors=[])))
 pa = ss.parse_anchored('```json\n{"text": "Ciao a tutti", "anchors": [{"scene": 2, "phrase": "ciao"}]}\n```')
 check("C15 parse: fenced JSON, final stop added", pa == ("Ciao a tutti.", [{"scene": 2, "phrase": "ciao"}]), pa)
 check("C16 parse: not JSON / wrong shape -> None", ss.parse_anchored("no") is None and ss.parse_anchored('{"text": 3}') is None and ss.parse_anchored('{"text": "a", "anchors": [{"scene": "2"}]}') is None)
 fb = ss.build_anchor_feedback([{"clip": 1, "speed": 0.6, "kind": "too_slow", "visible_secs": 7.5, "allowed_visible": [3.5, 5.75], "seconds_over": 1.75}],
                               [{"scene": 3, "phrase": "La cucina", "word_at": 15.5}], LABELS, 2.4)
 check("C17 feedback speaks seconds and words, names the phrase times", "7.5 s" in fb and "5.8 s" in fb or "5.7 s" in fb and "La cucina" in fb and "4 words" in fb and "REJECTED" in fb, fb)
+
+fb2 = ss.build_anchor_feedback([{"clip": 1, "speed": 0.4, "kind": "too_slow", "visible_secs": 9.0, "allowed_visible": [3.5, 5.75], "seconds_over": 3.25}],
+                               [{"scene": 3, "phrase": "La cucina", "word_at": 15.5}], LABELS, 2.3, previous_text=GOODTXT, speech_secs=42.0)
+check("C18 feedback (Patch K): shows the previous text, the measured seconds, the limit and how many words to remove", GOODTXT in fb2 and "42.0 seconds" in fb2 and "never more than 32" in fb2 and "Remove about 32 words" in fb2, fb2)
+check("C19 feedback without the new arguments is unchanged in shape (still accepted)", "REJECTED" in fb and GOODTXT not in fb)
 
 # ---------------- D. word_timing never raises
 import word_timing as WT
@@ -233,6 +242,7 @@ o = run([J(LATE, LATEANCH), J(GOODTXT, GOODANCH)])
 check("E7 timing outside the limits -> second Claude call told the measured seconds, second text accepted",
       o["ok"] and o["narration_mode"] == "anchored" and o["script_attempts"] == 2 and len(prompts) == 2 and "REJECTED after the voice was recorded" in prompts[1] and "Il soggiorno" in prompts[1] and o["tts_calls_used"] == 2, (o.get("narration_mode"), len(prompts), o.get("timeline_fallback_reason")))
 
+check("E7b (Patch K) the retry after a timing rejection shows the model its own previous text and the measured seconds", LATE in prompts[1] and "The voice read it in" in prompts[1] and "never more than 32" in prompts[1], prompts[1][-700:])
 legacy = ["Testo narrazione di prova " * 14] * 8
 o = run([J(LATE, LATEANCH), J(LATE, LATEANCH)] + legacy)
 check("E8 rejected twice -> falls back to the single-text path, reason recorded, TTS calls of both counted",
@@ -244,6 +254,7 @@ check("E9 unusable replies twice -> fallback, no crash", o["ok"] and o["timeline
 bad = J(GOODTXT.replace("650", "999"), GOODANCH)
 o = run([bad, J(GOODTXT, GOODANCH)])
 check("E10 fact check failure on attempt 1 -> attempt 2 told why", o["narration_mode"] == "anchored" and o["script_attempts"] == 2 and "999" in prompts[1] and len(measure_calls) == 1)
+check("E10b (Patch K) the retry after a fact-check rejection shows the previous text", GOODTXT.replace("650", "999") in prompts[1] and "edit THIS text" in prompts[1])
 
 WT.transcribe_words = lambda p, language="it": None
 o = run([J(GOODTXT, GOODANCH)] + ["Testo narrazione " * 14] * 8)

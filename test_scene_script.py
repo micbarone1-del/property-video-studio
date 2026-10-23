@@ -9,6 +9,7 @@ except Exception:
 import scene_script as ss
 import narration as N
 import listing_scraper as ls
+os.environ.pop("PVS_ANCHORED_TIMELINE", None)   # 2026-10-23 (Patch K): AFTER the import (listing_scraper calls load_dotenv); this suite tests the per-scene path and the server .env turns the anchored mode ON
 
 fails = []; total = 0
 def check(name, cond, extra=""):

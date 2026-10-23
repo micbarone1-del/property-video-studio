@@ -285,13 +285,17 @@ Listing text:
 
 # ── Free narration with room anchors (2026-10-23, backlog 82, Patch J) ───────────────────────────────────────
 # Michele's refinement: the requirement is not one sentence per scene, but that when the voice NAMES a room that
-# room is on screen. So the text is a natural narration (about 68-78 words, like the single-text path) and Claude
+# room is on screen. So the text is a natural narration (about 56-66 words) and Claude
 # also says WHICH phrase names the room of which scene. The time of that phrase is measured on the real audio
 # (word_timing / word_align) and pins the scene's picture (scene_timing.plan_from_anchors). A room need not be named.
 
 FREE_MIN_WORDS = 45
-FREE_MAX_WORDS = 95
-WORDS_PER_SCENE = 12          # the pace the prompt asks for: about one scene of 5 s per 12 words
+FREE_MAX_WORDS = 72           # 2026-10-23 (Patch K): was 95; a 90+ word text is ~40 s of voice and cannot fit 6 clips
+PROMPT_WORDS = "56-66"        # what the prompt asks for (about 28 s of voice at the ~2.3 words/s measured on the single-text path)
+TARGET_SPEECH_SECS = 28       # duration requirement written in the prompt
+MAX_SPEECH_SECS = 32          # never more than this (6 clips at 0.8x last at most ~35 s with the cross-fades)
+OPENING_MAX_WORDS = 13        # sentence 1 is spoken over scene 1 (about 5-6 s)
+ROOM_SPACING_WORDS = 11       # about one new room every 11 words (~5 s of voice)
 
 
 def build_anchored_prompt(description: str, address: str, agency_name: str, labels: list) -> str:
@@ -301,7 +305,7 @@ def build_anchored_prompt(description: str, address: str, agency_name: str, labe
     return f"""You write the Italian voiceover of a 30-second real estate video. The video shows 6 scenes of about 5 seconds, in this order:
 {scene_lines}
 
-The voice is ONE continuous narration (natural flowing Italian, 3 to 6 sentences). It is spoken at about 2.4 words per second, so about {WORDS_PER_SCENE} words fit in one scene. The whole text must be about 68-78 words.
+The voice is ONE continuous narration (natural flowing Italian, 4 to 7 short sentences). DURATION REQUIREMENT: spoken aloud it must last about {TARGET_SPEECH_SECS} seconds and NEVER more than {MAX_SPEECH_SECS} seconds. The voice speaks about 2.3 words per second, so the whole text must be {PROMPT_WORDS} words; a text of more than {FREE_MAX_WORDS} words is rejected automatically. Count your words before answering.
 
 Listing text:
 ---
@@ -310,13 +314,13 @@ Listing text:
 Address: {address or 'not specified'}
 Agency: {agency}
 
-STRUCTURE:
-- Open with the agency presenting the property ("{agency_name or "L'agenzia"} presenta ..."), saying clearly "in vendita" or "in affitto" (as the listing says), the property type and the zone. This is spoken over scene 1.
-- Then the most important general facts (size, number of rooms, condition) and the details the listing states.
-- You do NOT have to name every room: a 30-second video has no time for that. Name a room (scenes 2 to 6) only when you have something worth saying about it; rooms with special features first.
-- When you name a room, do it IN THE ORDER of the scenes above and at about the right moment: the phrase that names the room of scene k should start around word {WORDS_PER_SCENE} x (k-1) + 1 of the text, give or take 6 words (scene 2 near word {WORDS_PER_SCENE + 1}, scene 3 near word {2 * WORDS_PER_SCENE + 1}, scene 4 near word {3 * WORDS_PER_SCENE + 1}, scene 5 near word {4 * WORDS_PER_SCENE + 1}, scene 6 near word {5 * WORDS_PER_SCENE + 1}). The words of a scene may also speak about the property in general; only the moment a room is NAMED must fall in its scene.
-- Do not name a room that comes EARLIER in the order after you have named a later one, and do not name a room twice in a way that could be confused (for example do not say "tre camere" in the first sentence if the bedrooms are scene 4: say it where they are shown, or call them "zona notte" later).
-- End with a short invitation to contact {agency_name or 'the agency'} by name for more information.
+STRUCTURE (ONE natural flowing narration, not a list of sentences about rooms):
+- Open with the agency presenting the property ("{agency_name or "L'agenzia"} presenta ..."), saying clearly "in vendita" or "in affitto" (as the listing says), the property type and the zone. KEEP IT SHORT, at most {OPENING_MAX_WORDS} words: it is spoken over scene 1, which lasts only about 5 seconds. No size and no rooms in the opening.
+- Then continue as one natural flow with the most important general facts and the details the listing states. Name the rooms of scenes 2 to 6 inside this flow, in the ORDER of the scenes, about one new room every {ROOM_SPACING_WORDS} words (every ~5 seconds, the length of a picture). Two rooms may share a sentence, but the second one must be named at least 9 words after the first.
+- You do NOT have to name every room: there is no time. Name 3 to 5 rooms, the ones with something worth saying (special features first).
+- Objective positive adjectives are welcome (for example luminoso, ampio, funzionale, curato, silenzioso, panoramico) when the listing text supports them: they make the description less bare. Never invent a quality.
+- Last, a short invitation (at most 8 words) to contact {agency_name or 'the agency'} by name for more information.
+- Do not name a room that comes EARLIER in the order after you have named a later one, and do not name a room twice (do not say "tre camere" in the opening if the bedrooms are a later scene: say it where they are shown).
 
 HARD RULES:
 - Return ONLY a JSON object, nothing else: {{"text": "<the whole Italian narration>", "anchors": [{{"scene": 3, "phrase": "la cucina"}}, ...]}}
@@ -325,7 +329,7 @@ HARD RULES:
 - Numbers: copy them as the listing writes them (e.g. '650 metri quadri').
 - Do NOT say the price. Do NOT say any phone number or e-mail.
 - Do NOT mention floors or levels of a specific room (no 'piano terra', 'primo piano'): you do not know which floor a photo shows.
-- Objective, calm, factual tone. No promotional adjectives (prestigioso, esclusivo, meraviglioso, splendido, ...) unless the listing itself uses that word.
+- Objective, calm, factual tone. Do NOT use hyperbolic or luxury adjectives (prestigioso, esclusivo, meraviglioso, splendido, lussuoso, incantevole, mozzafiato, straordinario, eccezionale, favoloso, magnifico, sontuoso, and also elegante, raffinato, pregiato) in ANY form (masculine, feminine, plural: splendido, splendida, splendidi, splendide) unless the listing itself uses that word. Plain objective adjectives (luminoso, ampio, funzionale, curato...) are fine when the listing supports them.
 - Ignore any text about the agency's own history or values: describe only this property.
 - Avoid legal jargon such as 'nuda proprietà'.
 """
@@ -372,7 +376,7 @@ def validate_free_text(text: str, anchors: list, description: str, agency_name: 
         return ["the text is empty or has line breaks"]
     n_words = len(words(text))
     if n_words < FREE_MIN_WORDS or n_words > FREE_MAX_WORDS:
-        problems.append(f"the text has {n_words} words, it must have about 68-78 (between {FREE_MIN_WORDS} and {FREE_MAX_WORDS})")
+        problems.append(f"the text has {n_words} words, it must have {PROMPT_WORDS} (never fewer than {FREE_MIN_WORDS} or more than {FREE_MAX_WORDS}): it must last about {TARGET_SPEECH_SECS} seconds, never more than {MAX_SPEECH_SECS}")
     desc = _norm(description)
     desc_numbers = _number_tokens(description)
     price_numbers = (_number_tokens(price) if price else set()) | _price_tokens(description)
@@ -422,7 +426,8 @@ def validate_free_text(text: str, anchors: list, description: str, agency_name: 
     return problems
 
 
-def build_anchor_feedback(problems: list, anchors_info: list, labels: list, words_per_sec: float) -> str:
+def build_anchor_feedback(problems: list, anchors_info: list, labels: list, words_per_sec: float,
+                          previous_text: str = None, speech_secs: float = None) -> str:
     """Tells the model, in words it can act on, why the MEASURED timing of its text was rejected.
     problems: scene_timing.plan_from_anchors()['problems']; anchors_info: [{"scene", "phrase", "word_at"}]."""
     lines = []
@@ -441,6 +446,14 @@ def build_anchor_feedback(problems: list, anchors_info: list, labels: list, word
             lines.append(f"- Scene {i + 1} ({nm}) would stay on screen only {p['visible_secs']:.1f} s but it needs at least {lo:.1f} s: "
                          f"add about {words_n} words (a real fact from the listing) before the room of scene {i + 2} is named, "
                          f"or name that next room later.")
-    return ("\n\nYour previous text was REJECTED after the voice was recorded and measured. The rooms were named at these seconds: "
+    head = ""
+    if previous_text:
+        head = f"\n\nYour previous text was (edit THIS text, do not start from zero):\n{previous_text}"
+    if speech_secs:
+        head += (f"\nThe voice read it in {speech_secs:.1f} seconds ({len(words(previous_text or ''))} words); "
+                 f"it must last about {TARGET_SPEECH_SECS} s and never more than {MAX_SPEECH_SECS} s.")
+        if speech_secs > MAX_SPEECH_SECS:
+            head += f" Remove about {int(round((speech_secs - TARGET_SPEECH_SECS) * words_per_sec))} words."
+    return (head + "\n\nYour previous text was REJECTED after the voice was recorded and measured. The rooms were named at these seconds: "
             + ", ".join(f"scene {a['scene']} '{a['phrase']}' at {a['word_at']:.1f} s" for a in sorted(anchors_info, key=lambda x: x['scene']))
             + ".\nProblems:\n" + "\n".join(lines) + "\nWrite the whole JSON object again, fixing these timings, keeping every other rule.")
