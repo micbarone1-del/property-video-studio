@@ -288,6 +288,51 @@ def assemble_narration(
     }
 
 
+def join_clips(clips: list, pause_ms: int = SENTENCE_PAUSE_MS):
+    """The sentence clips of ONE block joined with the plain pause (pydub AudioSegment)."""
+    from pydub import AudioSegment
+    out = clips[0]
+    for c in clips[1:]:
+        out = out + AudioSegment.silent(duration=pause_ms) + c
+    return out
+
+
+def stretch_audio(seg, rate: float):
+    """Tempo change with the pitch kept (ffmpeg atempo): rate 1.05 = 5 % faster. 1.0 returns the segment unchanged.
+    Used for the small tempo adjustments of a narration block (0.92..1.10, see scene_timing.plan_blocks)."""
+    if abs(float(rate) - 1.0) < 0.005:
+        return seg
+    import subprocess, tempfile
+    from pydub import AudioSegment
+    with tempfile.TemporaryDirectory(prefix="_stretch_") as d:
+        src, dst = os.path.join(d, "in.wav"), os.path.join(d, "out.wav")
+        seg.export(src, format="wav")
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", src, "-filter:a", f"atempo={float(rate):.4f}", dst],
+                       check=True, timeout=60)
+        return AudioSegment.from_file(dst)
+
+
+def assemble_blocks(segments: list, rates: list, starts_secs: list, output_path: str) -> dict:
+    """Block narration (Patch Q): each block segment (at normal tempo) is stretched by its rate and placed so that it STARTS at
+    its start time (silence before it). Narration time 0 == start of scene 1, as everywhere else. Returns
+    {"ok", "duration_secs", "starts_secs", "durations_secs"}; a block that would overlap the previous one is pushed after it
+    (reported by the shift in starts_secs, never cut)."""
+    from pydub import AudioSegment
+    combined = AudioSegment.silent(duration=0)
+    real_starts, durs = [], []
+    for seg, rate, start in zip(segments, rates, starts_secs):
+        part = stretch_audio(seg, rate)
+        gap = int(round(float(start) * 1000)) - len(combined)
+        if gap < 0:
+            gap = 0
+        combined = combined + AudioSegment.silent(duration=gap) + part
+        real_starts.append((len(combined) - len(part)) / 1000.0)
+        durs.append(len(part) / 1000.0)
+    combined.export(output_path, format="mp3")
+    log.info(f"[Narration] Block narration: {len(segments)} blocks, starts {['%.2f' % x for x in real_starts]}, total {len(combined) / 1000.0:.1f}s -> {output_path}")
+    return {"ok": True, "duration_secs": len(combined) / 1000.0, "starts_secs": real_starts, "durations_secs": durs}
+
+
 def generate_narration_audio(
     text:            str,
     output_path:     str,

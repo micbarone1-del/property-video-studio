@@ -220,3 +220,79 @@ def plan_from_anchors(anchor_times, speech_end_secs, src_secs=None, *, transitio
     return {"ok": not problems, "feasible": feasible, "cuts": [round(c, 3) for c in cuts], "clips": clips,
             "targets": [c["duration"] for c in clips], "video_secs": round(cuts[n], 3),
             "speech_end_secs": round(float(speech_end_secs), 3), "anchors": anchors, "problems": problems}
+
+
+# ── Block narration (2026-10-24, Patch Q) ──────────────────────────────────────────────────────────────────
+# The VIDEO leads (6 Luma clips of 5 s, as in automatic dubbing the picture timing is the target). The voice is written and
+# recorded in BLOCKS of two scenes; each block is measured on its own, then fitted to its slot with the levers a dubbing
+# pipeline uses: the pause between blocks, a small tempo change of the block (pitch preserved) and, last, the speed of the
+# single clips (plan_from_anchors, unchanged, which also gives the cut points).
+BLOCK_SCENES = 2              # scenes per block
+BLOCK_RATE_MIN = 0.92         # slowest tempo of a block (voice slightly slower)
+BLOCK_RATE_MAX = 1.10         # fastest tempo of a block (barely audible)
+BLOCK_MIN_GAP_SECS = 0.30     # shortest silence between two blocks
+BLOCK_MAX_GAP_SECS = 1.60     # longest silence between two blocks (more would be dead air)
+END_EARLY_SECS = 2.5          # the voice may end this long before the picture ends at normal speed
+END_LATE_SECS = 0.8           # ... or this long after it (the last clips are slowed a little)
+
+
+def block_nominal_starts(n_scenes=6, per_block=BLOCK_SCENES, src=DEFAULT_SRC_SECS, transition=TRANSITION_SECS,
+                         lead_before=LEAD_BEFORE_WORD):
+    """Where each block should start (narration time, 0 = start of scene 1) when every clip runs at normal speed, and when
+    the picture ends. A block after the first starts just after the cut of its first scene (same lead as the room words)."""
+    half = transition / 2.0
+    cuts = [0.0]
+    for i in range(n_scenes):
+        cuts.append(cuts[-1] + src - (half if i > 0 else 0.0) - (half if i < n_scenes - 1 else 0.0))
+    n_blocks = n_scenes // per_block
+    starts = [0.0] + [cuts[b * per_block] + lead_before for b in range(1, n_blocks)]
+    return starts, cuts[-1]
+
+
+def plan_blocks(durations, n_scenes=6, per_block=BLOCK_SCENES, rate_min=BLOCK_RATE_MIN, rate_max=BLOCK_RATE_MAX,
+                min_gap=BLOCK_MIN_GAP_SECS, max_gap=BLOCK_MAX_GAP_SECS, early=EARLY_MAX, late=LATE_MAX,
+                end_early=END_EARLY_SECS, end_late=END_LATE_SECS):
+    """durations: the measured length (seconds, normal tempo) of each block's audio. Chooses, block after block, a tempo
+    inside [rate_min, rate_max] (as close to 1.0 as the slot allows) and the start of the next block (as close as possible to
+    its nominal start, inside the same early/late window the cuts use), with a silence between blocks of min_gap..max_gap.
+    Returns {"ok", "starts", "rates", "ends", "speech_end", "problems"}; a problem is
+    {"block": j (0-based), "kind": "too_long" | "too_short", "seconds_over": float} = how many seconds of audio (at the fastest /
+    slowest allowed tempo) the block is outside its slot, so the text can be rewritten by a known amount."""
+    nominal, video_end = block_nominal_starts(n_scenes, per_block)
+    nb = len(nominal)
+    if len(durations) != nb:
+        raise ValueError(f"{len(durations)} durations for {nb} blocks")
+    starts, rates, ends, problems = [0.0], [], [], []
+    for j in range(nb):
+        d, s = float(durations[j]), starts[j]
+        if j < nb - 1:
+            lo_s, hi_s = nominal[j + 1] - early, nominal[j + 1] + late
+            r_lo = d / (hi_s - min_gap - s) if hi_s - min_gap - s > _EPS else float("inf")        # at least this tempo to end in time
+            r_hi = d / (lo_s - max_gap - s) if lo_s - max_gap - s > _EPS else float("inf")        # at most this tempo to not leave dead air
+        else:
+            lo_e, hi_e = video_end - end_early, video_end + end_late
+            r_lo = d / (hi_e - s) if hi_e - s > _EPS else float("inf")
+            r_hi = d / (lo_e - s) if lo_e - s > _EPS else float("inf")
+        lower, upper = max(rate_min, r_lo), min(rate_max, r_hi)
+        if lower > upper + 1e-9:
+            if r_lo > rate_max:      # even at the fastest tempo it ends too late
+                over = d / rate_max - (d / r_lo)
+                problems.append({"block": j, "kind": "too_long", "seconds_over": round(over, 3)})
+                rate = rate_max
+            else:                    # even at the slowest tempo it ends too early
+                over = d / r_hi - d / rate_min
+                problems.append({"block": j, "kind": "too_short", "seconds_over": round(over, 3)})
+                rate = rate_min
+        else:
+            rate = min(max(1.0, lower), upper)
+        if abs(rate - 1.0) < 0.005:
+            rate = 1.0
+        rates.append(round(rate, 4))
+        end = s + d / rate
+        ends.append(end)
+        if j < nb - 1:
+            a, b = max(end + min_gap, lo_s), min(end + max_gap, hi_s)
+            blocked = problems and problems[-1]["block"] == j
+            starts.append(nominal[j + 1] if (blocked or a > b) else min(max(nominal[j + 1], a), b))
+    return {"ok": not problems, "starts": [round(x, 4) for x in starts], "rates": rates, "ends": [round(x, 4) for x in ends],
+            "speech_end": round(ends[-1], 4), "problems": problems}

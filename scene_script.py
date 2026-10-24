@@ -425,7 +425,7 @@ def estimate_timing_problems(text: str, anchors: list, labels: list = None, scen
 
 
 def validate_free_text(text: str, anchors: list, description: str, agency_name: str = None, price: str = None,
-                       split_fn=None, scenes: int = SCENES, labels: list = None) -> list:
+                       split_fn=None, scenes: int = SCENES, labels: list = None, check_timing: bool = True) -> list:
     """Problems of the free narration (empty list = accepted). Same fact check as validate(), per spoken sentence."""
     import word_align as wa
     problems = []
@@ -482,7 +482,7 @@ def validate_free_text(text: str, anchors: list, description: str, agency_name: 
         last_pos = max(last_pos, hits[0])
     if len([a for a in (anchors or []) if isinstance(a, dict)]) > MAX_ANCHORS:
         problems.append(f"{len(anchors)} rooms are named: there is no time for that in 30 seconds, name at most {MAX_ANCHORS} highlights (2 or 3) and leave the other rooms out")
-    if not problems:     # Patch L: only when the text is otherwise valid (a wrong text needs rewriting anyway)
+    if check_timing and not problems:     # Patch L: only when the text is otherwise valid (a wrong text needs rewriting anyway)
         problems.extend(estimate_timing_problems(text, anchors, labels, scenes))
     return problems
 
@@ -518,3 +518,142 @@ def build_anchor_feedback(problems: list, anchors_info: list, labels: list, word
     return (head + "\n\nYour previous text was REJECTED after the voice was recorded and measured. The rooms were named at these seconds: "
             + ", ".join(f"scene {a['scene']} '{a['phrase']}' at {a['word_at']:.1f} s" for a in sorted(anchors_info, key=lambda x: x['scene']))
             + ".\nProblems:\n" + "\n".join(lines) + "\nWrite the whole JSON object again, fixing these timings, keeping every other rule.")
+
+
+# ── Block narration (2026-10-24, Patch Q) ──────────────────────────────────────────────────────────────────
+# Three blocks of two scenes each (see scene_timing.plan_blocks). The facts rules are the same as for the free text (validate_free_text
+# is reused with the timing check switched off); the block lengths are judged on the MEASURED audio, never on the word count alone.
+N_BLOCKS = 3
+BLOCK_TARGET_WORDS = 17        # a block is about 8.2 s of voice: 2 short sentences
+BLOCK_MIN_WORDS = 12           # below / above these the block is rejected before any voice is paid for
+BLOCK_MAX_WORDS = 23
+# words that name a room, by scene category: a block may only name the rooms of ITS two scenes
+ROOM_KEYWORDS = {
+    "living": ("soggiorno", "salone", "living", "zona giorno"),
+    "kitchen": ("cucina", "cucinotto"),
+    "bedrooms": ("camera", "camere", "zona notte"),
+    "bathrooms": ("bagno", "bagni", "servizi"),
+    "outdoor": ("giardino", "terrazza", "terrazzo", "balcone", "esterni", "esterno", "cortile", "veranda", "patio"),
+}
+
+
+def block_scene_groups(scene_sequence: list, per_block: int = 2) -> list:
+    return [list(scene_sequence[i:i + per_block]) for i in range(0, len(scene_sequence), per_block)]
+
+
+def build_blocks_prompt(description: str, address: str, agency_name: str, labels: list, scene_sequence: list) -> str:
+    """labels: the Italian name of what each of the 6 scenes shows, in video order. The text comes back as 3 blocks."""
+    agency = agency_name or "(agency name not available: say 'l'agenzia')"
+    scene_lines = "\n".join(f"Scene {i + 1}: {label}" for i, label in enumerate(labels))
+    groups = block_scene_groups(list(range(len(labels))))
+    block_lines = "\n".join(
+        f"Block {b + 1}: spoken over scenes {g[0] + 1} and {g[1] + 1} ({labels[g[0]]}; {labels[g[1]]})" for b, g in enumerate(groups))
+    allowed = "\n".join(
+        f"- Block {b + 1} may name only: " + (", ".join(sorted({w for c in scene_sequence[g[0]:g[1] + 1] for w in ROOM_KEYWORDS.get(c, ())})) or "no room")
+        for b, g in enumerate(groups))
+    return f"""You write the Italian voiceover of a 30-second real estate video. The video shows 6 scenes of 5 seconds, in this order:
+{scene_lines}
+
+The voice is ONE narration written as {N_BLOCKS} BLOCKS, spoken one after the other; each block is spoken over two scenes (about 9 seconds):
+{block_lines}
+
+LENGTH: each block is 2 short sentences, about {BLOCK_TARGET_WORDS} words in total (never fewer than {BLOCK_MIN_WORDS} or more than {BLOCK_MAX_WORDS}); spoken aloud a block lasts about 8 seconds. The voice speaks about 2.1 words per second, pauses included. The block durations are measured after the voice is recorded and a block that is too long or too short is sent back to you, so write the length with care.
+
+Listing text:
+---
+{description}
+---
+Address: {address or 'not specified'}
+Agency: {agency}
+
+CONTENT:
+- Block 1: the agency presenting the property ("{agency_name or "L'agenzia"} presenta ..."), saying clearly "in vendita" or "in affitto" (as the listing says), the property type and the zone; then the most important fact (size, for example).
+- Block 2: what makes the property worth visiting, with the facts and benefits the listing states (light, spaces, layout, number of rooms...). Talk about the PROPERTY, do not guide the viewer through the pictures.
+- Block 3: the remaining valuable facts (outdoor space, services...) and, as the very last sentence, a short invitation (at most 7 words) to contact {agency_name or 'the agency'} by name for more information.
+- ROOMS: the pictures change inside each block, so do not name rooms one by one. A block may name a room only if it is shown during that block:
+{allowed}
+  Better to name none than to name one in the wrong block. Never name a room twice.
+- Objective positive adjectives are welcome (for example luminoso, ampio, funzionale, curato, silenzioso, panoramico) when the listing text supports them. Never invent a quality.
+
+HARD RULES:
+- Return ONLY a JSON object, nothing else: {{"blocks": ["<block 1>", "<block 2>", "<block 3>"]}}. Every block ends with a full stop and has no line breaks.
+- Every fact (number, feature, condition) must come from the listing text above. Never invent anything. If the listing does not say it, leave it out.
+- Numbers: copy them as the listing writes them (e.g. '650 metri quadri').
+- Do NOT say the price. Do NOT say any phone number or e-mail.
+- Do NOT mention floors or levels of a specific room (no 'piano terra', 'primo piano'): you do not know which floor a photo shows.
+- Objective, calm, factual tone. Do NOT use hyperbolic or luxury adjectives (prestigioso, esclusivo, meraviglioso, splendido, lussuoso, incantevole, mozzafiato, straordinario, eccezionale, favoloso, magnifico, sontuoso, affascinante, and also elegante, raffinato, pregiato) in ANY form (masculine, feminine, plural) unless the listing itself uses that word.
+- Ignore any text about the agency's own history or values: describe only this property.
+- Avoid legal jargon such as 'nuda proprietà'.
+"""
+
+
+def parse_blocks(raw: str):
+    """The model's reply -> list of N_BLOCKS strings, or None."""
+    if not raw:
+        return None
+    s = raw.strip()
+    fence = re.search(r"```(?:json)?\s*(\{.*\})\s*```", s, re.S)
+    if fence:
+        s = fence.group(1)
+    else:
+        m = re.search(r"\{.*\}", s, re.S)
+        if m:
+            s = m.group(0)
+    try:
+        data = json.loads(s)
+    except Exception:
+        return None
+    blocks = data.get("blocks") if isinstance(data, dict) else None
+    if not isinstance(blocks, list) or len(blocks) != N_BLOCKS or not all(isinstance(b, str) and b.strip() for b in blocks):
+        return None
+    out = []
+    for b in blocks:
+        b = re.sub(r"\s+", " ", b).strip()
+        if b[-1] not in ".!?":
+            b = b.rstrip(";:,- ") + "."
+        out.append(b)
+    return out
+
+
+def validate_blocks(blocks: list, description: str, agency_name: str = None, price: str = None, split_fn=None,
+                    scene_sequence: list = None) -> list:
+    """Problems of the 3 blocks (empty = accepted): the facts/agency/sale-rent rules of the free text, a word band per block,
+    and the room rule (a block may name only the rooms of its own two scenes)."""
+    import word_align as wa
+    if not isinstance(blocks, list) or len(blocks) != N_BLOCKS:
+        return [f"{N_BLOCKS} blocks are needed"]
+    problems = []
+    for b, text in enumerate(blocks):
+        n = len(words(text))
+        if n < BLOCK_MIN_WORDS or n > BLOCK_MAX_WORDS:
+            problems.append(f"block {b + 1} has {n} words: it must have about {BLOCK_TARGET_WORDS} (never fewer than {BLOCK_MIN_WORDS} or more than {BLOCK_MAX_WORDS})")
+    problems.extend(validate_free_text(" ".join(blocks), [], description, agency_name, price, split_fn=split_fn, check_timing=False))
+    if scene_sequence:
+        for b, g in enumerate(block_scene_groups(list(scene_sequence))):
+            own = set(g)
+            tk = wa.tokens(blocks[b])
+            for cat, kws in ROOM_KEYWORDS.items():
+                if cat in own:
+                    continue
+                for kw in kws:
+                    if wa.find_phrase(tk, kw):
+                        problems.append(f"block {b + 1} names '{kw}' but that room is not shown during block {b + 1}: remove it (talk about the property in general)")
+                        break
+    return problems
+
+
+def build_block_feedback(plan_problems: list, durations: list, blocks: list) -> str:
+    """Tells the model, in seconds and words, which block is outside its slot after the voice was recorded and measured."""
+    lines = []
+    for p in plan_problems:
+        j = p["block"]
+        n = max(1, len(words(blocks[j])))
+        wps = n / max(float(durations[j]), 1.0)
+        k = max(1, int(round(p["seconds_over"] * wps)) + 1)
+        if p["kind"] == "too_long":
+            lines.append(f"- Block {j + 1} lasts {durations[j]:.1f} s ({n} words) and does not fit its slot: remove about {k} words (keep the facts that matter most).")
+        else:
+            lines.append(f"- Block {j + 1} lasts only {durations[j]:.1f} s ({n} words) and leaves a silence: add about {k} words (a real fact from the listing).")
+    return ("\n\nYour previous blocks were:\n" + json.dumps({"blocks": blocks}, ensure_ascii=False)
+            + "\n\nThe voice was recorded and measured; the blocks must fit their slots. Problems:\n" + "\n".join(lines)
+            + "\nReturn the whole JSON object again. Keep every block that is not mentioned above EXACTLY as it is; change only the blocks listed.")

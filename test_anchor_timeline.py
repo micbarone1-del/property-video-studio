@@ -183,6 +183,9 @@ def fake_reply(client, prompt, max_tokens=1024):
     if isinstance(r, Exception): raise r
     return r
 ls._claude_text_reply = fake_reply
+# Patch Q (2026-10-24): generate_narration_and_derive_scenes now calls _block_narration; these tests still exercise the superseded
+# free-text anchored machinery (_anchored_narration, same signature) until it is removed after Patch Q is verified.
+ls._block_narration = ls._anchored_narration
 ls._track_claude = lambda r: r
 measure_calls = []
 VOICE_WPS = [2.4]          # Patch L: words per second of the fake voice for the NEXT calls (the last value is kept)

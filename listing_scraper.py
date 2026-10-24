@@ -714,19 +714,25 @@ Return ONLY the shortened narration text (no JSON, no markdown, no preamble)."""
 TTS_MEASURE_ATTEMPTS = 3
 
 
-def _measure_tts_duration(text: str, voice_id: str = None, attempts: int = TTS_MEASURE_ATTEMPTS, scene_secs: list = None) -> dict:
-    """2026-10-12: retries the real TTS measurement on transient failure (backoff 2 s, 4 s).
-    A single provider hiccup used to fail the whole job ("TTS measurement failed on initial narration").
-    2026-10-15: scene_secs (fixed scene lengths) makes the audio come out already synchronised with the scenes."""
+def _retry_tts(once, attempts: int = TTS_MEASURE_ATTEMPTS) -> dict:
+    """2026-10-24 (Patch Q): the ONE retry-with-backoff wrapper for the TTS steps (backoff 2 s, 4 s). `once` is a function with no
+    arguments that returns a dict with "ok"; the last result is returned."""
     last = {"ok": False, "duration_secs": None, "audio_path": None}
     for n in range(attempts):
-        last = _measure_tts_duration_once(text, voice_id, scene_secs)
+        last = once()
         if last.get("ok"):
             return last
         log.warning(f"[Scraper] TTS measurement attempt {n + 1}/{attempts} failed")
         if n < attempts - 1:
             time.sleep(2 * (n + 1))
     return last
+
+
+def _measure_tts_duration(text: str, voice_id: str = None, attempts: int = TTS_MEASURE_ATTEMPTS, scene_secs: list = None) -> dict:
+    """2026-10-12: retries the real TTS measurement on transient failure (backoff 2 s, 4 s).
+    A single provider hiccup used to fail the whole job ("TTS measurement failed on initial narration").
+    2026-10-15: scene_secs (fixed scene lengths) makes the audio come out already synchronised with the scenes."""
+    return _retry_tts(lambda: _measure_tts_duration_once(text, voice_id, scene_secs), attempts)
 
 
 def _measure_tts_duration_once(text: str, voice_id: str = None, scene_secs: list = None) -> dict:
@@ -1091,6 +1097,114 @@ def _anchored_narration(description: str, address: str, price: str, voice_id: st
 
 
 
+# ── Block narration (2026-10-24, Patch Q) ────────────────────────────────────────────────────────────────────
+# The video leads: 6 Luma clips of 5 s. The voice is written as 3 blocks of two scenes (scene_script.build_blocks_prompt), every block is
+# recorded on its own (the shared sentence-TTS path of narration.py), measured, and fitted to its slot with the pause between blocks and a
+# small tempo change (scene_timing.plan_blocks); the clip speeds / cut points come from the SAME solver as before (plan_from_anchors).
+BLOCK_MAX_ATTEMPTS = 5          # Claude calls (a block rewritten on facts, length, or measured duration each costs one)
+
+
+def _synthesize_block(text: str, voice_id: str = None) -> dict:
+    """One block -> {"ok", "segment" (pydub), "duration_secs"}; retried like every TTS step."""
+    from narration import synthesize_sentences, join_clips
+
+    def once():
+        syn = synthesize_sentences(text, voice_id)
+        if not syn["ok"]:
+            return {"ok": False, "error": syn.get("error")}
+        seg = join_clips(syn["clips"])
+        return {"ok": True, "segment": seg, "duration_secs": len(seg) / 1000.0}
+    return _retry_tts(once)
+
+
+def _assemble_block_audio(segments: list, rates: list, starts: list) -> dict:
+    """Places the blocks (tempo + silence) in ONE audio file. Returns {"ok", "audio_path", "duration_secs", "starts_secs"}."""
+    import tempfile
+    from narration import assemble_blocks
+    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+        path = f.name
+    res = assemble_blocks(segments, rates, starts, path)
+    res["audio_path"] = path
+    return res
+
+
+def _block_narration(description: str, address: str, price: str, voice_id: str, agency_name: str, scene_sequence: list) -> dict:
+    """Narration in 3 blocks fitted to the fixed 5 s clips. Returns {"ok": True, "result": <dict in the shape of
+    generate_narration_and_derive_scenes>, "tts_calls": n} or {"ok": False, "reason": str, "tts_calls": n}. Never raises."""
+    import scene_script as ss
+    import scene_timing as st
+    from narration import split_into_sentences
+    n = len(scene_sequence)
+    labels = [CATEGORY_ITALIAN_LABELS.get(c, c) for c in scene_sequence]
+    base_prompt = ss.build_blocks_prompt(description, address, agency_name, labels, scene_sequence)
+    feedback, reason = "", "not attempted"
+    tts_calls, cache = 0, {}
+    try:
+        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        for attempt in range(1, BLOCK_MAX_ATTEMPTS + 1):
+            blocks = ss.parse_blocks(_claude_text_reply(client, base_prompt + feedback, max_tokens=1200))
+            if blocks is None:
+                reason = "the reply was not the expected JSON object"
+                feedback = '\n\nYour previous answer was not a JSON object {"blocks": [3 strings]}. Return exactly that object.'
+                log.warning(f"[Scraper] Block narration attempt {attempt}: {reason}")
+                continue
+            problems = ss.validate_blocks(blocks, description, agency_name, price, split_fn=split_into_sentences, scene_sequence=scene_sequence)
+            if problems:
+                reason = f"blocks rejected: {problems}"
+                feedback = ("\n\nYour previous blocks were:\n" + json.dumps({"blocks": blocks}, ensure_ascii=False)
+                            + "\n\nThey were REJECTED for these reasons. Fix all of them, return the full JSON object again:\n- " + "\n- ".join(problems))
+                log.warning(f"[Scraper] Block narration attempt {attempt} rejected: {problems} | blocks: {blocks}")
+                continue
+            segs = []
+            for b in blocks:
+                if b not in cache:
+                    syn = _synthesize_block(b, voice_id)
+                    tts_calls += 1
+                    if not syn["ok"]:
+                        return {"ok": False, "reason": "TTS failed on a narration block", "tts_calls": tts_calls}
+                    cache[b] = syn
+                segs.append(cache[b])
+            durations = [c["duration_secs"] for c in segs]
+            plan = st.plan_blocks(durations, n)
+            log.info(f"[Scraper] Block narration attempt {attempt}: durations {['%.1f' % d for d in durations]}, starts {plan['starts']}, "
+                     f"rates {plan['rates']}, ok={plan['ok']}, problems {plan['problems']} | blocks: {blocks}")
+            if not plan["ok"]:
+                reason = f"blocks outside their slots: {plan['problems']}"
+                feedback = ss.build_block_feedback(plan["problems"], durations, blocks)
+                continue
+            audio = _assemble_block_audio([c["segment"] for c in segs], plan["rates"], plan["starts"])
+            if not audio.get("ok"):
+                return {"ok": False, "reason": "block audio assembly failed", "tts_calls": tts_calls}
+            speech_secs = float(audio["duration_secs"])
+            per = n // len(blocks)
+            anchor_times = [None] * n
+            infos = []
+            for b in range(1, len(blocks)):
+                anchor_times[b * per] = float(audio["starts_secs"][b])
+                infos.append({"scene": b * per + 1, "phrase": f"(block {b + 1})", "word_at": round(float(audio["starts_secs"][b]), 3)})
+            clip_plan = st.plan_from_anchors(anchor_times, speech_secs, [SCENE_CLIP_SECS] * n)
+            if not clip_plan["ok"]:
+                reason = f"clip speeds outside the limits: {clip_plan['problems']}"
+                log.warning(f"[Scraper] Block narration attempt {attempt}: {reason}")
+                return {"ok": False, "reason": reason, "tts_calls": tts_calls}
+            timeline = {"mode": "anchored", "method": "blocks", "targets": clip_plan["targets"], "cuts": clip_plan["cuts"],
+                        "speeds": [c["speed"] for c in clip_plan["clips"]], "video_secs": clip_plan["video_secs"], "anchors": infos,
+                        "anchor_offsets": clip_plan["anchors"], "speech_secs": round(speech_secs, 3),
+                        "blocks": [{"text": b, "start": audio["starts_secs"][i], "rate": plan["rates"][i], "secs": round(durations[i], 3)}
+                                   for i, b in enumerate(blocks)]}
+            result = {
+                "ok": True, "narration_text": " ".join(blocks), "audio_path": audio["audio_path"], "speech_duration_secs": speech_secs,
+                "scene_count": n, "video_duration_secs": clip_plan["video_secs"], "tts_calls_used": tts_calls, "was_trimmed": False,
+                "sync": None, "error": None, "narration_mode": "anchored", "script_attempts": attempt, "script_tightened": False,
+                "script_fallback_reason": None, "timeline": timeline,
+            }
+            return {"ok": True, "result": result, "tts_calls": tts_calls}
+        return {"ok": False, "reason": reason, "tts_calls": tts_calls}
+    except Exception as e:
+        log.warning(f"[Scraper] Block narration failed: {e}")
+        return {"ok": False, "reason": f"error: {e}", "tts_calls": tts_calls}
+
+
 def generate_narration_and_derive_scenes(
     description: str, address: str = None, price: str = None, voice_id: str = None,
     premium: bool = False, agency_name: str = None, scene_category_order: list = None,
@@ -1162,7 +1276,7 @@ def generate_narration_and_derive_scenes(
     # to the modes below, unchanged. The TTS calls it spent are added to the count.
     anchored_calls, anchored_fallback = 0, None
     if anchored_timeline_enabled() and (not premium) and scene_sequence and len(scene_sequence) == STANDARD_SCENES:
-        _an = _anchored_narration(description, address, price, voice_id, agency_name, scene_sequence)
+        _an = _block_narration(description, address, price, voice_id, agency_name, scene_sequence)   # 2026-10-24 (Patch Q): blocks replace the free anchored text
         anchored_calls = _an["tts_calls"]
         if _an["ok"]:
             return _an["result"]
