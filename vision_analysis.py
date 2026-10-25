@@ -9,7 +9,8 @@ fallback; output/TTS QC: Florence-2 Large via fal.ai):
      Returns: space_type, depth, recommended_camera, confidence, description
      Used by: UI to auto-fill space type and camera movement dropdowns
 
-  2. OUTPUT QC       — compares generated video frame against original photo
+  2. OUTPUT QC       — compares first/last frame of a generated clip against the original photo
+                       (2026-10-25: Claude vision; Florence-2 + keywords removed, backlog 83)
      Returns: verdict (pass/flag/reject), issues list, quality_score
      Used by: pipeline to hold assembly until human approves flagged clips
 
@@ -71,10 +72,6 @@ _BEDROOM_KW   = ["bedroom","bed frame","mattress","pillows","headboard","wardrob
                   "nightstand","bedside table","duvet","bedroom furniture","sleeping area"]
 
 # Body part detection
-_BODY_PART_KW = ["human hand","person's hand","hand reaching","fingers visible",
-                  "arm visible","arm extended","human arm","body part","limb visible",
-                  "hand in frame","hands in frame","arm in frame","person visible",
-                  "human figure","silhouette of person"]
 
 # ── Camera recommendations by space type ──────────────────────────────────────
 _SPACE_CAMERA = {
@@ -93,21 +90,6 @@ _SPACE_CAMERA = {
 # "armchair", "table leg", "configuration" — causing false positives on every
 # scene with furniture, which is every scene. Only unambiguous multi-word
 # phrases that specifically indicate an actual human presence are used here.
-_PEOPLE_KW    = ["a person","a man","a woman","a child","human figure",
-                  "silhouette of a person","shadow of a person","person standing",
-                  "person walking","person visible","people visible",
-                  "human presence","a human"]
-_STRUCTURAL_KW = ["door opening","window appeared","new room","additional room",
-                   "different room","corridor appeared","staircase appeared",
-                   "wall disappeared","ceiling collapsed","furniture moved",
-                   "door swinging","door ajar","door opened","opening door",
-                   "new doorway","new window","previously unseen",
-                   "open door","doorway visible","door frame","through the door",
-                   "another room","room behind","hallway beyond","space beyond",
-                   "room beyond","area beyond","space through","leading to another",
-                   "wardrobe door","cabinet door","cupboard door","sliding door",
-                   "moving door","door handle","door knob","hinged","drawer open",
-                   "furniture opening","cabinet opening"]
 
 
 # ── Florence-2 helper ──────────────────────────────────────────────────────────
@@ -226,9 +208,10 @@ Rules:
 - "depth": shallow = wall or objects close to camera, deep = long view through the space."""
 
 
-def _claude_vision_text(image_path: str, prompt: str, max_tokens: int = 250) -> str | None:
-    """Sends one (downscaled) photo + prompt to Claude vision; returns the text, or None on any failure.
-    Reuses listing_scraper's model name and usage tracking so the cost lands in the job's claude_usage."""
+def _claude_vision_call(image_paths: list, prompt: str, max_tokens: int = 250) -> str | None:
+    """Sends one or more (downscaled) photos + prompt to Claude vision; returns the text, or None on any failure.
+    Reuses listing_scraper's model name and usage tracking so the cost lands in the job's claude_usage.
+    2026-10-25: the single-image helper became this (one implementation) so the clip QC can send photo + 2 frames."""
     try:
         import base64, io
         import anthropic
@@ -236,23 +219,25 @@ def _claude_vision_text(image_path: str, prompt: str, max_tokens: int = 250) -> 
         from listing_scraper import MODEL, _track_claude
         if not os.getenv("ANTHROPIC_API_KEY"):
             return None
-        img = Image.open(image_path).convert("RGB")
-        img.thumbnail((1024, 1024))
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=85)
-        b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+        content = [{"type": "text", "text": prompt}]
+        for image_path in image_paths:
+            img = Image.open(image_path).convert("RGB")
+            img.thumbnail((1024, 1024))
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=85)
+            b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+            content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}})
         client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-        resp = _track_claude(client.messages.create(
-            model=MODEL, max_tokens=max_tokens,
-            messages=[{"role": "user", "content": [
-                {"type": "text", "text": prompt},
-                {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
-            ]}],
-        ))
+        resp = _track_claude(client.messages.create(model=MODEL, max_tokens=max_tokens, messages=[{"role": "user", "content": content}]))
         return "".join(b.text for b in resp.content if getattr(b, "type", None) == "text").strip()
     except Exception as e:
-        log.warning(f"[Vision] Claude room recognition call failed: {e}")
+        log.warning(f"[Vision] Claude vision call failed: {e}")
         return None
+
+
+def _claude_vision_text(image_path: str, prompt: str, max_tokens: int = 250) -> str | None:
+    """One photo + prompt -> text (room recognition). Thin wrapper of _claude_vision_call."""
+    return _claude_vision_call([image_path], prompt, max_tokens)
 
 
 def _classify_room_claude(image_path: str) -> dict | None:
@@ -438,200 +423,123 @@ def _extract_video_frame(video_path: str, position: str = "first") -> str | None
         return None
 
 
+CLIP_QC_PROMPT = """You are the quality check of an AI-generated real-estate video clip.
+You get THREE images, in this order: (1) the ORIGINAL PHOTO the clip was made from, (2) the FIRST frame of the clip, (3) the LAST frame of the clip.
+The system already knows what kind of space this is ({known}). NEVER judge or comment on interior-versus-exterior or on the type of room: only compare what is in the frames with what is in the photo.
+The camera moves, so a frame may show a slightly different part of the SAME space: that is normal and is NOT a problem. Compare only things that clearly contradict the photo.
+
+Answer with ONE JSON object and nothing else:
+{{"people": true|false,                     // a person, a face, a hand/arm/finger, or the shadow or reflection of a person or photographer, in frame 2 or 3 but NOT in the photo
+ "same_space": true|false,                  // frames 2 and 3 show the same place as the photo (false only if it is clearly another place)
+ "new_structure": ["..."],                  // things in frame 2 or 3 that do NOT exist in the photo or contradict it: a new door/window/opening/stair/wall, a room that was not there, furniture added or removed, a changed number of beds/sofas/chairs. Empty list if none. Doors, windows and furniture that ARE in the photo do not count.
+ "severity": "none"|"minor"|"major",        // major = a clear invented or changed structure/furniture count or another place; minor = small doubtful differences
+ "artifacts": true|false,                   // heavy warping, melting or smeared surfaces in frame 2 or 3
+ "first_frame": "one sentence describing frame 2",
+ "last_frame": "one sentence describing frame 3"}}"""
+
+
+def _parse_clip_qc(raw: str):
+    """Claude's reply -> a validated dict, or None when it is not the expected JSON."""
+    import json
+    if not raw:
+        return None
+    m = re.search(r"\{.*\}", raw, re.DOTALL)
+    if not m:
+        return None
+    try:
+        d = json.loads(re.sub(r"//[^\n]*", "", m.group(0)))
+    except Exception:
+        return None
+    if not isinstance(d, dict) or "severity" not in d or "people" not in d:
+        return None
+    sev = str(d.get("severity", "none")).strip().lower()
+    if sev not in ("none", "minor", "major"):
+        return None
+    ns = d.get("new_structure") or []
+    if not isinstance(ns, list):
+        ns = [str(ns)]
+    return {"people": bool(d.get("people")), "same_space": d.get("same_space", True) is not False,
+            "new_structure": [str(x)[:160] for x in ns][:6], "severity": sev, "artifacts": bool(d.get("artifacts")),
+            "first_frame": str(d.get("first_frame", ""))[:300], "last_frame": str(d.get("last_frame", ""))[:300]}
+
+
+def clip_qc_verdict(qc: dict) -> tuple:
+    """(verdict, issues) from the parsed answer. The rules are HERE, not in the model: reject = a person/body part, another place, or a
+    major invented/changed structure; flag = minor doubts or visible artifacts; otherwise pass."""
+    issues = []
+    if qc["people"]:
+        issues.append("Persona, parte del corpo, ombra o riflesso di una persona nel video")
+    if not qc["same_space"]:
+        issues.append("Il video mostra un posto diverso dalla foto")
+    if qc["new_structure"] and qc["severity"] != "none":
+        issues.append("Struttura/arredo diverso dalla foto: " + "; ".join(qc["new_structure"]))
+    if qc["artifacts"]:
+        issues.append("Deformazioni evidenti nel video")
+    if qc["people"] or not qc["same_space"] or qc["severity"] == "major":
+        return "reject", issues
+    if qc["severity"] == "minor" or qc["artifacts"]:
+        return "flag", issues
+    return "pass", issues
+
+
 def analyse_output(
     video_path:          str,
     original_image_path: str,
-    known_space_type:    str = None,  # pass scene space_type from job config if known
+    known_space_type:    str = None,  # the scene space_type from the job: NEVER contested by the QC
 ) -> dict:
     """
-    Compares generated video frames against the original photo for QC.
+    Clip QC (2026-10-25: Claude vision instead of Florence-2 captions + keywords, backlog 83). Claude receives the original photo, the
+    first and the last frame and answers a strict JSON (see CLIP_QC_PROMPT); the verdict rules are in clip_qc_verdict().
+    The known space type is only context for the model: interior-versus-exterior is no longer judged here.
 
-    Args:
-        video_path:          Local path to the generated .mp4 clip.
-        original_image_path: Local path to the original input photo.
-
-    Returns:
-        {
-          "verdict":                  "pass|flag|reject",
-          "people_detected":          True|False,
-          "space_matches":            True|False,
-          "structural_hallucinations": True|False,
-          "quality_score":            0.0-1.0,
-          "issues":                   ["list of issues"],
-          "original_description":     "...",
-          "output_description":       "...",
-          "error":                    None or error message
-        }
+    Returns the same keys as before (verdict pass|flag|reject, people_detected, space_matches, structural_hallucinations, quality_score,
+    issues, original_description, output_description, error) plus last_description, new_structure, severity, qc_engine.
     """
     default = {
-        "verdict":                   "pass",
-        "people_detected":           False,
-        "space_matches":             True,
-        "structural_hallucinations": False,
-        "quality_score":             1.0,
-        "issues":                    [],
-        "original_description":      "",
-        "output_description":        "",
-        "error":                     None,
+        "verdict": "pass", "people_detected": False, "space_matches": True, "structural_hallucinations": False,
+        "quality_score": 1.0, "issues": [], "original_description": "", "output_description": "", "last_description": "",
+        "new_structure": [], "severity": "none", "qc_engine": "claude", "error": None,
     }
 
-    if not os.environ.get("FAL_KEY"):
-        log.warning("[Vision] FAL_KEY not set — skipping output QC")
-        default["error"] = "FAL_KEY not set"
-        return default
+    def _fail(msg):
+        out = dict(default)
+        out.update({"verdict": "flag", "error": msg, "issues": [msg]})
+        return out
 
-    issues = []
-
+    first_frame = last_frame = None
     try:
-        # ── Describe original photo ────────────────────────────────────────
-        orig_url  = _upload_local_image(original_image_path)
-        orig_desc = _describe_image(orig_url) if orig_url else ""
-
-        # Use known space type from job config if available — more reliable than re-classifying
-        if known_space_type:
-            _type_map = {
-                "large": "large_interior", "medium": "medium_interior",
-                "bedroom": "bedroom", "small": "small_interior",
-                "corridor": "small_interior", "outdoor": "ground_exterior",
-                "elevated": "elevated",
-            }
-            orig_space = _type_map.get(known_space_type, "large_interior")
-            log.info(f"[Vision QC] Using known space type: {known_space_type} → {orig_space}")
-        else:
-            orig_space, _ = _classify_space(orig_desc) if orig_desc else ("unknown", 0)
-
-        # ── Extract and describe first frame of video ──────────────────────
         first_frame = _extract_video_frame(video_path, "first")
-        if not first_frame:
-            default["error"] = "Could not extract video frame"
-            default["verdict"] = "flag"
-            return default
-
-        # ── Describe first AND last frame ─────────────────────────────────
-        frame_url  = _upload_local_image(first_frame)
-        frame_desc = _describe_image(frame_url) if frame_url else ""
-
-        # Also check last frame for hallucinations that appear mid-clip
-        last_frame  = _extract_video_frame(video_path, "last")
-        last_desc   = ""
-        if last_frame:
-            last_url  = _upload_local_image(last_frame)
-            last_desc = _describe_image(last_url) if last_url else ""
-            try: os.remove(last_frame)
-            except: pass
-
-        # Combine descriptions for structural checks
-        combined_desc = (frame_desc + " " + last_desc).lower()
-
-        # Clean up temp frame
-        try: os.remove(first_frame)
-        except: pass
-
-        if not frame_desc:
-            default["error"] = "Vision model returned no description for video frame"
-            default["verdict"] = "flag"
-            default["issues"]  = ["Could not analyse video output"]
-            return default
-
-        frame_space, _ = _classify_space(frame_desc)
-
-        # ── Check 1: People and body part detection ───────────────────────
-        # Guard against negated phrasing — Florence-2 sometimes explicitly
-        # states "no people are visible" as reassurance, which would
-        # otherwise match "people visible" as a false positive.
-        def _has_unnegated_match(text: str, keywords: list) -> bool:
-            for kw in keywords:
-                idx = text.find(kw)
-                if idx == -1:
-                    continue
-                # Check the ~15 characters before the match for a negation word
-                window = text[max(0, idx-15):idx]
-                if any(neg in window for neg in ["no ", "not ", "without ", "zero "]):
-                    continue  # negated — not a real detection
-                return True
-            return False
-
-        people_detected     = _has_unnegated_match(combined_desc, _PEOPLE_KW)
-        body_parts_detected = _has_unnegated_match(combined_desc, _BODY_PART_KW)
-        if body_parts_detected:
-            issues.append("Human body part detected in generated video (hands/arms/fingers)")
-            log.warning("[Vision QC] BODY PARTS detected")
-        if people_detected:
-            issues.append("Person or human element detected in generated video")
-            log.warning("[Vision QC] PEOPLE DETECTED")
-
-        # ── Check 2: Space type matches ────────────────────────────────────
-        # Only flag CLEAR mismatches — interior vs exterior.
-        # Do NOT flag bedroom vs living room, small vs large etc.
-        # Florence-2 descriptions are imprecise — only reject obvious wrong space type.
-        interior_types = {"large_interior","medium_interior","bedroom","small_interior"}
-        exterior_types = {"ground_exterior","elevated"}
-
-        space_matches = True
-        if orig_space in interior_types and frame_space in exterior_types:
-            # Check if description has strong outdoor signals before flagging
-            strong_outdoor = any(k in frame_desc.lower() for k in
-                ["garden","pool","sky","outdoor","outside","facade","street",
-                 "trees","grass","driveway","parking"])
-            if strong_outdoor:
-                space_matches = False
-                issues.append(f"Space mismatch: input is interior, output appears outdoor")
-                log.warning(f"[Vision QC] SPACE MISMATCH interior→exterior")
-        elif orig_space in exterior_types and frame_space in interior_types:
-            # Check if description has strong interior signals
-            strong_interior = any(k in frame_desc.lower() for k in
-                ["ceiling","furniture","sofa","floor","wall","room","interior"])
-            if strong_interior:
-                space_matches = False
-                issues.append(f"Space mismatch: input is exterior, output appears interior")
-                log.warning(f"[Vision QC] SPACE MISMATCH exterior→interior")
-
-        # ── Check 3: Structural hallucinations (first AND last frame) ────
-        structural = any(k in combined_desc for k in _STRUCTURAL_KW)
-        if structural:
-            issues.append("Possible structural hallucination detected (door opening or new element)")
-            log.warning("[Vision QC] STRUCTURAL hallucination suspected")
-
-        # ── Check 4: Basic quality score ──────────────────────────────────
-        # Simple heuristic: longer, richer descriptions = better quality
-        quality_score = min(1.0, len(frame_desc) / 200)
-        if quality_score < 0.3:
-            issues.append("Video frame appears low quality or heavily degraded")
-
-        # ── Determine verdict ──────────────────────────────────────────────
-        if people_detected or body_parts_detected or not space_matches:
-            verdict = "reject"
-        elif structural or quality_score < 0.3:
-            verdict = "flag"
-        elif issues:
-            verdict = "flag"
-        else:
-            verdict = "pass"
-
-        log.info(
-            f"[Vision QC] verdict={verdict} people={people_detected} "
-            f"space_match={space_matches} quality={quality_score:.2f} "
-            f"issues={len(issues)}"
-        )
-
-        return {
-            "verdict":                   verdict,
-            "people_detected":           people_detected,
-            "space_matches":             space_matches,
-            "structural_hallucinations": structural,
-            "quality_score":             round(quality_score, 2),
-            "issues":                    issues,
-            "original_description":      orig_desc,
-            "output_description":        frame_desc,
-            "error":                     None,
-        }
-
+        last_frame = _extract_video_frame(video_path, "last")
+        if not first_frame or not last_frame:
+            return _fail("QC: impossibile estrarre i frame dal video")
+        known = (known_space_type or "").strip() or "not given"
+        raw = _claude_vision_call([original_image_path, first_frame, last_frame], CLIP_QC_PROMPT.format(known=known), max_tokens=500)
+        qc = _parse_clip_qc(raw)
+        if qc is None:
+            log.warning(f"[Vision QC] Claude answer unusable: {str(raw)[:160]!r}")
+            return _fail("QC: risposta di Claude non valida o non disponibile")
+        verdict, issues = clip_qc_verdict(qc)
+        log.info(f"[Vision QC] verdict={verdict} people={qc['people']} same_space={qc['same_space']} severity={qc['severity']} "
+                 f"new_structure={qc['new_structure']} artifacts={qc['artifacts']}")
+        out = dict(default)
+        out.update({
+            "verdict": verdict, "people_detected": qc["people"], "space_matches": qc["same_space"],
+            "structural_hallucinations": bool(qc["new_structure"]) and qc["severity"] != "none",
+            "quality_score": 0.2 if qc["artifacts"] else 1.0, "issues": issues,
+            "output_description": qc["first_frame"], "last_description": qc["last_frame"],
+            "new_structure": qc["new_structure"], "severity": qc["severity"],
+        })
+        return out
     except Exception as e:
         log.error(f"[Vision] Output QC failed: {e}", exc_info=True)
-        default["error"]   = str(e)
-        default["verdict"] = "flag"
-        default["issues"]  = [f"QC check failed: {e}"]
-        return default
+        return _fail(f"QC check failed: {e}")
+    finally:
+        for f in (first_frame, last_frame):
+            try:
+                if f:
+                    os.remove(f)
+            except Exception:
+                pass
 
 
 # ── 3. TTS QUALITY CONTROL ────────────────────────────────────────────────────

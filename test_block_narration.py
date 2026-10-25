@@ -230,7 +230,7 @@ check("C13 TTS failure -> ok False", (not r["ok"]) and "TTS" in r["reason"], r)
 ls._synthesize_block = fake_synth
 # last attempt: sentences cannot follow their scenes -> block starts only (sentence_sync False), not a fallback to per_scene
 LONG2 = "La cucina è abitabile, molto funzionale e con il piano di lavoro."
-SENT[LONG2] = 7.0
+SENT[LONG2] = 12.0     # R5: 7.0 s now FITS (the joint search finds tempo+silences); 12 s cannot
 b_long2 = list(GOOD); b_long2[1] = LONG2 + " Ci sono 5 camere da letto, tutte molto luminose."
 replies[:] = [json.dumps({"blocks": b_long2})] * ls.BLOCK_MAX_ATTEMPTS
 r = run()
@@ -325,6 +325,30 @@ nsrc = open("narration.py").read()
 check("D3 narration has join_clips / stretch_audio / assemble_blocks", all(f"def {f}(" in nsrc for f in ("join_clips", "stretch_audio", "assemble_blocks")))
 api = open("api_server.py").read()
 check("D4 api_server still reads the anchored timeline targets", '_tl.get("mode") == "anchored"' in api)
+
+# ---------------- E. Patch R5 (2026-10-25): one authority (clip speeds) + word budget of the last sentence
+import scene_timing as _T5
+_ok5 = _T5.plan_blocks_joint([[4.3, 4.8], [3.2, 3.8], [3.5, 5.9]])
+_ok6 = _T5.plan_blocks_joint([[4.3, 4.8], [3.2, 3.8], [3.0, 6.1]])
+_bad = _T5.plan_blocks_joint([[4.3, 4.8], [3.2, 3.8], [3.1, 6.7]])
+check("E1 real attempts of draft d6ca1445 (last sentence 5.9 s and 6.1 s) fit now (the old pre-filter rejected both)",
+      _ok5["ok"] and _ok6["ok"] and all(0.8 - 1e-3 <= c["speed"] <= 1.25 + 1e-3 for c in _ok5["clip_plan"]["clips"]), (_ok5["problems"], _ok6["problems"]))
+check("E2 a really too long last sentence (6.7 s) is reported as clip 5 too_slow with the seconds, ok False",
+      (not _bad["ok"]) and _bad["problems"] and _bad["problems"][0]["clip"] == 5 and _bad["problems"][0]["kind"] == "too_slow" and _bad["violation"] > 0.3, _bad)
+check("E3 the plan keeps tempo inside 0.92-1.10, silences inside 0.3-1.6 and gives the starts the audio assembly needs",
+      all(0.92 - 1e-9 <= r <= 1.10 + 1e-9 for r in _ok5["rates"]) and all(0.3 - 1e-9 <= g <= 1.6 + 1e-9 for g in _ok5["gaps"]) and len(_ok5["starts"]) == 3 and _ok5["starts"][0] == 0.0, _ok5)
+cb = ss.closing_budget("Gallo Immobiliare"); cb_long = ss.closing_budget("Immobiliare Sant Agnese e Figli"); cb_none = ss.closing_budget(None)
+check("E4 closing budget: 'contatta Gallo Immobiliare' = 3 words -> fact <= 8 of 11; a long agency name leaves at least 3 words of fact; no name works",
+      cb == {"invitation": 3, "total": 11, "fact": 8} and cb_long["fact"] >= ss.LAST_SENTENCE_MIN_FACT_WORDS and cb_none["fact"] > 0, (cb, cb_long, cb_none))
+long_last = list(GOOD); long_last[2] = "Gli spazi sono curati nei dettagli. Il giardino è di 3000 metri quadri e molto ben curato, contatta Coldwell Banker."
+pr = ss.validate_blocks(long_last, DESC, AG, PRICE, split_fn=SPLIT, scene_sequence=SEQ)
+check("E5 a last sentence over the budget is rejected with the numbers; the good one (10 words) is accepted", any("AT MOST 11 words" in x for x in pr), pr)
+check("E6 the prompt gives the budget of the last sentence", "AT MOST 11 words in total" in pm and "contatta Coldwell Banker" in pm, pm[pm.find("EXCEPTION"):pm.find("EXCEPTION") + 200])
+fs3 = ss.build_sync_feedback([{"clip": 5, "kind": "too_slow", "seconds_over": 0.2}], GOOD)
+check("E7 feedback aims inside the limit, not at its edge: even 0.2 s over asks for at least 2 words", "at least" not in fs3 and "about 2 words" in fs3 and "not at its edge" in fs3, fs3)
+src_rep = open("listing_scraper.py").read()
+check("E8 the block loop uses plan_blocks_joint (no second pre-filter) and the old plan_blocks is not called any more",
+      "st.plan_blocks_joint(" in src_rep and "st.plan_blocks(" not in src_rep)
 
 print(f"\n{total - len(fails)}/{total} PASS")
 sys.exit(1 if fails else 0)

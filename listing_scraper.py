@@ -1185,25 +1185,25 @@ def _block_narration(description: str, address: str, price: str, voice_id: str, 
                         return {"ok": False, "reason": "TTS failed on a narration block", "tts_calls": tts_calls}
                     cache[b] = syn
                 syn_list.append(cache[b])
-            # tempo and silences: the silence between the two sentences depends on the block's tempo, the tempo on the block's
-            # length (silence included) -> a few rounds until they agree (they do within 2-3, the changes are small)
-            rates, plan, segs = [1.0] * len(blocks), None, None
-            offs_nominal = st.second_sentence_offsets(n)
-            for _ in range(4):
-                segs = [_block_segment(c["clips"], r, o) for c, r, o in zip(syn_list, rates, offs_nominal)]
-                durations = [len(sg) / 1000.0 for sg in segs]
-                plan = st.plan_blocks(durations, n)
-                if max(abs(a - b) for a, b in zip(plan["rates"], rates)) < 0.006:
-                    break
-                rates = plan["rates"]
+            # Patch R5 (2026-10-25): ONE authority. The clip plan (speed limits) decides whether the blocks fit; tempo of each block and
+            # the silences between blocks are chosen by scene_timing.plan_blocks_joint (the old plan_blocks pre-judged with its own windows).
             sent_secs = [c["sentence_secs"] for c in syn_list]
+            offs_nominal = st.second_sentence_offsets(n)
+            plan = st.plan_blocks_joint(sent_secs, n)
+            segs = [_block_segment(c["clips"], r, o) for c, r, o in zip(syn_list, plan["rates"], offs_nominal)]
+            durations = [len(sg) / 1000.0 for sg in segs]
             log.info(f"[Scraper] Block narration attempt {attempt}: sentences {[['%.1f' % x for x in ss_] for ss_ in sent_secs]}, "
-                     f"blocks {['%.1f' % d for d in durations]}, starts {plan['starts']}, rates {plan['rates']}, ok={plan['ok']}, "
+                     f"blocks {['%.1f' % d for d in durations]}, starts {plan['starts']}, rates {plan['rates']}, gaps {plan['gaps']}, "
+                     f"speeds {[c['speed'] for c in plan['clip_plan']['clips']]}, ok={plan['ok']}, "
                      f"problems {plan['problems']} | blocks: {blocks}")
             if not plan["ok"]:
-                reason = f"blocks outside their slots: {plan['problems']}"
-                feedback = ss.build_block_feedback(plan["problems"], durations, blocks)
-                continue
+                reason = f"sentences outside their scenes: {plan['problems']}"
+                if attempt < BLOCK_MAX_ATTEMPTS:
+                    feedback = ss.build_sync_feedback(plan["problems"], blocks)
+                    continue
+                # last attempt: do not throw the text away - the checks below try the block starts alone (less strict); only if the clip
+                # speeds still cannot follow, the narration falls back (reason recorded)
+                log.warning(f"[Scraper] Block narration: last attempt does not fit sentence by sentence ({plan['problems']}); trying block starts only")
             audio = _assemble_block_audio(segs, plan["rates"], plan["starts"])
             if not audio.get("ok"):
                 return {"ok": False, "reason": "block audio assembly failed", "tts_calls": tts_calls}

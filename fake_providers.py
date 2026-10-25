@@ -414,6 +414,9 @@ def _speech_text(words):
 def _fake_claude_text(prompt, max_tokens):
     if "Answer with ONLY the category word" in prompt:
         return "living"
+    if "quality check of an AI-generated real-estate video clip" in prompt:  # vision_analysis.CLIP_QC_PROMPT (2026-10-25)
+        return json.dumps({"people": False, "same_space": True, "new_structure": [], "severity": "none", "artifacts": False,
+                           "first_frame": "fake first frame", "last_frame": "fake last frame"})
     if "classify ONE real-estate photo" in prompt:  # vision_analysis.ROOM_PROMPT (2026-10-10)
         return json.dumps({"room": "living", "size": "large", "depth": "medium", "confidence": 0.9, "description": "fake living room"})
     n = len(re.findall(r"Photo \d+:", prompt))

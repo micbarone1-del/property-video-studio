@@ -298,6 +298,56 @@ def plan_blocks(durations, n_scenes=6, per_block=BLOCK_SCENES, rate_min=BLOCK_RA
             "speech_end": round(ends[-1], 4), "problems": problems}
 
 
+# ── ONE authority for the fit (2026-10-25, Patch R5) ───────────────────────────────────────────────────────
+# plan_blocks (above) pre-judged the blocks with its own fixed windows (block start +-, end -2.5/+0.8 s) and so rejected texts that the
+# real authority - plan_from_anchors, i.e. the clip speed limits - could have fitted (simulation: 62% of plausible texts accepted
+# vs 91-100% with the real authority). plan_blocks_joint asks the real authority directly: it tries tempo (per block) and silence
+# (between blocks) combinations from small grids and keeps the one with the least intervention whose clip plan is OK. plan_blocks
+# stays only for its old tests and is SUPERSEDED (to be removed after verification on real drafts).
+BLOCK_RATE_GRID = (1.0, 0.97, 1.03, 0.95, 1.06, 0.92, 1.10)      # per block, closest to normal first (inside BLOCK_RATE_MIN..MAX)
+BLOCK_GAP_GRID = (0.6, 0.8, 0.3, 1.0, 1.3, 1.6)                  # between blocks (BLOCK_MIN_GAP_SECS..BLOCK_MAX_GAP_SECS)
+_JOINT_W_RATE, _JOINT_W_SPEED, _JOINT_W_GAP, _JOINT_W_EDGE = 3.0, 1.0, 0.1, 4.0   # how much each kind of intervention costs (EDGE: staying away from the speed limits)
+
+
+def block_audio_secs(s1, s2, rate, offset):
+    """Length (seconds, normal tempo) of a block made of sentence 1 (s1), the silence that puts sentence 2 on its cut at the tempo
+    `rate`, and sentence 2 (s2)."""
+    return float(s1) + sentence_pause_pre(s1, rate, offset=offset) + float(s2)
+
+
+def plan_blocks_joint(sent_secs, n_scenes=6, src_secs=None):
+    """sent_secs: [[sentence 1, sentence 2], ...] measured seconds of each sentence (the closing invitation is part of the last
+    sentence 2). Returns {"ok", "starts", "rates", "ends", "speech_end", "gaps", "clip_plan", "problems", "violation"}:
+    the cheapest combination (tempo, silences) whose clip plan keeps every clip speed inside the limits; when none exists, the
+    combination with the smallest total violation, ok=False and `problems` = its clip problems (build_sync_feedback understands them)."""
+    nb = len(sent_secs)
+    per = n_scenes // nb
+    src = list(src_secs) if src_secs else [DEFAULT_SRC_SECS] * n_scenes
+    offs = second_sentence_offsets(n_scenes)
+    best = None
+    import itertools
+    for rs in itertools.product(BLOCK_RATE_GRID, repeat=nb):
+        d = [block_audio_secs(sent_secs[b][0], sent_secs[b][1], rs[b], offs[b]) for b in range(nb)]
+        so = [(float(sent_secs[b][0]) + sentence_pause_pre(sent_secs[b][0], rs[b], offset=offs[b])) / rs[b] for b in range(nb)]
+        for gs in itertools.product(BLOCK_GAP_GRID, repeat=nb - 1):
+            starts = [0.0]
+            for b in range(nb - 1):
+                starts.append(starts[b] + d[b] / rs[b] + gs[b])
+            end = starts[-1] + d[-1] / rs[-1]
+            cp = plan_from_anchors(sentence_anchor_times(starts, so, n_scenes, per), end, src)
+            viol = sum(float(q.get("seconds_over", 0)) for q in cp["problems"])
+            cost = (_JOINT_W_RATE * sum(abs(r - 1.0) for r in rs) + _JOINT_W_SPEED * sum(abs(c["speed"] - 1.0) for c in cp["clips"])
+                    + _JOINT_W_GAP * sum(abs(g - BLOCK_GAP_GRID[0]) for g in gs)
+                    + _JOINT_W_EDGE * sum(max(0.0, 0.88 - c["speed"]) + max(0.0, c["speed"] - 1.15) for c in cp["clips"]))
+            key = (round(viol, 3), cost)
+            if best is None or key < best[0]:
+                best = (key, rs, gs, starts, end, cp, viol)
+    _, rs, gs, starts, end, cp, viol = best
+    return {"ok": cp["ok"], "starts": [round(x, 4) for x in starts], "rates": [round(r, 4) for r in rs],
+            "ends": [round(starts[b] + block_audio_secs(sent_secs[b][0], sent_secs[b][1], rs[b], offs[b]) / rs[b], 4) for b in range(nb)],
+            "speech_end": round(end, 4), "gaps": list(gs), "clip_plan": cp, "problems": cp["problems"], "violation": round(viol, 3)}
+
+
 # ── Sentence level inside a block (2026-10-24, Patch R) ───────────────────────────────────────────────────────
 # Each block has exactly two sentences: the first is heard while the block's first scene is shown, the second while the
 # second scene is shown. The silence between the two sentences is the lever that puts the second sentence on the cut of its

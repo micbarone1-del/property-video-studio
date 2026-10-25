@@ -540,6 +540,20 @@ ROOM_KEYWORDS = {
 # Patch R (2026-10-24): each block = exactly 2 sentences, sentence k is heard while scene k of the block is shown.
 SENTENCE_MIN_WORDS = 5
 SENTENCE_MAX_WORDS = 13
+LAST_SENTENCE_MAX_WORDS = 11     # Patch R5 (2026-10-25): sentence 2 of block 3 = one fact + 0.6 s pause + "contatta <agency>"; at 13 words (like the others) it
+                                 # needs ~6.8 s and the last picture cannot be slowed enough (simulation: last block was the cause of every real failure)
+LAST_SENTENCE_MIN_FACT_WORDS = 3
+
+
+def closing_budget(agency_name: str = None) -> dict:
+    """Words available in sentence 2 of the last block: {"invitation": words of "contatta <agency>", "total": max words of the whole
+    sentence, "fact": max words of the fact before the invitation}. Longer agency names get a little more room (never fewer than
+    LAST_SENTENCE_MIN_FACT_WORDS words of fact)."""
+    inv = 1 + max(1, len(words(agency_name or "l'agenzia")))
+    total = max(LAST_SENTENCE_MAX_WORDS, inv + LAST_SENTENCE_MIN_FACT_WORDS)
+    return {"invitation": inv, "total": total, "fact": total - inv}
+
+
 MAX_ROOMS_NAMED = 3     # Michele 2026-10-23/25: name only 2-3 highlight rooms; a general sentence over any scene is fine
 ROOM_WORD_EARLY_SECS = 0.0     # a room word may start no earlier than the cut to its scene ...
 ROOM_WORD_LATE_SECS = 0.3      # ... and no later than this long before the cut away from it
@@ -580,13 +594,14 @@ def build_blocks_prompt(description: str, address: str, agency_name: str, labels
                 rule = "speak of the property in general (no room names)"
             slot_lines.append(f"- Block {b + 1}, sentence {k + 1} (heard over scene {i + 1}: {labels[i] if i < len(labels) else '?'}): {rule}")
     slots = "\n".join(slot_lines)
+    _cb = closing_budget(agency_name)
     return f"""You write the Italian voiceover of a 30-second real estate video. The video shows 6 scenes of 5 seconds, in this order:
 {scene_lines}
 
 The voice is ONE narration written as {N_BLOCKS} BLOCKS. Every block has EXACTLY 2 short sentences: the first sentence is heard while the first scene of the block is on screen, the second sentence while the second scene is on screen. So each sentence must talk about the picture it is heard over, in the order of the scenes:
 {slots}
 
-LENGTH: each sentence has {SENTENCE_MIN_WORDS}-{SENTENCE_MAX_WORDS} words (about 8, spoken in about 4 seconds); each block about {BLOCK_TARGET_WORDS} words in total (never fewer than {BLOCK_MIN_WORDS} or more than {BLOCK_MAX_WORDS}). The voice speaks about 2.1 words per second. The durations are measured after the voice is recorded and a sentence that is too long or too short is sent back to you, so write the length with care.
+LENGTH: each sentence has {SENTENCE_MIN_WORDS}-{SENTENCE_MAX_WORDS} words (about 8, spoken in about 4 seconds); each block about {BLOCK_TARGET_WORDS} words in total (never fewer than {BLOCK_MIN_WORDS} or more than {BLOCK_MAX_WORDS}). EXCEPTION: sentence 2 of block 3 (the last one) has AT MOST {_cb["total"]} words in total, the invitation included ("contatta {agency_it}" takes {_cb["invitation"]} of them, so the fact before it has at most {_cb["fact"]} words) - it is the longest to speak because of the pause before the invitation. The voice speaks about 2.1 words per second. The durations are measured after the voice is recorded and a sentence that is too long or too short is sent back to you, so write the length with care.
 
 Listing text:
 ---
@@ -680,6 +695,11 @@ def validate_blocks(blocks: list, description: str, agency_name: str = None, pri
                 n = len(words(sent))
                 if n < SENTENCE_MIN_WORDS or n > SENTENCE_MAX_WORDS:
                     problems.append(f"block {b + 1}, sentence {k + 1} has {n} words: each sentence must have {SENTENCE_MIN_WORDS}-{SENTENCE_MAX_WORDS} words (about 8)")
+                if b == N_BLOCKS - 1 and k == 1:
+                    cb = closing_budget(agency_name)
+                    if n > cb["total"]:
+                        problems.append(f"block {b + 1}, sentence 2 has {n} words: the last sentence has AT MOST {cb['total']} words in total, the invitation "
+                                        f"('contatta ...', {cb['invitation']} words) included, so the fact before it has at most {cb['fact']} words")
                 cat = scene_of_sentence(scene_sequence, b, k)
                 found = named_rooms(sent)
                 wrong = sorted(found - {cat})
@@ -749,9 +769,9 @@ def build_sync_feedback(clip_problems: list, blocks: list, sentence_secs: list =
             continue          # a knock-on of the sentence before it (a too short sentence makes the next picture too long): fix the first only
         secs = round(float(p.get("seconds_over", 0)), 1)
         if p["kind"] == "too_slow":
-            lines.append(f"- Block {b + 1}, sentence {k + 1} (scene {i + 1}) is about {secs} s too long for its picture: shorten THAT sentence by about {max(1, int(round(secs * 2.1)))} words.")
+            lines.append(f"- Block {b + 1}, sentence {k + 1} (scene {i + 1}) is about {secs} s too long for its picture: shorten THAT sentence by about {max(2, int(round(secs * 2.1)) + 1)} words (aim well inside the limit, not at its edge).")
         else:
-            lines.append(f"- Block {b + 1}, sentence {k + 1} (scene {i + 1}) is about {secs} s too short for its picture: lengthen THAT sentence by about {max(1, int(round(secs * 2.1)))} words (a real fact about the same room).")
+            lines.append(f"- Block {b + 1}, sentence {k + 1} (scene {i + 1}) is about {secs} s too short for its picture: lengthen THAT sentence by about {max(2, int(round(secs * 2.1)) + 1)} words (a real fact about the same room).")
     return ("\n\nYour previous blocks were:\n" + json.dumps({"blocks": blocks}, ensure_ascii=False)
             + "\n\nThe voice was recorded and each sentence was placed over its scene; the pictures can only be sped up or slowed down a little. Problems:\n"
             + "\n".join(lines) + "\nReturn the whole JSON object again. Keep every sentence that is not mentioned above EXACTLY as it is.")
