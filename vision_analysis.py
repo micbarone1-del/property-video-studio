@@ -434,7 +434,8 @@ def _extract_video_frame(video_path: str, position: str = "first") -> str | None
 
 
 CLIP_QC_MAX_TOKENS = 1200   # 2026-10-25: Haiku 5.5 writes ~700 tokens, so 700 cut its JSON (6 of 12 answers invalid in the model comparison)
-CLIP_QC_MODEL = os.getenv("CLIP_QC_MODEL") or None     # None = the project's default model (listing_scraper.MODEL)
+CLIP_QC_DEFAULT_MODEL = "claude-sonnet-5-5"   # 2026-10-25 (Michele "ok Sonnet 5.5"): same verdicts on 2 full runs, 0 false rejects, best descriptions; ~EUR 0.0093 per clip
+CLIP_QC_MODEL = os.getenv("CLIP_QC_MODEL") or CLIP_QC_DEFAULT_MODEL   # CLIP_QC_MODEL in .env overrides it (e.g. back to claude-haiku-4-5-20251001)
 
 CLIP_QC_PROMPT = """You are the quality check of an AI-generated real-estate video clip.
 You get THREE images, in this order: (1) the ORIGINAL PHOTO the clip was made from, (2) the FIRST frame of the clip, (3) the LAST frame of the clip.

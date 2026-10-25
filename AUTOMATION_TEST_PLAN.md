@@ -314,3 +314,5 @@ Update 2026-10-25 (night): clip QC with Claude built in the sandbox (test_clip_q
 - test_tts_sanitize U1-U10: PASS in the sandbox (19/19); not yet run on the server. Real-draft check (no pause after the unit, "metri quadri" in the opening): not run.
 
 - 2026-10-25 (late) CORRECTION: fixtures A6/B1 of test_clip_qc were described as "real defects of 41ae5a44"; scene 3 is not a defect (mirror reflection). They are synthetic unit fixtures only, renamed. Real QC measurement on corrected labels: Haiku 4.5 1 false reject + 2 false flags of 8 clean clips; Sonnet 5.5 0 false rejects + 3 false flags; both found the 2 real defects (flag/reject); Haiku 5.5 invalid answers (token limit). Z1/Z2 added (PASS in sandbox). Re-run after Patch Z: not run.
+
+- 2026-10-25 (late) Patch AA: test_clip_qc E11 PASS in the sandbox (37/37); real-job behaviour of the Sonnet QC: not run.

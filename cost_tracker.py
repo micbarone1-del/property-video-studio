@@ -42,7 +42,7 @@ UPSCALE_COST_PER_IMAGE = 0.030  # fal-ai/aura-sr image upscale per image
 
 # Florence-2 vision analysis — per call
 FLORENCE_COST_PER_CALL = 0.0002     # legacy Florence-2 (only the fallback of the input analysis); the clip QC is Claude since 2026-10-25
-CLIP_QC_EST_EUR_PER_CLIP = 0.004    # ESTIMATE of one clip QC (Claude, photo + 2 frames; measured 0.0032 EUR with Haiku 4.5 on 2026-10-25). The ACTUAL is the real usage
+CLIP_QC_EST_EUR_PER_CLIP = 0.0093   # ESTIMATE of one clip QC with Sonnet 5.5 (photo + 2 frames; measured EUR 0.0557 / 6 clips on 2026-10-25, about 3285 tokens in / 340 out per clip). test_clip_qc E11 checks it against the price table. The ACTUAL is the real usage
 
 # ElevenLabs TTS — per character
 ELEVENLABS_COST_PER_CHAR = float(os.getenv("ELEVENLABS_COST_PER_CHAR", "0.0003"))

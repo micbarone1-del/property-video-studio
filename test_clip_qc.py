@@ -181,6 +181,10 @@ qsrc2 = open(qv.__file__).read()
 check("E10 qc_validate can try another model without changing the default (--model), and prints the cost", "--model" in qsrc2 and "CLIP_QC_MODEL" in qsrc2 and "merge_claude_usage" in qsrc2)
 check("Z1 prompt: the mirror rule is present and the wrong example (double bed -> two single beds) is gone", "REFLECTION" in va.CLIP_QC_PROMPT and "one double bed that became two single beds" not in va.CLIP_QC_PROMPT)
 check("Z2 max_tokens leaves room for Haiku 5.5 (its JSON was cut at 700)", va.CLIP_QC_MAX_TOKENS >= 1000 and "max_tokens=CLIP_QC_MAX_TOKENS" in open(va.__file__).read())
+check("E11 the default QC model is Sonnet 5.5 and the cost ESTIMATE per clip matches the price table for it (within 15%)",
+      va.CLIP_QC_DEFAULT_MODEL == "claude-sonnet-5-5" and (va.CLIP_QC_MODEL == va.CLIP_QC_DEFAULT_MODEL or os.getenv("CLIP_QC_MODEL"))
+      and abs(ct.CLIP_QC_EST_EUR_PER_CLIP - ls.claude_cost_eur(3285, 340, va.CLIP_QC_DEFAULT_MODEL)) / ct.CLIP_QC_EST_EUR_PER_CLIP < 0.15,
+      (ct.CLIP_QC_EST_EUR_PER_CLIP, ls.claude_cost_eur(3285, 340, va.CLIP_QC_DEFAULT_MODEL)))
 print(f"\n{ok_n}/{ok_n + len(fails)} PASS")
 raise SystemExit(1 if fails else 0)
 
