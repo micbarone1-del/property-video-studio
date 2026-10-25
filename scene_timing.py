@@ -296,3 +296,47 @@ def plan_blocks(durations, n_scenes=6, per_block=BLOCK_SCENES, rate_min=BLOCK_RA
             starts.append(nominal[j + 1] if (blocked or a > b) else min(max(nominal[j + 1], a), b))
     return {"ok": not problems, "starts": [round(x, 4) for x in starts], "rates": rates, "ends": [round(x, 4) for x in ends],
             "speech_end": round(ends[-1], 4), "problems": problems}
+
+
+# ── Sentence level inside a block (2026-10-24, Patch R) ───────────────────────────────────────────────────────
+# Each block has exactly two sentences: the first is heard while the block's first scene is shown, the second while the
+# second scene is shown. The silence between the two sentences is the lever that puts the second sentence on the cut of its
+# scene: it starts SECOND_OFFSET seconds after the block starts (= one clip minus one cross-fade, the distance between two cuts).
+SECOND_OFFSET_SECS = DEFAULT_SRC_SECS - TRANSITION_SECS       # 4.5
+SENT_PAUSE_MIN_SECS = 0.25                                    # shortest silence between the two sentences of a block
+SENT_PAUSE_MAX_SECS = 1.60                                    # longest (more would be dead air)
+
+
+def second_sentence_offsets(n_scenes=6, per_block=BLOCK_SCENES, src=DEFAULT_SRC_SECS, transition=TRANSITION_SECS, lead_before=LEAD_BEFORE_WORD):
+    """Where the second sentence of each block should start, relative to its block start, so that it falls just after the cut
+    of the block's second scene: 5.1 s for the first block (the first clip has no cross-fade on its left, so it is longer),
+    4.5 s for the others."""
+    starts, _ = block_nominal_starts(n_scenes, per_block, src, transition, lead_before)
+    half = transition / 2.0
+    cuts = [0.0]
+    for i in range(n_scenes):
+        cuts.append(cuts[-1] + src - (half if i > 0 else 0.0) - (half if i < n_scenes - 1 else 0.0))
+    return [round(cuts[b * per_block + 1] + lead_before - starts[b], 4) for b in range(len(starts))]
+
+
+def sentence_pause(first_secs, rate, offset=SECOND_OFFSET_SECS, lo=SENT_PAUSE_MIN_SECS, hi=SENT_PAUSE_MAX_SECS):
+    """The silence (seconds, AFTER the tempo change) that makes the second sentence start `offset` s after the block
+    starts, given the length of the first sentence at normal tempo and the block's tempo. Clamped to lo..hi."""
+    return min(max(float(offset) - float(first_secs) / float(rate), lo), hi)
+
+
+def sentence_pause_pre(first_secs, rate, **kw):
+    """The same silence as it must be written BEFORE the tempo change (the block is stretched as a whole, silence included)."""
+    return sentence_pause(first_secs, rate, **kw) * float(rate)
+
+
+def sentence_anchor_times(starts, second_offsets, n_scenes=6, per_block=BLOCK_SCENES):
+    """Anchor list for plan_from_anchors: every scene except the first is tied to the sentence that talks about it.
+    starts: start of each block (narration time); second_offsets: where the second sentence of each block starts, relative
+    to its block start. Scene index b*per_block is the block start, b*per_block+1 the second sentence."""
+    out = [None] * n_scenes
+    for b, s in enumerate(starts):
+        if b > 0:
+            out[b * per_block] = float(s)
+        out[b * per_block + 1] = float(s) + float(second_offsets[b])
+    return out

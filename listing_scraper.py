@@ -1101,20 +1101,31 @@ def _anchored_narration(description: str, address: str, price: str, voice_id: st
 # The video leads: 6 Luma clips of 5 s. The voice is written as 3 blocks of two scenes (scene_script.build_blocks_prompt), every block is
 # recorded on its own (the shared sentence-TTS path of narration.py), measured, and fitted to its slot with the pause between blocks and a
 # small tempo change (scene_timing.plan_blocks); the clip speeds / cut points come from the SAME solver as before (plan_from_anchors).
-BLOCK_MAX_ATTEMPTS = 5          # Claude calls (a block rewritten on facts, length, or measured duration each costs one)
+BLOCK_MAX_ATTEMPTS = 6          # Claude calls (a block rewritten on facts, length, or measured duration each costs one)
 
 
 def _synthesize_block(text: str, voice_id: str = None) -> dict:
-    """One block -> {"ok", "segment" (pydub), "duration_secs"}; retried like every TTS step."""
-    from narration import synthesize_sentences, join_clips
+    """One block (2 sentences) -> {"ok", "clips" (the 2 pydub segments), "sentence_secs"}; retried like every TTS step."""
+    from narration import synthesize_sentences
 
     def once():
         syn = synthesize_sentences(text, voice_id)
         if not syn["ok"]:
             return {"ok": False, "error": syn.get("error")}
-        seg = join_clips(syn["clips"])
-        return {"ok": True, "segment": seg, "duration_secs": len(seg) / 1000.0}
+        if len(syn["clips"]) != 2:
+            return {"ok": False, "error": f"the block has {len(syn['clips'])} sentences, not 2"}
+        return {"ok": True, "clips": syn["clips"], "sentence_secs": [len(c) / 1000.0 for c in syn["clips"]]}
     return _retry_tts(once)
+
+
+def _block_segment(clips: list, rate: float, offset: float = None) -> object:
+    """The block as ONE segment at normal tempo, with the silence between its two sentences written so that, AFTER the tempo
+    change `rate`, the second sentence starts exactly SECOND_OFFSET s after the block starts (scene_timing.sentence_pause)."""
+    import scene_timing as st
+    from narration import join_clips
+    d1 = len(clips[0]) / 1000.0
+    kw = {} if offset is None else {"offset": offset}
+    return join_clips(clips, pause_ms=int(round(st.sentence_pause_pre(d1, rate, **kw) * 1000)))
 
 
 def _assemble_block_audio(segments: list, rates: list, starts: list) -> dict:
@@ -1155,7 +1166,7 @@ def _block_narration(description: str, address: str, price: str, voice_id: str, 
                             + "\n\nThey were REJECTED for these reasons. Fix all of them, return the full JSON object again:\n- " + "\n- ".join(problems))
                 log.warning(f"[Scraper] Block narration attempt {attempt} rejected: {problems} | blocks: {blocks}")
                 continue
-            segs = []
+            syn_list = []
             for b in blocks:
                 if b not in cache:
                     syn = _synthesize_block(b, voice_id)
@@ -1163,34 +1174,87 @@ def _block_narration(description: str, address: str, price: str, voice_id: str, 
                     if not syn["ok"]:
                         return {"ok": False, "reason": "TTS failed on a narration block", "tts_calls": tts_calls}
                     cache[b] = syn
-                segs.append(cache[b])
-            durations = [c["duration_secs"] for c in segs]
-            plan = st.plan_blocks(durations, n)
-            log.info(f"[Scraper] Block narration attempt {attempt}: durations {['%.1f' % d for d in durations]}, starts {plan['starts']}, "
-                     f"rates {plan['rates']}, ok={plan['ok']}, problems {plan['problems']} | blocks: {blocks}")
+                syn_list.append(cache[b])
+            # tempo and silences: the silence between the two sentences depends on the block's tempo, the tempo on the block's
+            # length (silence included) -> a few rounds until they agree (they do within 2-3, the changes are small)
+            rates, plan, segs = [1.0] * len(blocks), None, None
+            offs_nominal = st.second_sentence_offsets(n)
+            for _ in range(4):
+                segs = [_block_segment(c["clips"], r, o) for c, r, o in zip(syn_list, rates, offs_nominal)]
+                durations = [len(sg) / 1000.0 for sg in segs]
+                plan = st.plan_blocks(durations, n)
+                if max(abs(a - b) for a, b in zip(plan["rates"], rates)) < 0.006:
+                    break
+                rates = plan["rates"]
+            sent_secs = [c["sentence_secs"] for c in syn_list]
+            log.info(f"[Scraper] Block narration attempt {attempt}: sentences {[['%.1f' % x for x in ss_] for ss_ in sent_secs]}, "
+                     f"blocks {['%.1f' % d for d in durations]}, starts {plan['starts']}, rates {plan['rates']}, ok={plan['ok']}, "
+                     f"problems {plan['problems']} | blocks: {blocks}")
             if not plan["ok"]:
                 reason = f"blocks outside their slots: {plan['problems']}"
                 feedback = ss.build_block_feedback(plan["problems"], durations, blocks)
                 continue
-            audio = _assemble_block_audio([c["segment"] for c in segs], plan["rates"], plan["starts"])
+            audio = _assemble_block_audio(segs, plan["rates"], plan["starts"])
             if not audio.get("ok"):
                 return {"ok": False, "reason": "block audio assembly failed", "tts_calls": tts_calls}
             speech_secs = float(audio["duration_secs"])
             per = n // len(blocks)
-            anchor_times = [None] * n
-            infos = []
+            real_starts = [float(x) for x in audio["starts_secs"]]
+            second_offsets = [(sent_secs[b][0] + st.sentence_pause_pre(sent_secs[b][0], plan["rates"][b], offset=offs_nominal[b])) / plan["rates"][b]
+                              for b in range(len(blocks))]
+            full = st.sentence_anchor_times(real_starts, second_offsets, n, per)          # every scene tied to its own sentence
+            blocks_only = [None] * n
             for b in range(1, len(blocks)):
-                anchor_times[b * per] = float(audio["starts_secs"][b])
-                infos.append({"scene": b * per + 1, "phrase": f"(block {b + 1})", "word_at": round(float(audio["starts_secs"][b]), 3)})
-            clip_plan = st.plan_from_anchors(anchor_times, speech_secs, [SCENE_CLIP_SECS] * n)
-            if not clip_plan["ok"]:
-                reason = f"clip speeds outside the limits: {clip_plan['problems']}"
-                log.warning(f"[Scraper] Block narration attempt {attempt}: {reason}")
-                return {"ok": False, "reason": reason, "tts_calls": tts_calls}
-            timeline = {"mode": "anchored", "method": "blocks", "targets": clip_plan["targets"], "cuts": clip_plan["cuts"],
-                        "speeds": [c["speed"] for c in clip_plan["clips"]], "video_secs": clip_plan["video_secs"], "anchors": infos,
-                        "anchor_offsets": clip_plan["anchors"], "speech_secs": round(speech_secs, 3),
-                        "blocks": [{"text": b, "start": audio["starts_secs"][i], "rate": plan["rates"][i], "secs": round(durations[i], 3)}
+                blocks_only[b * per] = real_starts[b]
+            clip_plan = st.plan_from_anchors(full, speech_secs, [SCENE_CLIP_SECS] * n)
+            sentence_sync = clip_plan["ok"]
+            if not sentence_sync:
+                log.warning(f"[Scraper] Block narration attempt {attempt}: scenes cannot all follow their sentence: {clip_plan['problems']}")
+                if attempt < BLOCK_MAX_ATTEMPTS:
+                    reason = f"sentences outside their scenes: {clip_plan['problems']}"
+                    feedback = ss.build_sync_feedback(clip_plan["problems"], blocks)
+                    continue
+                clip_plan = st.plan_from_anchors(blocks_only, speech_secs, [SCENE_CLIP_SECS] * n)      # last try: block starts only
+                if not clip_plan["ok"]:
+                    reason = f"clip speeds outside the limits: {clip_plan['problems']}"
+                    log.warning(f"[Scraper] Block narration attempt {attempt}: {reason}")
+                    return {"ok": False, "reason": reason, "tts_calls": tts_calls}
+            # the check with the real audio: a room is only named while its picture is on screen (word timing of the final mp3)
+            word_check = {"checked": False, "violations": 0, "rooms": []}
+            if any(ss.named_rooms(x) for b_ in blocks for x in split_into_sentences(b_)):
+                import word_timing as wt
+                import word_align as wa
+                recognised = wt.transcribe_words(audio["audio_path"])
+                if recognised is None:
+                    word_check["note"] = "speech recogniser not available: room words NOT verified"
+                    log.warning(f"[Scraper] Block narration attempt {attempt}: {word_check['note']}")
+                else:
+                    al = wa.align(wa.tokens(" ".join(blocks)), recognised)
+                    if al["coverage"] < ANCHORED_MIN_COVERAGE:
+                        word_check["note"] = f"only {al['coverage']:.0%} of the text found in the audio: room words NOT verified"
+                        log.warning(f"[Scraper] Block narration attempt {attempt}: {word_check['note']}")
+                    else:
+                        rooms = ss.check_room_words(blocks, scene_sequence, al["times"], clip_plan["cuts"], split_into_sentences)
+                        bad = [r_ for r_ in rooms if not r_["ok"]]
+                        word_check = {"checked": True, "violations": len(bad), "rooms": rooms, "coverage": round(al["coverage"], 3)}
+                        log.info(f"[Scraper] Block narration attempt {attempt}: room words {rooms}")
+                        if bad and attempt < BLOCK_MAX_ATTEMPTS:
+                            reason = f"room words outside their pictures: {bad}"
+                            feedback = ss.build_word_check_feedback(bad, blocks)
+                            continue
+                        if bad:
+                            log.warning(f"[Scraper] Block narration: accepted on the last attempt WITH room words outside their pictures: {bad}")
+            used = full if sentence_sync else blocks_only
+            infos = []
+            for i_, t_ in enumerate(used):
+                if t_ is not None and i_ > 0:
+                    infos.append({"scene": i_ + 1, "phrase": f"(block {i_ // per + 1}, sentence {i_ % per + 1})", "word_at": round(float(t_), 3)})
+            timeline = {"mode": "anchored", "method": "blocks", "sentence_sync": sentence_sync, "targets": clip_plan["targets"],
+                        "cuts": clip_plan["cuts"], "speeds": [c["speed"] for c in clip_plan["clips"]], "video_secs": clip_plan["video_secs"],
+                        "anchors": infos, "anchor_offsets": clip_plan["anchors"], "speech_secs": round(speech_secs, 3),
+                        "word_check": word_check,
+                        "blocks": [{"text": b, "start": real_starts[i], "rate": plan["rates"][i], "secs": round(durations[i], 3),
+                                    "sentence_secs": [round(x, 3) for x in sent_secs[i]], "second_start": round(real_starts[i] + second_offsets[i], 3)}
                                    for i, b in enumerate(blocks)]}
             result = {
                 "ok": True, "narration_text": " ".join(blocks), "audio_path": audio["audio_path"], "speech_duration_secs": speech_secs,

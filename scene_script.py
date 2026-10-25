@@ -537,27 +537,56 @@ ROOM_KEYWORDS = {
 }
 
 
+# Patch R (2026-10-24): each block = exactly 2 sentences, sentence k is heard while scene k of the block is shown.
+SENTENCE_MIN_WORDS = 5
+SENTENCE_MAX_WORDS = 13
+MAX_ROOMS_NAMED = 3     # Michele 2026-10-23/25: name only 2-3 highlight rooms; a general sentence over any scene is fine
+ROOM_WORD_EARLY_SECS = 0.0     # a room word may start no earlier than the cut to its scene ...
+ROOM_WORD_LATE_SECS = 0.3      # ... and no later than this long before the cut away from it
+
+
+def scene_of_sentence(scene_sequence: list, block: int, sentence: int):
+    """The category of the scene that the sentence `sentence` (0/1) of block `block` is heard over."""
+    i = block * 2 + sentence
+    return scene_sequence[i] if 0 <= i < len(scene_sequence) else None
+
+
+def named_rooms(sentence: str) -> set:
+    """The room categories a sentence names (ROOM_KEYWORDS)."""
+    import word_align as wa
+    tk = wa.tokens(sentence)
+    return {cat for cat, kws in ROOM_KEYWORDS.items() if any(wa.find_phrase(tk, kw) for kw in kws)}
+
+
 def block_scene_groups(scene_sequence: list, per_block: int = 2) -> list:
     return [list(scene_sequence[i:i + per_block]) for i in range(0, len(scene_sequence), per_block)]
 
 
 def build_blocks_prompt(description: str, address: str, agency_name: str, labels: list, scene_sequence: list) -> str:
-    """labels: the Italian name of what each of the 6 scenes shows, in video order. The text comes back as 3 blocks."""
+    """labels: the Italian name of what each of the 6 scenes shows, in video order. The text comes back as 3 blocks of 2 sentences;
+    sentence k of a block is heard while scene k of that block is shown (Patch R)."""
     agency = agency_name or "(agency name not available: say 'l'agenzia')"
+    agency_it = agency_name or "l'agenzia"
     scene_lines = "\n".join(f"Scene {i + 1}: {label}" for i, label in enumerate(labels))
-    groups = block_scene_groups(list(range(len(labels))))
-    block_lines = "\n".join(
-        f"Block {b + 1}: spoken over scenes {g[0] + 1} and {g[1] + 1} ({labels[g[0]]}; {labels[g[1]]})" for b, g in enumerate(groups))
-    allowed = "\n".join(
-        f"- Block {b + 1} may name only: " + (", ".join(sorted({w for c in scene_sequence[g[0]:g[1] + 1] for w in ROOM_KEYWORDS.get(c, ())})) or "no room")
-        for b, g in enumerate(groups))
+    slot_lines = []
+    for b in range(N_BLOCKS):
+        for k in range(2):
+            i = b * 2 + k
+            cat = scene_sequence[i] if i < len(scene_sequence) else None
+            if cat in ROOM_KEYWORDS:
+                rule = ("may name this room (" + ", ".join(ROOM_KEYWORDS[cat]) + ") ONLY if it is a real highlight of this property, with one fact about it; "
+                        "otherwise speak of the property in general. Name no other room")
+            else:
+                rule = "speak of the property in general (no room names)"
+            slot_lines.append(f"- Block {b + 1}, sentence {k + 1} (heard over scene {i + 1}: {labels[i] if i < len(labels) else '?'}): {rule}")
+    slots = "\n".join(slot_lines)
     return f"""You write the Italian voiceover of a 30-second real estate video. The video shows 6 scenes of 5 seconds, in this order:
 {scene_lines}
 
-The voice is ONE narration written as {N_BLOCKS} BLOCKS, spoken one after the other; each block is spoken over two scenes (about 9 seconds):
-{block_lines}
+The voice is ONE narration written as {N_BLOCKS} BLOCKS. Every block has EXACTLY 2 short sentences: the first sentence is heard while the first scene of the block is on screen, the second sentence while the second scene is on screen. So each sentence must talk about the picture it is heard over, in the order of the scenes:
+{slots}
 
-LENGTH: each block is 2 short sentences, about {BLOCK_TARGET_WORDS} words in total (never fewer than {BLOCK_MIN_WORDS} or more than {BLOCK_MAX_WORDS}); spoken aloud a block lasts about 8 seconds. The voice speaks about 2.1 words per second, pauses included. The block durations are measured after the voice is recorded and a block that is too long or too short is sent back to you, so write the length with care.
+LENGTH: each sentence has {SENTENCE_MIN_WORDS}-{SENTENCE_MAX_WORDS} words (about 8, spoken in about 4 seconds); each block about {BLOCK_TARGET_WORDS} words in total (never fewer than {BLOCK_MIN_WORDS} or more than {BLOCK_MAX_WORDS}). The voice speaks about 2.1 words per second. The durations are measured after the voice is recorded and a sentence that is too long or too short is sent back to you, so write the length with care.
 
 Listing text:
 ---
@@ -567,12 +596,10 @@ Address: {address or 'not specified'}
 Agency: {agency}
 
 CONTENT:
-- Block 1: the agency presenting the property ("{agency_name or "L'agenzia"} presenta ..."), saying clearly "in vendita" or "in affitto" (as the listing says), the property type and the zone; then the most important fact (size, for example).
-- Block 2: what makes the property worth visiting, with the facts and benefits the listing states (light, spaces, layout, number of rooms...). Talk about the PROPERTY, do not guide the viewer through the pictures.
-- Block 3: the remaining valuable facts (outdoor space, services...) and, as the very last sentence, a short invitation (at most 7 words) to contact {agency_name or 'the agency'} by name for more information.
-- ROOMS: the pictures change inside each block, so do not name rooms one by one. A block may name a room only if it is shown during that block:
-{allowed}
-  Better to name none than to name one in the wrong block. Never name a room twice.
+- Block 1, sentence 1: the agency presenting the property ("{agency_name or "L'agenzia"} presenta ..."), saying clearly "in vendita" or "in affitto" (as the listing says) and the zone. Short. Sentence 2: the most important general fact (size, property type...).
+- Blocks 2 and 3: one short sentence per scene as listed above. A sentence over a room's scene may be about that room (a real fact or benefit from the listing: light, size, equipment, number of rooms) or a general sentence about the property. Name AT MOST {MAX_ROOMS_NAMED} rooms in the whole narration, only the real highlights, and a room name is ONLY allowed in the sentence heard over that room's scene (the word is checked against the audio).
+- The closing is NOT a separate sentence: sentence 2 of block 3 (heard over scene 6) states the fact about that scene and ends with a short invitation to contact {agency_name or 'the agency'} by name, joined in the SAME sentence with a comma or a colon (shape: "<outdoor fact>, contatta {agency_it}."). The invitation never mentions a visit.
+- Never name a room twice. Never talk about a room in a sentence that is heard over a different room.
 - Objective positive adjectives are welcome (for example luminoso, ampio, funzionale, curato, silenzioso, panoramico) when the listing text supports them. Never invent a quality.
 
 HARD RULES:
@@ -628,18 +655,92 @@ def validate_blocks(blocks: list, description: str, agency_name: str = None, pri
         if n < BLOCK_MIN_WORDS or n > BLOCK_MAX_WORDS:
             problems.append(f"block {b + 1} has {n} words: it must have about {BLOCK_TARGET_WORDS} (never fewer than {BLOCK_MIN_WORDS} or more than {BLOCK_MAX_WORDS})")
     problems.extend(validate_free_text(" ".join(blocks), [], description, agency_name, price, split_fn=split_fn, check_timing=False))
-    if scene_sequence:
-        for b, g in enumerate(block_scene_groups(list(scene_sequence))):
-            own = set(g)
-            tk = wa.tokens(blocks[b])
-            for cat, kws in ROOM_KEYWORDS.items():
-                if cat in own:
-                    continue
-                for kw in kws:
-                    if wa.find_phrase(tk, kw):
-                        problems.append(f"block {b + 1} names '{kw}' but that room is not shown during block {b + 1}: remove it (talk about the property in general)")
-                        break
+    if scene_sequence and split_fn:
+        total_named = 0
+        for b, text in enumerate(blocks):
+            sents = split_fn(text)
+            if len(sents) != 2:
+                problems.append(f"block {b + 1} has {len(sents)} sentences: it must have EXACTLY 2 (the first is heard over scene {2 * b + 1}, the second over scene {2 * b + 2})")
+                continue
+            for k, sent in enumerate(sents):
+                n = len(words(sent))
+                if n < SENTENCE_MIN_WORDS or n > SENTENCE_MAX_WORDS:
+                    problems.append(f"block {b + 1}, sentence {k + 1} has {n} words: each sentence must have {SENTENCE_MIN_WORDS}-{SENTENCE_MAX_WORDS} words (about 8)")
+                cat = scene_of_sentence(scene_sequence, b, k)
+                found = named_rooms(sent)
+                wrong = sorted(found - {cat})
+                if wrong:
+                    problems.append(f"block {b + 1}, sentence {k + 1} is heard over scene {2 * b + k + 1} ({cat}) but names {', '.join(wrong)}: "
+                                    f"talk only about what scene {2 * b + k + 1} shows, or about the property in general")
+                total_named += len(found & {cat})
+        if total_named > MAX_ROOMS_NAMED:
+            problems.append(f"{total_named} rooms are named: name at most {MAX_ROOMS_NAMED} (only the real highlights); speak of the property in general in the other sentences")
     return problems
+
+
+def check_room_words(blocks: list, scene_sequence: list, word_times: list, cuts: list, split_fn,
+                     early: float = ROOM_WORD_EARLY_SECS, late: float = ROOM_WORD_LATE_SECS) -> list:
+    """The check with the real audio (Michele 2026-10-25): every room NAMED in the narration must be said while the picture of
+    that room is on screen. word_times: (start, end) for every token of " ".join(blocks) (word_align.align); cuts: the cut
+    times of the plan (cuts[i] .. cuts[i+1] = scene i). Returns one dict per named room:
+    {"block","sentence","scene" (1-based),"room","word","at","window":[from,to],"ok","kind":"early"|"late"|None}."""
+    import word_align as wa
+    full = wa.tokens(" ".join(blocks))
+    out, offset = [], 0
+    for b, text in enumerate(blocks):
+        for k, sent in enumerate(split_fn(text)):
+            tk = wa.tokens(sent)
+            cat = scene_of_sentence(scene_sequence, b, k)
+            for room in named_rooms(sent) & {cat}:
+                for kw in ROOM_KEYWORDS.get(room, ()):
+                    hit = wa.find_phrase(tk, kw)
+                    if not hit:
+                        continue
+                    idx = offset + hit[0]
+                    if idx >= len(word_times):
+                        break
+                    t = float(word_times[idx][0])
+                    i = b * 2 + k
+                    lo, hi = float(cuts[i]) + early, float(cuts[i + 1]) - late
+                    kind = "early" if t < lo else ("late" if t > hi else None)
+                    out.append({"block": b + 1, "sentence": k + 1, "scene": i + 1, "room": room, "word": kw, "at": round(t, 3),
+                                "window": [round(lo, 3), round(hi, 3)], "ok": kind is None, "kind": kind})
+                    break
+            offset += len(tk)
+    return out
+
+
+def build_word_check_feedback(violations: list, blocks: list) -> str:
+    """The audio was transcribed: a room word is said outside the time its picture is on screen."""
+    lines = []
+    for v in violations:
+        when = "before" if v["kind"] == "early" else "after"
+        lines.append(f"- Block {v['block']}, sentence {v['sentence']}: the word '{v['word']}' is said at {v['at']:.1f} s, {when} the picture of that room is on screen "
+                     f"({v['window'][0]:.1f}-{v['window'][1]:.1f} s). Remove the room name from this block (speak of the property in general) "
+                     f"or change the sentences before it so that '{v['word']}' comes later/earlier.")
+    return ("\n\nYour previous blocks were:\n" + json.dumps({"blocks": blocks}, ensure_ascii=False)
+            + "\n\nThe voice was recorded and the words were timed. Problems:\n" + "\n".join(lines)
+            + "\nReturn the whole JSON object again. Keep every sentence that is not mentioned above EXACTLY as it is.")
+
+
+def build_sync_feedback(clip_problems: list, blocks: list, sentence_secs: list = None) -> str:
+    """After the voice was placed: scene i (0-based) is heard with sentence i (block i//2, sentence i%2). A clip that would have
+    to play slower than allowed (too_slow) has a sentence that is too long; one too fast (too_fast), a sentence that is too short."""
+    lines = []
+    by_clip = {int(p["clip"]): p for p in clip_problems}
+    for p in clip_problems:
+        i = int(p["clip"]); b, k = i // 2, i % 2
+        prev = by_clip.get(i - 1)
+        if k == 1 and prev is not None and prev["kind"] != p["kind"]:
+            continue          # a knock-on of the sentence before it (a too short sentence makes the next picture too long): fix the first only
+        secs = round(float(p.get("seconds_over", 0)), 1)
+        if p["kind"] == "too_slow":
+            lines.append(f"- Block {b + 1}, sentence {k + 1} (scene {i + 1}) is about {secs} s too long for its picture: shorten THAT sentence by about {max(1, int(round(secs * 2.1)))} words.")
+        else:
+            lines.append(f"- Block {b + 1}, sentence {k + 1} (scene {i + 1}) is about {secs} s too short for its picture: lengthen THAT sentence by about {max(1, int(round(secs * 2.1)))} words (a real fact about the same room).")
+    return ("\n\nYour previous blocks were:\n" + json.dumps({"blocks": blocks}, ensure_ascii=False)
+            + "\n\nThe voice was recorded and each sentence was placed over its scene; the pictures can only be sped up or slowed down a little. Problems:\n"
+            + "\n".join(lines) + "\nReturn the whole JSON object again. Keep every sentence that is not mentioned above EXACTLY as it is.")
 
 
 def build_block_feedback(plan_problems: list, durations: list, blocks: list) -> str:
