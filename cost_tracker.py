@@ -41,7 +41,8 @@ TOPAZ_COST_PER_SEC     = 0.02   # 720p → 1080p tier
 UPSCALE_COST_PER_IMAGE = 0.030  # fal-ai/aura-sr image upscale per image
 
 # Florence-2 vision analysis — per call
-FLORENCE_COST_PER_CALL = 0.0002
+FLORENCE_COST_PER_CALL = 0.0002     # legacy Florence-2 (only the fallback of the input analysis); the clip QC is Claude since 2026-10-25
+CLIP_QC_EST_EUR_PER_CLIP = 0.004    # ESTIMATE of one clip QC (Claude, photo + 2 frames; measured 0.0032 EUR with Haiku 4.5 on 2026-10-25). The ACTUAL is the real usage
 
 # ElevenLabs TTS — per character
 ELEVENLABS_COST_PER_CHAR = float(os.getenv("ELEVENLABS_COST_PER_CHAR", "0.0003"))
@@ -187,8 +188,8 @@ def estimate_job_cost(
     upscale_cost = (UPSCALE_COST_PER_IMAGE * n) if do_upscale else 0.0
     total_chars  = sum(len(s.get("voiceover", "")) for s in scenes)
     tts_cost     = total_chars * ELEVENLABS_COST_PER_CHAR
-    vision_calls = (n * 2) if do_vision_qc else 0
-    vision_cost  = vision_calls * FLORENCE_COST_PER_CALL
+    vision_calls = n if do_vision_qc else 0                      # clip QC, one Claude check per clip (Patch X)
+    vision_cost  = vision_calls * CLIP_QC_EST_EUR_PER_CLIP
     infra_cost   = get_infra_cost_per_job(actual_monthly_jobs)
     total = video_cost + upscale_cost + video_upscale_cost + tts_cost + vision_cost + infra_cost + claude_cost_eur
 
@@ -254,8 +255,8 @@ def calculate_actual_cost(
     upscale_cost = (UPSCALE_COST_PER_IMAGE * n) if do_upscale else 0.0
     total_chars  = sum(a.get("chars", 0) for a in audios_generated)
     tts_cost     = total_chars * ELEVENLABS_COST_PER_CHAR
-    vision_calls = (n * 2) if do_vision_qc else 0
-    vision_cost  = vision_calls * FLORENCE_COST_PER_CALL
+    vision_calls = n if do_vision_qc else 0
+    vision_cost  = 0.0     # Patch X: the clip QC is billed by Claude and its REAL usage is inside claude_cost_eur (adding an estimate here would count it twice)
     infra_cost   = INFRA_COST_PER_JOB
     total = video_cost + upscale_cost + tts_cost + vision_cost + infra_cost + claude_cost_eur
 
@@ -315,7 +316,7 @@ def calculate_rework_cost(
                 video_cost += video_cost_for_clip(model_tier, duration)
 
     tts_cost    = (audio_chars * ELEVENLABS_COST_PER_CHAR) if redo_audio else 0.0
-    vision_cost = n * FLORENCE_COST_PER_CALL   # output QC only
+    vision_cost = n * CLIP_QC_EST_EUR_PER_CLIP   # output QC only (estimate; Claude since Patch X)
 
     total = video_cost + tts_cost + vision_cost
 

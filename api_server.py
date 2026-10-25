@@ -3655,6 +3655,10 @@ async def run_pipeline(
                 original_img = image_paths[i]
                 vid_qc = await asyncio.to_thread(analyse_output, clip_out, original_img, space_type)
                 video_verdict = vid_qc["verdict"]
+                # Patch X (2026-10-25): the clip QC is billed by Claude: its REAL usage is added to the job's claude_usage (which
+                # _record_actual_cost / cost_model already read), never estimated and never left in the process-wide counter
+                import listing_scraper as _ls_qc
+                JOBS[job_id]["claude_usage"] = _ls_qc.merge_claude_usage(JOBS[job_id].get("claude_usage"), vid_qc.get("claude_usage"))
                 log.info(f"[Job {job_id}] Video QC scene {i}: {video_verdict}")
                 qc_results.append({"scene": i, "type": "video", **vid_qc})
 

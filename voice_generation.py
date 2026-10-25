@@ -123,7 +123,22 @@ def sanitize_for_tts(text):
     import re
     text = re.sub(r"\s*&\s*", " e ", text)
     text = text.replace("<", " ").replace(">", " ")
+    text = spoken_units(text)
     return re.sub(r"[ \t]{2,}", " ", text)
+
+
+def spoken_units(text):
+    """2026-10-25: square metres are always spoken 'metri quadri' (never 'mq' spelled letter by letter, never
+    'metri quadrati'). Single authority for every provider (called from sanitize_for_tts, which generate_speech
+    always applies). It also removes the full stop of the abbreviation ('mq. 60' made the voice stop after 'M-Q'
+    because generate_speech adds a pause after every period)."""
+    import re
+    num = r"(\d+(?:[.,]\d+)?)"
+    text = re.sub(r"(?<!\w)(?:mq|m\u00b2|m2)\.?\s+" + num + r"(?![\d.,]*\w)", r"\1 metri quadri", text, flags=re.I)  # 'mq. 60' -> '60 metri quadri'
+    text = re.sub(num + r"\s*(?:mq|m\u00b2|m2)(?![\w\u00b2])", r"\1 metri quadri", text, flags=re.I)  # '60 mq' / '60m2'
+    text = re.sub(r"(?<!\w)mq(?!\w)\.?", "metri quadri", text, flags=re.I)  # a bare 'mq'
+    text = re.sub(r"\bmetri quadrati\b", "metri quadri", text, flags=re.I)
+    return text
 
 
 def apply_pronunciation_fixes(text):

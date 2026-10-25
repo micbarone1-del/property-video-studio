@@ -307,3 +307,10 @@ Update 2026-10-25 (night): clip QC with Claude built in the sandbox (test_clip_q
 
 - 2026-10-25 R5: new test_block_robustness.py (R1-R5, simulation of plausible texts, slow ~90 s) PASS in sandbox; test_block_narration E1-E8 PASS (70/70). Evidence level: simulation + replay of real logged sentence lengths. Real-draft test: not run. FMEA row "block narration falls back to per_scene (last block too long)": occurrence confirmed twice in real drafts (R2, d6ca1445); control = joint planner + last-sentence budget; S/O/D proposal to be reviewed with Michele after the real draft.
 - Level B URL battery (supplied by Michele 2026-10-25, immobiliare.it/annunci/): 133345168, 130120864, 129258124, 132923242, 132055134, 132223370, 133381578, 132195874, 129644228, 133605094, 127250417, 128111304, 131335508, 132273018, 133826132. Not run yet.
+
+- 2026-10-25 Patch X: test_clip_qc E1-E10 PASS (34/34, unit). Cost rows: QC cost now real usage in the job total; estimate constant is an ESTIMATE. Real validation of prompt v2 / models on labelled clips: not run. QC FMEA row "QC misses a real defect": occurrence CONFIRMED (41ae5a44 s3 missed by QC v1, 2026-10-25); control = prompt v2 + model comparison + labelled set; S/O/D proposal to be reviewed.
+
+## 2026-10-25 - Patch Y tests (units)
+- test_tts_sanitize U1-U10: PASS in the sandbox (19/19); not yet run on the server. Real-draft check (no pause after the unit, "metri quadri" in the opening): not run.
+
+- 2026-10-25 (late) CORRECTION: fixtures A6/B1 of test_clip_qc were described as "real defects of 41ae5a44"; scene 3 is not a defect (mirror reflection). They are synthetic unit fixtures only, renamed. Real QC measurement on corrected labels: Haiku 4.5 1 false reject + 2 false flags of 8 clean clips; Sonnet 5.5 0 false rejects + 3 false flags; both found the 2 real defects (flag/reject); Haiku 5.5 invalid answers (token limit). Z1/Z2 added (PASS in sandbox). Re-run after Patch Z: not run.

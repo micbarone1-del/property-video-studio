@@ -208,15 +208,17 @@ Rules:
 - "depth": shallow = wall or objects close to camera, deep = long view through the space."""
 
 
-def _claude_vision_call(image_paths: list, prompt: str, max_tokens: int = 250) -> str | None:
+def _claude_vision_call(image_paths: list, prompt: str, max_tokens: int = 250, model: str = None, usage_out: dict = None) -> str | None:
     """Sends one or more (downscaled) photos + prompt to Claude vision; returns the text, or None on any failure.
-    Reuses listing_scraper's model name and usage tracking so the cost lands in the job's claude_usage.
+    Default: reuses listing_scraper's model and its per-job usage counter (draft stage).
+    usage_out (Patch X, 2026-10-25): a dict that receives THIS call's tokens and cost (and the call is then NOT added to the process-wide
+    counter) - the clip QC runs long after the draft, so its usage is attached to the job explicitly (see api_server).
     2026-10-25: the single-image helper became this (one implementation) so the clip QC can send photo + 2 frames."""
     try:
         import base64, io
         import anthropic
         from PIL import Image
-        from listing_scraper import MODEL, _track_claude
+        import listing_scraper as ls
         if not os.getenv("ANTHROPIC_API_KEY"):
             return None
         content = [{"type": "text", "text": prompt}]
@@ -228,7 +230,15 @@ def _claude_vision_call(image_paths: list, prompt: str, max_tokens: int = 250) -
             b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
             content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}})
         client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-        resp = _track_claude(client.messages.create(model=MODEL, max_tokens=max_tokens, messages=[{"role": "user", "content": content}]))
+        use_model = model or ls.MODEL
+        resp = client.messages.create(model=use_model, max_tokens=max_tokens, messages=[{"role": "user", "content": content}])
+        if usage_out is None:
+            ls._track_claude(resp)
+        else:
+            u = getattr(resp, "usage", None)
+            i_t, o_t = int(getattr(u, "input_tokens", 0) or 0), int(getattr(u, "output_tokens", 0) or 0)
+            usage_out.update(ls.merge_claude_usage(usage_out, {"input_tokens": i_t, "output_tokens": o_t, "calls": 1,
+                                                                "cost_eur": ls.claude_cost_eur(i_t, o_t, use_model)}))
         return "".join(b.text for b in resp.content if getattr(b, "type", None) == "text").strip()
     except Exception as e:
         log.warning(f"[Vision] Claude vision call failed: {e}")
@@ -423,16 +433,22 @@ def _extract_video_frame(video_path: str, position: str = "first") -> str | None
         return None
 
 
+CLIP_QC_MAX_TOKENS = 1200   # 2026-10-25: Haiku 5.5 writes ~700 tokens, so 700 cut its JSON (6 of 12 answers invalid in the model comparison)
+CLIP_QC_MODEL = os.getenv("CLIP_QC_MODEL") or None     # None = the project's default model (listing_scraper.MODEL)
+
 CLIP_QC_PROMPT = """You are the quality check of an AI-generated real-estate video clip.
 You get THREE images, in this order: (1) the ORIGINAL PHOTO the clip was made from, (2) the FIRST frame of the clip, (3) the LAST frame of the clip.
 The system already knows what kind of space this is ({known}). NEVER judge or comment on interior-versus-exterior or on the type of room: only compare what is in the frames with what is in the photo.
 The camera moves, so a frame may show a slightly different part of the SAME space: that is normal and is NOT a problem. Compare only things that clearly contradict the photo.
 
+Work in two steps. STEP A - look ONLY at the photo (image 1) and write down its FIXED ELEMENTS that can be counted or named exactly: how many beds and of what kind (one double bed? two single beds?), sofas, chairs, tables, how many doors and windows and of what kind (sliding glass door, hinged door, arched window, french window...), stairs, built-in furniture, large fixtures. STEP B - check each of those elements in image 2 and in image 3 (when it is in view): same number, same kind, same place? A different number or a different kind (for example a sofa that became two armchairs, a sliding glass door that became a hinged door) is a MAJOR change even if the room looks similar. A REFLECTION in a mirror, a window or glass is NOT a separate object: never count it as an extra bed, door or window, in the photo or in the frames (a bed seen again inside a mirrored wardrobe is still ONE bed). Also list anything in image 2 or 3 that does not exist in the photo.
+
 Answer with ONE JSON object and nothing else:
-{{"people": true|false,                     // a person, a face, a hand/arm/finger, or the shadow or reflection of a person or photographer, in frame 2 or 3 but NOT in the photo
+{{"photo_elements": ["..."],                // step A: the counted/named fixed elements of the photo (max 10 short items)
+ "people": true|false,                     // a person, a face, a hand/arm/finger, or the shadow or reflection of a person or photographer, in frame 2 or 3 but NOT in the photo
  "same_space": true|false,                  // frames 2 and 3 show the same place as the photo (false only if it is clearly another place)
- "new_structure": ["..."],                  // things in frame 2 or 3 that do NOT exist in the photo or contradict it: a new door/window/opening/stair/wall, a room that was not there, furniture added or removed, a changed number of beds/sofas/chairs. Empty list if none. Doors, windows and furniture that ARE in the photo do not count.
- "severity": "none"|"minor"|"major",        // major = a clear invented or changed structure/furniture count or another place; minor = small doubtful differences
+ "new_structure": ["..."],                  // step B: elements of the photo that are missing, changed in number or kind, or things that do NOT exist in the photo (a new door/window/opening/stair/wall, furniture added or removed). Empty list if none. Elements that ARE in the photo, in the same number and kind, do not count.
+ "severity": "none"|"minor"|"major",        // major = a clear invented or changed structure/furniture number or kind, or another place; minor = small doubtful differences
  "artifacts": true|false,                   // heavy warping, melting or smeared surfaces in frame 2 or 3
  "first_frame": "one sentence describing frame 2",
  "last_frame": "one sentence describing frame 3"}}"""
@@ -460,7 +476,8 @@ def _parse_clip_qc(raw: str):
         ns = [str(ns)]
     return {"people": bool(d.get("people")), "same_space": d.get("same_space", True) is not False,
             "new_structure": [str(x)[:160] for x in ns][:6], "severity": sev, "artifacts": bool(d.get("artifacts")),
-            "first_frame": str(d.get("first_frame", ""))[:300], "last_frame": str(d.get("last_frame", ""))[:300]}
+            "first_frame": str(d.get("first_frame", ""))[:300], "last_frame": str(d.get("last_frame", ""))[:300],
+            "photo_elements": [str(x)[:80] for x in (d.get("photo_elements") or [])][:10] if isinstance(d.get("photo_elements"), list) else []}
 
 
 def clip_qc_verdict(qc: dict) -> tuple:
@@ -495,10 +512,11 @@ def analyse_output(
     Returns the same keys as before (verdict pass|flag|reject, people_detected, space_matches, structural_hallucinations, quality_score,
     issues, original_description, output_description, error) plus last_description, new_structure, severity, qc_engine.
     """
+    usage = {"input_tokens": 0, "output_tokens": 0, "calls": 0, "cost_eur": 0.0}     # THIS clip's Claude usage (the pipeline adds it to the job)
     default = {
         "verdict": "pass", "people_detected": False, "space_matches": True, "structural_hallucinations": False,
         "quality_score": 1.0, "issues": [], "original_description": "", "output_description": "", "last_description": "",
-        "new_structure": [], "severity": "none", "qc_engine": "claude", "error": None,
+        "new_structure": [], "severity": "none", "qc_engine": "claude", "error": None, "claude_usage": usage,
     }
 
     def _fail(msg):
@@ -513,7 +531,8 @@ def analyse_output(
         if not first_frame or not last_frame:
             return _fail("QC: impossibile estrarre i frame dal video")
         known = (known_space_type or "").strip() or "not given"
-        raw = _claude_vision_call([original_image_path, first_frame, last_frame], CLIP_QC_PROMPT.format(known=known), max_tokens=500)
+        raw = _claude_vision_call([original_image_path, first_frame, last_frame], CLIP_QC_PROMPT.format(known=known), max_tokens=CLIP_QC_MAX_TOKENS,
+                                  model=CLIP_QC_MODEL, usage_out=usage)
         qc = _parse_clip_qc(raw)
         if qc is None:
             log.warning(f"[Vision QC] Claude answer unusable: {str(raw)[:160]!r}")
@@ -527,7 +546,7 @@ def analyse_output(
             "structural_hallucinations": bool(qc["new_structure"]) and qc["severity"] != "none",
             "quality_score": 0.2 if qc["artifacts"] else 1.0, "issues": issues,
             "output_description": qc["first_frame"], "last_description": qc["last_frame"],
-            "new_structure": qc["new_structure"], "severity": qc["severity"],
+            "new_structure": qc["new_structure"], "severity": qc["severity"], "photo_elements": qc["photo_elements"],
         })
         return out
     except Exception as e:

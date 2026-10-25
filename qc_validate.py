@@ -4,7 +4,9 @@ For every scene of a finished job it runs the NEW clip QC (Claude: photo + first
 clip and the photo that already exist, and prints it NEXT TO the verdict the old QC stored in job_meta.json. Nothing is written
 (not in the job, not anywhere): output goes to the terminal only.
 
-    python3 qc_validate.py <job_id> [<job_id> ...]
+    python3 qc_validate.py [--model <claude model id>] <job_id> [<job_id> ...]
+
+--model tries another Claude model for the QC (e.g. claude-haiku-5-5, claude-sonnet-5-5) WITHOUT changing the project's default.
 """
 import json
 import sys
@@ -34,26 +36,38 @@ def plan(job_id: str, jobs_dir: Path = JOBS_DIR) -> list:
     return rows
 
 
-def run(job_id: str, jobs_dir: Path = JOBS_DIR) -> None:
-    import listing_scraper as ls
+def run(job_id: str, jobs_dir: Path = JOBS_DIR, model: str = None) -> dict:
+    import vision_analysis as va
     from vision_analysis import analyse_output
+    import listing_scraper as ls
+    if model:
+        va.CLIP_QC_MODEL = model
     rows = plan(job_id, jobs_dir)
-    ls.reset_claude_usage()
-    print(f"=== job {job_id}: {len(rows)} scenes with photo and clip")
+    tot = {"input_tokens": 0, "output_tokens": 0, "calls": 0, "cost_eur": 0.0}
+    print(f"=== job {job_id}: {len(rows)} scenes with photo and clip | model: {va.CLIP_QC_MODEL or ls.MODEL}")
     for r in rows:
         q = analyse_output(str(r["clip"]), str(r["photo"]), r["space_type"])
+        tot = ls.merge_claude_usage(tot, q.get("claude_usage"))
         print(f"--- scena {r['scene']} (space_type={r['space_type']})")
         print(f"    VECCHIO QC : {r['old_verdict']}  {r['old_issues']}")
         print(f"    NUOVO QC   : {q['verdict']}  severity={q['severity']}  issues={q['issues']}  error={q['error']}")
+        if q.get("photo_elements"):
+            print(f"    elementi foto: {q['photo_elements']}")
         print(f"    primo frame: {q['output_description'][:220]}")
         print(f"    ultimo     : {q['last_description'][:220]}")
-    u = ls.get_claude_cost()
-    print(f"=== Claude: {u['calls']} chiamate, {u['input_tokens']} token in / {u['output_tokens']} out, EUR {u['cost_eur']}")
+    print(f"=== Claude: {tot['calls']} chiamate, {tot['input_tokens']} token in / {tot['output_tokens']} out, EUR {tot['cost_eur']}")
+    return tot
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
+    args = sys.argv[1:]
+    model = None
+    if "--model" in args:
+        i = args.index("--model")
+        model = args[i + 1] if i + 1 < len(args) else None
+        args = args[:i] + args[i + 2:]
+    if not args:
         print(__doc__)
         sys.exit(2)
-    for jid in sys.argv[1:]:
-        run(jid)
+    for jid in args:
+        run(jid, model=model)

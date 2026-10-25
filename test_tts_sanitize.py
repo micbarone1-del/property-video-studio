@@ -61,9 +61,23 @@ t = sent["json"]["text"]
 check("E1 elevenlabs: no '&', 'e' spoken, break tags kept", "&" not in t and "Engel e Völkers" in t and "<break" in t, t[:120])
 
 # plain text is untouched
-check("P1 plain text unchanged", vg.sanitize_for_tts("Appartamento di 80 mq, è luminoso. L'agenzia vi aspetta.") == "Appartamento di 80 mq, è luminoso. L'agenzia vi aspetta.")
+check("P1 plain text unchanged", vg.sanitize_for_tts("Appartamento luminoso, ampio. L'agenzia vi aspetta.") == "Appartamento luminoso, ampio. L'agenzia vi aspetta.")
 check("P2 no double spaces, newlines kept", vg.sanitize_for_tts("A & B\nC  D") == "A e B\nC D", repr(vg.sanitize_for_tts("A & B\nC  D")))
 check("P3 '&' glued to words", vg.sanitize_for_tts("Re/Max&Co") == "Re/Max e Co")
 
+# units (2026-10-25)
+U = vg.sanitize_for_tts
+check("U1 'mq. 60' -> '60 metri quadri' (no stop after the abbreviation)", U("Il giardino terrazzato di mq. 60, contatta Gallo.") == "Il giardino terrazzato di 60 metri quadri, contatta Gallo.", U("Il giardino terrazzato di mq. 60, contatta Gallo."))
+check("U2 '80 mq,' ", U("Appartamento di 80 mq, luminoso.") == "Appartamento di 80 metri quadri, luminoso.", U("Appartamento di 80 mq, luminoso."))
+check("U3 '80mq' and '80 m2' and '80 m²'", U("80mq e 80 m2 e 80 m²") == "80 metri quadri e 80 metri quadri e 80 metri quadri", U("80mq e 80 m2 e 80 m²"))
+check("U4 sentence-final '60 mq.' keeps its full stop", U("Sono 60 mq. Il bagno è nuovo.") == "Sono 60 metri quadri. Il bagno è nuovo.", U("Sono 60 mq. Il bagno è nuovo."))
+check("U5 'metri quadrati' -> 'metri quadri'", U("Un attico di 120 metri quadrati.") == "Un attico di 120 metri quadri.", U("Un attico di 120 metri quadrati."))
+check("U6 decimals", U("di 62,5 mq") == "di 62,5 metri quadri", U("di 62,5 mq"))
+check("U7 unrelated words untouched", U("Il mqtt e il m2x restano, come 'camera 2'.") == "Il mqtt e il m2x restano, come 'camera 2'.", U("Il mqtt e il m2x restano, come 'camera 2'."))
+check("U8 bare 'mq'", U("una superficie in mq totali") == "una superficie in metri quadri totali", U("una superficie in mq totali"))
+import scene_script as _ss
+_cnt = sum(1 for f, a in ((_ss.build_prompt, ("d", "a", "Gallo", ["x"] * 6)), (_ss.build_anchored_prompt, ("d", "a", "Gallo", ["x"] * 6))) if _ss.NUMBERS_RULE in f(*a))
+check("U9 the two older prompts use the shared NUMBERS_RULE", _cnt == 2, str(_cnt))
+check("U10 the blocks prompt uses it too", _ss.NUMBERS_RULE in _ss.build_blocks_prompt("d", "a", "Gallo", ["x"] * 6, list(range(6))))
 print(f"RESULT: {'ALL PASS' if not fails else 'FAILURES'} ({total - len(fails)}/{total})")
 sys.exit(1 if fails else 0)

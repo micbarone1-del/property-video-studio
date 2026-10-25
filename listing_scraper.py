@@ -89,13 +89,39 @@ def _track_claude(response):
         pass
     return response
 
+# USD per million tokens (input, output) by model. 5.5 models: platform.claude.com model pages, 2026-10-25 (prompts up to 100K tokens).
+CLAUDE_PRICES = {
+    "claude-haiku-4-5-20251001": (CLAUDE_INPUT_PER_MTOK, CLAUDE_OUTPUT_PER_MTOK),
+    "claude-haiku-5-5": (0.10, 0.50),
+    "claude-sonnet-5-5": (2.00, 10.00),
+}
+
+
+def claude_cost_eur(input_tokens, output_tokens, model=None):
+    """THE cost formula (EUR) of a number of tokens of one model; an unknown model is priced like the default one (never zero)."""
+    pin, pout = CLAUDE_PRICES.get(model or MODEL, (CLAUDE_INPUT_PER_MTOK, CLAUDE_OUTPUT_PER_MTOK))
+    usd = (input_tokens / 1_000_000) * pin + (output_tokens / 1_000_000) * pout
+    return round(usd * USD_TO_EUR, 4)
+
+
+def merge_claude_usage(base, extra):
+    """Sums two usage dicts ({input_tokens, output_tokens, calls, cost_eur}); either may be None. Used to add the usage of calls that were
+    NOT counted in the per-job counter (the clip QC runs after the draft was made) to the job's claude_usage."""
+    out = {"input_tokens": 0, "output_tokens": 0, "calls": 0, "cost_eur": 0.0}
+    for d in (base, extra):
+        for k in ("input_tokens", "output_tokens", "calls"):
+            out[k] += int((d or {}).get(k, 0) or 0)
+        out["cost_eur"] += float((d or {}).get("cost_eur", 0) or 0)
+    out["cost_eur"] = round(out["cost_eur"], 4)
+    return out
+
+
 def get_claude_cost():
     """Real Claude API cost for the current job, in EUR."""
     i = _claude_usage["input_tokens"]; o = _claude_usage["output_tokens"]
-    usd = (i / 1_000_000) * CLAUDE_INPUT_PER_MTOK + (o / 1_000_000) * CLAUDE_OUTPUT_PER_MTOK
     return {
         "input_tokens": i, "output_tokens": o, "calls": _claude_usage["calls"],
-        "cost_eur": round(usd * USD_TO_EUR, 4),
+        "cost_eur": claude_cost_eur(i, o),
     }
 
 MODEL = "claude-haiku-4-5-20251001"  # cheapest current model; upgrade to
