@@ -532,7 +532,7 @@ ROOM_KEYWORDS = {
     "living": ("soggiorno", "salone", "living", "zona giorno"),
     "kitchen": ("cucina", "cucinotto"),
     "bedrooms": ("camera", "camere", "zona notte"),
-    "bathrooms": ("bagno", "bagni", "servizi"),
+    "bathrooms": ("bagno", "bagni", "doppi servizi", "servizi igienici"),   # Patch R3: bare "servizi" ("servizi completi") is generic, not a room
     "outdoor": ("giardino", "terrazza", "terrazzo", "balcone", "esterni", "esterno", "cortile", "veranda", "patio"),
 }
 

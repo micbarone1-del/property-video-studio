@@ -1153,11 +1153,14 @@ def _block_narration(description: str, address: str, price: str, voice_id: str, 
     try:
         client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
         for attempt in range(1, BLOCK_MAX_ATTEMPTS + 1):
-            blocks = ss.parse_blocks(_claude_text_reply(client, base_prompt + feedback, max_tokens=1200))
+            raw_reply = _claude_text_reply(client, base_prompt + feedback, max_tokens=1200)
+            blocks = ss.parse_blocks(raw_reply)
             if blocks is None:
                 reason = "the reply was not the expected JSON object"
-                feedback = '\n\nYour previous answer was not a JSON object {"blocks": [3 strings]}. Return exactly that object.'
-                log.warning(f"[Scraper] Block narration attempt {attempt}: {reason}")
+                # 2026-10-25 (Patch R3): the feedback of the previous attempt is KEPT (draft dd4d2b79: a lost feedback made attempt 6 start
+                # from zero and ignore the measured-duration corrections of attempts 2-4)
+                feedback = feedback + '\n\nYour previous answer was not a JSON object {"blocks": [3 strings]}. Return exactly that object, nothing else.'
+                log.warning(f"[Scraper] Block narration attempt {attempt}: {reason} | reply starts: {str(raw_reply)[:300]!r}")
                 continue
             problems = ss.validate_blocks(blocks, description, agency_name, price, split_fn=split_into_sentences, scene_sequence=scene_sequence)
             if problems:

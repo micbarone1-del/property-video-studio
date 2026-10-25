@@ -267,6 +267,22 @@ r = run()
 check("C18 recogniser not available -> accepted, word_check says NOT verified", r["ok"] and r["result"]["timeline"]["word_check"]["checked"] is False and "NOT verified" in r["result"]["timeline"]["word_check"].get("note", ""), r)
 WTM.transcribe_words = fake_transcribe
 
+# Patch R3 (draft dd4d2b79): a reply that is not JSON must NOT erase the measured-duration feedback of the attempt before
+SENT[LONG] = 7.9
+replies[:] = [json.dumps({"blocks": b_long}), "Certo! Ecco il testo richiesto.", json.dumps({"blocks": GOOD})]
+prompts.clear()
+r = run()
+check("C19 non-JSON reply keeps the previous feedback (sentence too long) and adds the JSON reminder; next reply accepted",
+      r["ok"] and len(prompts) == 3 and "too long" in prompts[2] and "not a JSON object" in prompts[2] and "Your previous blocks were" in prompts[2],
+      (r.get("reason"), prompts[-1][-500:]))
+SENT.pop(LONG, None)
+# Patch R3: generic "servizi" is not a room name; "doppi servizi" / "servizi igienici" are
+import scene_script as _ssr3
+check("B17 'servizi completi' names no room; 'doppi servizi' and 'servizi igienici' name the bathrooms",
+      _ssr3.named_rooms("Una proprietà con doppio ingresso e servizi completi.") == set()
+      and _ssr3.named_rooms("La proprietà dispone di doppi servizi.") == {"bathrooms"}
+      and _ssr3.named_rooms("Ci sono due servizi igienici.") == {"bathrooms"})
+
 # retry helper shared
 n = {"c": 0}
 def flaky():
