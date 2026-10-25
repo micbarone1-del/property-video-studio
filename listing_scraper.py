@@ -1112,9 +1112,15 @@ def _synthesize_block(text: str, voice_id: str = None) -> dict:
         syn = synthesize_sentences(text, voice_id)
         if not syn["ok"]:
             return {"ok": False, "error": syn.get("error")}
-        if len(syn["clips"]) != 2:
-            return {"ok": False, "error": f"the block has {len(syn['clips'])} sentences, not 2"}
-        return {"ok": True, "clips": syn["clips"], "sentence_secs": [len(c) / 1000.0 for c in syn["clips"]]}
+        clips = list(syn["clips"])
+        if len(clips) == 3:
+            # Patch R4: sentence 2 + the closing invitation (its own sentence) = ONE timing unit, with a real pause between them
+            import scene_timing as st
+            from narration import join_clips
+            clips = [clips[0], join_clips(clips[1:], pause_ms=int(round(st.CLOSING_PAUSE_SECS * 1000)))]
+        if len(clips) != 2:
+            return {"ok": False, "error": f"the block has {len(clips)} sentences, not 2"}
+        return {"ok": True, "clips": clips, "sentence_secs": [len(c) / 1000.0 for c in clips]}
     return _retry_tts(once)
 
 
@@ -1170,9 +1176,10 @@ def _block_narration(description: str, address: str, price: str, voice_id: str, 
                 log.warning(f"[Scraper] Block narration attempt {attempt} rejected: {problems} | blocks: {blocks}")
                 continue
             syn_list = []
-            for b in blocks:
+            for bi, b in enumerate(blocks):
                 if b not in cache:
-                    syn = _synthesize_block(b, voice_id)
+                    # only the last block carries the closing invitation: spoken as its own sentence (Patch R4)
+                    syn = _synthesize_block(ss.closing_as_sentence(b, agency_name) if bi == len(blocks) - 1 else b, voice_id)
                     tts_calls += 1
                     if not syn["ok"]:
                         return {"ok": False, "reason": "TTS failed on a narration block", "tts_calls": tts_calls}

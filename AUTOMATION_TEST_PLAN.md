@@ -299,3 +299,6 @@ Update 2026-10-24 (evening): Patch Q deployed 5c085eb; draft 41ae5a44 = first no
 
 Update 2026-10-25 (afternoon): Patch R2 deployed 14a6e4f (19 safe suites PASS on the server). First real draft dd4d2b79: R2 sync NOT demonstrated - fallback to per_scene after 6 attempts (false room keyword, closing block slightly too long, feedback lost after a non-JSON reply). F70 (sync) stays FAIL/not demonstrated. Patch R3 in sandbox only (59/59). Real-listing behaviour of R2/R3 = NOT RUN until a draft with narration_mode anchored/blocks exists.
 
+Update 2026-10-25 (evening): Patch R3 deployed 01475ca (19 safe suites PASS on the server, test_block_narration 59/59). Draft 633d3f36: block narration accepted, word check 3/3 rooms inside their window (evidence: job_meta timeline.word_check). F70 (sync as seen in the assembled video) remains NOT RUN until a video is generated and watched by Michele.
+
+Update 2026-10-25 (night): Michele reviewed the zero-cost sync preview of draft 633d3f36: sync OK by eye (F70 sync: PASS on one draft by human review; automatic audio-vs-cut check not built yet; battery of drafts not run). Test plan levels A-F approved (see backlog item 83 update). Patch R4 in sandbox only (test_block_narration 62/62, test_sync_preview 9/9); real effect of the longer last block NOT RUN.

@@ -614,6 +614,20 @@ HARD RULES:
 """
 
 
+def closing_as_sentence(text: str, agency_name: str = None) -> str:
+    """Patch R4 (Michele 2026-10-25): the last clause "..., contatta <agency>." is spoken as its OWN sentence ("... . Contatta <agency>.")
+    so the voice makes a real pause before the invitation. Applied only when the text is sent to the voice (the block keeps its
+    2 sentences for every rule and for the timing). Unchanged when the last clause does not contain the agency name."""
+    if not text or not agency_name:
+        return text
+    s = text.strip()
+    m = re.search(r",\s+([^,.!?]+)[.!?]?\s*$", s)
+    if not m or agency_name.lower() not in m.group(1).lower():
+        return text
+    clause = m.group(1).strip()
+    return s[:m.start()] + ". " + clause[:1].upper() + clause[1:] + "."
+
+
 def parse_blocks(raw: str):
     """The model's reply -> list of N_BLOCKS strings, or None."""
     if not raw:

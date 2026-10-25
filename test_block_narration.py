@@ -145,6 +145,7 @@ def fake_synth(text, voice_id=None):
     sents = SPLIT(text)
     secs = [SENT.get(x, len(x.split()) / 2.1) for x in sents]
     return {"ok": True, "clips": [Seg(x * 1000) for x in secs], "sentence_secs": secs}
+_REAL_SYNTH = ls._synthesize_block        # kept for the Patch R4 test of the real merge
 ls._synthesize_block = fake_synth
 def fake_segment(clips, rate, offset=None):
     d1 = len(clips[0]) / 1000.0
@@ -282,6 +283,30 @@ check("B17 'servizi completi' names no room; 'doppi servizi' and 'servizi igieni
       _ssr3.named_rooms("Una proprietà con doppio ingresso e servizi completi.") == set()
       and _ssr3.named_rooms("La proprietà dispone di doppi servizi.") == {"bathrooms"}
       and _ssr3.named_rooms("Ci sono due servizi igienici.") == {"bathrooms"})
+
+# Patch R4: the closing invitation is spoken as its own sentence (after a real pause), only at synthesis time
+import scene_script as _ssr4
+check("B18 closing clause -> own sentence; other texts unchanged",
+      _ssr4.closing_as_sentence("Il giardino è di 3000 metri quadri, contatta Coldwell Banker.", "Coldwell Banker") == "Il giardino è di 3000 metri quadri. Contatta Coldwell Banker."
+      and _ssr4.closing_as_sentence("Il giardino è ampio, luminoso e curato.", "Coldwell Banker") == "Il giardino è ampio, luminoso e curato."
+      and _ssr4.closing_as_sentence("Il giardino è di 3000 metri quadri, contatta Coldwell Banker.", None) == "Il giardino è di 3000 metri quadri, contatta Coldwell Banker."
+      and _ssr4.closing_as_sentence("Giardino di 60 mq, ampio, contatta COLDWELL BANKER!", "Coldwell Banker") == "Giardino di 60 mq, ampio. Contatta COLDWELL BANKER.")
+synth_calls.clear()
+replies[:] = [json.dumps({"blocks": GOOD})]
+r = run()
+check("C20 only the last block is sent to the voice with the closing as its own sentence; narration_text keeps the 3 blocks as written",
+      r["ok"] and synth_calls[2].endswith(". Contatta Coldwell Banker.") and synth_calls[0] == GOOD[0] and synth_calls[1] == GOOD[1] and r["result"]["narration_text"] == " ".join(GOOD), synth_calls)
+# the real _synthesize_block: 3 spoken sentences -> 2 timing units; the 2nd = sentence 2 + CLOSING_PAUSE + closing
+import narration as _nar
+_o_syn, _o_join = _nar.synthesize_sentences, _nar.join_clips
+_nar.synthesize_sentences = lambda text, voice_id=None, tmp_parent=None: {"ok": True, "sentences": ["a", "b", "c"], "error": None, "clips": [Seg(1000), Seg(2000), Seg(1500)]}
+_nar.join_clips = lambda clips, pause_ms=380: Seg(sum(len(c) for c in clips) + pause_ms * (len(clips) - 1))
+_syn3 = _REAL_SYNTH("A. B. Contatta X.", "v")
+_nar.synthesize_sentences = lambda text, voice_id=None, tmp_parent=None: {"ok": True, "sentences": ["a", "b"], "error": None, "clips": [Seg(1000), Seg(2000)]}
+_syn2 = _REAL_SYNTH("A. B.", "v")
+_nar.synthesize_sentences, _nar.join_clips = _o_syn, _o_join
+check("C21 real _synthesize_block: 3 sentences -> sentence_secs [1.0, 2.0 + 0.6 + 1.5 = 4.1]; 2 sentences unchanged",
+      _syn3["ok"] and _syn3["sentence_secs"] == [1.0, 4.1] and len(_syn3["clips"]) == 2 and _syn2["ok"] and _syn2["sentence_secs"] == [1.0, 2.0], (_syn3, _syn2))
 
 # retry helper shared
 n = {"c": 0}

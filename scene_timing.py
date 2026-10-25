@@ -304,6 +304,7 @@ def plan_blocks(durations, n_scenes=6, per_block=BLOCK_SCENES, rate_min=BLOCK_RA
 # scene: it starts SECOND_OFFSET seconds after the block starts (= one clip minus one cross-fade, the distance between two cuts).
 SECOND_OFFSET_SECS = DEFAULT_SRC_SECS - TRANSITION_SECS       # 4.5
 SENT_PAUSE_MIN_SECS = 0.25                                    # shortest silence between the two sentences of a block
+CLOSING_PAUSE_SECS = 0.60      # Patch R4 (Michele 2026-10-25): the closing invitation ("Contatta <agency>") is its own sentence after this silence
 SENT_PAUSE_MAX_SECS = 1.60                                    # longest (more would be dead air)
 
 
