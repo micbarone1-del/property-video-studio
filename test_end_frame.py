@@ -72,6 +72,7 @@ rc = ex.cmd_run("jobX", 0, "base", True, fake_gen)
 check("E16 the run that would pass EUR 10 is REFUSED and does not call the generator", rc == 3 and len(calls) == n and ex.spent() < 10.0, (rc, ex.spent()))
 def failing(img, dur, outp, **kw): return False
 ex2 = ex.SPEND.read_text(); before = ex.spent()
+check("E17b straight variant exists, no end frame, adds the no-rotation text", "straight" in ex.VARIANTS and "no pivoting" in ex.STRAIGHT_ADD and ex.cmd_run("jobX", 0, "straight", False, fake_gen) in (0, 3))
 check("E17 bad variant refused", ex.cmd_run("jobX", 0, "nope", True, fake_gen) == 2)
 check("E18 the script only writes under _test_scratch", "SCRATCH / f\"exp_" in open("exp_luma.py").read() and "rmtree" not in open("exp_luma.py").read() and ".unlink" not in open("exp_luma.py").read())
 print(f"\nRESULT: {'ALL PASS' if not fails else fails} ({ok_n}/{ok_n+len(fails)})")

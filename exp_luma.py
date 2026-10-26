@@ -4,7 +4,7 @@ that would take the running total (jobs/_test_scratch/exp_spend.json) above the 
   python3 exp_luma.py list  JOB                     scenes of a job: index, movement, QC remarks, which picture would be used (free)
   python3 exp_luma.py run   JOB INDEX VARIANT       shows the cost and stops (free)
   python3 exp_luma.py run   JOB INDEX VARIANT --go  generates ONE clip (~EUR 1.10) and prints light + full links
-VARIANT: base (today's prompt) | strict (stricter prompt, no end frame) | endframe (today's prompt + last frame = crop of the photo)
+VARIANT: base (today's prompt) | strict (stricter prompt, no end frame) | straight (strict + no rotation, short straight travel) | endframe (today's prompt + last frame = crop of the photo)
 """
 import json
 import os
@@ -20,7 +20,9 @@ SPEND = SCRATCH / "exp_spend.json"
 STRICT_ADD = ("the first frame is the exact and complete starting image: every object visible in any later frame must already be visible "
               "in the first frame, never add, replace or move any chair, table, plant, lamp, decoration or other furniture, "
               "and the camera never leaves the area shown in the first frame")
-VARIANTS = ("base", "strict", "endframe")
+STRAIGHT_ADD = (", camera moves strictly along a single forward axis, no lateral drift, no panning, no pivoting, no rotation, "
+                "the field of view stays fixed and centered throughout the shot, the camera advances less than one meter in total")   # = the portrait anti-drift text of assemble_pov_prompt + a short travel
+VARIANTS = ("base", "strict", "straight", "endframe")
 
 
 def est_eur() -> float:
@@ -92,8 +94,8 @@ def cmd_run(job: str, index: int, variant: str, go: bool, generate=None):
         print("Nessuna generazione (manca --go). Per generare aggiungi --go in fondo.")
         return 0
     import video_generation as vg
-    if variant == "strict":
-        vg._LUMA_RULES = vg._LUMA_RULES + ", " + STRICT_ADD
+    if variant in ("strict", "straight"):
+        vg._LUMA_RULES = vg._LUMA_RULES + ", " + STRICT_ADD + (STRAIGHT_ADD if variant == "straight" else "")
     gen = generate or vg.generate_video_single
     SCRATCH.mkdir(parents=True, exist_ok=True)
     out = SCRATCH / f"exp_{job}_{index}_{variant}_{int(time.time())}.mp4"
