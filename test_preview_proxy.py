@@ -54,6 +54,13 @@ check("P10 missing file fail-open", pp.light_copy(tmp / "nope.mp4", cache) == tm
 os.utime(src, (1, 1))   # a re-assembled video (new mtime) must get a new preview
 check("P11 changed original -> new cache name", pp.cache_path(src, cache) != light)
 
+src_code = open("preview_proxy.py").read()
+check("P12 ffmpeg/ffprobe never read the terminal (-nostdin + stdin=DEVNULL): real server smoke test hung with 0 bytes on 2026-10-26", "-nostdin" in src_code and src_code.count("stdin=subprocess.DEVNULL") == 2)
+# the build must work with stdin closed, as under screen/uvicorn
+import subprocess as _sp
+_r = _sp.run([sys.executable, "-c", "import preview_proxy as p,sys;from pathlib import Path;print(p.light_copy(Path(sys.argv[1]),Path(sys.argv[2])).name)", str(tmp / "final2.mp4"), str(tmp / "c2")], stdin=_sp.DEVNULL, capture_output=True, text=True, cwd=os.getcwd()) if (tmp / "final2.mp4").write_bytes(src.read_bytes()) else None
+check("P13 builds a preview in a child process with stdin closed", _r is not None and _r.stdout.strip().startswith("prev_"), _r and (_r.stdout, _r.stderr[-200:]))
+
 # wiring checks in the real files (no server in the sandbox)
 api = open("api_server.py").read()
 ui = open("ui.html").read()

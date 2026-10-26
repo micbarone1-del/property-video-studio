@@ -31,10 +31,10 @@ def build(src: Path, dst: Path, timeout: int = 300) -> bool:
     tmp = Path(str(dst) + ".tmp")
     try:
         dst.parent.mkdir(parents=True, exist_ok=True)
-        cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", str(src),
+        cmd = ["ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-i", str(src),
                "-vf", f"scale=-2:'min({PREVIEW_HEIGHT},ih)'", "-c:v", "libx264", "-preset", "veryfast", "-crf", CRF,
                "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "64k", "-movflags", "+faststart", "-f", "mp4", str(tmp)]
-        r = subprocess.run(cmd, capture_output=True, timeout=timeout)
+        r = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout)   # stdin closed: under screen/uvicorn ffmpeg would wait on the terminal
         if r.returncode != 0 or not tmp.exists() or tmp.stat().st_size == 0:
             print(f"[Preview] ffmpeg failed for {src.name}: {r.stderr[-300:]!r}")
             return False
@@ -66,7 +66,7 @@ def info(path) -> dict:
     path = Path(path)
     try:
         r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
-                            "-of", "json", str(path)], capture_output=True, timeout=30)
+                            "-of", "json", str(path)], stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
         st = (json.loads(r.stdout or b"{}").get("streams") or [{}])[0]
         return {"width": st.get("width"), "height": st.get("height"), "size_mb": round(path.stat().st_size / 1048576, 1)}
     except Exception:
