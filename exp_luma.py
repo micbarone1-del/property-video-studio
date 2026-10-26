@@ -4,7 +4,7 @@ that would take the running total (jobs/_test_scratch/exp_spend.json) above the 
   python3 exp_luma.py list  JOB                     scenes of a job: index, movement, QC remarks, which picture would be used (free)
   python3 exp_luma.py run   JOB INDEX VARIANT       shows the cost and stops (free)
   python3 exp_luma.py run   JOB INDEX VARIANT --go  generates ONE clip (~EUR 1.10) and prints light + full links
-VARIANT: base (today's prompt) | strict (stricter prompt, no end frame) | straight (strict + no rotation, short straight travel) | endframe (today's prompt + last frame = crop of the photo)
+VARIANT: base (today's prompt) | strict (stricter prompt, no end frame) | straight (strict + no rotation, short straight travel) | subtle (strict + subtle_rotate) | target (strict + straight push-in toward the centre, no sideways) | endframe (today's prompt + last frame = crop of the photo)
 """
 import json
 import os
@@ -22,7 +22,11 @@ STRICT_ADD = ("the first frame is the exact and complete starting image: every o
               "and the camera never leaves the area shown in the first frame")
 STRAIGHT_ADD = (", camera moves strictly along a single forward axis, no lateral drift, no panning, no pivoting, no rotation, "
                 "the field of view stays fixed and centered throughout the shot, the camera advances less than one meter in total")   # = the portrait anti-drift text of assemble_pov_prompt + a short travel
-VARIANTS = ("base", "strict", "straight", "endframe")
+TARGET_MOTION = ("slow straight forward camera push-in toward the centre of the frame, the camera never moves sideways, never slides left or right "
+                 "and never turns, treat nearby furniture as if it were not there: never steer around it and never dodge it, the path is one straight line toward the centre, "
+                 "the nearest furniture at the edges of the frame stays in view and the camera stops well before reaching it, "
+                 "smooth continuous motion, no stepping or bobbing, realistic physics")   # no 'parallax' wording (it invites a sideways slide), a target, no sideways move
+VARIANTS = ("base", "strict", "straight", "endframe", "subtle", "target")
 
 
 def est_eur() -> float:
@@ -94,13 +98,19 @@ def cmd_run(job: str, index: int, variant: str, go: bool, generate=None):
         print("Nessuna generazione (manca --go). Per generare aggiungi --go in fondo.")
         return 0
     import video_generation as vg
-    if variant in ("strict", "straight"):
-        vg._LUMA_RULES = vg._LUMA_RULES + ", " + STRICT_ADD + (STRAIGHT_ADD if variant == "straight" else "")
+    if variant in ("strict", "straight", "subtle", "target"):
+        vg._LUMA_RULES = vg._LUMA_RULES + ", " + STRICT_ADD + (STRAIGHT_ADD if variant in ("straight", "target") else "")
+    movement = s["scene"].get("pov_movement", "walk_in_explore")
+    if variant == "subtle":
+        movement = "subtle_rotate"          # the almost-static production movement
+    if variant == "target":
+        vg._LUMA_MOVEMENT_TOKENS["walk_in_explore"] = TARGET_MOTION
+        movement = "walk_in_explore"
     gen = generate or vg.generate_video_single
     SCRATCH.mkdir(parents=True, exist_ok=True)
     out = SCRATCH / f"exp_{job}_{index}_{variant}_{int(time.time())}.mp4"
     sc = s["scene"]
-    done = gen(str(s["image"]), 5, str(out), space_type=sc.get("space_type", "large"), pov_movement=sc.get("pov_movement", "walk_in_explore"),
+    done = gen(str(s["image"]), 5, str(out), space_type=sc.get("space_type", "large"), pov_movement=movement,
                model_tier="luma", end_frame=(variant == "endframe"))
     used = None
     try:

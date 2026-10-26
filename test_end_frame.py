@@ -73,6 +73,22 @@ check("E16 the run that would pass EUR 10 is REFUSED and does not call the gener
 def failing(img, dur, outp, **kw): return False
 ex2 = ex.SPEND.read_text(); before = ex.spent()
 check("E17b straight variant exists, no end frame, adds the no-rotation text", "straight" in ex.VARIANTS and "no pivoting" in ex.STRAIGHT_ADD and ex.cmd_run("jobX", 0, "straight", False, fake_gen) in (0, 3))
+# fresh budget so the cap does not hide these (own temp dir)
+tmp2 = Path(tempfile.mkdtemp()); os.environ["PVS_JOBS_DIR"] = str(tmp2); importlib.reload(ex)
+(tmp2 / "_test_scratch").mkdir(); (tmp2 / "jobY" / "images").mkdir(parents=True)
+Image.new("RGB", (640, 360), (90, 90, 90)).save(tmp2 / "jobY" / "images" / "sc_1.jpg")
+(tmp2 / "jobY" / "job_meta.json").write_text(json.dumps({"scenes_config": [{"scene_id": "sc_1", "pov_movement": "walk_in_explore", "space_type": "large"}]}))
+import video_generation as _vg
+seen = []
+def spy(img, dur, outp, **kw):
+    seen.append((kw["pov_movement"], kw["end_frame"], _vg._LUMA_RULES, _vg._LUMA_MOVEMENT_TOKENS["walk_in_explore"])); Path(outp).write_bytes(b"x"); return True
+_rules0, _tok0 = _vg._LUMA_RULES, _vg._LUMA_MOVEMENT_TOKENS["walk_in_explore"]
+ex.cmd_run("jobY", 0, "subtle", True, spy)
+check("E17c subtle: movement forced to subtle_rotate, strict rules added, no end frame", seen[-1][0] == "subtle_rotate" and seen[-1][1] is False and ex.STRICT_ADD in seen[-1][2], seen[-1][:2])
+_vg._LUMA_RULES = _rules0
+ex.cmd_run("jobY", 0, "target", True, spy)
+check("E17d target: scene movement kept, its own motion text replaces the parallax one, no-rotation text added", seen[-1][0] == "walk_in_explore" and seen[-1][3] == ex.TARGET_MOTION and "parallax" not in ex.TARGET_MOTION and "never dodge" in ex.TARGET_MOTION and ex.STRAIGHT_ADD in seen[-1][2], seen[-1][0])
+_vg._LUMA_MOVEMENT_TOKENS["walk_in_explore"] = _tok0; _vg._LUMA_RULES = _rules0
 check("E17 bad variant refused", ex.cmd_run("jobX", 0, "nope", True, fake_gen) == 2)
 check("E18 the script only writes under _test_scratch", "SCRATCH / f\"exp_" in open("exp_luma.py").read() and "rmtree" not in open("exp_luma.py").read() and ".unlink" not in open("exp_luma.py").read())
 print(f"\nRESULT: {'ALL PASS' if not fails else fails} ({ok_n}/{ok_n+len(fails)})")
