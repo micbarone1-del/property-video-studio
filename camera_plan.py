@@ -56,3 +56,40 @@ CATEGORY_MOVEMENT = {
     "bedrooms": "stand_look_around",
     "bathrooms": "subtle_rotate",
 }
+
+
+# ── End frame (2026-10-26, Michele's idea) ───────────────────────────────────────────────────────────────────────────────
+# Luma can be given the LAST frame as well as the first. If the last frame is a CROP of the same photo, the clip has to end on
+# something that really is inside the photo, so it cannot drift out of the photo's space or invent furniture on the way.
+# movement -> (scale, dx, dy): scale = fraction of the width/height kept (same aspect ratio as the photo); dx, dy in [-1, 1] = where the
+# crop sits inside the free margin (0 = centred, -1 = left/top edge, +1 = right/bottom edge). None / missing = no end frame.
+# A crop has no parallax: the model must invent the 3D motion between the two frames, so these values are a starting point to be
+# judged on real clips (backlog), not a finished truth.
+END_FRAME_CROP = {
+    "approach_facade":    (0.80, 0.0, 0.0),
+    "walk_toward":        (0.80, 0.0, 0.0),
+    "walk_in_explore":    (0.85, 0.0, 0.0),
+    "walk_through":       (0.75, 0.0, 0.0),
+    "step_out_onto":      (0.85, 0.0, 0.0),
+    "approach_reveal":    (0.90, 0.0, 0.0),
+    "outward_view":       (0.90, 0.0, 0.0),
+    "walk_in_gentle":     (0.92, 0.6, 0.0),
+    "walk_in_turn_left":  (0.88, -0.8, 0.0),
+    "walk_in_turn_right": (0.88, 0.8, 0.0),
+    "stand_look_around":  (0.88, 0.8, 0.0),
+    "subtle_rotate":      (0.95, 0.5, 0.0),
+    # reveal_pullback: reverse dolly, no end frame
+}
+
+
+def end_frame_box(movement: str, width: int, height: int):
+    """(left, top, right, bottom) pixel box of the end frame for this movement, or None. Always inside the photo, same aspect ratio."""
+    spec = END_FRAME_CROP.get(movement)
+    if not spec or width < 2 or height < 2:
+        return None
+    scale, dx, dy = spec
+    w, h = max(2, round(width * scale)), max(2, round(height * scale))
+    left = round((width - w) / 2 + dx * (width - w) / 2)
+    top = round((height - h) / 2 + dy * (height - h) / 2)
+    left, top = min(max(0, left), width - w), min(max(0, top), height - h)
+    return (left, top, left + w, top + h)

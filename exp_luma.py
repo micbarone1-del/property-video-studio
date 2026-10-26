@@ -1,0 +1,134 @@
+"""Luma fidelity experiments (2026-10-26). Michele's budget: EUR 10 MAX in total. Spends real money ONLY with --go, and refuses any run
+that would take the running total (jobs/_test_scratch/exp_spend.json) above the cap. Writes ONLY into jobs/_test_scratch/ (never into a job).
+
+  python3 exp_luma.py list  JOB                     scenes of a job: index, movement, QC remarks, which picture would be used (free)
+  python3 exp_luma.py run   JOB INDEX VARIANT       shows the cost and stops (free)
+  python3 exp_luma.py run   JOB INDEX VARIANT --go  generates ONE clip (~EUR 1.10) and prints light + full links
+VARIANT: base (today's prompt) | strict (stricter prompt, no end frame) | endframe (today's prompt + last frame = crop of the photo)
+"""
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+CAP_EUR = 10.0
+HERE = Path(__file__).resolve().parent
+JOBS_DIR = Path(os.environ.get("PVS_JOBS_DIR") or (HERE / "jobs"))
+SCRATCH = JOBS_DIR / "_test_scratch"
+SPEND = SCRATCH / "exp_spend.json"
+STRICT_ADD = ("the first frame is the exact and complete starting image: every object visible in any later frame must already be visible "
+              "in the first frame, never add, replace or move any chair, table, plant, lamp, decoration or other furniture, "
+              "and the camera never leaves the area shown in the first frame")
+VARIANTS = ("base", "strict", "endframe")
+
+
+def est_eur() -> float:
+    import cost_tracker as ct
+    return round(ct.LUMA_DIRECT_USD_PER_CLIP * ct.USD_TO_EUR, 2)
+
+
+def spent() -> float:
+    try:
+        return float(json.loads(SPEND.read_text()).get("total_eur", 0.0))
+    except Exception:
+        return 0.0
+
+
+def add_spend(eur: float, note: str):
+    SCRATCH.mkdir(parents=True, exist_ok=True)
+    try:
+        d = json.loads(SPEND.read_text())
+    except Exception:
+        d = {"total_eur": 0.0, "runs": []}
+    d["total_eur"] = round(d["total_eur"] + eur, 2)
+    d["runs"].append({"eur": eur, "note": note, "at": time.strftime("%Y-%m-%d %H:%M:%S")})
+    SPEND.write_text(json.dumps(d, indent=1))
+
+
+def can_spend(eur: float):
+    """(ok, message). The cap is checked BEFORE every generation."""
+    now = spent()
+    if now + eur > CAP_EUR + 1e-9:
+        return False, f"STOP: speso {now:.2f} + {eur:.2f} supererebbe il tetto di {CAP_EUR:.2f} EUR"
+    return True, f"speso finora {now:.2f} EUR, questa prova ~{eur:.2f} EUR, dopo ~{now + eur:.2f} di {CAP_EUR:.2f}"
+
+
+def load_scene(job: str, index: int) -> dict:
+    meta = json.loads((JOBS_DIR / job / "job_meta.json").read_text())
+    cfg = meta.get("scenes_config") or []
+    sc = cfg[index]
+    sid = sc.get("scene_id")
+    jd = JOBS_DIR / job
+    cands = [jd / "enhanced" / f"scene_{index:03d}_enhanced_lit.jpg", jd / "enhanced" / f"scene_{index:03d}_enhanced.jpg"]
+    cands += [jd / "images" / f"{sid}{e}" for e in (".jpg", ".jpeg", ".png", ".webp")] if sid else []
+    cands += [jd / "images" / f"scene_{index:03d}{e}" for e in (".jpg", ".jpeg", ".png", ".webp")]
+    img = next((c for c in cands if c.exists()), None)
+    qc = [q for q in (meta.get("qc_results") or []) if q.get("scene") == index and q.get("type") == "video"]
+    return {"scene": sc, "image": img, "qc": qc, "meta": meta}
+
+
+def cmd_list(job: str):
+    meta = json.loads((JOBS_DIR / job / "job_meta.json").read_text())
+    for i, sc in enumerate(meta.get("scenes_config") or []):
+        s = load_scene(job, i)
+        issues = "; ".join(x for q in s["qc"] for x in (q.get("issues") or [])) or "-"
+        print(f"scena {i}: {sc.get('pov_movement')} / {sc.get('space_type')} | {(sc.get('caption') or '')[:30]} | QC: {issues[:110]} | foto: {s['image'].name if s['image'] else 'NON TROVATA'}")
+    print(f"speso nelle prove finora: {spent():.2f} EUR (tetto {CAP_EUR:.2f})")
+
+
+def cmd_run(job: str, index: int, variant: str, go: bool, generate=None):
+    if variant not in VARIANTS:
+        print("variante non valida:", variant, VARIANTS); return 2
+    s = load_scene(job, index)
+    if not s["image"]:
+        print("foto non trovata"); return 2
+    eur = est_eur()
+    ok, msg = can_spend(eur)
+    print(msg)
+    if not ok:
+        return 3
+    if not go:
+        print("Nessuna generazione (manca --go). Per generare aggiungi --go in fondo.")
+        return 0
+    import video_generation as vg
+    if variant == "strict":
+        vg._LUMA_RULES = vg._LUMA_RULES + ", " + STRICT_ADD
+    gen = generate or vg.generate_video_single
+    SCRATCH.mkdir(parents=True, exist_ok=True)
+    out = SCRATCH / f"exp_{job}_{index}_{variant}_{int(time.time())}.mp4"
+    sc = s["scene"]
+    done = gen(str(s["image"]), 5, str(out), space_type=sc.get("space_type", "large"), pov_movement=sc.get("pov_movement", "walk_in_explore"),
+               model_tier="luma", end_frame=(variant == "endframe"))
+    used = None
+    try:
+        import clip_provenance
+        used = clip_provenance.used_model_of(out)
+    except Exception:
+        pass
+    if done and out.exists():
+        import cost_tracker as ct
+        real = ct.video_cost_for_clip("luma", 5, used)
+        add_spend(round(real, 2), f"{job} scene {index} {variant} model={used}")
+        print(f"FATTO. costo reale ~{real:.2f} EUR (modello {used}); totale speso {spent():.2f} di {CAP_EUR:.2f} EUR")
+        import preview_proxy
+        light = preview_proxy.light_copy(out, SCRATCH)
+        print("video leggero:", f"http://187.77.196.94:8000/test-scratch/{light.name}")
+        print("video pieno:  ", f"http://187.77.196.94:8000/test-scratch/{out.name}")
+        return 0
+    # a failed call may still have been billed: count it as spent so the cap stays safe
+    add_spend(eur, f"{job} scene {index} {variant} FAILED (counted as spent, to be safe)")
+    print("generazione NON riuscita (contata come spesa per sicurezza). Vedi il log del server/terminale.")
+    return 1
+
+
+if __name__ == "__main__":
+    from dotenv import load_dotenv
+    load_dotenv(HERE / ".env")
+    a = sys.argv[1:]
+    if len(a) >= 2 and a[0] == "list":
+        cmd_list(a[1])
+    elif len(a) >= 4 and a[0] == "run":
+        sys.exit(cmd_run(a[1], int(a[2]), a[3], "--go" in a))
+    else:
+        print(__doc__)

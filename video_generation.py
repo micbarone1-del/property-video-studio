@@ -728,7 +728,7 @@ def _snap_luma_direct_duration(duration: int) -> str | None:
     return "5s" if duration <= 6 else None
 
 
-def _generate_luma_direct(image_url: str, prompt: str, duration: int, aspect_ratio: str = "16:9") -> str | None:
+def _generate_luma_direct(image_url: str, prompt: str, duration: int, aspect_ratio: str = "16:9", end_frame_url: str = None) -> str | None:
     """Submits to Luma Ray 3.2 via Luma's AGENTS API (agents.lumalabs.ai) --
     confirmed via live testing (Oct 2026) that this account's key only
     authenticates on this host, not the classic Dream Machine API. SDR
@@ -767,6 +767,7 @@ def _generate_luma_direct(image_url: str, prompt: str, duration: int, aspect_rat
                     "resolution": "1080p",
                     "duration": luma_dur,
                     "start_frame": {"url": image_url},
+                    **({"end_frame": {"url": end_frame_url}} if end_frame_url else {}),   # 2026-10-26: a crop of the photo, see end_frame.py
                 },
             },
             timeout=30,
@@ -946,6 +947,7 @@ def generate_video_single(
     do_video_upscale: bool = True,         # Eco: Topaz; Standard/Premium: ignored
     include_person: bool = False,          # future hook
     test_mode:      bool = False,
+    end_frame:      bool = None,           # 2026-10-26: Luma DIRECT only: last frame = crop of the photo. None -> env PVS_END_FRAME (default off)
 ) -> bool:
     """
     Generates a single POV immersive video clip from a property photo.
@@ -1031,6 +1033,22 @@ def generate_video_single(
             log.warning(f"[VideoGen] Image resize failed, uploading as-is: {_resize_err}")
         image_url = _upload_bytes(image_data)
 
+        # 2026-10-26: optional end frame (only the DIRECT Luma call uses it; the fal fallback ignores it). OFF unless asked.
+        end_frame_url = None
+        if end_frame is None:
+            end_frame = os.environ.get("PVS_END_FRAME", "0").strip().lower() in ("1", "true", "yes")
+        if end_frame and model_tier == "luma" and LUMA_DIRECT:
+            import end_frame as _ef
+            _ef_bytes = _ef.make_end_frame_bytes(image_data, pov_movement)
+            if _ef_bytes:
+                try:
+                    end_frame_url = _upload_bytes(_ef_bytes)
+                    log.info(f"[VideoGen] Luma end frame = crop of the photo for movement {pov_movement}")
+                except Exception as _ef_err:
+                    log.warning(f"[VideoGen] end frame upload failed, generating without it: {_ef_err}")
+            else:
+                log.info(f"[VideoGen] no end-frame rule for movement {pov_movement}: generating without it")
+
         # 2026-07-17 fix: detect the real input orientation once here,
         # instead of every call hardcoding "16:9" -- see _detect_aspect_ratio().
         luma_aspect_ratio = _detect_aspect_ratio(_w, _h, model="luma")
@@ -1049,7 +1067,7 @@ def generate_video_single(
             _LUMA_STATE.bad_input = False
             _LUMA_STATE.direct_error = None
             if LUMA_DIRECT:
-                video_url  = _generate_luma_direct(image_url, final_prompt, duration, aspect_ratio=luma_aspect_ratio)
+                video_url  = _generate_luma_direct(image_url, final_prompt, duration, aspect_ratio=luma_aspect_ratio, end_frame_url=end_frame_url)
                 used_model = "luma-ray-3.2-direct"
                 if not video_url:
                     if not getattr(_LUMA_STATE, "direct_error", None):

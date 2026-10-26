@@ -801,3 +801,4 @@ Requirements, in his words/intent (confirm in plain language before any code; ea
 
 ### 2026-10-26 Luma fidelity experiments (budget EUR 10 max, Michele)
 - Goal: clip must not leave the space of the photo or invent items (dining chair on 6dddfd66 living room). Candidates: (1) stronger prompt wording; (2) end keyframe = crop of the photo. Test on ONE scene, 1-2 clips per variant (~EUR 1.1 each direct), stop at EUR 10 total; report cost after each run. Not started.
+- (2026-10-26 AK) End-frame experiments: plan = same scene, variants base / strict prompt / endframe, then a second scene type; judge: no invented items, stays inside the photo, motion looks like a camera move not a digital zoom, price. Production switch (PVS_END_FRAME or UI option) only after Michele sees the clips.
