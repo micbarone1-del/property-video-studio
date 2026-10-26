@@ -9,6 +9,7 @@ except Exception:
 import scene_script as ss
 import narration as N
 import listing_scraper as ls
+ls._IT_SPELL = False   # 2026-10-26: these tests script the whole-text proofreader replies; the dictionary mode is covered in test_italian_check.py
 os.environ.pop("PVS_ANCHORED_TIMELINE", None)   # 2026-10-23 (Patch K): AFTER the import (listing_scraper calls load_dotenv); this suite tests the per-scene path and the server .env turns the anchored mode ON
 
 fails = []; total = 0
@@ -117,10 +118,13 @@ check("L3 scenes config is built from the SAME slots (same order, same photos)",
 check("L4 empty selection -> empty sequence", ls.standard_scene_sequence({"selected": {}}) == [])
 
 # ---------------- orchestration with fakes
-replies = []; prompts = []
+replies = []; prompts = []; lang_prompts = []; LANG = []
 class Msgs:
     def create(self, **kw):
         txt = kw["messages"][0]["content"]
+        if txt.startswith("You are a meticulous proofreader"):   # 2026-10-26: Italian check call, not part of the narration conversation
+            lang_prompts.append(txt)
+            return types.SimpleNamespace(content=[types.SimpleNamespace(type="text", text=(LANG.pop(0) if LANG else '{"errors": []}'))])
         prompts.append(txt)
         r = replies.pop(0)
         if isinstance(r, Exception): raise r
@@ -217,6 +221,21 @@ check("C4 Relinx path: selection before narration, sequence passed, selection re
       i_rel_sel < i_rel_narr and "agency.get(\"name\"), scene_category_order, scene_sequence," in api and "if narration[\"scene_count\"] == scraper.STANDARD_SCENES:\n            selection = pre_selection" in api)
 check("C5 both job records store narration_mode", api.count('"narration_mode": narration.get("narration_mode")') == 2)
 check("C6 the scenes config builder uses the shared slots (no second copy of the loop)", "for category, photo in standard_scene_slots(selection):" in open("listing_scraper.py").read())
+
+# 2026-10-26 Italian check on the other two narration paths
+bad_it = list(GOOD); bad_it[3] = "La cucina è abitabille."
+LANG[:] = ['{"errors": [{"wrong": "abitabille", "fix": "abitabile"}]}']
+o = run([J(bad_it)], [(28.5, {})])
+check("O24 per-scene script: a misspelled word is corrected before the voice (Italian check), still one script attempt", o["narration_mode"] == "per_scene" and o["script_attempts"] == 1 and o["narration_text"] == " ".join(GOOD) and "abitabille" not in measure_calls[0][0], (o.get("narration_text"), measure_calls))
+LANG[:] = ['{"errors": [{"wrong": "abitabille", "fix": "abitabile"}]}', '{"errors": [{"wrong": "ideale", "fix": "adatto"}]}']
+o = run([J(bad_it)], [(28.5, {})])
+check("O25 per-scene script: if an error is still left after the fix, the original sentences are kept (never blocks the job)", o["narration_mode"] == "per_scene" and "abitabille" in o["narration_text"], o.get("narration_text"))
+LANG[:] = ['{"errors": [{"wrong": "xyzzy", "fix": "abc"}]}']
+o = run([J(GOOD)], [(28.5, {})])
+check("O26 a made-up report never changes the text", o["narration_text"] == " ".join(GOOD))
+LANG[:] = ['{"errors": [{"wrong": "Terraza", "fix": "Terrazza"}]}']
+o = run(["Terraza e giardino completano la proprieta."], [(28.5, {})], seq=None)
+check("O27 single-text path: the Italian check replaces the wrong word in the text (no sequence -> single text)", o["narration_mode"] == "single_text" and o["narration_text"].startswith("Terrazza e giardino"), o.get("narration_text"))
 
 print(f"RESULT: {'ALL PASS' if not fails else 'FAILURES: ' + ', '.join(fails)} ({total - len(fails)}/{total})")
 sys.exit(1 if fails else 0)

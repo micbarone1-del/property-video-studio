@@ -970,6 +970,40 @@ def _claude_text_reply(client, prompt: str, max_tokens: int = 1024) -> str:
     return "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
 
 
+_IT_SPELL = None
+
+
+def _italian_unknown_words():
+    """The Italian dictionary lookup for italian_check (pyspellchecker): function(list of lowercase words) -> set of the unknown ones,
+    or None when the package is not installed (italian_check then proofreads the whole text, which finds far fewer typos)."""
+    global _IT_SPELL
+    if _IT_SPELL is None:
+        try:
+            from spellchecker import SpellChecker
+            _IT_SPELL = SpellChecker(language="it")
+        except Exception as e:
+            log.warning(f"[Scraper] Italian dictionary not available (pip install pyspellchecker): {e}")
+            _IT_SPELL = False
+    return (lambda words: set(_IT_SPELL.unknown(words))) if _IT_SPELL else None
+
+
+def _proofread(texts: list, description: str = "", address: str = "", agency_name: str = "") -> dict:
+    """2026-10-26: Italian spelling/grammar check of a narration (italian_check.py, ONE implementation for all narration paths).
+    A dictionary finds the unknown words, Claude judges only those (a whole-text proofreading missed "garantono" with both Haiku 4.5 and
+    Sonnet 5.5). Never raises. Returns italian_check.proofread()'s dict; checked=False when the Claude call did not work (the text goes on unchanged)."""
+    import italian_check as ic
+    try:
+        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        res = ic.proofread(texts, lambda prompt: _claude_text_reply(client, prompt, max_tokens=600),
+                           " ".join(x for x in (description, address, agency_name) if x), unknown_fn=_italian_unknown_words())
+    except Exception as e:
+        log.warning(f"[Scraper] Italian check failed, text kept as it is: {e}")
+        return {"texts": list(texts), "fixed": [], "remaining": [], "checked": False}
+    if res["fixed"] or res["remaining"] or not res["checked"]:
+        log.info(f"[Scraper] Italian check: checked={res['checked']} fixed={res['fixed']} remaining={res['remaining']}")
+    return res
+
+
 def _write_standard_scene_script(description: str, address: str, price: str, agency_name: str, sequence: list) -> dict:
     """2026-10-22 (Patch B): one sentence per scene for the standard video (see scene_script.py). Up to 3 Claude
     attempts (2026-10-22: was 2); each retry is told why the previous one was rejected by the fact check. Never raises.
@@ -986,6 +1020,11 @@ def _write_standard_scene_script(description: str, address: str, price: str, age
             problems = (["the reply was not a JSON array of strings"] if sentences is None else
                         ss.validate(sentences, description, agency_name, price, split_fn=split_into_sentences))
             if not problems:
+                lc = _proofread(sentences, description, address, agency_name)   # 2026-10-26: Italian check, applied only if the fact check still passes
+                if lc["fixed"] and not lc["remaining"] and not ss.validate(lc["texts"], description, agency_name, price, split_fn=split_into_sentences):
+                    sentences = lc["texts"]
+                elif lc["fixed"] or lc["remaining"]:
+                    log.warning(f"[Scraper] Per-scene script: Italian corrections not used (remaining {lc['remaining']}), original kept")
                 return {"ok": True, "sentences": sentences, "attempts": attempt, "problems": [], "error": None}
             log.warning(f"[Scraper] Per-scene script attempt {attempt} rejected: {problems} | sentences: {sentences}")
             feedback = ("\n\nYour previous answer was REJECTED for these reasons. Fix all of them, return the full JSON array again:\n- "
@@ -1201,6 +1240,24 @@ def _block_narration(description: str, address: str, price: str, voice_id: str, 
                             + "\n\nThey were REJECTED for these reasons. Fix all of them, return the full JSON object again:\n- " + "\n- ".join(problems))
                 log.warning(f"[Scraper] Block narration attempt {attempt} rejected: {problems} | blocks: {blocks}")
                 continue
+            # 2026-10-26: Italian spelling/grammar check BEFORE any voice is spent on the text (draft 7ff8ec4b: "garantono"). The corrections are word
+            # replacements; they are used only if the text still passes every check above. Anything left over goes back to the model as feedback.
+            lc = _proofread(blocks, description, address, agency_name)
+            if lc["fixed"] or lc["remaining"]:
+                fixed_ok = (not ss.validate_blocks(lc["texts"], description, agency_name, price, split_fn=split_into_sentences, scene_sequence=scene_sequence))
+                if lc["fixed"] and not lc["remaining"] and fixed_ok:
+                    log.info(f"[Scraper] Block narration attempt {attempt}: Italian corrections applied {lc['fixed']}")
+                    blocks = lc["texts"]
+                elif attempt < BLOCK_MAX_ATTEMPTS:
+                    import italian_check as _ic
+                    reason = f"Italian errors: {lc['fixed'] + lc['remaining']}"
+                    feedback = ("\n\nYour previous blocks were:\n" + json.dumps({"blocks": blocks}, ensure_ascii=False)
+                                + "\n\nThey were REJECTED because of language errors. Fix them, keep everything else, return the full JSON object again:\n- "
+                                + "\n- ".join(_ic.feedback_lines(lc["fixed"] + lc["remaining"])))
+                    log.warning(f"[Scraper] Block narration attempt {attempt} rejected: {reason} | blocks: {blocks}")
+                    continue
+                else:
+                    log.warning(f"[Scraper] Block narration: last attempt keeps its text, Italian errors left: {lc['fixed'] + lc['remaining']}")
             syn_list = []
             for bi, b in enumerate(blocks):
                 if b not in cache:
@@ -1293,7 +1350,7 @@ def _block_narration(description: str, address: str, price: str, voice_id: str, 
                                     "sentence_secs": [round(x, 3) for x in sent_secs[i]], "second_start": round(real_starts[i] + second_offsets[i], 3)}
                                    for i, b in enumerate(blocks)]}
             result = {
-                "ok": True, "narration_text": " ".join(blocks), "audio_path": audio["audio_path"], "speech_duration_secs": speech_secs,
+                "ok": True, "narration_text": " ".join(blocks[:-1] + [ss.closing_as_sentence(blocks[-1], agency_name)]), "audio_path": audio["audio_path"], "speech_duration_secs": speech_secs,
                 "scene_count": n, "video_duration_secs": clip_plan["video_secs"], "tts_calls_used": tts_calls, "was_trimmed": False,
                 "sync": None, "error": None, "narration_mode": "anchored", "script_attempts": attempt, "script_tightened": False,
                 "script_fallback_reason": None, "timeline": timeline,
@@ -1417,6 +1474,11 @@ def generate_narration_and_derive_scenes(
         return {"ok": False, "narration_text": "", "audio_path": None, "speech_duration_secs": None,
                 "scene_count": None, "video_duration_secs": None, "tts_calls_used": 0,
                 "was_trimmed": False, "error": "empty narration returned"}
+
+    if not per_scene:
+        _lc = _proofread([narration_text], description, address, agency_name)   # 2026-10-26: Italian check of the single text (replacements only)
+        if _lc["fixed"] and not _lc["remaining"]:
+            narration_text = _lc["texts"][0]
 
     # 2026-10-15: the standard video has a FIXED scene count, so the audio is built already synchronised with it.
     # Premium derives its scene count from the speech, so it is measured plain first and synchronised afterwards.

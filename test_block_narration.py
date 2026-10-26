@@ -9,6 +9,7 @@ except Exception:
 import scene_timing as T
 import scene_script as ss
 import listing_scraper as ls
+ls._IT_SPELL = False   # 2026-10-26: these tests script the whole-text proofreader replies; the dictionary mode is covered in test_italian_check.py
 
 fails = []; total = 0
 def check(name, cond, extra=""):
@@ -59,6 +60,7 @@ LABELS = ["Facciata", "Soggiorno", "Cucina", "Camera da letto", "Bagno", "Giardi
 GOOD = ["Coldwell Banker presenta una villa in vendita a Olgiata. Di 650 metri quadri, è completamente ristrutturata.",
         "La cucina è abitabile e molto funzionale. Ci sono 5 camere da letto, tutte molto luminose.",
         "Gli spazi sono curati nei dettagli. Il giardino è di 3000 metri quadri, contatta Coldwell Banker."]
+STORED = " ".join(GOOD[:-1] + [ss.closing_as_sentence(GOOD[-1], "Coldwell Banker")])   # 2026-10-26: the saved text shows the closing as its own sentence
 from narration import split_into_sentences as SPLIT
 pr = ss.validate_blocks(GOOD, DESC, AG, PRICE, split_fn=SPLIT, scene_sequence=SEQ)
 check("B1 good blocks accepted", pr == [], pr)
@@ -132,7 +134,11 @@ replies, prompts = [], []
 class FakeClient:
     def __init__(self, api_key=None): pass
 ls.anthropic.Anthropic = FakeClient
+lang_prompts, LANG_REPLIES = [], []
 def fake_reply(client, prompt, max_tokens=1024):
+    if prompt.startswith("You are a meticulous proofreader"):   # 2026-10-26: Italian check call, separate from the narration conversation
+        lang_prompts.append(prompt)
+        return LANG_REPLIES.pop(0) if LANG_REPLIES else '{"errors": []}'
     prompts.append(prompt)
     r = replies.pop(0)
     if isinstance(r, Exception): raise r
@@ -197,7 +203,7 @@ check("C1 first reply accepted -> ok, 3 synth calls, mode anchored/blocks/senten
 res = r["result"]; tl = res["timeline"]
 check("C2 result has the keys the pipeline reads", all(k in res for k in ("narration_text", "audio_path", "speech_duration_secs", "scene_count", "video_duration_secs", "tts_calls_used", "was_trimmed", "sync", "error", "script_attempts", "timeline")))
 check("C3 timeline: 6 targets, speeds inside limits, 5 anchors (scenes 2-6, one per sentence)", len(tl["targets"]) == 6 and all(0.8 - 1e-3 <= s <= 1.25 + 1e-3 for s in tl["speeds"]) and [a["scene"] for a in tl["anchors"]] == [2, 3, 4, 5, 6], tl)
-check("C4 narration text = the 3 blocks joined; price not spoken", res["narration_text"] == " ".join(GOOD) and "1.680" not in res["narration_text"])
+check("C4 narration text = the 3 blocks joined, the closing as its own sentence; price not spoken", res["narration_text"] == STORED and "1.680" not in res["narration_text"])
 offs = [a["offset_secs"] for a in tl["anchor_offsets"]]
 check("C5 every scene is on screen at (or just before) the sentence that talks about it (-1.1..+0.3 s)", all(-1.1 - 1e-6 <= o <= 0.3 + 1e-6 for o in offs), offs)
 check("C6 second sentences start where the log can verify them (second_start recorded per block)", all("second_start" in b and "sentence_secs" in b for b in tl["blocks"]))
@@ -294,8 +300,8 @@ check("B18 closing clause -> own sentence; other texts unchanged",
 synth_calls.clear()
 replies[:] = [json.dumps({"blocks": GOOD})]
 r = run()
-check("C20 only the last block is sent to the voice with the closing as its own sentence; narration_text keeps the 3 blocks as written",
-      r["ok"] and synth_calls[2].endswith(". Contatta Coldwell Banker.") and synth_calls[0] == GOOD[0] and synth_calls[1] == GOOD[1] and r["result"]["narration_text"] == " ".join(GOOD), synth_calls)
+check("C20 only the last block is sent to the voice with the closing as its own sentence; narration_text shows the closing as its own sentence, the timeline blocks stay as written",
+      r["ok"] and synth_calls[2].endswith(". Contatta Coldwell Banker.") and synth_calls[0] == GOOD[0] and synth_calls[1] == GOOD[1] and r["result"]["narration_text"] == STORED and [b["text"] for b in r["result"]["timeline"]["blocks"]] == GOOD and STORED.endswith(". Contatta Coldwell Banker."), synth_calls)
 # the real _synthesize_block: 3 spoken sentences -> 2 timing units; the 2nd = sentence 2 + CLOSING_PAUSE + closing
 import narration as _nar
 _o_syn, _o_join = _nar.synthesize_sentences, _nar.join_clips
@@ -349,6 +355,30 @@ check("E7 feedback aims inside the limit, not at its edge: even 0.2 s over asks 
 src_rep = open("listing_scraper.py").read()
 check("E8 the block loop uses plan_blocks_joint (no second pre-filter) and the old plan_blocks is not called any more",
       "st.plan_blocks_joint(" in src_rep and "st.plan_blocks(" not in src_rep)
+
+# ---------------- F. Italian check inside the loop (2026-10-26)
+bad_lang = list(GOOD); bad_lang[1] = GOOD[1].replace("luminose", "luminosse")
+check("F0 fixture: the misspelled block still passes every other check", ss.validate_blocks(bad_lang, DESC, AG, PRICE, split_fn=SPLIT, scene_sequence=SEQ) == [] and bad_lang != GOOD)
+replies[:] = [json.dumps({"blocks": bad_lang})]; LANG_REPLIES[:] = ['{"errors": [{"wrong": "luminosse", "fix": "luminose"}]}']
+synth_calls.clear(); prompts.clear(); lang_prompts.clear()
+r = run()
+check("F1 a misspelled word is corrected by replacement: accepted on attempt 1, the voice never sees the error",
+      r["ok"] and r["result"]["script_attempts"] == 1 and len(prompts) == 1 and len(lang_prompts) == 2 and r["result"]["narration_text"] == STORED
+      and not any("luminosse" in t for t in synth_calls), (r.get("reason"), synth_calls))
+replies[:] = [json.dumps({"blocks": bad_lang}), json.dumps({"blocks": GOOD})]
+LANG_REPLIES[:] = ['{"errors": [{"wrong": "luminosse", "fix": "luminose"}]}', '{"errors": [{"wrong": "curati", "fix": "accurati"}]}']
+synth_calls.clear(); prompts.clear(); lang_prompts.clear()
+r = run()
+check("F2 an error still reported after the replacement is sent back to the model (attempt 2 accepted)",
+      r["ok"] and r["result"]["script_attempts"] == 2 and len(prompts) == 2 and "language errors" in prompts[1] and '"curati" is not correct Italian' in prompts[1], prompts[-1][-400:] if len(prompts) > 1 else r)
+replies[:] = [json.dumps({"blocks": bad_lang})]; LANG_REPLIES[:] = ["boh"]
+synth_calls.clear(); prompts.clear(); lang_prompts.clear()
+r = run()
+check("F3 an unusable answer of the checker never blocks the narration (text goes on, attempt 1)", r["ok"] and r["result"]["script_attempts"] == 1 and len(prompts) == 1)
+replies[:] = [json.dumps({"blocks": GOOD})]; LANG_REPLIES[:] = ['{"errors": [{"wrong": "parola mai scritta", "fix": "altra"}]}']
+synth_calls.clear(); prompts.clear(); lang_prompts.clear()
+r = run()
+check("F4 a made-up report (words not in the text) is ignored", r["ok"] and r["result"]["narration_text"] == STORED and r["result"]["script_attempts"] == 1)
 
 print(f"\n{total - len(fails)}/{total} PASS")
 sys.exit(1 if fails else 0)

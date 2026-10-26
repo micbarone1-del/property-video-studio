@@ -357,6 +357,10 @@ _LUMA_MOVEMENT_TOKENS = {
     "walk_toward":        "slow 3D forward dolly approaching the building, foreground ground moving faster than the facade for depth parallax, smooth continuous motion, realistic physics",
     "step_out_onto":      "slow 3D forward dolly out toward the open view beyond the railing, camera always facing outward away from the building and never turning back toward the interior, foreground railing or plants moving faster than the distant view for depth parallax, maximum 30 degrees, smooth continuous motion, realistic physics",  # 2026-10-08: was a lateral pan with no outward direction; camera drifted back toward the interior
     "reveal_pullback":    "reverse 3D dolly shot, camera slowly moving backward as foreground elements slide past the frame edges, natural depth parallax throughout, the building facade stays fully visible and no branches, leaves or foliage ever cross in front of it or cover it, smooth continuous motion, realistic physics",
+    # 2026-10-26 CANDIDATES (camera test round, Michele's brief): NOT the default of any space type yet. Both only ever show PART of the
+    # starting image (no zoom-out): the pull-back of reveal_pullback invented a street and pavement around the facade (job 83ca6568 scene 0).
+    "approach_facade":    "slow straight 3D forward dolly toward the building entrance, camera level and at the same height throughout, foreground ground moving faster than the facade for depth parallax, the frame only ever shows a part of the starting image: it never zooms out and never reveals anything outside the starting image, no street, pavement, road, wall or garden appears that is not already in the photo, smooth continuous motion, realistic physics",
+    "outward_view":       "very slow 3D forward dolly facing outward, away from the building, toward the outdoor space already visible in the photo, foreground railing, plants or ground moving slightly faster than the distance for depth parallax, the frame only ever shows a part of the starting image: it never reveals anything outside the starting image and nothing is invented, the camera never turns back toward the building, maximum 20 degrees, smooth continuous motion, realistic physics",
 }
 
 _LUMA_INTENSITY_SUFFIX = {
@@ -385,6 +389,12 @@ _LUMA_RULES = (
     + _NO_OPERATOR_TRACES
 )
 
+# 2026-10-26: added to the Luma prompt ONLY when the photo analysis found a mirror / mirrored wardrobe / large glass door facing the camera.
+_LUMA_MIRROR_RULE = (
+    "the mirror and any large glass surface in the photo is a flat wall: it reflects only the empty room exactly as in the source photo, "
+    "the camera never moves toward it, and no person, face, shadow or anything missing from the source photo ever appears in it"
+)
+
 # Lyra frozen-scene prompt (lighting only — Lyra controls camera via parameters)
 _LYRA_SCENE = (
     "A high-end real estate interior. "
@@ -410,6 +420,7 @@ def assemble_pov_prompt(
     intensity:    str,
     model_tier:   str,
     output_format: str = "landscape",
+    reflective_surface: str = "none",   # 2026-10-26: none | small | large (photo analysis); only the Luma prompt uses it
 ) -> str:
     """
     Assembles a model-specific prompt from structured token dictionaries.
@@ -464,6 +475,8 @@ def assemble_pov_prompt(
         motion = _LUMA_MOVEMENT_TOKENS.get(pov_movement, _LUMA_MOVEMENT_TOKENS["walk_in_explore"])
         pace   = _LUMA_INTENSITY_SUFFIX.get(intensity, _LUMA_INTENSITY_SUFFIX["natural_pace"])
         prompt = f"{motion}, {pace}, {_LUMA_RULES}"
+        if reflective_surface in ("small", "large"):
+            prompt += ", " + _LUMA_MIRROR_RULE
         if output_format == "portrait":
             prompt += _PORTRAIT_ANTI_DRIFT
         log.info(f"[VideoGen] Luma prompt: {prompt}")
@@ -931,6 +944,7 @@ def generate_video_single(
     intensity:      str  = DEFAULT_INTENSITY,    # property-level
     model_tier:     str  = "standard",        # eco / standard / premium
     output_format:  str  = "landscape",       # landscape / portrait -- 2026-07-27, backlog item 37
+    reflective_surface: str = "none",         # 2026-10-26: none | small | large (mirror / glass seen by the photo analysis)
     # Legacy parameter kept for backward compatibility
     prompt:         str  = "",
     camera_hint:    str  = "auto",
@@ -983,7 +997,7 @@ def generate_video_single(
 
         # ── Assemble structured prompt ─────────────────────────────────────
         final_prompt = assemble_pov_prompt(
-            space_type, pov_movement, lighting, intensity, model_tier, output_format
+            space_type, pov_movement, lighting, intensity, model_tier, output_format, reflective_surface
         )
         log.info(f"[VideoGen] Prompt: {final_prompt[:120]}...")
 
