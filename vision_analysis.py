@@ -24,6 +24,7 @@ Cost: ~€0.0001-0.0003 per image analysis.
 """
 
 import os
+import camera_plan
 import re
 import logging
 import tempfile
@@ -303,18 +304,13 @@ _SPACE_MAP = {
     "large_interior": "large", "medium_interior": "medium", "bedroom": "bedroom",
     "small_interior": "small", "corridor": "corridor", "ground_exterior": "outdoor", "elevated": "elevated",
 }
-_MOVEMENT_MAP = {
-    "large": "walk_in_explore", "medium": "walk_in_explore", "bedroom": "walk_in_gentle",
-    "small": "subtle_rotate", "corridor": "walk_through", "outdoor": "reveal_pullback",
-    "elevated": "step_out_onto",
-}
+# 2026-10-26: the movement table is camera_plan.SPACE_DEFAULT_MOVEMENT (it used to be a drifted copy here); same object, no second table.
+_MOVEMENT_MAP = camera_plan.SPACE_DEFAULT_MOVEMENT
 
 
 def _build_input_result(space_type, depth, confidence, description, source, room=None) -> dict:
     v7_space = _SPACE_MAP.get(space_type, "large")
-    v7_movement = _MOVEMENT_MAP.get(v7_space, "walk_in_explore")
-    if v7_space == "large" and depth == "shallow":
-        v7_movement = "stand_look_around"
+    v7_movement = camera_plan.movement_for(v7_space, depth, room)
     camera = _SPACE_CAMERA.get(space_type, "gentle_arc")
     log.info(f"[Vision] Input analysis ({source}): room={room} space={space_type}->{v7_space} "
              f"movement={v7_movement} depth={depth} confidence={confidence:.0%}")

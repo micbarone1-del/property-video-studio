@@ -2183,20 +2183,22 @@ const MOVEMENT_OPTS = {
   subtle_rotate:      'Rotazione sottile — max 15° (piccoli ambienti)',
   approach_reveal:    'Avvicinati dolcemente — per piccoli ambienti',
   walk_toward:        'Avvicinati alla proprietà — per esterni',
-  reveal_pullback:    '⭐ Avvicinamento con profondità — primo piano più veloce dello sfondo (esterno/facciata)',
+  approach_facade:    '⭐ Avvicinamento alla facciata — dritto e lento, non mostra mai più della foto (facciata)',
+  outward_view:       '⭐ Sguardo verso l\'esterno — lento, senza inventare nulla (giardino, balcone, terrazza, piscina)',
+  reveal_pullback:    'Allontanamento con profondità — indietro, può inventare ciò che non è nella foto (sconsigliato)',
   step_out_onto:      'Esci verso — per balconi e terrazze (max 30°)',
 };
 
 
-// Space type → default POV movement mapping (mirrors SPACE_DEFAULT_MOVEMENT in video_generation.py)
+// Space type → default POV movement mapping. MIRROR of camera_plan.SPACE_DEFAULT_MOVEMENT (python): test_camera_plan.py fails if they differ.
 const SPACE_DEFAULT_MOVEMENT_MAP = {
   large:    'walk_in_explore',
-  medium:   'walk_in_gentle',
+  medium:   'walk_in_explore',
   bedroom:  'walk_in_gentle',
   small:    'subtle_rotate',
   corridor: 'walk_through',
-  outdoor:  'reveal_pullback',
-  elevated: 'step_out_onto',
+  outdoor:  'approach_facade',
+  elevated: 'outward_view',
 };
 
 

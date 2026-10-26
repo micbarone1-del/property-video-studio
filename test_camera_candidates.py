@@ -21,8 +21,8 @@ f, o = vg._LUMA_MOVEMENT_TOKENS["approach_facade"], vg._LUMA_MOVEMENT_TOKENS["ou
 check("C3 candidate movements never zoom out / reveal outside the photo, the terrace/garden one never turns back and does not name the horizon",
       "never zooms out" in f and "never reveals anything outside the starting image" in f and "backward" not in f and "reverse" not in f
       and "outside the starting image" in o and "never turns back" in o and "horizon" not in o and "landscape" not in o and "trees" not in o)
-check("C4 defaults NOT changed yet (a candidate is adopted only after Michele reviews the test clips)",
-      vg.SPACE_DEFAULT_MOVEMENT["outdoor"] == "reveal_pullback" and vg.SPACE_DEFAULT_MOVEMENT["elevated"] == "step_out_onto")
+check("C4 the candidates are the defaults now (Michele reviewed the test clips 2026-10-26; the table is camera_plan.py, see test_camera_plan.py)",
+      vg.SPACE_DEFAULT_MOVEMENT["outdoor"] == "approach_facade" and vg.SPACE_DEFAULT_MOVEMENT["elevated"] == "outward_view")
 check("C5 other tiers ignore the reflective argument (Veo/Lyra prompts identical)",
       all(vg.assemble_pov_prompt("bedroom", "subtle_rotate", "bright_natural", "very_slow", t, "landscape", "large") == vg.assemble_pov_prompt("bedroom", "subtle_rotate", "bright_natural", "very_slow", t, "landscape", "none") for t in ("premium", "eco")))
 

@@ -116,16 +116,10 @@ def _detect_space(hint: str) -> str:
 
 
 # ── POV movement suggestions per space type ────────────────────────────────────
-# Used by Florence-2 auto-suggest AND as fallback when camera_hint="auto"
-SPACE_DEFAULT_MOVEMENT = {
-    "large":    "walk_in_explore",
-    "medium":   "walk_in_gentle",
-    "bedroom":  "walk_in_gentle",
-    "small":    "subtle_rotate",
-    "corridor": "walk_through",
-    "outdoor":  "reveal_pullback",   # starts on facade detail, reveals full exterior
-    "elevated": "step_out_onto",
-}
+# Used by Florence-2 auto-suggest AND as fallback when camera_hint="auto".
+# 2026-10-26: the table now lives in camera_plan.py (ONE source for the server, the photo analysis, the URL scraper and, checked by a
+# test, ui.html); this name stays for the code that imports it.
+from camera_plan import SPACE_DEFAULT_MOVEMENT   # noqa: E402
 
 # Single source of truth for the default motion pace (api_server.py imports it; ui.html mirrors it with its selected option).
 DEFAULT_INTENSITY = "very_slow"

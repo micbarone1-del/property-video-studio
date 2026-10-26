@@ -34,10 +34,10 @@ cases = [
     ("bedroom", "medium", "medium", "bedroom", "walk_in_gentle"),
     ("bathroom", "small", "shallow", "small", "subtle_rotate"),
     ("hallway", "small", "deep", "corridor", "walk_through"),
-    ("balcony", "small", "medium", "elevated", "step_out_onto"),
-    ("terrace", "large", "medium", "elevated", "step_out_onto"),
-    ("garden", "large", "deep", "outdoor", "reveal_pullback"),
-    ("building_exterior", "large", "deep", "outdoor", "reveal_pullback"),
+    ("balcony", "small", "medium", "elevated", "outward_view"),
+    ("terrace", "large", "medium", "elevated", "outward_view"),
+    ("garden", "large", "deep", "outdoor", "outward_view"),
+    ("building_exterior", "large", "deep", "outdoor", "approach_facade"),
 ]
 for room, size, depth, exp_space, exp_move in cases:
     with_claude(J(room, size, depth))

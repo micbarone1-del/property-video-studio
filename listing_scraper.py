@@ -46,6 +46,7 @@ KNOWN OPEN ITEMS (not blockers, flagged for follow-up):
 """
 
 import os
+import camera_plan
 import re
 import math
 import json
@@ -1683,26 +1684,10 @@ _CATEGORY_TO_SPACE_TYPE = {
     "bedrooms": "small", "bathrooms": "small",
 }
 
-# BUG FIXED July 10 2026 — the previous version of this table used
-# entirely INVENTED movement names ("wide_reveal", "pullback_arc",
-# "gentle_arc", "soft_orbit") that don't match ANY real option in
-# ui.html's MOVEMENT_OPTS. Since none of those values ever matched a real
-# <option>, the dropdown always fell back to showing its first/starred
-# option ("Entra ed esplora") regardless of category — confirmed via real
-# testing this was the actual cause of "camera movement never changes."
-# Verified against the real MOVEMENT_OPTS list this time before choosing
-# defaults — these ARE real, selectable values:
-#   walk_in_explore, walk_in_gentle, walk_in_turn_left, walk_in_turn_right,
-#   walk_through, stand_look_around, subtle_rotate, approach_reveal,
-#   walk_toward, reveal_pullback, step_out_onto
-_CATEGORY_TO_POV_MOVEMENT = {
-    "exterior": "reveal_pullback",   # explicitly labeled for facade/exterior in the UI itself
-    "outdoor": "walk_toward",        # explicitly labeled "per esterni" (for exteriors)
-    "living": "walk_in_explore",     # the app's own starred/recommended default
-    "kitchen": "walk_in_gentle",     # gentle lateral tracking, compact functional space
-    "bedrooms": "stand_look_around", # calm, minimal — avoid dramatic movement in a private room
-    "bathrooms": "subtle_rotate",    # explicitly labeled "per piccoli ambienti" (for small rooms)
-}
+# 2026-10-26: the table lives in camera_plan.CATEGORY_MOVEMENT (ONE source; the two outside categories are derived from camera_plan.ROOM_MOVEMENT).
+# History: July 10 2026 the table used invented movement names that matched no real option of the UI, so the dropdown always showed its
+# first option; every value in camera_plan is checked by test_camera_plan.py against the UI list and the Luma prompt tokens.
+_CATEGORY_TO_POV_MOVEMENT = camera_plan.CATEGORY_MOVEMENT
 
 
 def build_standard_video_scenes_config(selection: dict, captions: dict, clip_duration_secs: int = 5) -> list:
@@ -1731,7 +1716,7 @@ def build_standard_video_scenes_config(selection: dict, captions: dict, clip_dur
             "caption": _scene_caption(captions, category),
             "voiceover": "",  # continuous narration track applied separately, not per-scene
             "space_type": _CATEGORY_TO_SPACE_TYPE.get(category, "large"),
-            "pov_movement": _CATEGORY_TO_POV_MOVEMENT.get(category, "gentle_arc"),
+            "pov_movement": _CATEGORY_TO_POV_MOVEMENT.get(category, camera_plan.DEFAULT_MOVEMENT),
             "duration": clip_duration_secs,
             "local_image_path": photo.get("local_path"),
             "category": category,
@@ -2074,7 +2059,7 @@ def build_premium_video_scenes_config(selection: dict, captions: dict, clip_dura
                 "caption": _scene_caption(captions, real_category),
                 "voiceover": "",  # continuous narration track applied separately, not per-scene
                 "space_type": _CATEGORY_TO_SPACE_TYPE.get(real_category, "large"),
-                "pov_movement": _CATEGORY_TO_POV_MOVEMENT.get(real_category, "gentle_arc"),
+                "pov_movement": _CATEGORY_TO_POV_MOVEMENT.get(real_category, camera_plan.DEFAULT_MOVEMENT),
                 "duration": clip_duration_secs,
                 "local_image_path": photo.get("local_path"),
                 "category": real_category,
