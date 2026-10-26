@@ -791,3 +791,13 @@ Requirements, in his words/intent (confirm in plain language before any code; ea
 - Drafts already created keep the movements they were created with (stored per scene at draft time): b13657de etc. need a NEW draft to get the new movements.
 - NOT DONE: mirror recognition (reflective_surface) in the photo analysis and the large-mirror movement (separate package); the Florence fallback (no room known) gives "approach_facade" for any outdoor photo; vision_analysis._SPACE_CAMERA is a different, legacy concept (camera hints) and was left alone; eco-tier tables (_KLING/_VEO/depth_renderer) have no entry for the two new movements and fall back safely (.get with walk_in_explore / safe default).
 - Tests (sandbox): test_camera_plan 20/20 (new), test_room_recognition 31/31 (4 expected values updated), test_camera_candidates 8/8 (C4 updated); all other suites unchanged and PASS, with and without the dictionary. NOT RUN: on the server, a new draft + one real generation (needs Michele's OK, about USD 7.2 + Sonnet QC about EUR 0.06).
+
+### 2026-10-26 (after AH) open items from the 6dddfd66 review
+- Luma fidelity: clip invents elements (dining chair) and leaves the space of the photo. Ideas: stronger prompt wording; end keyframe = crop of the photo. Needs a budgeted test on the living-room scene (EUR ~1.1-1.84/clip). Decision: Michele's budget approval pending.
+- Job total: price each Luma clip by the real model used (clip_provenance, direct USD 1.20) instead of fal USD 2.00. Cost logic: needs Michele's explicit OK before code.
+- Verbless sentences: VERB_RULE (prompt) is in AH; an automatic check (LLM on stored texts) is NOT built; measure first.
+- Download endpoint has its own copy of the range-serving code (now only that one remains besides `_serve_mp4_file`): consolidate later.
+- Preview cache `jobs/<id>/preview_cache/` is never cleaned (small); check against the `/diagnostics` auto-cleanup rule before adding any cleanup.
+
+### 2026-10-26 Luma fidelity experiments (budget EUR 10 max, Michele)
+- Goal: clip must not leave the space of the photo or invent items (dining chair on 6dddfd66 living room). Candidates: (1) stronger prompt wording; (2) end keyframe = crop of the photo. Test on ONE scene, 1-2 clips per variant (~EUR 1.1 each direct), stop at EUR 10 total; report cost after each run. Not started.

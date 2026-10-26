@@ -422,7 +422,7 @@
           <label>Video quality tier</label>
           <select id="model-tier" onchange="onTierChange(this.value)" autocomplete="off">
             <option value="eco">Eco — Lyra 2.0 + upscale (~€0.05/clip) · budget</option>
-            <option value="luma" selected>⭐ Luma Ray 2 (~€1.84/5s clip) · consigliato — 3D reale, no warping</option>
+            <option value="luma" selected>⭐ Luma Ray 2 (~€1.10/5s clip) · consigliato — 3D reale, no warping</option>
             <option value="premium">Veo 3.1 Fast (~€0.74/8s clip)</option>
             <option value="premium_veo">Veo 3.1 Standard (~€1.47/8s clip) · no circular wipe</option>
           </select>
@@ -567,7 +567,8 @@
     <div class="card">
       <div id="job-id-display" style="font-size:.78rem;color:var(--muted);margin-bottom:10px;padding:8px 12px;background:var(--paper);border-radius:var(--radius);font-family:monospace"></div>
       <div id="tts-failure-warning" style="display:none;font-size:.8rem;color:var(--danger);margin-bottom:10px;padding:8px 12px;background:var(--paper);border:1px solid var(--danger);border-radius:var(--radius)"></div>
-      <video id="video-preview" controls></video>
+      <video id="video-preview" controls preload="metadata"></video>
+      <div id="video-preview-info" style="font-size:.72rem;color:var(--muted);margin:6px 0"></div>
       <a class="btn-download" id="download-link" href="#">⬇ Download MP4</a>
       <div id="actual-cost" style="margin-top:16px"></div>
       <div style="margin-top:16px;display:flex;gap:10px;flex-wrap:wrap">
@@ -1123,7 +1124,7 @@ function showJobPreview(jobId, baseJobId, job) {
     const qcLabel = qc === 'pass' ? '✓ OK' : qc === 'approved' ? '✓ Approvata manualmente' : qc === 'reject' ? '✗ Scartata' : qc === 'flag' ? '⚠ Da rivedere' : '?';
     return `
       <div style="background:var(--card);border:1px solid var(--rule);border-radius:var(--radius);overflow:hidden">
-        <video src="/jobs/${baseJobId}/clip/${i}" controls style="width:100%;height:110px;object-fit:cover;background:#000"></video>
+        <video src="/jobs/${baseJobId}/clip/${i}/preview" preload="metadata" controls style="width:100%;height:110px;object-fit:cover;background:#000"></video>
         <div style="padding:8px 10px">
           <div style="font-size:.76rem;font-weight:600">Scena ${i} <span style="color:var(--muted);font-weight:normal">(scene_${String(i).padStart(3,'0')})</span></div>
           <div style="font-size:.7rem;color:${qcColor};margin-top:2px">${qcLabel}</div>
@@ -1137,8 +1138,9 @@ function showJobPreview(jobId, baseJobId, job) {
     <section id="job-preview-section">
       <p class="sec-label">Anteprima — ${job.property_name || 'Property'} <span style="color:var(--muted);font-weight:normal">(${jobId})</span></p>
       <div class="card">
-        <video id="preview-video" controls style="width:100%;border-radius:var(--radius);background:#000"
-          src="/jobs/${jobId}/download"></video>
+        <video id="preview-video" controls preload="metadata" style="width:100%;border-radius:var(--radius);background:#000"
+          src="/jobs/${jobId}/preview"></video>
+        <div id="preview-video-info" style="font-size:.72rem;color:var(--muted);margin-top:6px">Anteprima leggera — il download è il file originale a piena qualità.</div>
         <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap">
           <a class="btn-download" href="/jobs/${jobId}/download" download>⬇ Scarica MP4</a>
           <button class="btn-primary" style="background:var(--green)" onclick="editJob('${jobId}','${baseJobId}')">✎ Usa come base per modifiche</button>
@@ -1159,6 +1161,7 @@ function showJobPreview(jobId, baseJobId, job) {
     document.getElementById('library-section').insertAdjacentElement('afterend', container);
   }
   container.innerHTML = previewHtml;
+  showVideoInfo(jobId, "preview-video-info");
   container.scrollIntoView({behavior:'smooth'});
 }
 
@@ -1891,6 +1894,21 @@ checkLogin();
 function authHeaders(extra = {}) {
   const key = localStorage.getItem(SESSION_KEY) || '';
   return key ? { 'X-Access-Key': key, ...extra } : extra;
+}
+
+// What the download gives (original resolution/size) next to the light preview, so nobody wonders if the shared file is the sharp one.
+async function showVideoInfo(jobId, elId) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  try {
+    const r = await fetch(`${API_BASE}/jobs/${jobId}/video-info`, { headers: authHeaders() });
+    if (!r.ok) return;
+    const d = await r.json();
+    const o = d.original || {};
+    if (o.width && o.height) {
+      el.textContent = `Anteprima leggera. Il pulsante Scarica dà il file ORIGINALE: ${o.width}×${o.height}, ${o.size_mb} MB.`;
+    }
+  } catch (e) { /* the label is optional */ }
 }
 
 
@@ -2743,7 +2761,7 @@ async function updateCostEstimate() {
   // of pricing logic living only in the frontend, never touched when the
   // backend was fixed.
   const ECO_CLIP_COST          = 0.05;  // eco tier keeps its own separate flat approximation
-  const VIDEO_COST_PER_SEC_EUR = { luma: 0.368, premium: 0.092, premium_veo: 0.184 };
+  const VIDEO_COST_PER_SEC_EUR = { luma: 0.2208, premium: 0.092, premium_veo: 0.184 };
   const UPSCALE      = 0.030;
   const VIDEO_UP_PER_SEC = 0.02;
   const EL_PER_CHAR  = 0.0003;
@@ -3205,11 +3223,11 @@ function showQcReview(job) {
 
 
     // Video preview — link to the generated clip
-    const clipUrl  = `${API_BASE}/jobs/${currentJobId}/clip/${idx}`;
+    const clipUrl  = `${API_BASE}/jobs/${currentJobId}/clip/${idx}/preview`;
     const videoPreview = `
       <details style="margin-top:8px">
         <summary style="font-size:.76rem;color:var(--green);cursor:pointer">▶ Anteprima clip generata</summary>
-        <video src="${clipUrl}" controls style="width:100%;max-width:320px;margin-top:6px;border-radius:4px;border:1px solid var(--rule)"></video>
+        <video src="${clipUrl}" preload="metadata" controls style="width:100%;max-width:320px;margin-top:6px;border-radius:4px;border:1px solid var(--rule)"></video>
       </details>`;
 
 
@@ -3357,8 +3375,9 @@ function showResult(jobId, propName, scenes, realSceneCount, ttsFailures) {
     renderScenes();
   }
   const dlUrl = `${API_BASE}/jobs/${jobId}/download`;
-  document.getElementById('video-preview').src    = dlUrl;
+  document.getElementById('video-preview').src    = `${API_BASE}/jobs/${jobId}/preview`;   // light viewing copy; the download below stays the original
   document.getElementById('download-link').href   = dlUrl;
+  showVideoInfo(jobId, 'video-preview-info');
   document.getElementById('download-link').download = `${propName.replace(/\s+/g,'_')}_${jobId}.mp4`;
   document.getElementById('actual-cost').innerHTML = '';
   const scenesCount = realSceneCount != null ? realSceneCount : (scenes && scenes.length ? scenes.length : (completedScenes.length || '?'));

@@ -113,7 +113,10 @@ VEO_FAST_USD_PER_SEC       = 0.10   # Veo 3.1 Fast, no audio
 VEO_STANDARD_USD_PER_SEC   = 0.20   # Veo 3.1 Standard, no audio
 
 VIDEO_COST_PER_SEC_EUR = {
-    "luma":        (LUMA_RAY2_FAL_USD_PER_CLIP / 5) * USD_TO_EUR,   # ~0.368 EUR/s at 1080p
+    # 2026-10-26: the luma tier runs on the DIRECT Luma API (USD 1.20 per 5 s clip, from the Luma billing page); a clip that fell back
+    # to fal.ai is priced at its real model through video_cost_for_clip(used_model=...). It used to price EVERY luma clip at the fal
+    # rate (USD 2.00), which over-reported every normal job (EUR 11.04 instead of 6.62 for 6 clips on job 6dddfd66).
+    "luma":        (LUMA_DIRECT_USD_PER_CLIP / 5) * USD_TO_EUR,     # ~0.221 EUR/s at 1080p
     "premium":     VEO_FAST_USD_PER_SEC * USD_TO_EUR,              # ~0.092 EUR/s, Veo 3.1 Fast, no audio
     "premium_veo": VEO_STANDARD_USD_PER_SEC * USD_TO_EUR,          # ~0.184 EUR/s, Veo 3.1 Standard, no audio
 }
@@ -122,9 +125,8 @@ VIDEO_COST_PER_SEC_EUR = {
 def clip_price_usd(used_model, duration_secs=5):
     """USD price of ONE clip made by the model that actually produced it
     (the `used_model` name from video_generation). None if unknown. Used to
-    tell the operator what a fal.ai fallback really costs; it does NOT change
-    the job cost accounting above (which prices the luma tier at the fal
-    Ray 2 rate for every clip -- see backlog)."""
+    tell the operator what a fal.ai fallback really costs, and (2026-10-26)
+    it is also what video_cost_for_clip(used_model=...) uses for the luma tier."""
     m = used_model or ""
     if m == "luma-ray-3.2-direct":
         return LUMA_DIRECT_USD_PER_CLIP
@@ -139,13 +141,19 @@ def clip_price_usd(used_model, duration_secs=5):
     return None
 
 
-def video_cost_for_clip(model_tier: str, duration_secs) -> float:
+def video_cost_for_clip(model_tier: str, duration_secs, used_model=None) -> float:
     """
     Real per-clip video cost, scaled by actual clip duration -- replaces
     the flat TIER_COST_PER_CLIP lookup for tiers fal.ai genuinely bills
     per-second (Luma, Veo). Falls back to the flat rate for any tier not
     in VIDEO_COST_PER_SEC_EUR.
+    used_model (2026-10-26): the model that REALLY made the clip (clip_provenance sidecar). For the luma tier, when it is known the
+    clip is priced by clip_price_usd() (direct 1.20 / fal 2.00 per 5 s), scaled by duration; unknown -> the tier rate.
     """
+    if model_tier == "luma" and used_model:
+        usd = clip_price_usd(used_model, duration_secs)
+        if usd is not None:
+            return (usd / 5.0) * float(duration_secs) * USD_TO_EUR
     if model_tier in VIDEO_COST_PER_SEC_EUR:
         return duration_secs * VIDEO_COST_PER_SEC_EUR[model_tier]
     return TIER_COST_PER_CLIP.get(model_tier, TIER_COST_PER_CLIP["premium"])
@@ -221,8 +229,10 @@ def calculate_actual_cost(
     do_vision_qc:     bool = True,
     model_tier:       str  = "premium",
     claude_cost_eur:  float = 0.0,
+    used_models:      list = None,
 ) -> dict:
     """Calculates the actual cost after generation completes.
+    used_models: per scene, the model that really made the clip (None where unknown) - 2026-10-26.
     claude_cost_eur: see estimate_job_cost() docstring -- same real,
     previously-uncounted Claude API cost, for scraped jobs (2026-07-21 fix).
     """
@@ -249,7 +259,7 @@ def calculate_actual_cost(
             lyra_clips += 1
         else:
             # Veo or Luma — real per-second billing (2026-07-20 fix)
-            video_cost += video_cost_for_clip(model_tier, duration)
+            video_cost += video_cost_for_clip(model_tier, duration, (used_models[i] if used_models and i < len(used_models) else None))
             veo_clips  += 1
 
     upscale_cost = (UPSCALE_COST_PER_IMAGE * n) if do_upscale else 0.0
@@ -289,6 +299,7 @@ def calculate_rework_cost(
     redo_audio:     bool = False,
     audio_chars:    int  = 0,
     model_tier:     str  = "premium",
+    used_models:    list = None,
 ) -> dict:
     """
     Calculates the incremental cost of a rework run.
@@ -313,7 +324,7 @@ def calculate_rework_cost(
                 video_cost += _FRAME_COST.get(frames, LYRA_COST_81_FRAMES)
                 video_cost += duration * TOPAZ_COST_PER_SEC
             else:
-                video_cost += video_cost_for_clip(model_tier, duration)
+                video_cost += video_cost_for_clip(model_tier, duration, (used_models[i] if used_models and i < len(used_models) else None))
 
     tts_cost    = (audio_chars * ELEVENLABS_COST_PER_CHAR) if redo_audio else 0.0
     vision_cost = n * CLIP_QC_EST_EUR_PER_CLIP   # output QC only (estimate; Claude since Patch X)

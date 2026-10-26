@@ -53,6 +53,21 @@ check("A8 visible artifacts -> flag; another place -> reject",
 v, iss = va.clip_qc_verdict(va._parse_clip_qc(ans(new_structure=["a door"], severity="none")))
 check("A9 a listed item with severity none does not fail the clip (the model said it is not a problem)", v == "pass")
 
+# 2026-10-26 (Michele, real job 6dddfd66): doubtful person -> flag with text, not reject; minor with nothing listed -> pass; major with nothing listed -> reject with text
+qd = va._parse_clip_qc(ans(possible_person=True))
+check("A10 possible_person parsed", qd and qd["possible_person"] is True and va._parse_clip_qc(ans())["possible_person"] is False)
+v, iss = va.clip_qc_verdict(qd)
+check("A11 faint/ambiguous figure (tile pattern) -> flag WITH a text to read, NOT reject", v == "flag" and len(iss) == 1 and "verificare" in iss[0].lower(), (v, iss))
+v, iss = va.clip_qc_verdict(va._parse_clip_qc(ans(people=True, possible_person=True)))
+check("A12 a clear person still rejects (one issue, not two)", v == "reject" and len(iss) == 1)
+v, iss = va.clip_qc_verdict(va._parse_clip_qc(ans(severity="minor")))
+check("A13 minor severity with nothing listed -> pass (no empty flag)", v == "pass" and iss == [])
+v, iss = va.clip_qc_verdict(va._parse_clip_qc(ans(severity="major")))
+check("A14 major with nothing listed -> reject with a generic text", v == "reject" and len(iss) == 1)
+check("A15 every flag/reject carries text", all(va.clip_qc_verdict(va._parse_clip_qc(ans(**k)))[1] for k in
+      ({"possible_person": True}, {"artifacts": True}, {"people": True}, {"same_space": False}, {"severity": "major"})))
+check("A16 prompt asks for possible_person", "possible_person" in va.CLIP_QC_PROMPT)
+
 # ---- B. analyse_output with fakes (the frames and the model are replaced)
 tmp = tempfile.mkdtemp()
 frames = []

@@ -92,13 +92,17 @@ def update_scene_status(statuses, scene_id, scene_idx, scene, **fields):
     return entry
 
 
-def record_rework_cost(job, redone, model_tier, redo_video):
+def record_rework_cost(job, redone, model_tier, redo_video, job_dir=None):
     """Prices one rework round and folds it into job["cost_actual"].
     redone = list of {"duration", "had_voiceover", "voiceover_chars"}.
     Returns the rework record (or None if nothing was redone)."""
     if not redone:
         return None
     from cost_tracker import calculate_rework_cost, format_cost_display
+    import clip_provenance
+    # 2026-10-26: price the new clips by the model that really made them (sidecar next to <scene_id>.mp4)
+    used_models = [clip_provenance.used_model_of(Path(job_dir) / "clips" / f"{r.get('scene_id')}.mp4")
+                   if (job_dir and r.get("scene_id")) else None for r in redone] if redo_video else []
     rework_cost = calculate_rework_cost(
         scenes_redone=[{"duration": r.get("duration", 0)} for r in redone] if redo_video else [],
         models_used=[model_tier] * len(redone) if redo_video else [],
@@ -106,6 +110,7 @@ def record_rework_cost(job, redone, model_tier, redo_video):
         redo_audio=any(r.get("had_voiceover") for r in redone),
         audio_chars=sum(r.get("voiceover_chars", 0) for r in redone),
         model_tier=model_tier,
+        used_models=used_models,
     )
     job.setdefault("reworks", []).append(rework_cost)
     original_raw = job.get("cost_actual_raw")

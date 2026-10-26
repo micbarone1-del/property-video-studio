@@ -442,7 +442,8 @@ Work in two steps. STEP A - look ONLY at the photo (image 1) and write down its 
 
 Answer with ONE JSON object and nothing else:
 {{"photo_elements": ["..."],                // step A: the counted/named fixed elements of the photo (max 10 short items)
- "people": true|false,                     // a person, a face, a hand/arm/finger, or the shadow or reflection of a person or photographer, in frame 2 or 3 but NOT in the photo
+ "people": true|false,                     // a person, a face, a hand/arm/finger, or the shadow or reflection of a person or photographer, CLEARLY recognisable in frame 2 or 3 and NOT in the photo
+ "possible_person": true|false,             // something that MIGHT be a person but is faint, blurry or ambiguous, or could just be a pattern (tiles, wallpaper, plants, curtains, furniture, textures): use this INSTEAD of "people" when you are not sure
  "same_space": true|false,                  // frames 2 and 3 show the same place as the photo (false only if it is clearly another place)
  "new_structure": ["..."],                  // step B: elements of the photo that are missing, changed in number or kind, or things that do NOT exist in the photo (a new door/window/opening/stair/wall, furniture added or removed). Empty list if none. Elements that ARE in the photo, in the same number and kind, do not count.
  "severity": "none"|"minor"|"major",        // major = a clear invented or changed structure/furniture number or kind, or another place; minor = small doubtful differences
@@ -471,29 +472,34 @@ def _parse_clip_qc(raw: str):
     ns = d.get("new_structure") or []
     if not isinstance(ns, list):
         ns = [str(ns)]
-    return {"people": bool(d.get("people")), "same_space": d.get("same_space", True) is not False,
+    return {"people": bool(d.get("people")), "possible_person": bool(d.get("possible_person")), "same_space": d.get("same_space", True) is not False,
             "new_structure": [str(x)[:160] for x in ns][:6], "severity": sev, "artifacts": bool(d.get("artifacts")),
             "first_frame": str(d.get("first_frame", ""))[:300], "last_frame": str(d.get("last_frame", ""))[:300],
             "photo_elements": [str(x)[:80] for x in (d.get("photo_elements") or [])][:10] if isinstance(d.get("photo_elements"), list) else []}
 
 
 def clip_qc_verdict(qc: dict) -> tuple:
-    """(verdict, issues) from the parsed answer. The rules are HERE, not in the model: reject = a person/body part, another place, or a
-    major invented/changed structure; flag = minor doubts or visible artifacts; otherwise pass."""
+    """(verdict, issues) from the parsed answer. The rules are HERE, not in the model: reject = a CLEAR person/body part, another place, or a
+    major invented/changed structure; flag = something the operator can read and check (a described difference, a doubtful person, artifacts);
+    otherwise pass. 2026-10-26 (Michele, real job 6dddfd66): a faint 'human-like silhouette' in a tile pattern rejected a good clip, and a
+    'minor' severity with nothing described flagged a good clip with no text - so a doubtful person is a flag, not a reject, and a flag
+    always carries a text (nothing to read = nothing to check = pass)."""
     issues = []
     if qc["people"]:
         issues.append("Persona, parte del corpo, ombra o riflesso di una persona nel video")
+    elif qc.get("possible_person"):
+        issues.append("Possibile figura umana poco chiara (può essere una texture o un disegno): verificare")
     if not qc["same_space"]:
         issues.append("Il video mostra un posto diverso dalla foto")
     if qc["new_structure"] and qc["severity"] != "none":
         issues.append("Struttura/arredo diverso dalla foto: " + "; ".join(qc["new_structure"]))
+    elif qc["severity"] == "major":
+        issues.append("Struttura/arredo molto diverso dalla foto (il controllo non ha indicato quale)")
     if qc["artifacts"]:
         issues.append("Deformazioni evidenti nel video")
     if qc["people"] or not qc["same_space"] or qc["severity"] == "major":
         return "reject", issues
-    if qc["severity"] == "minor" or qc["artifacts"]:
-        return "flag", issues
-    return "pass", issues
+    return ("flag" if issues else "pass"), issues
 
 
 def analyse_output(

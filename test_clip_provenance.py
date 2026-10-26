@@ -56,7 +56,7 @@ check("P4f nothing from fal -> level none, 0 clips; empty config is safe", cp.su
 
 # P5 prices defined once
 check("P5a prices", ct.clip_price_usd("luma-ray-3.2-direct") == 1.2 and ct.clip_price_usd("luma-ray-2-fallback") == 2.0 and ct.clip_price_usd("veo-3.1-fallback", 6) == 0.6 and ct.clip_price_usd("unknown") is None)
-check("P5b job cost table unchanged in value (luma 0.368 EUR/s, veo fast 0.092)", abs(ct.VIDEO_COST_PER_SEC_EUR["luma"] - 0.368) < 1e-9 and abs(ct.VIDEO_COST_PER_SEC_EUR["premium"] - 0.092) < 1e-9)
+check("P5b job cost table: luma = DIRECT rate 0.2208 EUR/s (changed 2026-10-26 from the fal 0.368), veo fast 0.092 unchanged", abs(ct.VIDEO_COST_PER_SEC_EUR["luma"] - 0.2208) < 1e-9 and abs(ct.VIDEO_COST_PER_SEC_EUR["premium"] - 0.092) < 1e-9)
 check("P5c the fal Ray 2 price literal exists once in cost_tracker", len(re.findall(r"LUMA_RAY2_FAL_USD_PER_CLIP\s*=", open("cost_tracker.py").read())) == 1)
 
 # P6 wiring (source level: api_server / ui import heavy modules)

@@ -337,3 +337,7 @@ Update 2026-10-25 (night): clip QC with Claude built in the sandbox (test_clip_q
 - Drafts already created keep the movements they were created with (stored per scene at draft time): b13657de etc. need a NEW draft to get the new movements.
 - NOT DONE: mirror recognition (reflective_surface) in the photo analysis and the large-mirror movement (separate package); the Florence fallback (no room known) gives "approach_facade" for any outdoor photo; vision_analysis._SPACE_CAMERA is a different, legacy concept (camera hints) and was left alone; eco-tier tables (_KLING/_VEO/depth_renderer) have no entry for the two new movements and fall back safely (.get with walk_in_explore / safe default).
 - Tests (sandbox): test_camera_plan 20/20 (new), test_room_recognition 31/31 (4 expected values updated), test_camera_candidates 8/8 (C4 updated); all other suites unchanged and PASS, with and without the dictionary. NOT RUN: on the server, a new draft + one real generation (needs Michele's OK, about USD 7.2 + Sonnet QC about EUR 0.06).
+
+### 2026-10-26 Patch AH
+- Tests: test_preview_proxy (P1-P11 ffmpeg, W1-W7 wiring) 18/18 PASS sandbox; test_clip_qc A10-A16 PASS (44/44). Server smoke test (Range request, light < full, download = original size) NOT RUN.
+- FMEA proposals (not reviewed by Michele): QC false reject of good clip (S3, O3, D2) mitigated by possible_person->flag; preview cache failure (S2, O2, D2) fail-open to original; download must stay original (S8, O1, D2) covered by W2/W5.

@@ -61,6 +61,12 @@ def read(clip_path):
         return None
 
 
+def used_model_of(clip_path):
+    """The model that really made this clip (from its sidecar), or None if unknown (clips made before the sidecars)."""
+    meta = read(clip_path) if clip_path else None
+    return (meta or {}).get("model")
+
+
 def clip_file_for_scene(job_dir, scene_index, scene_id=None):
     """The ONE resolver for 'which file is this scene's clip'. Same order the
     reassemble step uses: the scene's stable scene_id file first (a rework

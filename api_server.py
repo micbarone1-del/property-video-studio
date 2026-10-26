@@ -721,6 +721,7 @@ async def auth_middleware(request: Request, call_next):
             or path.startswith("/v1/")
             or "/clip/" in path
             or path.endswith("/download")
+            or path.endswith("/preview")
             or "/image/" in path):
         return await call_next(request)
     if not _check_access(request):
@@ -2420,11 +2421,8 @@ def get_scene_image(job_id: str, scene_index: int):
 
 
 
-@app.get("/jobs/{job_id}/clip/{scene_index}")
-async def get_clip(job_id: str, scene_index: int, request: Request):
-    """Serves a generated clip with range request support for fast browser preview.
-    Range requests allow the browser to start playing immediately without downloading the full file.
-    """
+def _resolve_clip_path(job_id: str, scene_index: int) -> Path:
+    """The ONE resolver of a scene's clip file (used by the clip and the clip-preview endpoints)."""
     if job_id not in JOBS:
         raise HTTPException(status_code=404, detail="Job not found")
     # 2026-10-15 (Patch A): after a rework the scene's clip lives under its NEW scene_id
@@ -2443,23 +2441,23 @@ async def get_clip(job_id: str, scene_index: int, request: Request):
                 break
     if not clip_path.exists():
         raise HTTPException(status_code=404, detail="Clip not found")
+    return clip_path
 
 
-    file_size = clip_path.stat().st_size
+def _serve_mp4_file(file_path, request: Request, cache_control: str = "public, max-age=3600"):
+    """Serves an mp4 with HTTP Range support (browser can start playing at once). Used by the clip and the preview endpoints."""
+    import re
+    from fastapi.responses import StreamingResponse
+    file_path = str(file_path)
+    file_size = os.path.getsize(file_path)
     range_header = request.headers.get("range")
-
-
     if range_header:
-        # Parse range header e.g. "bytes=0-1023"
-        from fastapi.responses import StreamingResponse
-        import re
         match = re.match(r"bytes=(\d+)-(\d*)", range_header)
         if match:
             start = int(match.group(1))
             end   = int(match.group(2)) if match.group(2) else file_size - 1
             end   = min(end, file_size - 1)
             chunk_size = end - start + 1
-
 
             def iter_file(path, start, chunk):
                 with open(path, "rb") as f:
@@ -2472,31 +2470,60 @@ async def get_clip(job_id: str, scene_index: int, request: Request):
                         remaining -= len(data)
                         yield data
 
-
             return StreamingResponse(
-                iter_file(str(clip_path), start, chunk_size),
-                status_code=206,
-                media_type="video/mp4",
-                headers={
-                    "Content-Range":  f"bytes {start}-{end}/{file_size}",
-                    "Accept-Ranges":  "bytes",
-                    "Content-Length": str(chunk_size),
-                    "Cache-Control":  "public, max-age=3600",
-                }
-            )
+                iter_file(file_path, start, chunk_size), status_code=206, media_type="video/mp4",
+                headers={"Content-Range": f"bytes {start}-{end}/{file_size}", "Accept-Ranges": "bytes",
+                         "Content-Length": str(chunk_size), "Cache-Control": cache_control})
+    return FileResponse(file_path, media_type="video/mp4",
+                        headers={"Cache-Control": cache_control, "Accept-Ranges": "bytes", "Content-Length": str(file_size)})
 
 
-    return FileResponse(
-        str(clip_path),
-        media_type="video/mp4",
-        headers={
-            "Cache-Control":  "public, max-age=3600",
-            "Accept-Ranges":  "bytes",
-            "Content-Length": str(file_size),
-        }
-    )
+@app.get("/jobs/{job_id}/clip/{scene_index}")
+async def get_clip(job_id: str, scene_index: int, request: Request):
+    """Serves a generated clip with range request support for fast browser preview (the original file)."""
+    return _serve_mp4_file(_resolve_clip_path(job_id, scene_index), request)
 
 
+@app.get("/jobs/{job_id}/clip/{scene_index}/preview")
+async def get_clip_preview(job_id: str, scene_index: int, request: Request):
+    """LIGHT viewing copy of a clip (built once, cached). Never used for download or assembly. Falls back to the original."""
+    import preview_proxy
+    clip_path = _resolve_clip_path(job_id, scene_index)
+    light = await asyncio.to_thread(preview_proxy.light_copy, clip_path, JOBS_DIR / job_id / "preview_cache")
+    return _serve_mp4_file(light, request)
+
+
+def _done_output_path(job_id: str) -> str:
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+    if job["status"] not in ["done"]:
+        raise HTTPException(status_code=400, detail=f"Job not ready (status: {job['status']})")
+    output_path = job.get("output_path")
+    if not output_path or not Path(output_path).exists():
+        raise HTTPException(status_code=500, detail="Output file missing")
+    return output_path
+
+
+@app.get("/jobs/{job_id}/preview")
+async def preview_job(job_id: str, request: Request):
+    """LIGHT viewing copy of the finished video. The full-quality file is ONLY /jobs/{id}/download (unchanged)."""
+    import preview_proxy
+    output_path = _done_output_path(job_id)
+    light = await asyncio.to_thread(preview_proxy.light_copy, output_path, JOBS_DIR / job_id / "preview_cache")
+    return _serve_mp4_file(light, request)
+
+
+@app.get("/jobs/{job_id}/video-info")
+async def video_info(job_id: str):
+    """What the person downloads: resolution and size of the ORIGINAL finished video, and of the light preview if it exists."""
+    import preview_proxy
+    output_path = _done_output_path(job_id)
+    out = {"original": await asyncio.to_thread(preview_proxy.info, output_path)}
+    cp = preview_proxy.cache_path(Path(output_path), JOBS_DIR / job_id / "preview_cache")
+    if cp.exists():
+        out["preview"] = await asyncio.to_thread(preview_proxy.info, cp)
+    return out
 
 
 @app.post("/jobs/{job_id}/stop")
@@ -2933,7 +2960,7 @@ async def _run_redo(job_id: str, scene_ids: list, *, video: bool, strict: bool,
 
         result = await _sr.redo_scenes(job, job_dir, scene_ids, _redo_deps(job_id),
                                        video=video, strict=strict, label=label)
-        _sr.record_rework_cost(job, result["redone"], job.get("model_tier", "premium"), video)
+        _sr.record_rework_cost(job, result["redone"], job.get("model_tier", "premium"), video, job_dir=job_dir)
         _save_job(job_id)
 
         await run_reassemble_only(job_id)
@@ -3407,10 +3434,15 @@ def _record_actual_cost(job_id, scenes_config, models_used, audio_chars,
     finishes without one -- before this, only the second path recorded it."""
     claude_cost_eur = JOBS[job_id].get("claude_usage", {}).get("cost_eur", 0.0)
     from cost_tracker import calculate_actual_cost, format_cost_display
+    import clip_provenance
+    # 2026-10-26: price each clip by the model that REALLY made it (sidecar), not by the tier name
+    used_models = [clip_provenance.used_model_of(clip_provenance.clip_file_for_scene(JOBS_DIR / job_id, i, (sc or {}).get("scene_id")))
+                   for i, sc in enumerate(scenes_config or [])]
     actual = calculate_actual_cost(
         scenes_config, models_used, audio_chars,
         do_upscale=do_upscale, do_vision_qc=enable_vision_qc,
         model_tier=model_tier, claude_cost_eur=claude_cost_eur,
+        used_models=used_models,
     )
     JOBS[job_id]["cost_actual_raw"] = actual
     JOBS[job_id]["cost_actual"] = format_cost_display(actual, previous_reworks=JOBS[job_id].get("reworks", []))

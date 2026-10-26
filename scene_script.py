@@ -95,6 +95,8 @@ def words(sentence: str) -> list:
 # 2026-10-25: one wording for the three prompts below (it was triplicated). Square metres are spoken 'metri quadri'
 # (the voice spells 'mq' letter by letter and stops after the abbreviation); voice_generation.spoken_units is the safety net.
 NUMBERS_RULE = "- Numbers: copy them as the listing writes them, number first (e.g. '650 metri quadri'). Always write square metres in full as 'metri quadri': never 'mq', never 'm2', never 'metri quadrati'."
+VERB_RULE = ("- Every sentence needs a conjugated verb. A noun phrase alone is NOT a sentence: never 'Il giardino terrazzato di circa 60 metri quadri.' "
+             "but 'Il giardino terrazzato misura circa 60 metri quadri.' (or 'Il giardino è di circa 60 metri quadri'). Keep the short sentences short, but with a verb.")
 
 
 def build_prompt(description: str, address: str, agency_name: str, labels: list) -> str:
@@ -136,6 +138,7 @@ HARD RULES:
 - Every sentence is one complete sentence ending with a full stop, with no line breaks.
 - Every fact (number, feature, condition) must come from the listing text above. Never invent anything. If the listing does not say it, leave it out.
 {NUMBERS_RULE}
+{VERB_RULE}
 - Do NOT say the price. Do NOT say any phone number or e-mail.
 - Do NOT mention floors or levels of a specific room (no 'piano terra', 'primo piano', 'al piano ...'): you do not know which floor a photo shows.
 - Objective, calm, factual tone. No promotional adjectives (prestigioso, esclusivo, meraviglioso, splendido, ...) unless the listing itself uses that word.
@@ -337,6 +340,7 @@ HARD RULES:
 - "anchors": one entry for each room (scene 2 to 6) that the text names. "phrase" is the 1 to 3 words that name it, copied EXACTLY as they appear in "text", and it must appear only once in "text". Use an empty list if you name no room. Scene 1 never has an anchor.
 - Every fact (number, feature, condition) must come from the listing text above. Never invent anything. If the listing does not say it, leave it out.
 {NUMBERS_RULE}
+{VERB_RULE}
 - Do NOT say the price. Do NOT say any phone number or e-mail.
 - Do NOT mention floors or levels of a specific room (no 'piano terra', 'primo piano'): you do not know which floor a photo shows.
 - Objective, calm, factual tone. Do NOT use hyperbolic or luxury adjectives (prestigioso, esclusivo, meraviglioso, splendido, lussuoso, incantevole, mozzafiato, straordinario, eccezionale, favoloso, magnifico, sontuoso, and also elegante, raffinato, pregiato) in ANY form (masculine, feminine, plural: splendido, splendida, splendidi, splendide) unless the listing itself uses that word. Plain objective adjectives (luminoso, ampio, funzionale, curato...) are fine when the listing supports them.
@@ -626,6 +630,7 @@ HARD RULES:
 - Return ONLY a JSON object, nothing else: {{"blocks": ["<block 1>", "<block 2>", "<block 3>"]}}. Every block ends with a full stop and has no line breaks.
 - Every fact (number, feature, condition) must come from the listing text above. Never invent anything. If the listing does not say it, leave it out.
 {NUMBERS_RULE}
+{VERB_RULE}
 - Do NOT say the price. Do NOT say any phone number or e-mail.
 - Do NOT mention floors or levels of a specific room (no 'piano terra', 'primo piano'): you do not know which floor a photo shows.
 - Objective, calm, factual tone. Do NOT use hyperbolic or luxury adjectives (prestigioso, esclusivo, meraviglioso, splendido, lussuoso, incantevole, mozzafiato, straordinario, eccezionale, favoloso, magnifico, sontuoso, affascinante, and also elegante, raffinato, pregiato) in ANY form (masculine, feminine, plural) unless the listing itself uses that word.
