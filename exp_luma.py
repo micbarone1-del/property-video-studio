@@ -4,7 +4,7 @@ that would take the running total (jobs/_test_scratch/exp_spend.json) above the 
   python3 exp_luma.py list  JOB                     scenes of a job: index, movement, QC remarks, which picture would be used (free)
   python3 exp_luma.py run   JOB INDEX VARIANT       shows the cost and stops (free)
   python3 exp_luma.py run   JOB INDEX VARIANT --go  generates ONE clip (~EUR 1.10) and prints light + full links
-VARIANT: base (today's prompt) | strict (stricter prompt, no end frame) | straight (strict + no rotation, short straight travel) | subtle (strict + subtle_rotate) | target (strict + straight push-in toward the centre, no sideways) | anchor (strict + straight approach toward the thing Claude names at the centre of the photo, for ANY movement) | pair (strict + first AND last frame = two equal crops of the photo; only for sideways/rotating movements)
+VARIANT: base (today's prompt) | strict (stricter prompt, no end frame) | straight (strict + no rotation, short straight travel) | subtle (strict + subtle_rotate) | target (strict + straight push-in toward the centre, no sideways) | anchor (strict + straight approach toward the thing Claude names at the centre of the photo, for ANY movement) | anchormove (strict + the scene's OWN movement expressed relative to the anchor: push-in, turn toward it, or arc around it) | pair (strict + first AND last frame = two equal crops of the photo; only for sideways/rotating movements)
 """
 import json
 import os
@@ -32,7 +32,54 @@ ANCHOR_QUESTION = ("This is a real-estate photo. Name the ONE thing a camera sta
 ANCHOR_MOTION = ("slow straight forward camera push-in toward {anchor}, the camera never moves sideways, never slides left or right and never turns, "
                  "treat nearby furniture as if it were not there: never steer around it and never dodge it, the path is one straight line toward {anchor}, "
                  "the camera stops well before reaching it, smooth continuous motion, no stepping or bobbing, realistic physics")
-VARIANTS = ("base", "strict", "straight", "pair", "subtle", "target", "anchor")
+ANCHOR2_QUESTION = ("This is a real-estate photo. Name the ONE most prominent, characteristic thing near the middle of the frame that a camera could "
+                    "approach or keep in view: a structural or main feature of the room (a window, a door, a bookcase, a bed, the view beyond a railing), "
+                    "never a small decorative object. Then say where it sits horizontally in the frame. "
+                    "Answer exactly like this and nothing else: <noun phrase of at most 8 words> | <left or center or right>")
+_MOVE_TAIL = "smooth continuous motion, no stepping or bobbing, realistic physics"
+FIRST_FRAME_ONLY = "the camera only ever shows what is already visible in the first frame"
+VARIANTS = ("base", "strict", "straight", "pair", "subtle", "target", "anchor", "anchormove")
+
+
+def parse_anchor_side(txt):
+    """'the French doors | right' -> ('the French doors', 'right'). Side defaults to 'center' when missing or unclear. ('', '') if no usable phrase."""
+    try:
+        line = (txt or "").strip().splitlines()[0]
+    except IndexError:
+        return "", ""
+    phrase, _, side = line.partition("|")
+    phrase = phrase.strip().strip('."\'`*').strip()
+    side = side.strip().strip('."\'`*').lower()
+    if not 2 <= len(phrase) <= 80:
+        return "", ""
+    return phrase, (side if side in ("left", "right", "center") else "center")
+
+
+def anchor_side_of(image_path, ask=None):
+    if ask is None:
+        import vision_analysis
+        ask = lambda p: vision_analysis._claude_vision_call([str(p)], ANCHOR2_QUESTION, max_tokens=40)
+    try:
+        return parse_anchor_side(ask(image_path))
+    except Exception:
+        return "", ""
+
+
+def anchor_motion_for(movement, anchor, side):
+    """The camera instruction of a scene movement, expressed relative to the anchor. Straight push-in for forward movements, a turn toward
+    the anchor for rotating ones (only when the anchor is off-centre), a short arc around the anchor for the sideways one."""
+    if movement in ("walk_in_turn_left", "walk_in_turn_right", "subtle_rotate", "stand_look_around") and side in ("left", "right"):
+        deg = 8 if movement == "subtle_rotate" else 12
+        return (f"slow gentle pan to the {side} of at most {deg} degrees until {anchor} is at the centre of the frame, then stop, "
+                f"the camera only turns and does not move forward or sideways, {FIRST_FRAME_ONLY}, " + _MOVE_TAIL)
+    if movement == "walk_in_gentle":
+        way = side if side in ("left", "right") else "right"
+        return (f"very slow short arc around {anchor}: the camera glides less than half a metre to the {way} while turning slightly so that {anchor} "
+                f"stays at the centre of the frame, {FIRST_FRAME_ONLY}, treat nearby furniture as if it were not there and never steer around it, " + _MOVE_TAIL)
+    if movement == "subtle_rotate":
+        return (f"almost static shot, imperceptibly slow push-in toward {anchor} of less than ten centimetres, the camera does not turn, "
+                f"{FIRST_FRAME_ONLY}, " + _MOVE_TAIL)
+    return ANCHOR_MOTION.format(anchor=anchor)
 
 
 def anchor_phrase(image_path, ask=None) -> str:
@@ -122,7 +169,7 @@ def cmd_run(job: str, index: int, variant: str, go: bool, generate=None, anchor_
         print("Nessuna generazione (manca --go). Per generare aggiungi --go in fondo.")
         return 0
     import video_generation as vg
-    if variant in ("strict", "straight", "subtle", "target", "pair", "anchor"):
+    if variant in ("strict", "straight", "subtle", "target", "pair", "anchor", "anchormove"):
         vg._LUMA_RULES = vg._LUMA_RULES + ", " + STRICT_ADD + (STRAIGHT_ADD if variant in ("straight", "target") else "")
     movement = s["scene"].get("pov_movement", "walk_in_explore")
     if variant == "subtle":
@@ -137,6 +184,16 @@ def cmd_run(job: str, index: int, variant: str, go: bool, generate=None, anchor_
         print("Punto verso cui avanzare, scelto da Claude guardando la foto:", anchor)
         vg._LUMA_MOVEMENT_TOKENS["walk_in_explore"] = ANCHOR_MOTION.format(anchor=anchor)
         movement = "walk_in_explore"      # every movement becomes a straight approach to the anchor (no sideways slide, no rotation)
+    if variant == "anchormove":
+        anchor, side = anchor_side_of(s["image"], ask=anchor_ask)
+        if not anchor:
+            print("Non sono riuscito a farmi dire da Claude cosa c'e al centro della foto: nessuna generazione, nessuna spesa."); return 5
+        if movement == "stand_look_around":
+            movement = "walk_in_explore"            # same remap as assemble_pov_prompt
+        text = anchor_motion_for(movement, anchor, side)
+        print(f"Punto di riferimento scelto da Claude: {anchor} (posizione: {side}); movimento della scena: {movement}")
+        print("Istruzione di camera:", text[:230])
+        vg._LUMA_MOVEMENT_TOKENS[movement] = text
     gen = generate or vg.generate_video_single
     SCRATCH.mkdir(parents=True, exist_ok=True)
     out = SCRATCH / f"exp_{job}_{index}_{variant}_{int(time.time())}.mp4"

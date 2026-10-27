@@ -101,6 +101,23 @@ check("E17f anchor: Claude's phrase (cleaned, first line) goes into the motion t
 check("E17g anchor with no answer from Claude: refused, no generation, no spend", ex.cmd_run("jobY", 0, "anchor", True, spy, anchor_ask=lambda p: None) == 5 and len(seen) == 1)
 check("E17h anchor_phrase rejects junk (empty / too long)", ex.anchor_phrase("x", ask=lambda p: "") == "" and ex.anchor_phrase("x", ask=lambda p: "a" * 200) == "" and ex.anchor_phrase("x", ask=lambda p: "the window") == "the window")
 _vg._LUMA_MOVEMENT_TOKENS["walk_in_explore"] = _tok0; _vg._LUMA_RULES = _rules0
+seen.clear()
+check("E19a parse 'phrase | side' (quotes/dots cleaned, bad side -> center, junk -> empty)", ex.parse_anchor_side('"the French doors". | Right') == ("the French doors", "right") and ex.parse_anchor_side("a bed | middle") == ("a bed", "center") and ex.parse_anchor_side("a bed") == ("a bed", "center") and ex.parse_anchor_side("") == ("", "") and ex.parse_anchor_side("x" * 120 + " | left") == ("", ""))
+check("E19b pan movements turn toward an off-centre anchor, never move forward/sideways", all(("pan to the right" in ex.anchor_motion_for(m, "the doors", "right") and "does not move forward or sideways" in ex.anchor_motion_for(m, "the doors", "right")) for m in ("walk_in_turn_left", "walk_in_turn_right", "subtle_rotate", "stand_look_around")) and "at most 8 degrees" in ex.anchor_motion_for("subtle_rotate", "d", "left") and "at most 12 degrees" in ex.anchor_motion_for("walk_in_turn_left", "d", "left"))
+check("E19c centred anchor: turning movements fall back to a push-in (nothing to turn toward)", "push-in toward the doors" in ex.anchor_motion_for("walk_in_turn_left", "the doors", "center") and "push-in" in ex.anchor_motion_for("subtle_rotate", "the doors", "center") and "ten centimetres" in ex.anchor_motion_for("subtle_rotate", "the doors", "center"))
+check("E19d sideways movement = short arc around the anchor, anchor stays centred", "arc around the bed" in ex.anchor_motion_for("walk_in_gentle", "the bed", "left") and "to the left" in ex.anchor_motion_for("walk_in_gentle", "the bed", "left") and "to the right" in ex.anchor_motion_for("walk_in_gentle", "the bed", "center") and "stays at the centre" in ex.anchor_motion_for("walk_in_gentle", "the bed", "left"))
+check("E19e forward movements (walk_in_explore, outward_view...) = the straight approach text", ex.anchor_motion_for("outward_view", "the view", "right") == ex.ANCHOR_MOTION.format(anchor="the view") and ex.anchor_motion_for("walk_in_explore", "x y", "left") == ex.ANCHOR_MOTION.format(anchor="x y"))
+(tmp2 / "jobM").mkdir(); (tmp2 / "jobM" / "images").mkdir(); Image.new("RGB", (64, 36)).save(tmp2 / "jobM" / "images" / "sc_m.jpg")
+(tmp2 / "jobM" / "job_meta.json").write_text(json.dumps({"scenes_config": [{"scene_id": "sc_m", "pov_movement": "walk_in_turn_left", "space_type": "bedroom"}]}))
+def spy2(img, dur, outp, **kw):
+    seen.append((kw["pov_movement"], kw["end_frame"], _vg._LUMA_RULES, _vg._LUMA_MOVEMENT_TOKENS.get(kw["pov_movement"]))); Path(outp).write_bytes(b"x"); return True
+_tok_l = _vg._LUMA_MOVEMENT_TOKENS["walk_in_turn_left"]
+ex.cmd_run("jobM", 0, "anchormove", True, spy2, anchor_ask=lambda p: "the wardrobe wall | left")
+check("E19f anchormove: scene movement KEPT, its text replaced by the anchor-relative one, strict rules, no end frame", seen and seen[-1][0] == "walk_in_turn_left" and seen[-1][1] is False and "pan to the left" in seen[-1][3] and "the wardrobe wall" in seen[-1][3] and ex.STRICT_ADD in seen[-1][2], seen[-1][:2] if seen else None)
+_vg._LUMA_MOVEMENT_TOKENS["walk_in_turn_left"] = _tok_l; _vg._LUMA_RULES = _rules0
+n = len(seen)
+check("E19g anchormove with no answer: refused, no generation, no spend", ex.cmd_run("jobM", 0, "anchormove", True, spy2, anchor_ask=lambda p: None) == 5 and len(seen) == n)
+_vg._LUMA_MOVEMENT_TOKENS["walk_in_explore"] = _tok0; _vg._LUMA_RULES = _rules0
 check("E17 bad variant refused", ex.cmd_run("jobX", 0, "nope", True, fake_gen) == 2)
 check("E18 the script only writes under _test_scratch", "SCRATCH / f\"exp_" in open("exp_luma.py").read() and "rmtree" not in open("exp_luma.py").read() and ".unlink" not in open("exp_luma.py").read())
 print(f"\nRESULT: {'ALL PASS' if not fails else fails} ({ok_n}/{ok_n+len(fails)})")
