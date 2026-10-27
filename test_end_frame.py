@@ -95,6 +95,12 @@ _vg._LUMA_MOVEMENT_TOKENS["walk_in_explore"] = _tok0; _vg._LUMA_RULES = _rules0
 (tmp2 / "jobF").mkdir(); (tmp2 / "jobF" / "images").mkdir(); Image.new("RGB", (64, 36)).save(tmp2 / "jobF" / "images" / "sc_f.jpg")
 (tmp2 / "jobF" / "job_meta.json").write_text(json.dumps({"scenes_config": [{"scene_id": "sc_f", "pov_movement": "walk_in_explore"}]}))
 check("E17e pair on a forward movement: refused with no generation and no spend", ex.cmd_run("jobF", 0, "pair", True, fake_gen) == 4)
+seen.clear()
+ex.cmd_run("jobY", 0, "anchor", True, spy, anchor_ask=lambda p: '"the glass door to the balcony".\nextra line')
+check("E17f anchor: Claude's phrase (cleaned, first line) goes into the motion text, movement forced to the straight one, no end frame", seen and seen[-1][0] == "walk_in_explore" and seen[-1][1] is False and "toward the glass door to the balcony," in seen[-1][3] and "never dodge it" in seen[-1][3], seen[-1][:2] if seen else None)
+check("E17g anchor with no answer from Claude: refused, no generation, no spend", ex.cmd_run("jobY", 0, "anchor", True, spy, anchor_ask=lambda p: None) == 5 and len(seen) == 1)
+check("E17h anchor_phrase rejects junk (empty / too long)", ex.anchor_phrase("x", ask=lambda p: "") == "" and ex.anchor_phrase("x", ask=lambda p: "a" * 200) == "" and ex.anchor_phrase("x", ask=lambda p: "the window") == "the window")
+_vg._LUMA_MOVEMENT_TOKENS["walk_in_explore"] = _tok0; _vg._LUMA_RULES = _rules0
 check("E17 bad variant refused", ex.cmd_run("jobX", 0, "nope", True, fake_gen) == 2)
 check("E18 the script only writes under _test_scratch", "SCRATCH / f\"exp_" in open("exp_luma.py").read() and "rmtree" not in open("exp_luma.py").read() and ".unlink" not in open("exp_luma.py").read())
 print(f"\nRESULT: {'ALL PASS' if not fails else fails} ({ok_n}/{ok_n+len(fails)})")

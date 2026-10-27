@@ -4,7 +4,7 @@ that would take the running total (jobs/_test_scratch/exp_spend.json) above the 
   python3 exp_luma.py list  JOB                     scenes of a job: index, movement, QC remarks, which picture would be used (free)
   python3 exp_luma.py run   JOB INDEX VARIANT       shows the cost and stops (free)
   python3 exp_luma.py run   JOB INDEX VARIANT --go  generates ONE clip (~EUR 1.10) and prints light + full links
-VARIANT: base (today's prompt) | strict (stricter prompt, no end frame) | straight (strict + no rotation, short straight travel) | subtle (strict + subtle_rotate) | target (strict + straight push-in toward the centre, no sideways) | pair (strict + first AND last frame = two equal crops of the photo; only for sideways/rotating movements)
+VARIANT: base (today's prompt) | strict (stricter prompt, no end frame) | straight (strict + no rotation, short straight travel) | subtle (strict + subtle_rotate) | target (strict + straight push-in toward the centre, no sideways) | anchor (strict + straight approach toward the thing Claude names at the centre of the photo, for ANY movement) | pair (strict + first AND last frame = two equal crops of the photo; only for sideways/rotating movements)
 """
 import json
 import os
@@ -26,7 +26,25 @@ TARGET_MOTION = ("slow straight forward camera push-in toward the centre of the 
                  "and never turns, treat nearby furniture as if it were not there: never steer around it and never dodge it, the path is one straight line toward the centre, "
                  "the nearest furniture at the edges of the frame stays in view and the camera stops well before reaching it, "
                  "smooth continuous motion, no stepping or bobbing, realistic physics")   # no 'parallax' wording (it invites a sideways slide), a target, no sideways move
-VARIANTS = ("base", "strict", "straight", "pair", "subtle", "target")
+ANCHOR_QUESTION = ("This is a real-estate photo. Name the ONE thing a camera standing where the photo was taken could slowly approach in a straight line: "
+                   "the most prominent object or opening near the middle of the frame (a window, a door, a bookcase, a bed, the view beyond a railing...). "
+                   "Answer with a short English noun phrase of at most 8 words and nothing else.")
+ANCHOR_MOTION = ("slow straight forward camera push-in toward {anchor}, the camera never moves sideways, never slides left or right and never turns, "
+                 "treat nearby furniture as if it were not there: never steer around it and never dodge it, the path is one straight line toward {anchor}, "
+                 "the camera stops well before reaching it, smooth continuous motion, no stepping or bobbing, realistic physics")
+VARIANTS = ("base", "strict", "straight", "pair", "subtle", "target", "anchor")
+
+
+def anchor_phrase(image_path, ask=None) -> str:
+    """The thing to move toward, named by Claude vision from the photo itself (a few cents at most). '' if it cannot be asked."""
+    if ask is None:
+        import vision_analysis
+        ask = lambda p: vision_analysis._claude_vision_call([str(p)], ANCHOR_QUESTION, max_tokens=40)
+    try:
+        txt = (ask(image_path) or "").strip().splitlines()[0].strip().strip('."\'`*')
+    except Exception:
+        return ""
+    return txt[:80] if 2 <= len(txt) <= 80 else ""
 
 
 def est_eur() -> float:
@@ -83,7 +101,7 @@ def cmd_list(job: str):
     print(f"speso nelle prove finora: {spent():.2f} EUR (tetto {CAP_EUR:.2f})")
 
 
-def cmd_run(job: str, index: int, variant: str, go: bool, generate=None):
+def cmd_run(job: str, index: int, variant: str, go: bool, generate=None, anchor_ask=None):
     if variant not in VARIANTS:
         print("variante non valida:", variant, VARIANTS); return 2
     s = load_scene(job, index)
@@ -104,7 +122,7 @@ def cmd_run(job: str, index: int, variant: str, go: bool, generate=None):
         print("Nessuna generazione (manca --go). Per generare aggiungi --go in fondo.")
         return 0
     import video_generation as vg
-    if variant in ("strict", "straight", "subtle", "target", "pair"):
+    if variant in ("strict", "straight", "subtle", "target", "pair", "anchor"):
         vg._LUMA_RULES = vg._LUMA_RULES + ", " + STRICT_ADD + (STRAIGHT_ADD if variant in ("straight", "target") else "")
     movement = s["scene"].get("pov_movement", "walk_in_explore")
     if variant == "subtle":
@@ -112,6 +130,13 @@ def cmd_run(job: str, index: int, variant: str, go: bool, generate=None):
     if variant == "target":
         vg._LUMA_MOVEMENT_TOKENS["walk_in_explore"] = TARGET_MOTION
         movement = "walk_in_explore"
+    if variant == "anchor":
+        anchor = anchor_phrase(s["image"], ask=anchor_ask)
+        if not anchor:
+            print("Non sono riuscito a farmi dire da Claude cosa c'e al centro della foto: nessuna generazione, nessuna spesa."); return 5
+        print("Punto verso cui avanzare, scelto da Claude guardando la foto:", anchor)
+        vg._LUMA_MOVEMENT_TOKENS["walk_in_explore"] = ANCHOR_MOTION.format(anchor=anchor)
+        movement = "walk_in_explore"      # every movement becomes a straight approach to the anchor (no sideways slide, no rotation)
     gen = generate or vg.generate_video_single
     SCRATCH.mkdir(parents=True, exist_ok=True)
     out = SCRATCH / f"exp_{job}_{index}_{variant}_{int(time.time())}.mp4"
