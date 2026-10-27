@@ -2451,6 +2451,25 @@ def _resolve_clip_path(job_id: str, scene_index: int) -> Path:
     return clip_path
 
 
+def _warm_previews(job_id: str, include_final: bool = False) -> None:
+    """2026-10-27: starts building the light preview copies of this job's clips (and of the finished video) in the background, right
+    when they become available, so the preview/QC screens open at once. Fail-open: any problem is ignored."""
+    try:
+        import preview_proxy
+        job = JOBS.get(job_id) or {}
+        paths = []
+        for i in range(len(job.get("scenes_config") or [])):
+            try:
+                paths.append(_resolve_clip_path(job_id, i))
+            except Exception:
+                pass
+        if include_final and job.get("output_path"):
+            paths.append(Path(job["output_path"]))
+        preview_proxy.warm(paths, JOBS_DIR / job_id / "preview_cache")
+    except Exception as e:
+        log.warning(f"[Job {job_id}] preview warm-up not started: {e}")
+
+
 def _serve_mp4_file(file_path, request: Request, cache_control: str = "public, max-age=3600"):
     """Serves an mp4 with HTTP Range support (browser can start playing at once). Used by the clip and the preview endpoints."""
     import re
@@ -3217,6 +3236,7 @@ async def run_reassemble_only(job_id: str):
         job["output_path"] = output_path
         job["awaiting_scenes"] = []  # 2026-10-08: clear QC-wait data once the job is finished (was never cleared, left stale on done jobs)
         update("done", 100, "Video pronto per il download")
+        _warm_previews(job_id, include_final=True)   # 2026-10-27: light copies ready before anybody opens them
         # 2026-10-02: webhook "completed" spostato su /jobs/{id}/release
 
 
@@ -3746,6 +3766,7 @@ async def run_pipeline(
                 f"{len(flagged_scenes)} flagged. Please review before assembly."
             )
             _save_job(job_id)
+            _warm_previews(job_id)   # 2026-10-27: the QC screen opens the clip previews: build them now, in the background
             prop_name = JOBS[job_id].get("property_name", "Property")
             await _notify_operator(
                 job_id, "QC flagged",

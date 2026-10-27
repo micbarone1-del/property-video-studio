@@ -1269,6 +1269,9 @@ async function editJob(jobId, baseJobId) {
     const job = await res.json();
     if (mySeq !== _editJobSeq) return;  // a newer editJob() started meanwhile
     const scenesConfig = job.scenes_config || [];
+    // 2026-10-27: opening a job stops the status poll of the job that was open before. Without this, a job still
+    // generating in the background kept painting its QC panel (and built its clip links with THIS job's id) over the new one.
+    clearInterval(pollTimer); pollEpoch++;
 
 
     if (!scenesConfig.length) {
@@ -1369,6 +1372,7 @@ async function editJob(jobId, baseJobId) {
     } else {
       qcSec.style.display = 'none';
     }
+    if (job.status === 'running' || job.status === 'queued') startPolling(jobId);   // 2026-10-27: follow the job now open, and only it
   } catch(e) {
     showError(`Errore: ${e.message}`);
   }

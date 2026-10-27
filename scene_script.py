@@ -107,7 +107,7 @@ def build_prompt(description: str, address: str, agency_name: str, labels: list)
         role = SENTENCE_ROLES[i]
         if role == "opening":
             what = (f"OPENING. Shows: {label}. The agency presents the property: '{agency_name or 'L agenzia'} presenta ...'. "
-                    f"Say clearly 'in vendita' or 'in affitto' (as the listing says), the property type and the zone. AT MOST 12 words.")
+                    f"Say clearly 'in vendita' or 'in affitto' (as the listing says; if the listing says neither sale nor rent, say neither), the property type and the zone. AT MOST 12 words.")
         elif role == "general":
             what = (f"GENERAL FACTS. Shows: {label}. Do NOT describe this room: give the most important general facts of the "
                     f"property that the listing text states (size in square metres, plot size, number of rooms/levels, "
@@ -177,6 +177,28 @@ def parse(raw: str):
     return out
 
 
+_SALE_WORDS = ("vendita", "vendesi", "vendiamo", "vendere")
+_RENT_WORDS = ("affitto", "affittasi", "locazione", "locare")
+
+
+def sale_rent_problems(sentence_low: str, desc: str, who: str) -> list:
+    """ONE implementation of the 'in vendita' / 'in affitto' rule for the opening sentence (used by the one-sentence-per-scene
+    script, the free text and the 3-block text; it used to exist in two copies). 2026-10-27: the sentence MUST say sale or rent only
+    when the listing text itself says one of them. Villa job e1dccbd4: the listing said neither, so 'must say in vendita' and
+    'says in vendita but the listing does not' could never both be satisfied and BOTH advanced narration modes were rejected."""
+    problems = []
+    listing_sale = any(k in desc for k in _SALE_WORDS)
+    listing_rent = any(k in desc for k in _RENT_WORDS)
+    says_sale, says_rent = "vendita" in sentence_low, "affitto" in sentence_low
+    if (listing_sale or listing_rent) and not (says_sale or says_rent):
+        problems.append(f"{who} must say 'in vendita' or 'in affitto'")
+    if says_sale and not listing_sale:
+        problems.append(f"{who} says 'in vendita' but the listing text does not")
+    if says_rent and not listing_rent:
+        problems.append(f"{who} says 'in affitto' but the listing text does not")
+    return problems
+
+
 def _fact_problems(s: str, tag: str, low: str, desc: str, desc_numbers: set, price_numbers: set) -> list:
     """The fact check of ONE sentence (price, numbers, feature words, promotional adjectives, floors). Shared by the
     one-sentence-per-scene script (validate) and the free narration of the anchor-driven timeline
@@ -233,14 +255,7 @@ def validate(sentences: list, description: str, agency_name: str = None, price: 
             problems.append(f"{tag}: contains more than one sentence")
         problems.extend(_fact_problems(s, tag, low, desc, desc_numbers, price_numbers))
         if i == 0:
-            says_sale = "vendita" in low
-            says_rent = "affitto" in low
-            if not (says_sale or says_rent):
-                problems.append("scene 1: must say 'in vendita' or 'in affitto'")
-            if says_sale and not any(k in desc for k in ("vendita", "vendesi", "vendiamo", "vendere")):
-                problems.append("scene 1: says 'in vendita' but the listing text does not")
-            if says_rent and not any(k in desc for k in ("affitto", "affittasi", "locazione", "locare")):
-                problems.append("scene 1: says 'in affitto' but the listing text does not")
+            problems.extend(sale_rent_problems(low, desc, "scene 1:"))
         if agency_n and i in (0, SCENES - 1) and agency_n not in re.sub(r"[^a-z0-9àèéìòù ]", "", low):
             problems.append(f"{tag}: must name the agency ({agency_name})")
 
@@ -327,7 +342,7 @@ Address: {address or 'not specified'}
 Agency: {agency}
 
 STRUCTURE (ONE natural flowing narration, not a list of sentences about rooms):
-- Open with the agency presenting the property ("{agency_name or "L'agenzia"} presenta ..."), saying clearly "in vendita" or "in affitto" (as the listing says), the property type and the zone. KEEP IT SHORT, at most {OPENING_MAX_WORDS} words: it is spoken over scene 1, which lasts only about 5 seconds. No size and no rooms in the opening.
+- Open with the agency presenting the property ("{agency_name or "L'agenzia"} presenta ..."), saying clearly "in vendita" or "in affitto" (as the listing says; if the listing says neither sale nor rent, say neither), the property type and the zone. KEEP IT SHORT, at most {OPENING_MAX_WORDS} words: it is spoken over scene 1, which lasts only about 5 seconds. No size and no rooms in the opening.
 - WHERE a highlight must be named: each scene lasts about 5 seconds (about 10 words), so the room of scene 2 is named around word 10 of the whole text, scene 3 around word 19, scene 4 around word 29, scene 5 around word 38, scene 6 around word 48 (give or take 4 words). A highlight named far from its place is rejected automatically, so write the sentences before it with that length in mind.
 - Then continue as one natural flow with the most important general facts and the details the listing states. There is NO time to name every room: choose 2 or 3 HIGHLIGHTS among the rooms of scenes 2 to 6 (never more than {MAX_ANCHORS}): the ones with the most worth saying (special features first, for example the garden, a terrace, a particular living room). The rooms you do not name are simply not named: their pictures fill the time between the named ones.
 - Name the highlights in the ORDER of the scenes. After naming a highlight, say something about it (a real fact from the listing) for about 12 to 20 words BEFORE the next highlight or the invitation: two highlights must be at least 12 words apart. Never "la cucina, seguita da due camere da letto". (The text is rejected automatically when a highlight is named too late or two are too close together.)
@@ -453,13 +468,7 @@ def validate_free_text(text: str, anchors: list, description: str, agency_name: 
     for i, sent in enumerate(sentences):
         problems.extend(_fact_problems(sent, f"sentence {i + 1}", _norm(sent), desc, desc_numbers, price_numbers))
     first, last = _norm(sentences[0]), _norm(sentences[-1])
-    says_sale, says_rent = "vendita" in first, "affitto" in first
-    if not (says_sale or says_rent):
-        problems.append("the first sentence must say 'in vendita' or 'in affitto'")
-    if says_sale and not any(k in desc for k in ("vendita", "vendesi", "vendiamo", "vendere")):
-        problems.append("the first sentence says 'in vendita' but the listing text does not")
-    if says_rent and not any(k in desc for k in ("affitto", "affittasi", "locazione", "locare")):
-        problems.append("the first sentence says 'in affitto' but the listing text does not")
+    problems.extend(sale_rent_problems(first, desc, "the first sentence"))
     if agency_n:
         strip = lambda t: re.sub(r"[^a-z0-9àèéìòù ]", "", t)
         if agency_n not in strip(first):
@@ -620,7 +629,7 @@ Address: {address or 'not specified'}
 Agency: {agency}
 
 CONTENT:
-- Block 1, sentence 1: the agency presenting the property ("{agency_name or "L'agenzia"} presenta ..."), saying clearly "in vendita" or "in affitto" (as the listing says) and the zone. Short. Sentence 2: the most important general fact (size, property type...).
+- Block 1, sentence 1: the agency presenting the property ("{agency_name or "L'agenzia"} presenta ..."), saying clearly "in vendita" or "in affitto" (as the listing says; if the listing says neither sale nor rent, say neither) and the zone. Short. Sentence 2: the most important general fact (size, property type...).
 - Blocks 2 and 3: one short sentence per scene as listed above. A sentence over a room's scene may be about that room (a real fact or benefit from the listing: light, size, equipment, number of rooms) or a general sentence about the property. Name AT MOST {MAX_ROOMS_NAMED} rooms in the whole narration, only the real highlights, and a room name is ONLY allowed in the sentence heard over that room's scene (the word is checked against the audio).
 - The closing is NOT a separate sentence: sentence 2 of block 3 (heard over scene 6) states the fact about that scene and ends with a short invitation to contact {agency_name or 'the agency'} by name, joined in the SAME sentence with a comma or a colon (shape: "<outdoor fact>, contatta {agency_it}."). The invitation never mentions a visit.
 - Never name a room twice. Never talk about a room in a sentence that is heard over a different room.

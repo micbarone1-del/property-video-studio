@@ -74,5 +74,22 @@ check("W5 UI download links still point at /download", 'href="/jobs/${jobId}/dow
 check("W6 no video tag plays /download any more", 'src="/jobs/${jobId}/download"' not in ui and "video-preview').src    = dlUrl" not in ui)
 check("W7 one resolver for the clip file", api.count("def _resolve_clip_path") == 1 and api.count("_resolve_clip_path(job_id, scene_index)") == 2)
 
+# 2026-10-27: warm-up in the background so the preview opens at once
+import time
+src2 = tmp / "clip2.mp4"
+subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=24:duration=2", "-c:v", "libx264", "-b:v", "6M", str(src2)], check=True, stdin=subprocess.DEVNULL)
+before2 = sha(src2)
+cache2 = tmp / "warm_cache"
+t0 = time.time(); pp.warm([src2, tmp / "does_not_exist.mp4", None], cache2); returned_in = time.time() - t0
+check("M1 warm() returns at once (background thread), never raises on a missing file or None", returned_in < 1.0, returned_in)
+for _ in range(100):
+    if cache2.exists() and any(cache2.glob("prev_clip2_*.mp4")): break
+    time.sleep(0.2)
+built = list(cache2.glob("prev_clip2_*.mp4"))
+check("M2 the light copy appears in the cache without any request", len(built) == 1 and built[0].stat().st_size > 0)
+check("M3 the original is untouched and no tmp file is left", sha(src2) == before2 and not list(cache2.glob("*.tmp")))
+check("M4 the later request finds the copy already built (same path, no rebuild)", pp.light_copy(src2, cache2) == built[0])
+check("M5 wiring: api_server warms previews when QC waits and when the video is done, via one helper", api.count("_warm_previews(job_id)") + api.count("_warm_previews(job_id, include_final=True)") == 2 and api.count("def _warm_previews") == 1)
+
 print(f"\nRESULT: {'ALL PASS' if not fails else 'FAILURES: ' + str(fails)} ({ok_n}/{ok_n + len(fails)})")
 sys.exit(1 if fails else 0)

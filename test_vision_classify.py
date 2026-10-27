@@ -114,6 +114,25 @@ ls.resolve_uncategorized_photos(ph)
 check("C2 resolve_uncategorized_photos only touches uncategorized photos", ph[0]["category"] == "bathrooms" and ph[1]["category"] == "living")
 check("C3 resolved photo is marked as vision", ph[0].get("category_source") == "vision" and "category_source" not in ph[1])
 
+# 5b. 2026-10-27: a "living" photo that is really the entrance hall / corridor leaves the selection; empty living rooms stay
+real_hall = ls._is_hall_photo
+HALLS = {"h1": (True, True), "l_ok": (False, True), "l_fail": (False, False)}
+ls._is_hall_photo = lambda url, fb=None: HALLS[url]
+ls._classify_photo_vision = lambda url, fb=None: ("exterior", True)
+ph = [{"url": "h1", "category": "living"}, {"url": "l_ok", "category": "living"}, {"url": "l_fail", "category": "living"}, {"url": "k", "category": "kitchen"}]
+s = ls.refine_exterior_outdoor_with_vision(ph)
+check("H1 a living-labelled hall / corridor becomes uncategorized (leaves the selection), others keep the label", [p["category"] for p in ph] == ["uncategorized", "living", "living", "kitchen"] and ph[0]["category_page"] == "living" and ph[0]["category_source"] == "vision_hall", ph)
+check("H2 failed call keeps the label and is marked; kitchen is not checked", ph[2]["category_source"] == "page_fallback" and "category_source" not in ph[3] and s["living_checked"] == 3 and s["halls_removed_from_living"] == 1, s)
+ph = [{"url": f"l_ok", "category": "living"} for _ in range(12)]
+s = ls.refine_exterior_outdoor_with_vision(ph)
+check("H3 at most MAX_LIVING_TO_CHECK living photos are checked", s["living_checked"] == ls.MAX_LIVING_TO_CHECK == 8)
+ls._is_hall_photo = real_hall
+HP = ls._VISION_HALL_PROMPT
+check("H4 hall question: an empty / unfurnished living room is NOT a hall", "unfurnished living room" in HP and "hall or room" in HP)
+sent = {}
+ls._vision_one_word = lambda u, fb, prompt: (sent.update(p=prompt) or ("hall", True))
+check("H5 _is_hall_photo uses the shared one-word helper", ls._is_hall_photo("u")[0] is True and sent["p"] == HP)
+
 # 6. wiring (static): one shared function, both paths, before the acceptance rule
 api = open("api_server.py", encoding="utf-8").read()
 url_part = api.split("async def _prepare_url_draft_work")[1].split("async def ")[0]   # Patch M: the URL path now runs in this background worker
@@ -127,6 +146,7 @@ check("W4 usage counter is thread safe", hasattr(ls, "_claude_lock"))
 P = ls._VISION_CLASSIFY_PROMPT
 check("P6 prompt v2: kitchen wins when cabinets/hob/sink are the main subject (open-plan)", "choose kitchen whenever cabinets" in P)
 check("P7 prompt v2: living only with sofa/lounge/dining table; facade also from inner courtyard", "only when a sofa" in P and "inner courtyard" in P)
-check("P8 prompt v2: shared/condominium spaces and trees are 'other', not outdoor", "condominium space" in P and "a tree or vegetation" in P)
+check("P8 prompt v3: shared/condominium spaces and a single tree close up are 'other', not outdoor", "condominium space" in P and "a single tree or plant close up" in P)
+check("P9 prompt v3 (2026-10-27): the view FROM A WINDOW of the home is outdoor (usable as the closing view), no longer 'other'", "view FROM A WINDOW" in P and "view from a window, a tree" not in P)
 print(f"RESULT: {'ALL PASS' if not fails else 'FAIL'} ({total - len(fails)}/{total})")
 sys.exit(1 if fails else 0)

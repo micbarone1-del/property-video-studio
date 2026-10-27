@@ -61,6 +61,26 @@ def light_copy(src, cache_dir) -> Path:
         return src
 
 
+def warm(paths, cache_dir) -> None:
+    """2026-10-27: builds the light copies of `paths` in a background daemon thread, one after the other, so they already exist
+    when somebody opens the preview (before, each copy was built on its first request, serialised by _LOCK, while the server was
+    busy generating: minutes of waiting for the QC screen). Never raises, never blocks the caller; nothing is deleted."""
+    paths = [Path(p) for p in paths if p]
+
+    def work():
+        for p in paths:
+            try:
+                if p.exists():
+                    light_copy(p, cache_dir)
+            except Exception as e:
+                print(f"[Preview] warm-up skipped {p}: {e}")
+
+    try:
+        threading.Thread(target=work, daemon=True, name="preview-warm").start()
+    except Exception as e:
+        print(f"[Preview] could not start warm-up: {e}")
+
+
 def info(path) -> dict:
     """{'width','height','size_mb'} of a video file, or {} if it cannot be read."""
     path = Path(path)

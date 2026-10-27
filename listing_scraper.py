@@ -421,9 +421,9 @@ _VISION_CLASSIFY_PROMPT = (
     "- kitchen: choose kitchen whenever cabinets, hob, sink or appliances are the main subject, even in an open-plan room.\n"
     "- bedrooms: bedroom or sleeping area (also the sleeping area of a studio flat).\n"
     "- bathrooms: bathroom, toilet, shower room.\n"
-    "- outdoor: a PRIVATE outdoor space belonging to this home: balcony, terrace, private garden, or the view from that balcony/terrace. A shared or condominium space (courtyard, portico, shared balcony or walkway) is NOT outdoor: answer other.\n"
+    "- outdoor: a PRIVATE outdoor space belonging to this home: balcony, terrace, private garden, or the view from that balcony/terrace, or the view FROM A WINDOW of this home (skyline, rooftops, city, sea, countryside) when the view itself is the main subject. A shared or condominium space (courtyard, portico, shared balcony or walkway) is NOT outdoor: answer other.\n"
     "- other: entrance hall, corridor, hallway, stairs, shared building areas (courtyard, portico, lobby, lift, communal garden), "
-    "floor plan, close-up of a detail, view from a window, a tree or vegetation, or anything that is not one of the categories above.\n\n"
+    "floor plan, close-up of a detail, a single tree or plant close up, or anything that is not one of the categories above.\n\n"
     "Answer with ONLY one word: exterior, living, kitchen, bedrooms, bathrooms, outdoor or other."
 )
 VISION_MAX_SIDE = 768
@@ -443,10 +443,9 @@ def _image_b64_for_vision(content: bytes) -> str:
         return base64.b64encode(content).decode("utf-8")
 
 
-def _classify_photo_vision(image_url: str, fallback_url: str = None) -> tuple:
-    """Single implementation of "which room is this photo" (Claude vision). Returns (category, ok):
-    category is one of CATEGORIES or "uncategorized" (the model answered "other"/anything else);
-    ok is False only when the call itself failed (download or API), so callers can keep a previous label."""
+def _vision_one_word(image_url: str, fallback_url: str, prompt: str) -> tuple:
+    """The ONE place that sends a (downscaled) listing photo and a short question to Claude vision and returns the answer as one
+    lowercase word. (word, ok): ok is False only when the call itself failed (download or API)."""
     try:
         fetched = fetch_photo_bytes(image_url, fallback_url, timeout=15)
         if not fetched["ok"]:
@@ -454,18 +453,43 @@ def _classify_photo_vision(image_url: str, fallback_url: str = None) -> tuple:
         b64 = _image_b64_for_vision(fetched["content"])
         client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
         content = [
-            {"type": "text", "text": _VISION_CLASSIFY_PROMPT},
+            {"type": "text", "text": prompt},
             {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
         ]
         response = _track_claude(client.messages.create(
             model=MODEL, max_tokens=20, messages=[{"role": "user", "content": content}],
         ))
         raw = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip().lower()
-        raw = re.sub(r"[^a-z]", "", raw)
-        return (raw if raw in CATEGORIES else "uncategorized"), True
+        return re.sub(r"[^a-z]", "", raw), True
     except Exception as e:
-        log.warning(f"[Scraper] Vision classification failed for {image_url}: {e}")
+        log.warning(f"[Scraper] Vision question failed for {image_url}: {e}")
+        return "", False
+
+
+def _classify_photo_vision(image_url: str, fallback_url: str = None) -> tuple:
+    """Single implementation of "which room is this photo" (Claude vision). Returns (category, ok):
+    category is one of CATEGORIES or "uncategorized" (the model answered "other"/anything else);
+    ok is False only when the call itself failed (download or API), so callers can keep a previous label."""
+    word, ok = _vision_one_word(image_url, fallback_url, _VISION_CLASSIFY_PROMPT)
+    if not ok:
         return "uncategorized", False
+    return (word if word in CATEGORIES else "uncategorized"), True
+
+
+# 2026-10-27: a photo the listing page labels "living" is sometimes the entrance hall, a corridor or a staircase (villa job
+# e1dccbd4: the only "living" photo was a corridor). A separate, narrow question on purpose: the general classifier says "other"
+# for a lounge with no sofa, which would wrongly throw away EMPTY apartments' living rooms.
+_VISION_HALL_PROMPT = (
+    "Look at this real estate photo. Does it mainly show an ENTRANCE HALL, a CORRIDOR, a hallway, a staircase or stairs landing, "
+    "or a lobby (a passage, not a room you stay in)? An empty or unfurnished living room, lounge or open-plan room is NOT a hall.\n"
+    "Answer with ONLY one word: hall or room."
+)
+
+
+def _is_hall_photo(image_url: str, fallback_url: str = None) -> tuple:
+    """(is_hall, ok). ok False = the call failed, callers keep the page label."""
+    word, ok = _vision_one_word(image_url, fallback_url, _VISION_HALL_PROMPT)
+    return word == "hall", ok
 
 
 def classify_uncategorized_photo(image_url: str, fallback_url: str = None) -> str:
@@ -475,6 +499,7 @@ def classify_uncategorized_photo(image_url: str, fallback_url: str = None) -> st
 
 
 MAX_PHOTOS_TO_REFINE = 12
+MAX_LIVING_TO_CHECK = 8     # 2026-10-27: first living-labelled photos checked for hall / corridor / stairs (ranking only compares 6 anyway)
 CLASSIFY_WORKERS = 4
 
 
@@ -511,7 +536,20 @@ def refine_exterior_outdoor_with_vision(photos: list, max_photos: int = MAX_PHOT
             p["category_source"] = "vision_refine"; p["category"] = "uncategorized"; excluded += 1
     for p in over:
         p["category_page"] = p.get("category"); p["category_source"] = "page_not_checked"
-    summary = {"method": "exterior_outdoor_check", "checked": len(todo), "confirmed": confirmed,
+    # 2026-10-27: photos labelled "living" are checked for the entrance hall / corridor / stairs mix-up (see _VISION_HALL_PROMPT).
+    # A hall leaves the selection (category "uncategorized"); anything else keeps the page label. Standard video only has the
+    # six rooms; a premium "entrance" scene is a separate backlog item.
+    living = [p for p in photos if p.get("category") == "living" and p.get("category_source") is None and p.get("url")][:MAX_LIVING_TO_CHECK]
+    with ThreadPoolExecutor(max_workers=CLASSIFY_WORKERS) as ex:
+        hall_results = list(ex.map(lambda p: _is_hall_photo(p["url"], p.get("original_url")), living))
+    halls = 0
+    for p, (is_hall, ok) in zip(living, hall_results):
+        p["category_page"] = p.get("category")
+        if ok and is_hall:
+            p["category"] = "uncategorized"; p["category_source"] = "vision_hall"; halls += 1
+        else:
+            p["category_source"] = "page_label_checked" if ok else "page_fallback"
+    summary = {"method": "exterior_outdoor_check", "checked": len(todo), "confirmed": confirmed, "living_checked": len(living), "halls_removed_from_living": halls,
                "swapped_exterior_outdoor": swapped, "excluded_as_other": excluded,
                "kept_page_label_after_failure": fallback, "not_checked_over_cap": len(over)}
     log.info(f"[Scraper] Exterior/outdoor check: {summary}")

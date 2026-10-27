@@ -815,3 +815,8 @@ Requirements, in his words/intent (confirm in plain language before any code; ea
 - [open 2026-10-27] Photo selection: check on real jobs that the bedroom pick now shows a bed directly; consider checking single-candidate categories and a pool larger than 6; empty apartments rely on page description.
 - [open 2026-10-27] Fallback target (balcony/glass door in the centre) when no anchor: decide after the multi-property test.
 - [open 2026-10-27] Multi-property test run to reach "good enough": several listings with different characteristics (furnished, empty, no balcony, villa, studio), review each clip.
+- [open 2026-10-27] subtle_rotate leaves the first frame in bathrooms (villa e1dccbd4 scene 4): replace with a short anchor push-in when an anchor exists (test one clip first, about EUR 1.10).
+- [open 2026-10-27] Selection backfill: when a category is missing the second photo comes from "exterior" first (two facades). Prefer an interior/view photo; needs the order of the backfill in select_photos_for_scene_count / premium.
+- [open 2026-10-27] Premium: entrance/hall and stairs scenes (standard excludes them); photos labelled living but classified as hall are now dropped from standard.
+- [open 2026-10-27] Narration single_text fallback is still forced onto the scene grid (long gaps, 0.16 s above the 32 s limit); decide whether it should be a plain continuous track.
+- [open 2026-10-27] Re-run the villa-type listing (no sale/rent word) to confirm the per-scene / anchored mode now passes.
