@@ -71,6 +71,8 @@ check("C5 intent_kwargs ON: centred valid scene -> kwargs; edge / no / unsafe / 
       and cp.intent_kwargs({}) == {} and cp.intent_kwargs({"anchor": "mirror"}) == {} and cp.intent_kwargs(None) == {} and cp.intent_kwargs({"anchor": "the bed", "anchor_side": "center", "depth": "huge"})["depth"] == ""
       and all(cp.intent_kwargs({"anchor": a, "anchor_side": sd}) == {} for a, sd in (("glass sliding door to balcony", "right"), ("stainless steel sink and countertop", "center"), ("metal railing along balcony edge", "center"))))
 
+check("C6 a far window / horizon high in the frame is accepted, a lower anchor and a ceiling lamp are not", cp.anchor_usable("distant green foliage and trees", "center", "upper") != "" and cp.anchor_usable("far window with natural light", "center", "upper") != "" and cp.anchor_usable("the bed", "center", "lower") == "" and cp.anchor_usable("ceiling lamp", "center", "upper") == "")
+
 # ---- D. the photo analysis: same call, extra keys only when ON --------------------------------------------------------------------
 seen = {}
 def fake_text(path, prompt, max_tokens=250):

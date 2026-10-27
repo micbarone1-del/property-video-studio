@@ -119,7 +119,7 @@ ANCHOR_UNSAFE = ("mirror", "mirrors", "reflection", "reflective", "reflect", "sh
 # Matched on word STEMS ("mirrored", "reflecting", "doorway", "sinks"), after the model has already been told the same rules in the prompt.
 ANCHOR_UNSAFE_STEMS = ("mirror", "reflect", "televis", "screen", "monitor", "door", "curtain", "blind", "plant", "railing", "balustrade",
                        "handrail", "fence", "sink", "basin", "toilet", "bidet", "bath", "shower", "radiator", "stove", "oven", "hob", "cooktop",
-                       "fridge", "refrigerator", "appliance", "faucet", "counter", "water", "fountain", "flame")
+                       "fridge", "refrigerator", "appliance", "faucet", "counter", "water", "fountain", "flame", "ceiling", "lamp", "chandelier")
 _ANCHOR_NONE = ("", "none", "null", "n/a", "no", "nothing", "nessuno")
 ANCHOR_SIDES = ("left", "center", "right")
 DEPTHS = ("shallow", "medium", "deep")
@@ -156,12 +156,12 @@ _ANCHOR_UNSAFE_SET = frozenset(ANCHOR_UNSAFE)
 
 
 def anchor_usable(anchor, side, height="") -> str:
-    """The anchor as it may be used (the cleaned phrase) or '': it must pass clean_anchor, sit at the horizontal CENTRE and not at the
-    top or bottom of the frame. The side / height come from the photo analysis; a missing height counts as 'middle'."""
+    """The anchor as it may be used (the cleaned phrase) or '': it must pass clean_anchor, sit at the horizontal CENTRE and not in the
+    lower part of the frame (a far window or horizon is naturally in the upper part, that is fine). The side / height come from the photo analysis; a missing height counts as 'middle'."""
     a = clean_anchor(anchor)
     if not a or clean_side(side) != "center":
         return ""
-    if str(height or "").strip().lower() in ("upper", "lower", "top", "bottom", "high", "low"):
+    if str(height or "").strip().lower() in ("lower", "bottom", "low"):
         return ""
     return a
 

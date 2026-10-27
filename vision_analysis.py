@@ -216,7 +216,7 @@ Also add three more keys to the JSON object. They choose the TARGET of a slow st
  "anchor_side": where it sits horizontally in the frame: left, center or right.
  "anchor_height": where it sits vertically in the frame: upper, middle or lower.
 Rules for the anchor:
- - It must sit in the CENTRE of the frame (middle vertically, not near the left or right edge) and be FAR from the camera: the far wall, the far end of the room, a window or opening with a view. For outdoor photos, balconies and terraces choose the DISTANT VIEW (the landscape, skyline, garden or horizon beyond), never what is near you.
+ - It must sit in the CENTRE of the frame (not near the left or right edge; vertically middle or upper, a far window or the horizon is naturally in the upper part, but NEVER in the lower part) and be FAR from the camera: the far wall, the far end of the room, a window or opening with a view. For outdoor photos, balconies and terraces choose the DISTANT VIEW (the landscape, skyline, garden or horizon beyond), never what is near you.
  - It must be worth looking at for a buyer: the view, a window with a view, the far end of the living space, a bed, a sofa area, a fireplace, a dining set. NOT a utilitarian fixture (sink, toilet, bathtub, shower, radiator, stove, oven, fridge, kitchen counter, appliance).
  - It must be fixed and still: NEVER a door of any kind (doors get animated), curtain, blind, plant, water, flame, screen, mirror or any reflective surface, person, animal or small decorative object.
  - NEVER a near foreground object (railing, balustrade, fence, a table or chair close to the camera): it pulls the camera down toward the floor.
