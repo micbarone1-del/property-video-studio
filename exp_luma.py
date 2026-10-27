@@ -19,11 +19,8 @@ SCRATCH = JOBS_DIR / "_test_scratch"
 SPEND = SCRATCH / "exp_spend.json"
 STRAIGHT_ADD = (", camera moves strictly along a single forward axis, no lateral drift, no panning, no pivoting, no rotation, "
                 "the field of view stays fixed and centered throughout the shot, the camera advances less than one meter in total")   # = the portrait anti-drift text of assemble_pov_prompt + a short travel
-TARGET_MOTION = ("slow straight forward camera push-in toward the centre of the frame, the camera never moves sideways, never slides left or right "
-                 "and never turns, treat nearby furniture as if it were not there: never steer around it and never dodge it, the path is one straight line toward the centre, "
-                 "the nearest furniture at the edges of the frame stays in view and the camera stops well before reaching it, "
-                 "smooth continuous motion, no stepping or bobbing, realistic physics")   # no 'parallax' wording (it invites a sideways slide), a target, no sideways move
 import camera_plan
+TARGET_MOTION = camera_plan.CENTRE_MOTION
 STILL_ADD = ("plants, foliage, curtains and every other object in the room stay perfectly still and never appear, grow, move or sway, only the camera moves, the foreground of the last frame contains exactly what the photo contains")
 STRICT_ADD = camera_plan.ANCHOR_STRICT   # the same first-frame text production adds in anchor mode
 ANCHOR_MOTION = camera_plan.ANCHOR_MOTION   # one text, shared with production

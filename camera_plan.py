@@ -132,6 +132,10 @@ ANCHOR_STRICT = ("the first frame is the exact and complete starting image: ever
 ANCHOR_MOTION = ("slow straight forward camera push-in toward {anchor}, the camera never moves sideways, never slides left or right and never turns, "
                  "treat nearby furniture as if it were not there: never steer around it and never dodge it, the path is one straight line toward {anchor}, "
                  "the camera stops well before reaching it, smooth continuous motion, no stepping or bobbing, realistic physics")
+# 2026-10-27: a scene with a bulky object close to the camera (big plant...) and NO safe anchor: push in toward the centre of the frame.
+# Tested by eye on job 9615333c scene 0 (exp_luma target): a light dolly in, no new object (Luma had added a second palm with its default push-in).
+CENTRE_ANCHOR = "the centre of the frame"
+CENTRE_MOTION = "slow straight forward camera push-in toward the centre of the frame, the camera never moves sideways, never slides left or right and never turns, treat nearby furniture as if it were not there: never steer around it and never dodge it, the path is one straight line toward the centre, the nearest furniture at the edges of the frame stays in view and the camera stops well before reaching it, smooth continuous motion, no stepping or bobbing, realistic physics"
 _MOVE_TAIL = "smooth continuous motion, no stepping or bobbing, realistic physics"
 FIRST_FRAME_ONLY = "the camera only ever shows what is already visible in the first frame"
 
@@ -209,6 +213,8 @@ def anchor_motion_for(movement, anchor, side="center", depth=None) -> str:
     if movement == "subtle_rotate":
         return (f"almost static shot, imperceptibly slow push-in toward {anchor} of less than ten centimetres, the camera does not turn, "
                 f"{FIRST_FRAME_ONLY}, " + _MOVE_TAIL)
+    if anchor == CENTRE_ANCHOR:
+        return CENTRE_MOTION
     text = ANCHOR_MOTION.format(anchor=anchor)
     if depth == "shallow":
         text = text.replace("slow straight forward camera push-in", "very slow, very short straight forward camera push-in of less than half a metre", 1)

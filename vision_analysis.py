@@ -211,10 +211,11 @@ Rules:
 
 # 2026-10-27: camera direction. Asked in the SAME call (no second analysis), only when PVS_ANCHOR=1 so the prompt is otherwise unchanged.
 ROOM_PROMPT_ANCHOR = """
-Also add three more keys to the JSON object. They choose the TARGET of a slow straight camera push-in (the camera moves toward it and stops well before reaching it):
+Also add four more keys to the JSON object. They choose the TARGET of a slow straight camera push-in (the camera moves toward it and stops well before reaching it):
  "anchor": an English noun phrase of at most 8 words, or "none".
  "anchor_side": where it sits horizontally in the frame: left, center or right.
  "anchor_height": where it sits vertically in the frame: upper, middle or lower.
+ "foreground_risk": true or false. true ONLY when a large plant, tree, curtain or other bulky or tall object stands close to the camera, at the left or right edge or in the lower part of the frame, so that a forward camera move would pass right next to it. Otherwise false.
 Rules for the anchor:
  - It must sit in the CENTRE of the frame (not near the left or right edge; vertically middle or upper, a far window or the horizon is naturally in the upper part, but NEVER in the lower part) and be FAR from the camera: the far wall, the far end of the room, a window or opening with a view. For outdoor photos, balconies and terraces choose the DISTANT VIEW (the landscape, skyline, garden or horizon beyond), never what is near you.
  - It must be worth looking at for a buyer: the view, a window with a view, the far end of the living space, a bed, a sofa area, a fireplace, a dining set. NOT a utilitarian fixture (sink, toilet, bathtub, shower, radiator, stove, oven, fridge, kitchen counter, appliance).
@@ -299,6 +300,10 @@ def _classify_room_claude(image_path: str) -> dict | None:
     if camera_plan.anchor_enabled():       # unusable / unsafe / "none" -> "": the scene then keeps today's movement text
         out["anchor"] = camera_plan.anchor_usable(d.get("anchor"), d.get("anchor_side"), d.get("anchor_height"))
         out["anchor_side"] = camera_plan.clean_side(d.get("anchor_side")) if out["anchor"] else ""
+        if not out["anchor"] and str(d.get("foreground_risk")).strip().lower() in ("true", "yes", "1"):
+            out["anchor"] = camera_plan.CENTRE_ANCHOR       # no safe anchor but a bulky object near the camera: straight push-in toward the centre
+            out["anchor_side"] = "center"
+            out["foreground_risk"] = True
     return out
 
 

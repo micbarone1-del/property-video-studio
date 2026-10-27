@@ -353,3 +353,5 @@ Update 2026-10-25 (night): clip QC with Claude built in the sandbox (test_clip_q
 2026-10-27 test_tts_cost.py: 9/9 PASS (output seen). Scoreboard and FMEA rows not re-counted yet; cost row proposal only, pending your review.
 
 2026-10-27 test_infra_cost.py: 5/5 PASS (output seen). FMEA cost row and scoreboard not re-counted; scores are proposals pending review.
+
+2026-10-27 test_foreground_risk.py: 10/10 PASS (output seen). Live check on the failing photo: flag fired 2 of 2. FMEA row for Luma hallucination and scoreboard not re-counted; scores are proposals pending review.
