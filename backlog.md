@@ -812,3 +812,6 @@ Requirements, in his words/intent (confirm in plain language before any code; ea
 - [open] Manual UI path does not carry the anchor (scenes created by hand keep today's movement).
 - [open] Cost: the UI estimate is still a third copy of the backend rates (now equal, test-guarded); consider an endpoint that returns the estimate.
 - [open] Preview of scene 5 did not start in the QC approval screen of job 26d7a774: diagnose preview_cache.
+- [open 2026-10-27] Photo selection: check on real jobs that the bedroom pick now shows a bed directly; consider checking single-candidate categories and a pool larger than 6; empty apartments rely on page description.
+- [open 2026-10-27] Fallback target (balcony/glass door in the centre) when no anchor: decide after the multi-property test.
+- [open 2026-10-27] Multi-property test run to reach "good enough": several listings with different characteristics (furnished, empty, no balcony, villa, studio), review each clip.

@@ -1781,6 +1781,9 @@ Rank them from best to worst based on:
 - NO people visible in the photo — this is a significant penalty, avoid photos with people
 - NO cars or other vehicles visible in the shot — same penalty as people; prefer a clean, uncluttered view of the property itself
 - Clearly shows the defining features of a {category} (e.g. a visible bed for a bedroom, sink/counter/appliances for a kitchen, toilet/shower/sink for a bathroom, a clear building facade for exterior)
+- The defining feature must be DIRECTLY visible, never only as a reflection: a bedroom photo where the bed shows up just in a mirror does NOT show the bed. If the room is empty (no furniture), judge by the page description given with each photo and by what the room clearly is (windows, fittings, layout).
+- Mirrors, mirrored wardrobes and large glass surfaces dominating the frame are a penalty: reflections make the AI video model drift and invent things. A photo with the same room and no big reflective surface is better.
+- A clear, fixed point of interest FAR from the camera in the middle of the frame (a window with a view, the far end of the room, a balcony opening) is a plus: it gives the video camera a safe, natural place to move toward. A photo whose centre is a near object, a blank wall close up, or a door is weaker.
 - Natural light present, well-lit rather than dark or harshly artificial
 - The room/space is shown fully and spaciously in frame, not a cramped or heavily cropped angle — a fuller, more complete view is better. This also matters practically: a fuller frame gives the AI video-generation model more real visual information to work with, which reduces the risk of it inventing or distorting details in an ambiguous or heavily-cropped area.
 
@@ -1828,7 +1831,8 @@ def rank_photos_by_quality(category: str, candidates: list, max_to_compare: int 
             if not fetched["ok"]:
                 raise RuntimeError(fetched["error"])
             b64 = base64.b64encode(fetched["content"]).decode("utf-8")
-            content.append({"type": "text", "text": f"Photo {i + 1}:"})
+            lab = str(photo.get("label_it") or "").strip()[:80]
+            content.append({"type": "text", "text": f"Photo {i + 1}:" + (f" (page description: {lab})" if lab else "")})
             content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}})
 
         response = _track_claude(client.messages.create(model=MODEL, max_tokens=200,
