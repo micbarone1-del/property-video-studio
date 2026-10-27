@@ -598,33 +598,46 @@ def download_photo(photo_url: str, output_dir: Path, filename_stem: str, fallbac
             "url_used": fetched["url_used"], "used_fallback": fetched["used_fallback"]}
 
 
+DOWNLOAD_RETRY_WAITS = (8, 20)   # 2026-10-27: extra rounds for photos that still failed (a source CDN throttling bursts is transient)
+
+
 def download_selected_photos(selection: dict, output_dir: Path) -> dict:
     """
-    Downloads every photo in a select_photos() result — only the selected
-    subset, not the full scraped list. Watermark removal is NOT done here
-    (see module note above) — it's handled at generation time via the
-    existing per-scene toggle.
+    Downloads every photo in a select_photos() result - only the selected subset, not the full scraped list.
+    Watermark removal is NOT done here (see module note above) - it's handled at generation time via the existing per-scene toggle.
 
-    Returns the same {"selected": {...}, "gaps": [...]} structure, with each
-    selected photo dict augmented with "local_path". Photos that fail to
-    download entirely are dropped and reported in a new "download_failures"
-    list rather than silently disappearing.
+    Returns the same {"selected": {...}, "gaps": [...]} structure, with each selected photo dict augmented with "local_path".
+    2026-10-27: photos that still fail after download_photo's own retries are tried again in DOWNLOAD_RETRY_WAITS rounds (the
+    first live golden-set run lost a whole draft because 6 of 6 downloads failed at the same moment). Order inside each category is
+    kept. Photos that fail every round are dropped and reported in "download_failures" with the real error, and each is logged.
+    This one function serves BOTH the from-url and the partner-payload preparation, so the retry is in one place only.
     """
-    download_failures = []
-    for category, photos in selection["selected"].items():
-        kept = []
-        for i, p in enumerate(photos):
-            stem = f"{category}_{i:02d}"
-            result = download_photo(p["url"], output_dir, stem, p.get("original_url"))
+    todo = [(cat, i, p) for cat, photos in selection["selected"].items() for i, p in enumerate(photos)]
+    got, errors = {}, {}
+    for rnd in range(len(DOWNLOAD_RETRY_WAITS) + 1):
+        if rnd:
+            log.warning(f"[Scraper] {len(todo)} photo(s) failed to download, retry round {rnd} in {DOWNLOAD_RETRY_WAITS[rnd - 1]}s")
+            time.sleep(DOWNLOAD_RETRY_WAITS[rnd - 1])
+        still = []
+        for cat, i, p in todo:
+            result = download_photo(p["url"], output_dir, f"{cat}_{i:02d}", p.get("original_url"))
             if result["ok"]:
                 p["local_path"] = result["path"]
                 p["url_used"] = result["url_used"]
                 p["used_fallback"] = result["used_fallback"]
-                kept.append(p)
+                got[(cat, i)] = p
             else:
-                download_failures.append({"category": category, "url": p["url"], "error": result["error"]})
-        selection["selected"][category] = kept
-
+                errors[(cat, i)] = result["error"]
+                still.append((cat, i, p))
+        todo = still
+        if not todo:
+            break
+    download_failures = []
+    for cat, i, p in todo:
+        download_failures.append({"category": cat, "url": p["url"], "error": errors[(cat, i)]})
+        log.warning(f"[Scraper] photo dropped after {len(DOWNLOAD_RETRY_WAITS) + 1} rounds: {cat}[{i}] {p['url'][:90]} -> {errors[(cat, i)]}")
+    for cat, photos in selection["selected"].items():
+        selection["selected"][cat] = [got[(cat, i)] for i in range(len(photos)) if (cat, i) in got]
     selection["download_failures"] = download_failures
     return selection
 

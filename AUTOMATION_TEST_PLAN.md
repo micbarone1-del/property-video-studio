@@ -341,3 +341,9 @@ Update 2026-10-25 (night): clip QC with Claude built in the sandbox (test_clip_q
 ### 2026-10-26 Patch AH
 - Tests: test_preview_proxy (P1-P11 ffmpeg, W1-W7 wiring) 18/18 PASS sandbox; test_clip_qc A10-A16 PASS (44/44). Server smoke test (Range request, light < full, download = original size) NOT RUN.
 - FMEA proposals (not reviewed by Michele): QC false reject of good clip (S3, O3, D2) mitigated by possible_person->flag; preview cache failure (S2, O2, D2) fail-open to original; download must stay original (S8, O1, D2) covered by W2/W5.
+
+## 2026-10-27 update (scores are proposals, not reviewed by the user)
+- Test T-D2 draft_check golden set: harness built, unit tests 17/17 PASS, first live run: 3 of 4 listings without FAIL, villa failed once on transient download (evidence: log line draft preparation failed, All 6 selected photos failed to download). Full golden run after the retry fix: NOT RUN yet.
+- FMEA row photo download failure kills the draft: S=8 O=5 D=3 RPN=120 ACT before; control: retry rounds in download_selected_photos plus test_download_retry.py 5/5 PASS; proposed after fix O=2 RPN=48, to be confirmed by a golden run under load.
+- FMEA row sample drift of judgment calls (no temperature set): proposed S=6 O=6 D=5 RPN=180 ACT, control temperature=0 approved, NOT implemented.
+- Scoreboard not re-counted in this update.

@@ -820,3 +820,7 @@ Requirements, in his words/intent (confirm in plain language before any code; ea
 - [open 2026-10-27] Premium: entrance/hall and stairs scenes (standard excludes them); photos labelled living but classified as hall are now dropped from standard.
 - [open 2026-10-27] Narration single_text fallback is still forced onto the scene grid (long gaps, 0.16 s above the 32 s limit); decide whether it should be a plain continuous track.
 - [open 2026-10-27] Re-run the villa-type listing (no sale/rent word) to confirm the per-scene / anchored mode now passes.
+
+### AX - 2026-10-27 - testing strategy and open items
+- Strategy: golden set of real listings checked at draft stage (cents), movement x room-type clip matrix only when camera rules change (about EUR 1.10 per clip), 2-3 full jobs per release as acceptance. Add one line to golden_listings.txt for every new listing type that shows a problem.
+- TODO: temperature=0 (approved); outdoor window-view scene must use outward_view; backfill order must not give a second facade; UI wrong-job status and QC panels; UI costs; Generated with AI label; run-all-tests script; inspect hall check on empty flat c9099c46 scenes 0-1.

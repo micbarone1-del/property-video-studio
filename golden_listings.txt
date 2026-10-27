@@ -1,0 +1,5 @@
+# Golden set: URL | label   (add one line per listing type; each costs only cents at draft stage)
+https://www.immobiliare.it/annunci/133345168/ | arredato
+https://www.immobiliare.it/annunci/132923242/ | villa
+https://www.immobiliare.it/annunci/133381578/ | vuoto
+https://www.immobiliare.it/annunci/131335508/ | monolocale
