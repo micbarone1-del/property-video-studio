@@ -737,7 +737,7 @@ async def auth_middleware(request: Request, call_next):
 if (BASE_DIR / "ui.html").exists():
     @app.get("/", response_class=FileResponse)
     def serve_ui():
-        return FileResponse(BASE_DIR / "ui.html")
+        return FileResponse(BASE_DIR / "ui.html", headers={"Cache-Control": "no-cache"})
 
 
 

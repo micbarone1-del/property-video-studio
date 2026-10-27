@@ -1272,6 +1272,7 @@ async function editJob(jobId, baseJobId) {
     // 2026-10-27: opening a job stops the status poll of the job that was open before. Without this, a job still
     // generating in the background kept painting its QC panel (and built its clip links with THIS job's id) over the new one.
     clearInterval(pollTimer); pollEpoch++;
+    hideJobOutputs();   // the previous job's result and QC panels must not stay on screen over this one
 
 
     if (!scenesConfig.length) {
@@ -1948,6 +1949,9 @@ const errorMsg   = document.getElementById('error-msg');
 const progSec    = document.getElementById('progress-section');
 const qcSec      = document.getElementById('qc-section');
 const resultSec  = document.getElementById('result-section');
+// 2026-10-27: ONE place that clears everything a previous job left on screen (result + QC panel). Starting, opening or
+// redoing a job used to hide only some of them (the draft start path forgot the QC panel, editJob forgot the result).
+function hideJobOutputs() { resultSec.style.display = 'none'; qcSec.style.display = 'none'; }
 
 
 // ── File handling ─────────────────────────────────────────────────────────────
@@ -2889,7 +2893,7 @@ genBtn.addEventListener('click', async () => {
       genBtn.disabled    = true;
       genBtn.textContent = 'Avvio generazione…';
       progSec.style.display   = 'block';
-      resultSec.style.display = 'none';
+      hideJobOutputs();
       updateProgress(0, 'Avvio generazione video…');
       try {
         const res = await authFetch(`${API_BASE}/jobs/${currentJobId}/start-generation`, { method: 'POST' });
@@ -2960,8 +2964,7 @@ genBtn.addEventListener('click', async () => {
   completedScenes = [];
   genBtn.disabled    = true;
   genBtn.textContent = 'Invio in corso…';
-  resultSec.style.display  = 'none';
-  qcSec.style.display      = 'none';
+  hideJobOutputs();
   progSec.style.display    = 'block';
   updateProgress(0, 'Caricamento foto…');
 
@@ -3010,8 +3013,7 @@ async function submitRework(reworkScenes) {
   genBtn.disabled    = true;
   genBtn.textContent = 'Invio rework…';
   progSec.style.display   = 'block';
-  resultSec.style.display = 'none';
-  qcSec.style.display     = 'none';
+  hideJobOutputs();
   updateProgress(0, `Rework ${reworkScenes.length} scena/e selezionata/e…`);
 
 
@@ -3113,8 +3115,7 @@ async function submitAudioOnlyRework() {
   btn.disabled = true;
   btn.textContent = 'Invio...';
   progSec.style.display   = 'block';
-  resultSec.style.display = 'none';
-  qcSec.style.display     = 'none';
+  hideJobOutputs();
   updateProgress(0, `Rework audio: ${redoSceneIds.length} scena/e selezionata/e...`);
 
   const fd = new FormData();

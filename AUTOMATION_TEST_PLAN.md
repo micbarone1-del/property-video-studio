@@ -347,3 +347,5 @@ Update 2026-10-25 (night): clip QC with Claude built in the sandbox (test_clip_q
 - FMEA row photo download failure kills the draft: S=8 O=5 D=3 RPN=120 ACT before; control: retry rounds in download_selected_photos plus test_download_retry.py 5/5 PASS; proposed after fix O=2 RPN=48, to be confirmed by a golden run under load.
 - FMEA row sample drift of judgment calls (no temperature set): proposed S=6 O=6 D=5 RPN=180 ACT, control temperature=0 approved, NOT implemented.
 - Scoreboard not re-counted in this update.
+
+- 2026-10-27 F51 AI label: label built (proposal: O stays 5), contrast test on real frames NOT RUN. Preview on a bright wall shows low contrast; no shadow by decision, so the contrast check Q31 remains the only safeguard.

@@ -824,3 +824,5 @@ Requirements, in his words/intent (confirm in plain language before any code; ea
 ### AX - 2026-10-27 - testing strategy and open items
 - Strategy: golden set of real listings checked at draft stage (cents), movement x room-type clip matrix only when camera rules change (about EUR 1.10 per clip), 2-3 full jobs per release as acceptance. Add one line to golden_listings.txt for every new listing type that shows a problem.
 - TODO: temperature=0 (approved); outdoor window-view scene must use outward_view; backfill order must not give a second facade; UI wrong-job status and QC panels; UI costs; Generated with AI label; run-all-tests script; inspect hall check on empty flat c9099c46 scenes 0-1.
+
+### 61 update 2026-10-27: label image replaced (see status AY). OPEN: check it on a real video, bright and dark walls; install Poppins or choose a font; decide darker grey if illegible on bright walls; check whether a second watermark copy exists in the reassemble path.
