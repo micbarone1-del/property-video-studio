@@ -832,3 +832,5 @@ Requirements, in his words/intent (confirm in plain language before any code; ea
 2026-10-27 OPEN: job 9615333c, Luma invented a second foreground palm during a walk_in_explore push-in and changed the room. Clip QC returned reject (correct). Prevention not built: (1) A/B prompt test about 2.2 EUR, needs approval; (2) room analysis flag for large foreground vegetation near the camera path. Also open: label size, hall check protection by page caption, single infra forecast number.
 
 2026-10-27 plant test, job 9615333c scene 0: variant still generated (1.10 EUR), result to be judged by Michele on the clip; no prompt change made in production yet. Infra cost is now read from the server (see BB in status.md). Open: decide whether tests count in the rolling job count; label size to verify on a real frame.
+
+2026-10-27 label width 420 accepted for now by Michele on one real frame; darker grey only if it proves too faint. Plant test: the still clip showed no palm but a flat 2D movement, judged unusable by Michele; photo used by the clip being checked; target variant not run yet (1.20 EUR left of the 10 EUR cap).

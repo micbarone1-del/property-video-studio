@@ -614,7 +614,7 @@ def assemble_property_video(scenes_config, video_clip_paths, audio_paths, image_
         if os.path.exists(PVS_WATERMARK_PATH):
             try:
                 wm_img = _PILImage.open(PVS_WATERMARK_PATH).convert("RGBA")
-                wm_w = 210
+                wm_w = 420
                 wm_h = int(wm_img.height * wm_w / wm_img.width)
                 wm_img = wm_img.resize((wm_w, wm_h))
                 wm_arr = np.array(wm_img).astype(float)
