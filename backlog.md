@@ -830,3 +830,5 @@ Requirements, in his words/intent (confirm in plain language before any code; ea
 ### AZ 2026-10-27: TTS cost rate by provider (OPEN, to confirm): one rate per TTS_PROVIDER used by cost_tracker (3 places) and the UI estimate; Google Chirp 3 HD USD 30 per 1M characters. Also: remove or fix immobiliare_it_claude.py (duplicate extractor).
 
 2026-10-27 OPEN: job 9615333c, Luma invented a second foreground palm during a walk_in_explore push-in and changed the room. Clip QC returned reject (correct). Prevention not built: (1) A/B prompt test about 2.2 EUR, needs approval; (2) room analysis flag for large foreground vegetation near the camera path. Also open: label size, hall check protection by page caption, single infra forecast number.
+
+2026-10-27 plant test, job 9615333c scene 0: variant still generated (1.10 EUR), result to be judged by Michele on the clip; no prompt change made in production yet. Infra cost is now read from the server (see BB in status.md). Open: decide whether tests count in the rolling job count; label size to verify on a real frame.

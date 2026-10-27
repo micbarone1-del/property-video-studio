@@ -1421,6 +1421,7 @@ checkGenerationPauseStatus();
 // 2026-10-08: voice menu + language architecture. Source of truth is voice_generation.TTS_LANGUAGES (via /tts/voices).
 // The language selector stays hidden until more than one language exists.
 let ttsCatalog = null;
+let infraCostPerJob = null;   // EUR per video, from /cost/infra (monthly VPS cost / done jobs of the last 30 days; no copy of the numbers here)
 let ttsCostPerChar = null;   // EUR per character of the ACTIVE TTS provider, read from /tts/voices (no second copy of the rate here)
 function onTtsLanguageChange(code) {
   const sel = document.getElementById('voice-id');
@@ -1428,7 +1429,16 @@ function onTtsLanguageChange(code) {
   if (!sel || !lang) return;
   sel.innerHTML = lang.voices.map(v => `<option value="${v.id}"${v.id === lang.default_voice ? ' selected' : ''}>${v.label}</option>`).join('');
 }
+async function loadInfraCost() {
+  try {
+    const res = await authFetch("/cost/infra");
+    if (!res.ok) return;
+    infraCostPerJob = (await res.json()).infra_cost_per_job_eur;
+    try { updateCostEstimate(); } catch (e) {}
+  } catch (e) {}
+}
 async function loadTtsVoices() {
+  loadInfraCost();
   try {
     const res = await authFetch('/tts/voices');
     if (!res.ok) return;
@@ -2777,7 +2787,7 @@ async function updateCostEstimate() {
   const VIDEO_UP_PER_SEC = 0.02;
   // voiceover rate: from the server (/tts/voices, cost_tracker.tts_cost_per_char), see ttsCostPerChar
   const CLIP_QC_EST  = 0.0093;  // = cost_tracker.CLIP_QC_EST_EUR_PER_CLIP (the clip QC is Claude vision since 2026-10-25, one call per clip)
-  const INFRA        = 34.79 / 20;  // updated annual Hostinger cost — server recalculates actual rolling value
+  const INFRA        = infraCostPerJob || 0;  // from the server (/cost/infra), see infraCostPerJob
 
 
   const n         = scenesToCharge.length;

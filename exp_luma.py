@@ -24,9 +24,10 @@ TARGET_MOTION = ("slow straight forward camera push-in toward the centre of the 
                  "the nearest furniture at the edges of the frame stays in view and the camera stops well before reaching it, "
                  "smooth continuous motion, no stepping or bobbing, realistic physics")   # no 'parallax' wording (it invites a sideways slide), a target, no sideways move
 import camera_plan
+STILL_ADD = ("plants, foliage, curtains and every other object in the room stay perfectly still and never appear, grow, move or sway, only the camera moves, the foreground of the last frame contains exactly what the photo contains")
 STRICT_ADD = camera_plan.ANCHOR_STRICT   # the same first-frame text production adds in anchor mode
 ANCHOR_MOTION = camera_plan.ANCHOR_MOTION   # one text, shared with production
-VARIANTS = ("base", "strict", "straight", "pair", "subtle", "target", "anchor", "anchormove")
+VARIANTS = ("base", "still", "strict", "straight", "pair", "subtle", "target", "anchor", "anchormove")
 # ONE implementation of the anchor texts and parsing: camera_plan (production reads the same functions)
 import camera_plan as _cp
 parse_anchor_side = _cp.parse_anchor_answer
@@ -137,6 +138,8 @@ def cmd_run(job: str, index: int, variant: str, go: bool, generate=None, anchor_
         print("Nessuna generazione (manca --go). Per generare aggiungi --go in fondo.")
         return 0
     import video_generation as vg
+    if variant == "still":
+        vg._LUMA_RULES = vg._LUMA_RULES + ", " + STILL_ADD
     if variant in ("strict", "straight", "subtle", "target", "pair", "anchor", "anchormove"):
         vg._LUMA_RULES = vg._LUMA_RULES + ", " + STRICT_ADD + (STRAIGHT_ADD if variant in ("straight", "target") else "")
     movement = s["scene"].get("pov_movement", "walk_in_explore")

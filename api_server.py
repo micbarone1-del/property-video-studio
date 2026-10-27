@@ -759,6 +759,14 @@ def list_tts_voices():
     }
 
 
+@app.get("/cost/infra")
+def infra_cost_per_job_endpoint():
+    """Infrastructure share of ONE video = monthly VPS cost / done jobs of the last 30 days. Same count and same function as the draft estimates; the page reads it from here."""
+    from cost_tracker import get_infra_cost_per_job
+    n = _get_rolling_monthly_job_count()
+    return {"infra_cost_per_job_eur": get_infra_cost_per_job(n), "monthly_jobs": n}
+
+
 @app.get("/test-scratch/{filename}")
 def serve_test_scratch(filename: str):
     """Serves files ONLY from jobs/_test_scratch/ — a dedicated directory
