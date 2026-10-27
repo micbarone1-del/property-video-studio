@@ -749,8 +749,10 @@ if (BASE_DIR / "ui.html").exists():
 def list_tts_voices():
     """Voice/language catalog for the UI menus. Source of truth: voice_generation.TTS_LANGUAGES."""
     import voice_generation as _vg
+    from cost_tracker import tts_cost_per_char
     return {
         "provider": _vg.TTS_PROVIDER,
+        "cost_per_char_eur": tts_cost_per_char(),
         "default_language": _vg.DEFAULT_LANGUAGE,
         "default_voice": _vg.DEFAULT_VOICE_ID,
         "languages": _vg.TTS_LANGUAGES if _vg.TTS_PROVIDER == "google" else {},
@@ -1811,6 +1813,7 @@ async def _prepare_url_draft_work(job_id, url, property_name, agency_id, voice_i
         scenes_config, do_upscale=True, do_video_upscale=True, do_vision_qc=True,
         model_tier=model_tier, actual_monthly_jobs=rolling_jobs,
         claude_cost_eur=claude_usage.get("cost_eur", 0.0),
+        narration_chars=len(narration["narration_text"]),
     )
 
     JOBS[job_id] = {
@@ -2203,6 +2206,7 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
             scenes_config, do_upscale=True, do_video_upscale=True, do_vision_qc=True,
             model_tier="luma", actual_monthly_jobs=rolling_jobs,
             claude_cost_eur=claude_usage.get("cost_eur", 0.0),
+            narration_chars=len(narration["narration_text"]),
         )
 
         JOBS[job_id].update({

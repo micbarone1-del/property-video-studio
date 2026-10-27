@@ -828,3 +828,5 @@ Requirements, in his words/intent (confirm in plain language before any code; ea
 ### 61 update 2026-10-27: label image replaced (see status AY). OPEN: check it on a real video, bright and dark walls; install Poppins or choose a font; decide darker grey if illegible on bright walls; check whether a second watermark copy exists in the reassemble path.
 
 ### AZ 2026-10-27: TTS cost rate by provider (OPEN, to confirm): one rate per TTS_PROVIDER used by cost_tracker (3 places) and the UI estimate; Google Chirp 3 HD USD 30 per 1M characters. Also: remove or fix immobiliare_it_claude.py (duplicate extractor).
+
+2026-10-27 OPEN: job 9615333c, Luma invented a second foreground palm during a walk_in_explore push-in and changed the room. Clip QC returned reject (correct). Prevention not built: (1) A/B prompt test about 2.2 EUR, needs approval; (2) room analysis flag for large foreground vegetation near the camera path. Also open: label size, hall check protection by page caption, single infra forecast number.

@@ -64,6 +64,18 @@ def get_infra_cost_per_job(actual_monthly_jobs: int = None) -> float:
 # Static fallback for any code path not yet passing actual_monthly_jobs
 INFRA_COST_PER_JOB = get_infra_cost_per_job()
 
+
+# 2026-10-27: ONE voiceover rate per TTS provider (was a hard-coded ElevenLabs rate in 3 places here and in ui.html).
+# Google Cloud TTS Chirp 3 HD: US$30 per 1 million characters (cloud.google.com/text-to-speech/pricing, checked 2026-10-27).
+GOOGLE_TTS_CHIRP3_HD_USD_PER_CHAR = 0.00003
+
+
+def tts_cost_per_char(provider: str = None) -> float:
+    p = (provider or os.environ.get("TTS_PROVIDER", "elevenlabs")).strip().lower()   # same variable and default as voice_generation.TTS_PROVIDER
+    if p == "google":
+        return GOOGLE_TTS_CHIRP3_HD_USD_PER_CHAR * USD_TO_EUR
+    return ELEVENLABS_COST_PER_CHAR
+
 # Frame mapping (mirrors video_generation.py)
 _DURATION_TO_FRAMES = {
     6: 81, 7: 81, 8: 81,
@@ -175,8 +187,10 @@ def estimate_job_cost(
     model_tier:          str  = "premium",
     actual_monthly_jobs: int  = None,
     claude_cost_eur:     float = 0.0,
+    narration_chars:     int   = 0,
 ) -> dict:
     """Estimates the total cost of a job before generation starts.
+    narration_chars: length of the continuous narration text (URL / partner jobs keep it outside the per-scene voiceover fields).
     actual_monthly_jobs: real rolling count of jobs completed in the last
     30 days, passed from api_server.py — used to calculate the true
     per-video infrastructure share rather than a static guess.
@@ -202,8 +216,8 @@ def estimate_job_cost(
             video_upscale_cost += duration * TOPAZ_COST_PER_SEC
 
     upscale_cost = (UPSCALE_COST_PER_IMAGE * n) if do_upscale else 0.0
-    total_chars  = sum(len(s.get("voiceover", "")) for s in scenes)
-    tts_cost     = total_chars * ELEVENLABS_COST_PER_CHAR
+    total_chars  = sum(len(s.get("voiceover", "")) for s in scenes) + narration_chars
+    tts_cost     = total_chars * tts_cost_per_char()
     vision_calls = n if do_vision_qc else 0                      # clip QC, one Claude check per clip (Patch X)
     vision_cost  = vision_calls * CLIP_QC_EST_EUR_PER_CLIP
     infra_cost   = get_infra_cost_per_job(actual_monthly_jobs)
@@ -272,7 +286,7 @@ def calculate_actual_cost(
 
     upscale_cost = (UPSCALE_COST_PER_IMAGE * n) if do_upscale else 0.0
     total_chars  = sum(a.get("chars", 0) for a in audios_generated)
-    tts_cost     = total_chars * ELEVENLABS_COST_PER_CHAR
+    tts_cost     = total_chars * tts_cost_per_char()
     vision_calls = n if do_vision_qc else 0
     vision_cost  = 0.0     # Patch X: the clip QC is billed by Claude and its REAL usage is inside claude_cost_eur (adding an estimate here would count it twice)
     infra_cost   = INFRA_COST_PER_JOB
@@ -334,7 +348,7 @@ def calculate_rework_cost(
             else:
                 video_cost += video_cost_for_clip(model_tier, duration, (used_models[i] if used_models and i < len(used_models) else None))
 
-    tts_cost    = (audio_chars * ELEVENLABS_COST_PER_CHAR) if redo_audio else 0.0
+    tts_cost    = (audio_chars * tts_cost_per_char()) if redo_audio else 0.0
     vision_cost = n * CLIP_QC_EST_EUR_PER_CLIP   # output QC only (estimate; Claude since Patch X)
 
     total = video_cost + tts_cost + vision_cost

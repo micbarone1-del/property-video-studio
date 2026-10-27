@@ -1421,6 +1421,7 @@ checkGenerationPauseStatus();
 // 2026-10-08: voice menu + language architecture. Source of truth is voice_generation.TTS_LANGUAGES (via /tts/voices).
 // The language selector stays hidden until more than one language exists.
 let ttsCatalog = null;
+let ttsCostPerChar = null;   // EUR per character of the ACTIVE TTS provider, read from /tts/voices (no second copy of the rate here)
 function onTtsLanguageChange(code) {
   const sel = document.getElementById('voice-id');
   const lang = ttsCatalog && ttsCatalog.languages[code];
@@ -1432,6 +1433,8 @@ async function loadTtsVoices() {
     const res = await authFetch('/tts/voices');
     if (!res.ok) return;
     ttsCatalog = await res.json();
+    ttsCostPerChar = ttsCatalog.cost_per_char_eur;
+    try { updateCostEstimate(); } catch (e) {}
     const codes = Object.keys(ttsCatalog.languages || {});
     if (!codes.length) return;
     const langSel = document.getElementById('tts-language');
@@ -2772,7 +2775,7 @@ async function updateCostEstimate() {
   const VIDEO_COST_PER_SEC_EUR = { luma: 0.2208, premium: 0.092, premium_veo: 0.184 };
   const UPSCALE      = 0.030;
   const VIDEO_UP_PER_SEC = 0.02;
-  const EL_PER_CHAR  = 0.0003;
+  // voiceover rate: from the server (/tts/voices, cost_tracker.tts_cost_per_char), see ttsCostPerChar
   const CLIP_QC_EST  = 0.0093;  // = cost_tracker.CLIP_QC_EST_EUR_PER_CLIP (the clip QC is Claude vision since 2026-10-25, one call per clip)
   const INFRA        = 34.79 / 20;  // updated annual Hostinger cost — server recalculates actual rolling value
 
@@ -2798,7 +2801,7 @@ async function updateCostEstimate() {
   const perSceneChars  = scenesToCharge.reduce((s,sc) => s + sc.voiceover.length, 0);
   const narrationChars = document.getElementById('narration-text')?.value.length || 0;
   const chars     = perSceneChars + narrationChars;
-  const ttsCost   = chars * EL_PER_CHAR;
+  const ttsCost   = chars * (ttsCostPerChar || 0);
   const visCost   = visionQc ? n * CLIP_QC_EST : 0;
   // Infra cost only applies to a fresh full job — a rework of 1-2 scenes
   // doesn't incur a fresh infrastructure share
