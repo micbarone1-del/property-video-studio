@@ -802,3 +802,13 @@ Requirements, in his words/intent (confirm in plain language before any code; ea
 ### 2026-10-26 Luma fidelity experiments (budget EUR 10 max, Michele)
 - Goal: clip must not leave the space of the photo or invent items (dining chair on 6dddfd66 living room). Candidates: (1) stronger prompt wording; (2) end keyframe = crop of the photo. Test on ONE scene, 1-2 clips per variant (~EUR 1.1 each direct), stop at EUR 10 total; report cost after each run. Not started.
 - (2026-10-26 AK) End-frame experiments: plan = same scene, variants base / strict prompt / endframe, then a second scene type; judge: no invented items, stays inside the photo, motion looks like a camera move not a digital zoom, price. Production switch (PVS_END_FRAME or UI option) only after Michele sees the clips.
+
+## 2026-10-27 - anchor / camera direction (from the first full job 26d7a774)
+- [open] Re-test the criteria v2 on a real job (cost about EUR 6.6): check that anchors are far, central, fixed and worth seeing, and that no door/fixture/railing is chosen.
+- [open] Facade (approach_facade) is static: no camera move at all. Decide a movement for facades that cannot invent (anchor = the entrance / the building centre?), test.
+- [open] Bedroom (walk_in_gentle) drifts toward a mirrored wardrobe: wire the mirror flag (reflective_surface) into the generation call, or test an anchor-based lateral/arc move whose anchor is never a mirror.
+- [open] Outdoor/balcony: the anchor must be the distant view; if Claude answers a near object the filter drops it (today's outward_view text).
+- [open] Clip QC with the anchor ("the camera should have moved toward X; is X closer and nothing new?").
+- [open] Manual UI path does not carry the anchor (scenes created by hand keep today's movement).
+- [open] Cost: the UI estimate is still a third copy of the backend rates (now equal, test-guarded); consider an endpoint that returns the estimate.
+- [open] Preview of scene 5 did not start in the QC approval screen of job 26d7a774: diagnose preview_cache.

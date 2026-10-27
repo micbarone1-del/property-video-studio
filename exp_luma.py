@@ -23,16 +23,9 @@ TARGET_MOTION = ("slow straight forward camera push-in toward the centre of the 
                  "and never turns, treat nearby furniture as if it were not there: never steer around it and never dodge it, the path is one straight line toward the centre, "
                  "the nearest furniture at the edges of the frame stays in view and the camera stops well before reaching it, "
                  "smooth continuous motion, no stepping or bobbing, realistic physics")   # no 'parallax' wording (it invites a sideways slide), a target, no sideways move
-ANCHOR_QUESTION = ("This is a real-estate photo. Name the ONE thing a camera standing where the photo was taken could slowly approach in a straight line: "
-                   "the most prominent object or opening near the middle of the frame (a window, a door, a bookcase, a bed, the view beyond a railing...). "
-                   "Answer with a short English noun phrase of at most 8 words and nothing else.")
 import camera_plan
 STRICT_ADD = camera_plan.ANCHOR_STRICT   # the same first-frame text production adds in anchor mode
 ANCHOR_MOTION = camera_plan.ANCHOR_MOTION   # one text, shared with production
-ANCHOR2_QUESTION = ("This is a real-estate photo. Name the ONE most prominent, characteristic and SAFE thing near the middle of the frame that a camera could "
-                    "approach or keep in view: a structural or main feature of the room (a window, a door, a bookcase, a bed, the view beyond a railing), "
-                    "never a mirror or reflective surface, a screen, a person, an animal or a small decorative object. Then say where it sits horizontally in the frame. "
-                    "Answer exactly like this and nothing else: <noun phrase of at most 8 words> | <left or center or right>")
 VARIANTS = ("base", "strict", "straight", "pair", "subtle", "target", "anchor", "anchormove")
 # ONE implementation of the anchor texts and parsing: camera_plan (production reads the same functions)
 import camera_plan as _cp
@@ -40,26 +33,33 @@ parse_anchor_side = _cp.parse_anchor_answer
 anchor_motion_for = _cp.anchor_motion_for
 
 
-def anchor_phrase(image_path, ask=None) -> str:
-    """The thing to move toward, named by Claude vision from the photo itself (a few cents at most). '' if it cannot be asked."""
-    if ask is None:
-        import vision_analysis
-        ask = lambda p: vision_analysis._claude_vision_call([str(p)], ANCHOR_QUESTION, max_tokens=40)
+def _production_answer(image_path):
+    """'anchor | side' from the PRODUCTION photo analysis (vision_analysis.analyse_input with the switch on): the experiments use the very same
+    prompt, rules and filters as the app, never a private copy. None when Claude names no usable anchor."""
+    import vision_analysis
+    old = os.environ.get("PVS_ANCHOR")
+    os.environ["PVS_ANCHOR"] = "1"
     try:
-        txt = (ask(image_path) or "").strip().splitlines()[0].strip().strip('."\'`*')
-    except Exception:
-        return ""
-    return txt[:80] if 2 <= len(txt) <= 80 else ""
+        r = vision_analysis.analyse_input(str(image_path))
+    finally:
+        if old is None:
+            os.environ.pop("PVS_ANCHOR", None)
+        else:
+            os.environ["PVS_ANCHOR"] = old
+    a = r.get("anchor") or ""
+    return f"{a} | {r.get('anchor_side') or 'center'}" if a else None
 
 
 def anchor_side_of(image_path, ask=None):
-    if ask is None:
-        import vision_analysis
-        ask = lambda p: vision_analysis._claude_vision_call([str(p)], ANCHOR2_QUESTION, max_tokens=40)
+    """(anchor, side) or ('', '')."""
     try:
-        return parse_anchor_side(ask(image_path))
+        return parse_anchor_side((ask or _production_answer)(image_path))
     except Exception:
         return "", ""
+
+
+def anchor_phrase(image_path, ask=None) -> str:
+    return anchor_side_of(image_path, ask)[0]
 
 
 def est_eur() -> float:
@@ -148,14 +148,14 @@ def cmd_run(job: str, index: int, variant: str, go: bool, generate=None, anchor_
     if variant == "anchor":
         anchor = anchor_phrase(s["image"], ask=anchor_ask)
         if not anchor:
-            print("Non sono riuscito a farmi dire da Claude cosa c'e al centro della foto: nessuna generazione, nessuna spesa."); return 5
+            print("Claude non ha indicato un punto di riferimento sicuro per questa foto (o non ha risposto): nessuna generazione, nessuna spesa."); return 5
         print("Punto verso cui avanzare, scelto da Claude guardando la foto:", anchor)
         vg._LUMA_MOVEMENT_TOKENS["walk_in_explore"] = ANCHOR_MOTION.format(anchor=anchor)
         movement = "walk_in_explore"      # every movement becomes a straight approach to the anchor (no sideways slide, no rotation)
     if variant == "anchormove":
         anchor, side = anchor_side_of(s["image"], ask=anchor_ask)
         if not anchor:
-            print("Non sono riuscito a farmi dire da Claude cosa c'e al centro della foto: nessuna generazione, nessuna spesa."); return 5
+            print("Claude non ha indicato un punto di riferimento sicuro per questa foto (o non ha risposto): nessuna generazione, nessuna spesa."); return 5
         if movement == "stand_look_around":
             movement = "walk_in_explore"            # same remap as assemble_pov_prompt
         text = anchor_motion_for(movement, anchor, side)

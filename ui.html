@@ -422,7 +422,7 @@
           <label>Video quality tier</label>
           <select id="model-tier" onchange="onTierChange(this.value)" autocomplete="off">
             <option value="eco">Eco — Lyra 2.0 + upscale (~€0.05/clip) · budget</option>
-            <option value="luma" selected>⭐ Luma Ray 2 (~€1.10/5s clip) · consigliato — 3D reale, no warping</option>
+            <option value="luma" selected>⭐ Luma Ray 3.2 (~€1.10/clip da 5s) · consigliato — 3D reale, no warping</option>
             <option value="premium">Veo 3.1 Fast (~€0.74/8s clip)</option>
             <option value="premium_veo">Veo 3.1 Standard (~€1.47/8s clip) · no circular wipe</option>
           </select>
@@ -2765,7 +2765,7 @@ async function updateCostEstimate() {
   const UPSCALE      = 0.030;
   const VIDEO_UP_PER_SEC = 0.02;
   const EL_PER_CHAR  = 0.0003;
-  const FLORENCE     = 0.0002;
+  const CLIP_QC_EST  = 0.0093;  // = cost_tracker.CLIP_QC_EST_EUR_PER_CLIP (the clip QC is Claude vision since 2026-10-25, one call per clip)
   const INFRA        = 34.79 / 20;  // updated annual Hostinger cost — server recalculates actual rolling value
 
 
@@ -2773,7 +2773,10 @@ async function updateCostEstimate() {
   const videoCost = scenesToCharge.reduce((s,sc) => {
     if (tier === 'eco') return s + ECO_CLIP_COST;
     const rate = VIDEO_COST_PER_SEC_EUR[tier] || VIDEO_COST_PER_SEC_EUR.premium;
-    return s + ((sc.duration || 8) * rate);
+    // 2026-10-27: Luma is always ONE 5 s clip per scene (same table as the duration slider, narration.py and cost_tracker.LUMA_CLIP_SECS),
+    // never the narration length of the scene (that showed EUR 11.04 for a job of EUR 6.62)
+    const secs = (tier === 'luma') ? getDurationRangeForTier('luma').def : (sc.duration || 8);
+    return s + (secs * rate);
   }, 0);
   const upCost    = upscale ? n * UPSCALE : 0;
   const vidUpCost = videoUpscale
@@ -2788,14 +2791,14 @@ async function updateCostEstimate() {
   const narrationChars = document.getElementById('narration-text')?.value.length || 0;
   const chars     = perSceneChars + narrationChars;
   const ttsCost   = chars * EL_PER_CHAR;
-  const visCost   = visionQc ? n * 2 * FLORENCE : 0;
+  const visCost   = visionQc ? n * CLIP_QC_EST : 0;
   // Infra cost only applies to a fresh full job — a rework of 1-2 scenes
   // doesn't incur a fresh infrastructure share
   const infraCost = isRework ? 0 : INFRA;
   const total     = videoCost + upCost + vidUpCost + ttsCost + visCost + infraCost
 
 
-  const tierLabel = { eco: 'Lyra 2.0 + Topaz', luma: 'Luma Ray 2', premium: 'Veo 3.1 Fast', premium_veo: 'Veo 3.1 Standard' };
+  const tierLabel = { eco: 'Lyra 2.0 + Topaz', luma: 'Luma Ray 3.2', premium: 'Veo 3.1 Fast', premium_veo: 'Veo 3.1 Standard' };
   const panel = document.getElementById('cost-panel');
   const lines = document.getElementById('cost-lines');
   panel.style.display = 'block';
@@ -2811,7 +2814,7 @@ async function updateCostEstimate() {
     if (upCost > 0) html += `<div class="cost-row"><span>Upscaling immagini AI (${n})</span><span>€${upCost.toFixed(3)}</span></div>`;
     if (vidUpCost > 0) html += `<div class="cost-row"><span>Topaz video upscale 1080p</span><span>€${vidUpCost.toFixed(3)}</span></div>`;
     if (ttsCost > 0) html += `<div class="cost-row"><span>Voiceover (${chars.toLocaleString()} caratteri)</span><span>€${ttsCost.toFixed(4)}</span></div>`;
-    if (visCost > 0) html += `<div class="cost-row"><span>Vision QC (${n*2} analisi)</span><span>€${visCost.toFixed(4)}</span></div>`;
+    if (visCost > 0) html += `<div class="cost-row"><span>Controllo qualità Claude (${n} clip)</span><span>€${visCost.toFixed(4)}</span></div>`;
     if (infraCost > 0) html += `<div class="cost-row"><span>Quota infrastruttura</span><span>€${infraCost.toFixed(2)}</span></div>`;
   }
   lines.innerHTML = html;

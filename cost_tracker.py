@@ -141,6 +141,12 @@ def clip_price_usd(used_model, duration_secs=5):
     return None
 
 
+# 2026-10-27: Luma is generated at ONE length only, 5 s per clip (narration.FIXED_SCENE_SECS_BY_TIER; the UI slider is 5-5), whatever the narration
+# length of the scene says. The estimate (draft stage, UI and backend) used to multiply the scene's narration seconds (e.g. 8.3 s) by the per-second
+# rate: EUR 11.04 shown for a job that really costs EUR 6.62 (job 26d7a774). test_cost_real_model checks this equals narration's table and the UI's.
+LUMA_CLIP_SECS = 5
+
+
 def video_cost_for_clip(model_tier: str, duration_secs, used_model=None) -> float:
     """
     Real per-clip video cost, scaled by actual clip duration -- replaces
@@ -150,6 +156,8 @@ def video_cost_for_clip(model_tier: str, duration_secs, used_model=None) -> floa
     used_model (2026-10-26): the model that REALLY made the clip (clip_provenance sidecar). For the luma tier, when it is known the
     clip is priced by clip_price_usd() (direct 1.20 / fal 2.00 per 5 s), scaled by duration; unknown -> the tier rate.
     """
+    if model_tier == "luma":
+        duration_secs = LUMA_CLIP_SECS
     if model_tier == "luma" and used_model:
         usd = clip_price_usd(used_model, duration_secs)
         if usd is not None:
@@ -362,7 +370,7 @@ def format_cost_display(cost: dict, previous_reworks: list = None) -> dict:
         tier_labels = {
             "eco":      "Lyra 2.0 + Topaz",
             "standard": "Kling 2.5 Turbo",
-            "luma":     "Luma Ray 2",
+            "luma":     "Luma Ray 3.2",
             "premium":  "Veo 3.1 Fast",
         }
         model_label = tier_labels.get(tier, "Veo 3.1 Fast")

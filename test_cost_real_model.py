@@ -38,5 +38,20 @@ m = re.search(r"VIDEO_COST_PER_SEC_EUR = \{ luma: ([\d.]+)", ui)
 check("K12 UI mirror of the luma rate equals the backend", m and abs(float(m.group(1)) - ct.VIDEO_COST_PER_SEC_EUR["luma"]) < 1e-3, m and m.group(1))
 api = open("api_server.py").read()
 check("K13 api passes used_models to the actual-cost calculation; rework passes job_dir", "used_models=used_models" in api and "job_dir=job_dir" in api)
+# ---- 2026-10-27: Luma is always one 5 s clip per scene (job 26d7a774 showed EUR 11.04 for a job of EUR 6.62) ----
+import types as _t
+for _n in ("fal_client", "moviepy", "anthropic"):
+    sys.modules.setdefault(_n, _t.ModuleType(_n))
+import narration as _nar
+ui_src = open("ui.html", encoding="utf-8").read()
+est = ct.estimate_job_cost([{"duration": d, "voiceover": ""} for d in (8, 9, 7, 10, 6, 8)], model_tier="luma", do_upscale=False, do_vision_qc=False)
+check("K14 estimate for 6 Luma scenes of any narration length = 6 clips of 5 s (EUR 6.62), not the narration seconds", abs(est["video_eur"] - 6 * 5 * ct.VIDEO_COST_PER_SEC_EUR["luma"]) < 1e-3 and abs(est["video_eur"] - 6.624) < 1e-2, est["video_eur"])
+check("K15 the rework estimate and the actual cost use the same fixed 5 s", abs(ct.video_cost_for_clip("luma", 9) - ct.video_cost_for_clip("luma", 5)) < 1e-9 and abs(ct.video_cost_for_clip("luma", 9, "luma-ray-3.2-direct") - 1.2 * E) < 1e-9)
+check("K16 Veo is still billed per second of the scene (unchanged)", abs(ct.video_cost_for_clip("premium", 8) - 8 * ct.VIDEO_COST_PER_SEC_EUR["premium"]) < 1e-9)
+check("K17 ONE value: cost_tracker.LUMA_CLIP_SECS == narration.FIXED_SCENE_SECS_BY_TIER['luma'] == the UI duration slider for luma", ct.LUMA_CLIP_SECS == _nar.FIXED_SCENE_SECS_BY_TIER["luma"] == 5 and re.search(r"if \(tier === 'luma'\) return \{min: 5, max: 5, step: 1, def: 5", ui_src) is not None)
+check("K18 the UI estimate takes the Luma seconds from that slider table, not from the scene's narration length", "getDurationRangeForTier('luma').def" in ui_src and "(sc.duration || 8) * rate" not in ui_src)
+mq = re.search(r"const CLIP_QC_EST\s*=\s*([\d.]+)", ui_src)
+check("K19 the UI clip-QC cost equals the backend constant (Claude vision), the old Florence constant is gone", mq and abs(float(mq.group(1)) - ct.CLIP_QC_EST_EUR_PER_CLIP) < 1e-9 and "FLORENCE" not in ui_src, mq and mq.group(1))
+check("K20 labels say Luma Ray 3.2 (UI dropdown, UI cost lines, backend cost report); no 'Ray 2' label left", "Luma Ray 3.2 (~" in ui_src and "luma: 'Luma Ray 3.2'" in ui_src and '"luma":     "Luma Ray 3.2"' in open("cost_tracker.py").read() and "Luma Ray 2 (~" not in ui_src)
 print(f"\nRESULT: {'ALL PASS' if not fails else fails} ({ok_n}/{ok_n+len(fails)})")
 sys.exit(1 if fails else 0)

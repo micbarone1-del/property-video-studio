@@ -211,10 +211,16 @@ Rules:
 
 # 2026-10-27: camera direction. Asked in the SAME call (no second analysis), only when PVS_ANCHOR=1 so the prompt is otherwise unchanged.
 ROOM_PROMPT_ANCHOR = """
-Also add two more keys to the JSON object:
- "anchor": the ONE most prominent, characteristic and SAFE thing near the middle of the frame that a camera could slowly approach: a structural or main feature of the space (a window, a door, the view beyond a railing, a bed, a main piece of furniture), as an English noun phrase of at most 8 words, or "none" if there is no safe one.
-   NEVER choose: a mirror or any reflective surface, a screen, a person, an animal, a small decorative object, or anything partly hidden by an object close to the camera.
- "anchor_side": where that thing sits horizontally in the frame: left, center or right."""
+Also add three more keys to the JSON object. They choose the TARGET of a slow straight camera push-in (the camera moves toward it and stops well before reaching it):
+ "anchor": an English noun phrase of at most 8 words, or "none".
+ "anchor_side": where it sits horizontally in the frame: left, center or right.
+ "anchor_height": where it sits vertically in the frame: upper, middle or lower.
+Rules for the anchor:
+ - It must sit in the CENTRE of the frame (middle vertically, not near the left or right edge) and be FAR from the camera: the far wall, the far end of the room, a window or opening with a view. For outdoor photos, balconies and terraces choose the DISTANT VIEW (the landscape, skyline, garden or horizon beyond), never what is near you.
+ - It must be worth looking at for a buyer: the view, a window with a view, the far end of the living space, a bed, a sofa area, a fireplace, a dining set. NOT a utilitarian fixture (sink, toilet, bathtub, shower, radiator, stove, oven, fridge, kitchen counter, appliance).
+ - It must be fixed and still: NEVER a door of any kind (doors get animated), curtain, blind, plant, water, flame, screen, mirror or any reflective surface, person, animal or small decorative object.
+ - NEVER a near foreground object (railing, balustrade, fence, a table or chair close to the camera): it pulls the camera down toward the floor.
+ - If nothing satisfies all of this, answer "none"."""
 
 
 def _claude_vision_call(image_paths: list, prompt: str, max_tokens: int = 250, model: str = None, usage_out: dict = None) -> str | None:
@@ -262,7 +268,7 @@ def _claude_vision_text(image_path: str, prompt: str, max_tokens: int = 250) -> 
 def _classify_room_claude(image_path: str) -> dict | None:
     """Returns {"room","size","depth","confidence","description"} or None if the call failed or the answer is invalid."""
     import json
-    raw = _claude_vision_text(image_path, ROOM_PROMPT + (ROOM_PROMPT_ANCHOR if camera_plan.anchor_enabled() else ""), 320 if camera_plan.anchor_enabled() else 250)
+    raw = _claude_vision_text(image_path, ROOM_PROMPT + (ROOM_PROMPT_ANCHOR if camera_plan.anchor_enabled() else ""), 420 if camera_plan.anchor_enabled() else 250)
     if not raw:
         return None
     m = re.search(r"\{.*\}", raw, re.DOTALL)
@@ -291,7 +297,7 @@ def _classify_room_claude(image_path: str) -> dict | None:
     out = {"room": room, "size": size, "depth": depth, "confidence": conf,
            "description": str(d.get("description", ""))[:200]}
     if camera_plan.anchor_enabled():       # unusable / unsafe / "none" -> "": the scene then keeps today's movement text
-        out["anchor"] = camera_plan.clean_anchor(d.get("anchor"))
+        out["anchor"] = camera_plan.anchor_usable(d.get("anchor"), d.get("anchor_side"), d.get("anchor_height"))
         out["anchor_side"] = camera_plan.clean_side(d.get("anchor_side")) if out["anchor"] else ""
     return out
 

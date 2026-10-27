@@ -58,13 +58,18 @@ check("B8 shallow depth = much shorter push; medium/deep/unknown = the approved 
 check("B9 the experiment tool and production share ONE text (same objects)", ex.ANCHOR_MOTION is cp.ANCHOR_MOTION and ex.STRICT_ADD is cp.ANCHOR_STRICT and ex.anchor_motion_for is cp.anchor_motion_for and ex.parse_anchor_side is cp.parse_anchor_answer)
 
 # ---- C. the safety net of the anchor itself ------------------------------------------------------------------------------------------
-check("C1 clean_anchor: ok / none / empty / too long / unsafe words", cp.clean_anchor("the French doors") == "the French doors" and cp.clean_anchor("none") == "" and cp.clean_anchor(None) == "" and cp.clean_anchor("a" * 90) == "" and all(cp.clean_anchor(x) == "" for x in ("a large mirror", "the TV screen", "a woman on the sofa", "the dog", "reflection in the glass")))
-check("C2 a glass DOOR is allowed (approved by eye on scene 1), a mirror is not", cp.clean_anchor("Glass doors leading outside") != "" and cp.clean_anchor("mirrored wardrobe") != "" and cp.clean_anchor("wall mirror") == "")
+check("C1 clean_anchor: ok / none / empty / too long / unsafe words", cp.clean_anchor("the far end of the living room") == "the far end of the living room" and cp.clean_anchor("none") == "" and cp.clean_anchor(None) == "" and cp.clean_anchor("a" * 90) == "" and all(cp.clean_anchor(x) == "" for x in ("a large mirror", "the TV screen", "a woman on the sofa", "the dog", "reflection in the glass")))
+check("C2 criteria v2: far / central / fixed / worth looking at. Doors, fixtures, near railings, mirrors, screens are rejected (job 26d7a774 feedback); views, windows, beds, fireplaces pass",
+      all(cp.clean_anchor(x) for x in ("the distant skyline beyond the terrace", "a window with a view of the garden", "the double bed", "the fireplace", "the far wall with the bookshelves", "the outdoor terrace view"))
+      and all(cp.clean_anchor(x) == "" for x in ("glass sliding door to balcony", "French doors on the right wall", "the doorway to the hall", "stainless steel sink and countertop", "the bathtub", "metal railing along balcony edge", "curved balcony with railing", "large mirrored wardrobe with white frame", "wall mirror", "reflecting glass wall", "two screens on the desk", "the curtains", "a potted plant")))
 check("C3 sides: left/right/center kept, anything else = center", cp.clean_side("Left") == "left" and cp.clean_side("middle") == "center" and cp.clean_side(None) == "center")
+os.environ.pop("PVS_ANCHOR", None)
 check("C4 intent_kwargs OFF = {} whatever the scene", cp.intent_kwargs({"anchor": "the bed", "depth": "deep"}) == {})
 os.environ["PVS_ANCHOR"] = "1"
-check("C5 intent_kwargs ON: valid scene -> kwargs; no / unsafe / junk anchor -> {}; bad depth -> ''", cp.intent_kwargs({"anchor": "the bed", "anchor_side": "left", "depth": "deep"}) == {"anchor": "the bed", "anchor_side": "left", "depth": "deep"}
-      and cp.intent_kwargs({}) == {} and cp.intent_kwargs({"anchor": "mirror"}) == {} and cp.intent_kwargs(None) == {} and cp.intent_kwargs({"anchor": "the bed", "depth": "huge"})["depth"] == "")
+check("C5 intent_kwargs ON: centred valid scene -> kwargs; edge / no / unsafe / junk anchor -> {}; bad depth -> ''", cp.intent_kwargs({"anchor": "the bed", "anchor_side": "center", "depth": "deep"}) == {"anchor": "the bed", "anchor_side": "center", "depth": "deep"}
+      and cp.intent_kwargs({"anchor": "the bed", "anchor_side": "left", "depth": "deep"}) == {} and cp.intent_kwargs({"anchor": "the bed", "anchor_side": "right"}) == {}
+      and cp.intent_kwargs({}) == {} and cp.intent_kwargs({"anchor": "mirror"}) == {} and cp.intent_kwargs(None) == {} and cp.intent_kwargs({"anchor": "the bed", "anchor_side": "center", "depth": "huge"})["depth"] == ""
+      and all(cp.intent_kwargs({"anchor": a, "anchor_side": sd}) == {} for a, sd in (("glass sliding door to balcony", "right"), ("stainless steel sink and countertop", "center"), ("metal railing along balcony edge", "center"))))
 
 # ---- D. the photo analysis: same call, extra keys only when ON --------------------------------------------------------------------
 seen = {}
@@ -72,9 +77,14 @@ def fake_text(path, prompt, max_tokens=250):
     seen["prompt"], seen["max"] = prompt, max_tokens
     return seen["answer"]
 va._claude_vision_text = fake_text
-seen["answer"] = '{"room":"living","size":"large","depth":"deep","confidence":0.9,"description":"x","anchor":"the glass doors to the terrace","anchor_side":"Right"}'
+seen["answer"] = '{"room":"living","size":"large","depth":"deep","confidence":0.9,"description":"x","anchor":"the view over the terrace","anchor_side":"Center","anchor_height":"middle"}'
 r = va._classify_room_claude("x.jpg")
-check("D1 ON: the prompt carries the anchor rules, the answer carries a cleaned anchor + side", va.ROOM_PROMPT_ANCHOR in seen["prompt"] and r["anchor"] == "the glass doors to the terrace" and r["anchor_side"] == "right")
+check("D1 ON: the prompt carries the v2 anchor rules, the answer carries a cleaned anchor + side", va.ROOM_PROMPT_ANCHOR in seen["prompt"] and r["anchor"] == "the view over the terrace" and r["anchor_side"] == "center")
+check("D1b the prompt states the v2 criteria (centre + far, worth seeing, no door / fixture / near railing / reflections, 'none' allowed)", all(w in va.ROOM_PROMPT_ANCHOR for w in ("CENTRE", "FAR", "NEVER a door", "sink", "railing", "DISTANT VIEW", '"none"', "anchor_height")))
+seen["answer"] = '{"room":"terrace","size":"large","depth":"deep","confidence":0.9,"description":"x","anchor":"the railing","anchor_side":"center","anchor_height":"lower"}'
+check("D1c anchor low in the frame (a near railing pulls the camera down): rejected", va._classify_room_claude("x.jpg")["anchor"] == "")
+seen["answer"] = '{"room":"living","size":"large","depth":"deep","confidence":0.9,"description":"x","anchor":"the far wall","anchor_side":"right","anchor_height":"middle"}'
+check("D1d anchor at the edge (side right): rejected, the camera would turn toward it", va._classify_room_claude("x.jpg")["anchor"] == "")
 seen["answer"] = '{"room":"bathroom","size":"small","depth":"shallow","confidence":0.9,"description":"x","anchor":"the large mirror","anchor_side":"center"}'
 r = va._classify_room_claude("x.jpg")
 check("D2 ON: Claude names a mirror -> anchor '' (side '')", r["anchor"] == "" and r["anchor_side"] == "")
@@ -85,10 +95,10 @@ seen["answer"] = '{"room":"living","size":"large","depth":"deep","confidence":0.
 r = va._classify_room_claude("x.jpg")
 check("D4 OFF: the prompt is exactly ROOM_PROMPT (same size limit as before) and no anchor key is returned", seen["prompt"] == va.ROOM_PROMPT and seen["max"] == 250 and "anchor" not in r)
 os.environ["PVS_ANCHOR"] = "1"
-seen["answer"] = '{"room":"living","size":"large","depth":"deep","confidence":0.9,"description":"x","anchor":"the doors","anchor_side":"left"}'
+seen["answer"] = '{"room":"living","size":"large","depth":"deep","confidence":0.9,"description":"x","anchor":"the far wall","anchor_side":"center"}'
 fp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False); fp.write(b"x"); fp.close()
 a = va.analyse_input(fp.name)
-check("D5 analyse_input returns anchor, anchor_side, depth and the same movement as before", a["anchor"] == "the doors" and a["anchor_side"] == "left" and a["depth"] == "deep" and a["suggested_movement"] == "walk_in_explore")
+check("D5 analyse_input returns anchor, anchor_side, depth and the same movement as before", a["anchor"] == "the far wall" and a["anchor_side"] == "center" and a["depth"] == "deep" and a["suggested_movement"] == "walk_in_explore")
 va._classify_room_claude = lambda p: None
 va._analyse_input_florence = lambda p, d: va._build_input_result("large_interior", "medium", 0.5, "f", "florence")
 check("D6 Claude unavailable (Florence fallback): empty anchor, no crash", va.analyse_input(fp.name)["anchor"] == "")

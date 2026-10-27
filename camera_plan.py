@@ -111,6 +111,15 @@ import re as _re
 PRODUCTION_ANCHOR_MOVEMENTS = ("walk_in_explore", "outward_view")   # AFTER video_generation's remaps (stand_look_around -> walk_in_explore)
 ANCHOR_UNSAFE = ("mirror", "mirrors", "reflection", "reflective", "reflect", "shiny", "television", "tv", "screen", "monitor",
                  "person", "people", "man", "woman", "child", "children", "kid", "dog", "cat", "pet")
+# Anchor criteria v2 (2026-10-27, after the first full job 26d7a774): the anchor must be FAR, near the CENTRE, FIXED and worth looking at.
+#   - a DOOR of any kind is animated by Luma (the balcony door moved while the camera approached it): never an anchor
+#   - a utilitarian fixture (sink, toilet, bath, radiator, stove, fridge, counter...) is not worth looking at ("looking into the sink")
+#   - a NEAR foreground object (railing, fence...) sits low in the frame and pulls the camera DOWN toward the floor, away from the view
+#   - mirrors / reflections / screens / people / animals / curtains / plants / water: unsafe or animated
+# Matched on word STEMS ("mirrored", "reflecting", "doorway", "sinks"), after the model has already been told the same rules in the prompt.
+ANCHOR_UNSAFE_STEMS = ("mirror", "reflect", "televis", "screen", "monitor", "door", "curtain", "blind", "plant", "railing", "balustrade",
+                       "handrail", "fence", "sink", "basin", "toilet", "bidet", "bath", "shower", "radiator", "stove", "oven", "hob", "cooktop",
+                       "fridge", "refrigerator", "appliance", "faucet", "counter", "water", "fountain", "flame")
 _ANCHOR_NONE = ("", "none", "null", "n/a", "no", "nothing", "nessuno")
 ANCHOR_SIDES = ("left", "center", "right")
 DEPTHS = ("shallow", "medium", "deep")
@@ -136,12 +145,25 @@ def clean_anchor(phrase) -> str:
     s = str(phrase or "").strip().strip('."\'`*').strip()
     if s.lower() in _ANCHOR_NONE or not 2 <= len(s) <= 80:
         return ""
-    if any(w in _ANCHOR_UNSAFE_SET for w in _re.findall(r"[a-z']+", s.lower())):
+    words = _re.findall(r"[a-z']+", s.lower())
+    # exact words AND word stems: "mirrored wardrobe" / "reflecting glass" / "screens" are as unsafe as "mirror" (job 26d7a774, scene 3)
+    if any(w in _ANCHOR_UNSAFE_SET or w.startswith(ANCHOR_UNSAFE_STEMS) for w in words):
         return ""
     return s
 
 
 _ANCHOR_UNSAFE_SET = frozenset(ANCHOR_UNSAFE)
+
+
+def anchor_usable(anchor, side, height="") -> str:
+    """The anchor as it may be used (the cleaned phrase) or '': it must pass clean_anchor, sit at the horizontal CENTRE and not at the
+    top or bottom of the frame. The side / height come from the photo analysis; a missing height counts as 'middle'."""
+    a = clean_anchor(anchor)
+    if not a or clean_side(side) != "center":
+        return ""
+    if str(height or "").strip().lower() in ("upper", "lower", "top", "bottom", "high", "low"):
+        return ""
+    return a
 
 
 def clean_side(side) -> str:
@@ -166,7 +188,7 @@ def intent_kwargs(scene) -> dict:
     if not anchor_enabled() or not isinstance(scene, dict):
         return {}
     anchor = clean_anchor(scene.get("anchor"))
-    if not anchor:
+    if not anchor or clean_side(scene.get("anchor_side")) != "center":      # an anchor near an edge makes the camera TURN toward it (job 26d7a774)
         return {}
     depth = str(scene.get("depth") or "").strip().lower()
     return {"anchor": anchor, "anchor_side": clean_side(scene.get("anchor_side")), "depth": depth if depth in DEPTHS else ""}
