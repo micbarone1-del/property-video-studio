@@ -826,3 +826,5 @@ Requirements, in his words/intent (confirm in plain language before any code; ea
 - TODO: temperature=0 (approved); outdoor window-view scene must use outward_view; backfill order must not give a second facade; UI wrong-job status and QC panels; UI costs; Generated with AI label; run-all-tests script; inspect hall check on empty flat c9099c46 scenes 0-1.
 
 ### 61 update 2026-10-27: label image replaced (see status AY). OPEN: check it on a real video, bright and dark walls; install Poppins or choose a font; decide darker grey if illegible on bright walls; check whether a second watermark copy exists in the reassemble path.
+
+### AZ 2026-10-27: TTS cost rate by provider (OPEN, to confirm): one rate per TTS_PROVIDER used by cost_tracker (3 places) and the UI estimate; Google Chirp 3 HD USD 30 per 1M characters. Also: remove or fix immobiliare_it_claude.py (duplicate extractor).

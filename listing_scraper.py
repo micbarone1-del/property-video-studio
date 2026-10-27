@@ -335,6 +335,10 @@ def fetch_photo_bytes(url: str, fallback_url: str = None, timeout: int = 20, att
 
 # ── Core extraction ─────────────────────────────────────────────────────────
 
+# 2026-10-27: was 4096; a listing with many photos made the JSON stop in the middle (JSON parse failed, line 357). Output is billed only for what is written.
+EXTRACTION_MAX_TOKENS = 12000
+
+
 def extract_listing(url: str, attempt_resolution_upgrade: bool = True) -> dict:
     """
     Returns:
@@ -360,7 +364,7 @@ def extract_listing(url: str, attempt_resolution_upgrade: bool = True) -> dict:
         client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
         response = _track_claude(client.messages.create(
             model=MODEL,
-            max_tokens=4096,
+            max_tokens=EXTRACTION_MAX_TOKENS,
             tools=[{"type": "web_fetch_20250910", "name": "web_fetch", "max_uses": 1}],
             extra_headers={"anthropic-beta": "web-fetch-2025-09-10"},
             messages=[{"role": "user", "content": EXTRACTION_PROMPT.format(url=url)}],
@@ -368,6 +372,10 @@ def extract_listing(url: str, attempt_resolution_upgrade: bool = True) -> dict:
 
         text_parts = [b.text for b in response.content if getattr(b, "type", None) == "text"]
         raw = "".join(text_parts).strip()
+
+        if getattr(response, "stop_reason", None) == "max_tokens":
+            return {"ok": False, "photos": [], "description": "", "price": None, "address": None,
+                    "error": f"Listing too large: the extraction answer was cut at {EXTRACTION_MAX_TOKENS} tokens (stop_reason=max_tokens), so it is not valid JSON."}
 
         if not raw:
             block_types = [getattr(b, "type", "?") for b in response.content]
