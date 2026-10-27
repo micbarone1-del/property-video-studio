@@ -148,7 +148,7 @@ This was a thinner, earlier entry describing the same feature scoped in more det
 
 **Proposed modern approach, not yet built:** pair a much stronger monocular depth estimator -- specifically Depth Anything V2 or Marigold -- with proper inpainting of the disoccluded regions. A materially different technique from the original attempt, not a retry of the same one.
 
-**Not started.** Scope to be defined beyond the above. Would sit alongside the existing model tiers as a hallucination-free option.
+**2026-10-27: re-tested on the real scene-1 photo with the existing depth_renderer.py and REJECTED by Michele (not realistic enough; the earlier implementation took months). Closed unless a new reason appears.** (Previously: not started. Scope to be defined beyond the above.) Would sit alongside the existing model tiers as a hallucination-free option.
 
 ---
 

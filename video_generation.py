@@ -767,7 +767,7 @@ def _generate_luma_direct(image_url: str, prompt: str, duration: int, aspect_rat
                     "resolution": "1080p",
                     "duration": luma_dur,
                     "start_frame": {"url": image_url},
-                    **({"end_frame": {"url": end_frame_url}} if end_frame_url else {}),   # 2026-10-26: a crop of the photo, see end_frame.py
+                    **({"end_frame": {"url": end_frame_url}} if end_frame_url else {}),   # 2026-10-27: a crop of the photo (the first frame is its twin crop), see end_frame.py
                 },
             },
             timeout=30,
@@ -947,7 +947,7 @@ def generate_video_single(
     do_video_upscale: bool = True,         # Eco: Topaz; Standard/Premium: ignored
     include_person: bool = False,          # future hook
     test_mode:      bool = False,
-    end_frame:      bool = None,           # 2026-10-26: Luma DIRECT only: last frame = crop of the photo. None -> env PVS_END_FRAME (default off)
+    end_frame:      bool = None,           # 2026-10-27: Luma DIRECT only: first+last frame = two equal crops of the photo. None -> env PVS_END_FRAME (default off)
 ) -> bool:
     """
     Generates a single POV immersive video clip from a property photo.
@@ -1031,23 +1031,27 @@ def generate_video_single(
                 log.info(f"[VideoGen] Image resized from {_w}x{_h} to {_img.size} (max 1920x1920)")
         except Exception as _resize_err:
             log.warning(f"[VideoGen] Image resize failed, uploading as-is: {_resize_err}")
-        image_url = _upload_bytes(image_data)
-
-        # 2026-10-26: optional end frame (only the DIRECT Luma call uses it; the fal fallback ignores it). OFF unless asked.
+        # 2026-10-27: optional FIRST + LAST frame (Luma DIRECT only; the fal fallback gets the whole photo and no last frame). OFF unless asked.
+        # Both frames are equal-size crops of the photo (see camera_plan.FRAME_PAIR); forward movements have no pair and use the whole photo.
         end_frame_url = None
+        image_url = None
         if end_frame is None:
             end_frame = os.environ.get("PVS_END_FRAME", "0").strip().lower() in ("1", "true", "yes")
         if end_frame and model_tier == "luma" and LUMA_DIRECT:
             import end_frame as _ef
-            _ef_bytes = _ef.make_end_frame_bytes(image_data, pov_movement)
-            if _ef_bytes:
+            _pair = _ef.make_frame_pair_bytes(image_data, pov_movement)
+            if _pair:
                 try:
-                    end_frame_url = _upload_bytes(_ef_bytes)
-                    log.info(f"[VideoGen] Luma end frame = crop of the photo for movement {pov_movement}")
+                    _first_url, end_frame_url = _upload_bytes(_pair[0]), _upload_bytes(_pair[1])
+                    image_url = _first_url
+                    log.info(f"[VideoGen] Luma first+last frame = two crops of the photo for movement {pov_movement}")
                 except Exception as _ef_err:
-                    log.warning(f"[VideoGen] end frame upload failed, generating without it: {_ef_err}")
+                    end_frame_url, image_url = None, None
+                    log.warning(f"[VideoGen] first/last frame upload failed, generating from the whole photo: {_ef_err}")
             else:
-                log.info(f"[VideoGen] no end-frame rule for movement {pov_movement}: generating without it")
+                log.info(f"[VideoGen] no frame-pair rule for movement {pov_movement}: whole photo as first frame, no last frame")
+        if image_url is None:
+            image_url = _upload_bytes(image_data)
 
         # 2026-07-17 fix: detect the real input orientation once here,
         # instead of every call hardcoding "16:9" -- see _detect_aspect_ratio().

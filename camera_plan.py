@@ -58,33 +58,27 @@ CATEGORY_MOVEMENT = {
 }
 
 
-# ── End frame (2026-10-26, Michele's idea) ───────────────────────────────────────────────────────────────────────────────
-# Luma can be given the LAST frame as well as the first. If the last frame is a CROP of the same photo, the clip has to end on
-# something that really is inside the photo, so it cannot drift out of the photo's space or invent furniture on the way.
-# movement -> (scale, dx, dy): scale = fraction of the width/height kept (same aspect ratio as the photo); dx, dy in [-1, 1] = where the
-# crop sits inside the free margin (0 = centred, -1 = left/top edge, +1 = right/bottom edge). None / missing = no end frame.
-# A crop has no parallax: the model must invent the 3D motion between the two frames, so these values are a starting point to be
-# judged on real clips (backlog), not a finished truth.
-END_FRAME_CROP = {
-    "approach_facade":    (0.80, 0.0, 0.0),
-    "walk_toward":        (0.80, 0.0, 0.0),
-    "walk_in_explore":    (0.85, 0.0, 0.0),
-    "walk_through":       (0.75, 0.0, 0.0),
-    "step_out_onto":      (0.85, 0.0, 0.0),
-    "approach_reveal":    (0.90, 0.0, 0.0),
-    "outward_view":       (0.90, 0.0, 0.0),
-    "walk_in_gentle":     (0.92, 0.6, 0.0),
-    "walk_in_turn_left":  (0.88, -0.8, 0.0),
-    "walk_in_turn_right": (0.88, 0.8, 0.0),
-    "stand_look_around":  (0.88, 0.8, 0.0),
-    "subtle_rotate":      (0.95, 0.5, 0.0),
-    # reveal_pullback: reverse dolly, no end frame
+# ── Start + end frame pair (2026-10-27) ──────────────────────────────────────────────────────────────────────────────────
+# Luma can be given the first AND the last frame. Test of 2026-10-26: first frame = whole photo, last frame = a smaller crop -> Luma (rightly)
+# made a ZOOM. Michele's fix: BOTH frames are crops of the same photo, the SAME size, at different positions, so the only motion that fits
+# between them is a sideways sweep, and everything shown by either frame is inside the photo (the "cage" = the union of the two crops).
+# movement -> ((scale, dx, dy) of the first frame, (scale, dx, dy) of the last frame). scale = fraction of width/height kept (same aspect
+# ratio as the photo); dx, dy in [-1, 1] = where the crop sits in its free margin (0 centred, -1 left/top edge, +1 right/bottom edge).
+# Only sideways / rotating movements are listed: the forward ones (walk_in_explore, approach_facade, walk_through...) are NOT, because
+# a push-in has no pair of equal-size crops, so they keep the normal single start frame. A crop pair has no parallax of its own: the model
+# must supply it, so these numbers are a starting point to judge on real clips (backlog), not a finished truth.
+FRAME_PAIR = {
+    "walk_in_gentle":     ((0.85, -1.0, 0.0), (0.85, 1.0, 0.0)),    # lateral slide, left -> right
+    "walk_in_turn_left":  ((0.85, 1.0, 0.0), (0.85, -1.0, 0.0)),    # the view moves to the left
+    "walk_in_turn_right": ((0.85, -1.0, 0.0), (0.85, 1.0, 0.0)),    # the view moves to the right
+    "subtle_rotate":      ((0.92, -0.8, 0.0), (0.92, 0.8, 0.0)),    # very small sweep
+    "outward_view":       ((0.85, -1.0, 0.0), (0.85, 1.0, 0.0)),    # balcony / terrace / garden: sweep across the view
 }
+# stand_look_around is deliberately absent: video_generation remaps it to walk_in_explore (a forward move)
 
 
-def end_frame_box(movement: str, width: int, height: int):
-    """(left, top, right, bottom) pixel box of the end frame for this movement, or None. Always inside the photo, same aspect ratio."""
-    spec = END_FRAME_CROP.get(movement)
+def crop_box(spec, width: int, height: int):
+    """(left, top, right, bottom) pixel box for a (scale, dx, dy) crop spec, always inside the photo, same aspect ratio. None if impossible."""
     if not spec or width < 2 or height < 2:
         return None
     scale, dx, dy = spec
@@ -93,3 +87,12 @@ def end_frame_box(movement: str, width: int, height: int):
     top = round((height - h) / 2 + dy * (height - h) / 2)
     left, top = min(max(0, left), width - w), min(max(0, top), height - h)
     return (left, top, left + w, top + h)
+
+
+def frame_pair_boxes(movement: str, width: int, height: int):
+    """((first box), (last box)) for this movement, or None (forward movements, unknown, tiny image)."""
+    pair = FRAME_PAIR.get(movement)
+    if not pair:
+        return None
+    a, b = crop_box(pair[0], width, height), crop_box(pair[1], width, height)
+    return (a, b) if a and b else None
