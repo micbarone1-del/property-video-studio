@@ -209,6 +209,14 @@ Rules:
 - "depth": shallow = wall or objects close to camera, deep = long view through the space."""
 
 
+# 2026-10-27: camera direction. Asked in the SAME call (no second analysis), only when PVS_ANCHOR=1 so the prompt is otherwise unchanged.
+ROOM_PROMPT_ANCHOR = """
+Also add two more keys to the JSON object:
+ "anchor": the ONE most prominent, characteristic and SAFE thing near the middle of the frame that a camera could slowly approach: a structural or main feature of the space (a window, a door, the view beyond a railing, a bed, a main piece of furniture), as an English noun phrase of at most 8 words, or "none" if there is no safe one.
+   NEVER choose: a mirror or any reflective surface, a screen, a person, an animal, a small decorative object, or anything partly hidden by an object close to the camera.
+ "anchor_side": where that thing sits horizontally in the frame: left, center or right."""
+
+
 def _claude_vision_call(image_paths: list, prompt: str, max_tokens: int = 250, model: str = None, usage_out: dict = None) -> str | None:
     """Sends one or more (downscaled) photos + prompt to Claude vision; returns the text, or None on any failure.
     Default: reuses listing_scraper's model and its per-job usage counter (draft stage).
@@ -254,7 +262,7 @@ def _claude_vision_text(image_path: str, prompt: str, max_tokens: int = 250) -> 
 def _classify_room_claude(image_path: str) -> dict | None:
     """Returns {"room","size","depth","confidence","description"} or None if the call failed or the answer is invalid."""
     import json
-    raw = _claude_vision_text(image_path, ROOM_PROMPT)
+    raw = _claude_vision_text(image_path, ROOM_PROMPT + (ROOM_PROMPT_ANCHOR if camera_plan.anchor_enabled() else ""), 320 if camera_plan.anchor_enabled() else 250)
     if not raw:
         return None
     m = re.search(r"\{.*\}", raw, re.DOTALL)
@@ -280,8 +288,12 @@ def _classify_room_claude(image_path: str) -> dict | None:
         conf = max(0.0, min(1.0, float(d.get("confidence", 0.8))))
     except Exception:
         conf = 0.8
-    return {"room": room, "size": size, "depth": depth, "confidence": conf,
-            "description": str(d.get("description", ""))[:200]}
+    out = {"room": room, "size": size, "depth": depth, "confidence": conf,
+           "description": str(d.get("description", ""))[:200]}
+    if camera_plan.anchor_enabled():       # unusable / unsafe / "none" -> "": the scene then keeps today's movement text
+        out["anchor"] = camera_plan.clean_anchor(d.get("anchor"))
+        out["anchor_side"] = camera_plan.clean_side(d.get("anchor_side")) if out["anchor"] else ""
+    return out
 
 
 def _space_from_room(room: str, size: str) -> str:
@@ -308,7 +320,7 @@ _SPACE_MAP = {
 _MOVEMENT_MAP = camera_plan.SPACE_DEFAULT_MOVEMENT
 
 
-def _build_input_result(space_type, depth, confidence, description, source, room=None) -> dict:
+def _build_input_result(space_type, depth, confidence, description, source, room=None, anchor="", anchor_side="") -> dict:
     v7_space = _SPACE_MAP.get(space_type, "large")
     v7_movement = camera_plan.movement_for(v7_space, depth, room)
     camera = _SPACE_CAMERA.get(space_type, "gentle_arc")
@@ -325,6 +337,8 @@ def _build_input_result(space_type, depth, confidence, description, source, room
         "room":                room,
         "source":              source,
         "error":               None,
+        "anchor":              anchor,
+        "anchor_side":         anchor_side,
     }
 
 
@@ -396,7 +410,8 @@ def analyse_input(image_path: str) -> dict:
     r = _classify_room_claude(image_path)
     if r:
         return _build_input_result(_space_from_room(r["room"], r["size"]), r["depth"],
-                                   r["confidence"], r["description"], "claude", room=r["room"])
+                                   r["confidence"], r["description"], "claude", room=r["room"],
+                                   anchor=r.get("anchor", ""), anchor_side=r.get("anchor_side", ""))
     log.warning("[Vision] Claude room recognition unavailable — falling back to Florence-2")
     return _analyse_input_florence(image_path, default)
 

@@ -96,3 +96,98 @@ def frame_pair_boxes(movement: str, width: int, height: int):
         return None
     a, b = crop_box(pair[0], width, height), crop_box(pair[1], width, height)
     return (a, b) if a and b else None
+
+
+# ── Camera direction toward an ANCHOR (2026-10-27, Michele's idea) ───────────────────────────────────────────────────────────
+# Luma invents things when the camera is free to wander. The photo analysis (vision_analysis.analyse_input, ONE Claude call per photo)
+# also names an ANCHOR: the most prominent, safe thing near the middle of the photo (a door, a window, the view, a bed...). The Luma prompt
+# then says "push in toward <anchor>" instead of the generic dolly. Real tests (job 6dddfd66, scenes 5 and 1): natural motion, full
+# resolution, clip QC pass. ONLY the straight push-in is proven; turning / arc texts exist for the experiments (exp_luma.py anchormove)
+# and are NOT used in production until they are tested one by one.
+# OFF unless PVS_ANCHOR=1 in the server environment; with it off (or with no anchor for a scene) every prompt is exactly as before.
+import os as _os
+import re as _re
+
+PRODUCTION_ANCHOR_MOVEMENTS = ("walk_in_explore", "outward_view")   # AFTER video_generation's remaps (stand_look_around -> walk_in_explore)
+ANCHOR_UNSAFE = ("mirror", "mirrors", "reflection", "reflective", "reflect", "shiny", "television", "tv", "screen", "monitor",
+                 "person", "people", "man", "woman", "child", "children", "kid", "dog", "cat", "pet")
+_ANCHOR_NONE = ("", "none", "null", "n/a", "no", "nothing", "nessuno")
+ANCHOR_SIDES = ("left", "center", "right")
+DEPTHS = ("shallow", "medium", "deep")
+
+# the strict first-frame text that was part of every approved anchor test (exp_luma.STRICT_ADD)
+ANCHOR_STRICT = ("the first frame is the exact and complete starting image: every object visible in any later frame must already be visible "
+                 "in the first frame, never add, replace or move any chair, table, plant, lamp, decoration or other furniture, "
+                 "and the camera never leaves the area shown in the first frame")
+# the motion text that was approved by eye on scenes 5 and 1 (exp_luma.ANCHOR_MOTION)
+ANCHOR_MOTION = ("slow straight forward camera push-in toward {anchor}, the camera never moves sideways, never slides left or right and never turns, "
+                 "treat nearby furniture as if it were not there: never steer around it and never dodge it, the path is one straight line toward {anchor}, "
+                 "the camera stops well before reaching it, smooth continuous motion, no stepping or bobbing, realistic physics")
+_MOVE_TAIL = "smooth continuous motion, no stepping or bobbing, realistic physics"
+FIRST_FRAME_ONLY = "the camera only ever shows what is already visible in the first frame"
+
+
+def anchor_enabled() -> bool:
+    return _os.environ.get("PVS_ANCHOR", "0").strip().lower() in ("1", "true", "yes")
+
+
+def clean_anchor(phrase) -> str:
+    """The anchor phrase as it may be used, or '' (empty, 'none', too short/long, or about something unsafe: mirror, screen, person, animal)."""
+    s = str(phrase or "").strip().strip('."\'`*').strip()
+    if s.lower() in _ANCHOR_NONE or not 2 <= len(s) <= 80:
+        return ""
+    if any(w in _ANCHOR_UNSAFE_SET for w in _re.findall(r"[a-z']+", s.lower())):
+        return ""
+    return s
+
+
+_ANCHOR_UNSAFE_SET = frozenset(ANCHOR_UNSAFE)
+
+
+def clean_side(side) -> str:
+    s = str(side or "").strip().strip('."\'`*').lower()
+    return s if s in ANCHOR_SIDES else "center"
+
+
+def parse_anchor_answer(txt):
+    """'the French doors | right' -> ('the French doors', 'right'); side defaults to 'center'. ('', '') when there is no usable anchor."""
+    try:
+        line = (txt or "").strip().splitlines()[0]
+    except IndexError:
+        return "", ""
+    phrase, _, side = line.partition("|")
+    a = clean_anchor(phrase)
+    return (a, clean_side(side)) if a else ("", "")
+
+
+def intent_kwargs(scene) -> dict:
+    """The camera-direction arguments of generate_video_single for ONE scene dict: {} when the switch is off or the scene has no usable
+    anchor (so a call with ** is then exactly the call as it was). The ONE place both the main pipeline and the scene rework read it."""
+    if not anchor_enabled() or not isinstance(scene, dict):
+        return {}
+    anchor = clean_anchor(scene.get("anchor"))
+    if not anchor:
+        return {}
+    depth = str(scene.get("depth") or "").strip().lower()
+    return {"anchor": anchor, "anchor_side": clean_side(scene.get("anchor_side")), "depth": depth if depth in DEPTHS else ""}
+
+
+def anchor_motion_for(movement, anchor, side="center", depth=None) -> str:
+    """The camera instruction of a movement expressed relative to the anchor. Forward movements = the straight push-in approved by eye
+    (a shallow room, with a wall or objects close to the camera, gets a much shorter push). Turning movements pan toward an off-centre
+    anchor, the sideways one arcs around it: these two are EXPERIMENTAL (exp_luma.py anchormove), never used by production."""
+    if movement in ("walk_in_turn_left", "walk_in_turn_right", "subtle_rotate", "stand_look_around") and side in ("left", "right"):
+        deg = 8 if movement == "subtle_rotate" else 12
+        return (f"slow gentle pan to the {side} of at most {deg} degrees until {anchor} is at the centre of the frame, then stop, "
+                f"the camera only turns and does not move forward or sideways, {FIRST_FRAME_ONLY}, " + _MOVE_TAIL)
+    if movement == "walk_in_gentle":
+        way = side if side in ("left", "right") else "right"
+        return (f"very slow short arc around {anchor}: the camera glides less than half a metre to the {way} while turning slightly so that {anchor} "
+                f"stays at the centre of the frame, {FIRST_FRAME_ONLY}, treat nearby furniture as if it were not there and never steer around it, " + _MOVE_TAIL)
+    if movement == "subtle_rotate":
+        return (f"almost static shot, imperceptibly slow push-in toward {anchor} of less than ten centimetres, the camera does not turn, "
+                f"{FIRST_FRAME_ONLY}, " + _MOVE_TAIL)
+    text = ANCHOR_MOTION.format(anchor=anchor)
+    if depth == "shallow":
+        text = text.replace("slow straight forward camera push-in", "very slow, very short straight forward camera push-in of less than half a metre", 1)
+    return text

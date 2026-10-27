@@ -20,6 +20,8 @@ keeps what only the server can do: the job lock, the rework policy
 import shutil
 from pathlib import Path
 
+import camera_plan
+
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp")
 
 # First-generation clip length rule (api_server job pipeline, Stage 2):
@@ -221,6 +223,7 @@ async def redo_scenes(job, job_dir, scene_ids, deps, *, video=True, strict=False
             model_tier=tier,
             output_format=job.get("output_format", "landscape"),
             do_video_upscale=job.get("do_video_upscale", True),
+            **camera_plan.intent_kwargs(scene),   # 2026-10-27: the scene's own anchor (same as the first generation); {} when off
         )
         if not ok_video:
             if strict:

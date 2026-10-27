@@ -120,6 +120,7 @@ def _detect_space(hint: str) -> str:
 # 2026-10-26: the table now lives in camera_plan.py (ONE source for the server, the photo analysis, the URL scraper and, checked by a
 # test, ui.html); this name stays for the code that imports it.
 from camera_plan import SPACE_DEFAULT_MOVEMENT   # noqa: E402
+import camera_plan   # noqa: E402
 
 # Single source of truth for the default motion pace (api_server.py imports it; ui.html mirrors it with its selected option).
 DEFAULT_INTENSITY = "very_slow"
@@ -415,6 +416,9 @@ def assemble_pov_prompt(
     model_tier:   str,
     output_format: str = "landscape",
     reflective_surface: str = "none",   # 2026-10-26: none | small | large (photo analysis); only the Luma prompt uses it
+    anchor:       str = "",             # 2026-10-27: the thing to push in toward (camera_plan; only the Luma prompt, only with PVS_ANCHOR=1)
+    anchor_side:  str = "center",
+    depth:        str = "",
 ) -> str:
     """
     Assembles a model-specific prompt from structured token dictionaries.
@@ -468,7 +472,14 @@ def assemble_pov_prompt(
         # real testing to need minimal anti-hallucination scaffolding
         motion = _LUMA_MOVEMENT_TOKENS.get(pov_movement, _LUMA_MOVEMENT_TOKENS["walk_in_explore"])
         pace   = _LUMA_INTENSITY_SUFFIX.get(intensity, _LUMA_INTENSITY_SUFFIX["natural_pace"])
-        prompt = f"{motion}, {pace}, {_LUMA_RULES}"
+        rules  = _LUMA_RULES
+        # 2026-10-27: camera direction toward an anchor (camera_plan). Only the straight forward movements, only when the analysis named a
+        # safe anchor, and never together with the mirror / glass rule (its "never move toward glass" would contradict a glass-door anchor).
+        if anchor and pov_movement in camera_plan.PRODUCTION_ANCHOR_MOVEMENTS and reflective_surface not in ("small", "large"):
+            motion = camera_plan.anchor_motion_for(pov_movement, anchor, anchor_side, depth)
+            rules  = rules + ", " + camera_plan.ANCHOR_STRICT
+            log.info(f"[VideoGen] camera direction: {pov_movement} toward {anchor!r} (side={anchor_side}, depth={depth or '?'})")
+        prompt = f"{motion}, {pace}, {rules}"
         if reflective_surface in ("small", "large"):
             prompt += ", " + _LUMA_MIRROR_RULE
         if output_format == "portrait":
@@ -947,6 +958,9 @@ def generate_video_single(
     do_video_upscale: bool = True,         # Eco: Topaz; Standard/Premium: ignored
     include_person: bool = False,          # future hook
     test_mode:      bool = False,
+    anchor:         str  = "",             # 2026-10-27: camera_plan.intent_kwargs(scene): the safe thing to push in toward (only with PVS_ANCHOR=1)
+    anchor_side:    str  = "center",
+    depth:          str  = "",
     end_frame:      bool = None,           # 2026-10-27: Luma DIRECT only: first+last frame = two equal crops of the photo. None -> env PVS_END_FRAME (default off)
 ) -> bool:
     """
@@ -993,7 +1007,8 @@ def generate_video_single(
 
         # ── Assemble structured prompt ─────────────────────────────────────
         final_prompt = assemble_pov_prompt(
-            space_type, pov_movement, lighting, intensity, model_tier, output_format, reflective_surface
+            space_type, pov_movement, lighting, intensity, model_tier, output_format, reflective_surface,
+            anchor, anchor_side, depth,
         )
         log.info(f"[VideoGen] Prompt: {final_prompt[:120]}...")
 

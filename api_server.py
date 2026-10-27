@@ -22,6 +22,7 @@ import uuid
 import json
 import shutil
 import asyncio
+import camera_plan
 import logging
 import time
 from pathlib import Path
@@ -1604,6 +1605,12 @@ async def _apply_vision_analysis_to_scenes(scenes_config: list, scene_image_path
             raw_movement = analysis.get("suggested_movement") or analysis.get("pov_movement")
             if raw_movement:
                 scene["pov_movement"] = raw_movement
+            if camera_plan.anchor_enabled():
+                # 2026-10-27: camera direction (camera_plan). Same analysis call, stored with the scene so a re-generation or a redo
+                # uses the SAME anchor. Nothing is written when the switch is off: job_meta stays exactly as before.
+                scene["anchor"] = analysis.get("anchor") or ""
+                scene["anchor_side"] = analysis.get("anchor_side") or ""
+                scene["depth"] = analysis.get("depth") or ""
         except Exception as e:
             log.warning(f"[{log_prefix}] Vision analysis failed for scene {i}, "
                         f"keeping category-based default: {e}")
@@ -3670,6 +3677,7 @@ async def run_pipeline(
                     model_tier=model_tier,
                     output_format=output_format,  # 2026-07-27 URGENT FIX: use the local parameter, not a nonexistent job dict
                     do_video_upscale=do_video_upscale,
+                    **camera_plan.intent_kwargs(scene),   # 2026-10-27: {} unless PVS_ANCHOR=1 and the scene has a safe anchor
                 )
 
 
