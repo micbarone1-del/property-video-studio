@@ -88,6 +88,10 @@ if fake_providers.ENABLED and JOBS_DIR.resolve() == (BASE_DIR / "jobs").resolve(
     raise RuntimeError("PVS_FAKE_PROVIDERS=1 requires PVS_JOBS_DIR pointing to a separate folder "
                        "(refusing to run fake providers on the real jobs/ folder)")
 JOBS_DIR.mkdir(parents=True, exist_ok=True)
+import cost_model as _cost_model_guard
+if fake_providers.ENABLED and _cost_model_guard.DATA_DIR.resolve() == BASE_DIR.resolve():
+    raise RuntimeError("PVS_FAKE_PROVIDERS=1 requires PVS_DATA_DIR pointing to a separate folder "
+                       "(refusing to run fake providers on the real agencies, sales and partner files)")
 
 
 JOBS: dict = {}

@@ -24,7 +24,7 @@ sleep 1
 screen -dmS "$SCREEN_NAME" bash -c "
     cd $PROJECT_DIR
     source $VENV_DIR/bin/activate
-    PVS_FAKE_PROVIDERS=1 PVS_JOBS_DIR=$FAKE_JOBS PVS_FAKE_DIR=$FAKE_STATE \
+    PVS_FAKE_PROVIDERS=1 PVS_JOBS_DIR=$FAKE_JOBS PVS_FAKE_DIR=$FAKE_STATE PVS_DATA_DIR=$FAKE_STATE/data \
       uvicorn api_server:app --host 0.0.0.0 --port $PORT 2>&1 | tee /tmp/property-video-fake.log
 "
 sleep 5

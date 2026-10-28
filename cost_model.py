@@ -30,11 +30,15 @@ from pathlib import Path
 from datetime import datetime
 
 BASE_DIR = Path(__file__).parent
+# 2026-10-28: PVS_DATA_DIR lets the fake-providers test instance keep agencies, properties, sales, investment and partner keys in its own
+# folder. Unset = unchanged production behaviour (files next to the code). api_server refuses fake providers on the real data files.
+DATA_DIR = Path(os.getenv("PVS_DATA_DIR") or BASE_DIR)
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-AGENCIES_FILE   = BASE_DIR / "agencies.json"
-PROPERTIES_FILE = BASE_DIR / "properties.json"
-SALES_FILE      = BASE_DIR / "sales.json"
-INVESTMENT_FILE = BASE_DIR / "investment.json"
+AGENCIES_FILE   = DATA_DIR / "agencies.json"
+PROPERTIES_FILE = DATA_DIR / "properties.json"
+SALES_FILE      = DATA_DIR / "sales.json"
+INVESTMENT_FILE = DATA_DIR / "investment.json"
 
 # Seller commission: 20% of revenue on the FIRST commercial sale per agency
 SELLER_COMMISSION_RATE = 0.20

@@ -860,3 +860,17 @@ Requirements, in his words/intent (confirm in plain language before any code; ea
 - Decision for Michele: accept or reject curato nei dettagli and similar emphasis when the listing does not say it (stem curat). Today it is accepted.
 - Facts: the cheapest vision model still describes views loosely (vista luminosa); consider a stronger model once the cost of the call is measured on its own.
 - Next area: partner error paths on the fake instance (port 8001, faults.json): not enough photos, narration failure, clip failure with the fallback off, provider quota. Check the four invariants of the test plan on each.
+
+## 2026-10-28 (sera) — difetti del primo video a pagamento e punti aperti
+- P1 (requisito concordato con Michele, NON costruito): un job con clip fallite non assembla mai parzialmente. Si ferma in revisione con l'elenco delle scene fallite e le scelte; una guardia all'assemblaggio rifiuta una clip mancante. Niente fermo-immagine (non accettabile). Test: clip fallita -> stato visibile, nessuna scena persa in silenzio.
+- P2 (concordato, NON costruito): dopo il tetto di 300 s di Luma continuare a seguire la STESSA generazione (fino a 900 s) invece di abbandonarla; registrare l'id; il costo reale deve includere le generazioni perse/fatturate.
+- P3 (concordato, NON costruito): movimento di default per spazio esterno non riconosciuto = minimo/lento (quasi fermo o lento verso un'ancora); approach_facade solo per la vera prima facciata.
+- P4 (concordato, NON costruito): viste aeree/drone e monumenti non visti dall'immobile non contano come spazio esterno privato ne' come scena di chiusura (prompt del classificatore).
+- Aperto: foto senza etichetta: la regola "living solo con divano" del prompt del classificatore manda le stanze vuote in "other". Irrilevante finche' Relinx invia le etichette; rischio per altre fonti.
+- Aperto: chiedere a Relinx conferma di etichette e una sola versione per foto nell'API, risoluzione degli originali, se arrivano mai duplicati.
+- Aperto: limite voce 26-32 s senza tolleranza (32.008 s fallisce); errori di plurale (camere per una camera) non intercettati dal validatore; frasi riempitive quando l'annuncio e' scarno; fallback per_scene senza controllo di lunghezza.
+- Aperto: confronto Luma vs altri modelli su 2-3 foto problematiche (facciata con alberi, ecc.), circa 8-12 EUR, DOPO P1-P4.
+- Aperto: riconciliare la fattura Luma con cost_actual (le chiamate perse sono fatturate).
+- Aperto: backup dei job: conservare per capacita' invece che 30 giorni (prima leggere backup_jobs.sh e le dimensioni degli archivi).
+- Aperto: batch immobiliare: 6 annunci non ancora creati (limite 5 job/ora per IP); video completi su d8ba3cf0 e sulla bozza vuota eed70d53 in attesa di P1-P4.
+- Aperto: rilevamento duplicati per contenuto; test_partner_errors (W2/W3); decisione sullo stem `curat`; criterio arredato solo in misura (PVS_FURNISHED_ENFORCE=0).

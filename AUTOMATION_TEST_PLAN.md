@@ -378,3 +378,10 @@ Update 2026-10-25 (night): clip QC with Claude built in the sandbox (test_clip_q
 - test_scene_facts V1, V2 (state and quality words), F4e (place names and materials): PASS, total 19/19, mocked. Real evidence: vuoto draft eed70d53 (27.9 s, anchored, no FAIL).
 - Not run: partner error paths on the fake instance (T-C4, T-C5, T-B7, T-D4, T-E), repeated runs for variance, paid video on an empty listing.
 - Scores remain proposals until reviewed by the user.
+
+## 2026-10-28 (sera) — aggiunte di stato (i punteggi restano proposte)
+- test_data_dir 5/5 e test_relinx_loader 14/14: PASS (funzioni pure; il flusso HTTP e' stato provato davvero su annunci reali ma non in un test automatico).
+- test_fake_video_cascade 13/13 PASS ora che il test imposta FAL_FALLBACK_ENABLED da solo (prima 7/13 sul server per il .env).
+- Evidenza reale dal video cc33f8af: due clip fallite scartate in silenzio e voce oltre la fine del video. Righe FMEA PROPOSTE, da rivedere con Michele: P9a clip fallita scartata senza fermo (S8 O4 D8 RPN 256, ACT); P9b timeout Luma abbandona generazione fatturata (S6 O5 D6 RPN 180, ACT); P9c esterno non riconosciuto con approach_facade (S5 O5 D6 RPN 150, ACT). Controlli: P1, P2, P3 nel backlog.
+- Invarianti colpite: stato finale corretto e visibile; costo contato (generazioni perse).
+- Not run: percorsi di errore partner sull'istanza fake; ripetizioni; video completi su altre 2 bozze.

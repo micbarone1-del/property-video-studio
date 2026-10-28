@@ -12,8 +12,10 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+import cost_model   # the ONE place that decides the data folder (PVS_DATA_DIR)
+
 BASE_DIR = Path(__file__).resolve().parent
-PARTNERS_FILE = BASE_DIR / "partners.json"
+PARTNERS_FILE = cost_model.DATA_DIR / "partners.json"
 
 
 def _load(path, default):

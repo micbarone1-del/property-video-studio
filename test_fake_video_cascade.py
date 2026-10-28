@@ -2,6 +2,7 @@ import os, sys, json, types, tempfile, time, subprocess
 REPO = sys.argv[1] if len(sys.argv) > 1 else os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, REPO)
 st = tempfile.mkdtemp(prefix="pvsfake_"); os.environ["PVS_FAKE_DIR"] = st
 os.environ["PVS_FAKE_PROVIDERS"] = "1"; os.environ["LUMA_DIRECT"] = "true"
+os.environ["FAL_FALLBACK_ENABLED"] = "true"   # 2026-10-28: il test non deve dipendere dal .env della macchina
 fc = types.ModuleType("fal_client"); fc.subscribe = fc.upload_file = lambda *a, **k: "REAL"
 an = types.ModuleType("anthropic"); an.Anthropic = lambda *a, **k: "REAL"
 sys.modules["fal_client"] = fc; sys.modules["anthropic"] = an

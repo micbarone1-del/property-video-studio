@@ -1,0 +1,4 @@
+# Relinx / GIAL: URL | label   (a line ending in .json = a request exactly as the partner sent it)
+https://relinx.it/it/immobili/albano-laziale-centro-storico/appartamento-vendita-110-mq-3-locali-1307/ | 1307 attico? 110mq Albano
+https://relinx.it/it/immobili/albano-laziale-centro-abitato-via-cavour/appartamento-vendita-50-mq-2-locali-1336/ | 1336 bilocale 50mq Albano
+https://relinx.it/it/immobili/albano-laziale-cecchina/villa-vendita-135-mq-4-locali-1337/ | 1337 villa 135mq Cecchina
