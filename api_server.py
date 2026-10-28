@@ -1628,6 +1628,10 @@ async def _apply_vision_analysis_to_scenes(scenes_config: list, scene_image_path
         except Exception as e:
             log.warning(f"[{log_prefix}] Vision analysis failed for scene {i}, "
                         f"keeping category-based default: {e}")
+    # 2026-10-28 (P3): the facade approach is for the first facade only (one shared rule, both URL and partner paths come through here)
+    _demoted = camera_plan.keep_first_facade_approach(scenes_config)
+    if _demoted:
+        log.info(f"[{log_prefix}] facade approach kept for the first facade only: scenes {_demoted} changed to a minimal move")
 
 
 # 2026-10-23 (Patch M): draft preparations in progress or failed. NOT jobs: nothing is written under jobs/ and nothing shows
@@ -2689,6 +2693,12 @@ async def approve_job(
     redo_scenes     = data.get("redo_scenes", [])
     approved_scenes = data.get("approved_scenes", [])
 
+    # 2026-10-28 (P1): a scene without a clip cannot be approved, only redone.
+    _still_missing = [i for i in _missing_clip_scenes(job_id) if i not in redo_scenes]
+    if _still_missing:
+        raise HTTPException(status_code=400,
+                            detail=f"Scene senza clip: {_still_missing}. Vanno rifatte, non approvate.")
+
 
     # Update qc_verdict for manually approved scenes so the library
     # preview reflects the accurate final status, not the stale AI verdict
@@ -2915,6 +2925,27 @@ async def _rework_gate(job_id: str, scene_ids: list, force: bool = False):
                f"(POST /jobs/{job_id}/rework-budget/reset oppure force_rework=1).")
 
 
+class _MissingClips(Exception):
+    """2026-10-28 (P1): the assembly was asked to run while some scenes have no clip.
+    A video is never assembled with scenes silently left out: the job stops in review."""
+    def __init__(self, scenes):
+        super().__init__(f"clip mancanti per le scene {scenes}")
+        self.scenes = list(scenes)
+
+
+def _awaiting_payload(rejected, flagged, failed):
+    """The ONE shape of job['awaiting_scenes'] (QC gate in the pipeline AND the safety net at assembly)."""
+    return {"rejected": list(rejected), "flagged": list(flagged), "failed": list(failed)}
+
+
+def _missing_clip_scenes(job_id: str) -> list:
+    """Indexes of the job's scenes that have no clip file (same resolver as the assembly)."""
+    import clip_provenance
+    job_dir = JOBS_DIR / job_id
+    return [i for i, sc in enumerate(JOBS[job_id].get("scenes_config", []) or [])
+            if clip_provenance.clip_file_for_scene(job_dir, i, (sc or {}).get("scene_id")) is None]
+
+
 async def _rework_after(job_id: str, failed_ids: list):
     """After a batch rework: scenes whose regeneration failed silently kept
     their OLD clip. The job must not look like a clean success."""
@@ -3009,6 +3040,13 @@ async def _run_redo(job_id: str, scene_ids: list, *, video: bool, strict: bool,
         result = await _sr.redo_scenes(job, job_dir, scene_ids, _redo_deps(job_id),
                                        video=video, strict=strict, label=label)
         _sr.record_rework_cost(job, result["redone"], job.get("model_tier", "premium"), video, job_dir=job_dir)
+        # 2026-10-28 (P2): a rework that gave no clip but left a billed generation behind is still money spent
+        if video:
+            _lost = _sr.lost_generations(job_dir, result["failed"])
+            if _lost:
+                log.warning(f"[Job {job_id}] rework: {len(_lost)} billed generation(s) without a clip counted in the cost: "
+                            f"{[x['lost_generation'] for x in _lost]}")
+                _sr.record_rework_cost(job, _lost, job.get("model_tier", "premium"), True, job_dir=job_dir)
         _save_job(job_id)
 
         await run_reassemble_only(job_id)
@@ -3164,6 +3202,7 @@ async def run_reassemble_only(job_id: str):
 
         clip_paths  = []
         audio_paths = []
+        missing_clips = []
         for scene_idx, scene in enumerate(scenes_config):
             sid = scene.get("scene_id")
             clip_path  = job_dir / "clips" / f"{sid}.mp4"
@@ -3191,12 +3230,17 @@ async def run_reassemble_only(job_id: str):
 
 
             if not clip_path.exists():
-                log.warning(f"[Job {job_id}] Missing clip for scene {sid} (index {scene_idx}) — skipping from assembly")
+                # 2026-10-28 (P1): the old code dropped the scene silently: it vanished from the video while the voice kept
+                # talking about it (job cc33f8af). Now collected and the job stops below.
+                log.warning(f"[Job {job_id}] Missing clip for scene {sid} (index {scene_idx}) — assembly will not run")
+                missing_clips.append(scene_idx)
                 continue
             clip_paths.append(str(clip_path))
             audio_paths.append(str(audio_path) if audio_path.exists() else None)
 
 
+        if missing_clips:
+            raise _MissingClips(missing_clips)
         if not clip_paths:
             raise RuntimeError("Nessuna clip disponibile per l'assemblaggio")
 
@@ -3262,6 +3306,20 @@ async def run_reassemble_only(job_id: str):
         # 2026-10-02: webhook "completed" spostato su /jobs/{id}/release
 
 
+    except _MissingClips as mc:
+        job = JOBS[job_id]
+        job["awaiting_scenes"] = _awaiting_payload([], [], mc.scenes)
+        update("awaiting_approval", 75,
+               f"Assemblaggio non eseguito: clip mancante per le scene {mc.scenes}. Rifai queste scene dalla revisione.")
+        try:
+            await _notify_operator(
+                job_id, "Clip missing",
+                subject=f"Clip mancanti: {job.get('property_name') or job_id}",
+                body_html=f"<p>Assemblaggio fermato: nessuna clip per le scene {mc.scenes}.</p><p>Job {job_id}.</p>",
+                push_message=f"{job.get('property_name') or job_id} - clip mancanti {mc.scenes}", tags=["warning"],
+            )
+        except Exception as e2:
+            log.warning(f"[Job {job_id}] Missing-clips notification failed (non-fatal): {e2}")
     except Exception as e:
         log.error(f"[Job {job_id}] reassembly failed: {e}", exc_info=True)
         JOBS[job_id].update({"status": "failed", "message": f"Errore assemblaggio: {str(e)[:200]}"})
@@ -3684,6 +3742,7 @@ async def run_pipeline(
 
         flagged_scenes  = []
         rejected_scenes = []
+        failed_scenes   = []   # 2026-10-28 (P1): clip not generated at all
 
 
         for i, (scene, img) in enumerate(zip(scenes_config, enhanced_paths)):
@@ -3751,6 +3810,7 @@ async def run_pipeline(
                     flagged_scenes.append(i)
             elif not ok:
                 video_verdict = "failed"
+                failed_scenes.append(i)
 
 
             scene_statuses.append({
@@ -3773,11 +3833,8 @@ async def run_pipeline(
 
 
         # ── QC gate: pause if any scenes rejected or flagged ──────────────
-        if rejected_scenes or flagged_scenes:
-            awaiting = {
-                "rejected": rejected_scenes,
-                "flagged":  flagged_scenes,
-            }
+        if rejected_scenes or flagged_scenes or failed_scenes:
+            awaiting = _awaiting_payload(rejected_scenes, flagged_scenes, failed_scenes)
             JOBS[job_id]["awaiting_scenes"]  = awaiting
             JOBS[job_id]["video_clip_paths"] = video_clip_paths
             JOBS[job_id]["audio_paths"]      = audio_paths
@@ -3785,7 +3842,7 @@ async def run_pipeline(
             update(
                 "awaiting_approval", 75,
                 f"QC review needed: {len(rejected_scenes)} rejected, "
-                f"{len(flagged_scenes)} flagged. Please review before assembly."
+                f"{len(flagged_scenes)} flagged, {len(failed_scenes)} clip not generated. Please review before assembly."
             )
             _save_job(job_id)
             _warm_previews(job_id)   # 2026-10-27: the QC screen opens the clip previews: build them now, in the background
@@ -3794,9 +3851,9 @@ async def run_pipeline(
                 job_id, "QC flagged",
                 subject=f"QC da rivedere: {prop_name}",
                 body_html=(f"<p><b>{prop_name}</b> - QC ha fermato il job: "
-                           f"{len(rejected_scenes)} scene rifiutate, {len(flagged_scenes)} segnalate.</p>"
+                           f"{len(rejected_scenes)} scene rifiutate, {len(flagged_scenes)} segnalate, {len(failed_scenes)} clip non generate.</p>"
                            f"<p>Job ID: {job_id}</p>"),
-                push_message=f"{prop_name} - QC: {len(rejected_scenes)} rifiutate, {len(flagged_scenes)} segnalate",
+                push_message=f"{prop_name} - QC: {len(rejected_scenes)} rifiutate, {len(flagged_scenes)} segnalate, {len(failed_scenes)} non generate",
                 tags=["warning"],
             )
             # 2026-10-09: the money is already spent here (clips generated). Cost used to be

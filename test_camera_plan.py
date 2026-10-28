@@ -64,8 +64,8 @@ check("M1 rooms: facade approaches, garden/pool/other/balcony/terrace look outwa
 check("M2 interior rooms follow the space type; the shallow large room keeps its old special case",
       cp.movement_for("large", "medium", "living") == "walk_in_explore" and cp.movement_for("large", "shallow", "living") == "stand_look_around"
       and cp.movement_for("bedroom", "medium", "bedroom") == "walk_in_gentle" and cp.movement_for("small", "shallow", "bathroom") == "subtle_rotate")
-check("M3 unknown room (the Florence fallback) -> the space default; unknown space -> walk_in_explore",
-      cp.movement_for("outdoor", "deep", None) == "approach_facade" and cp.movement_for("nonsense") == "walk_in_explore")
+check("M3 unknown room (the Florence fallback) -> the space default; unknown space -> walk_in_explore; 2026-10-28 (P3): an outdoor space with no recognised room -> the minimal move, NOT the facade approach",
+      cp.movement_for("outdoor", "deep", None) == "subtle_rotate" and cp.movement_for("nonsense") == "walk_in_explore")
 check("M4 the photo analysis result carries the room-based movement (no second table)",
       va._build_input_result("ground_exterior", "deep", 0.9, "x", "claude", room="garden")["suggested_movement"] == "outward_view"
       and va._build_input_result("ground_exterior", "deep", 0.9, "x", "claude", room="building_exterior")["suggested_movement"] == "approach_facade"

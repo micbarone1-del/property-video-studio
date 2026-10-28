@@ -94,6 +94,20 @@ def update_scene_status(statuses, scene_id, scene_idx, scene, **fields):
     return entry
 
 
+def lost_generations(job_dir, failed_scene_ids, scenes_config=None):
+    """2026-10-28 (P2): for scenes whose rework gave NO clip, the generations the provider started and probably billed
+    (clip_provenance .lost.json, written by video_generation). Returned in the shape record_rework_cost takes."""
+    import clip_provenance
+    out = []
+    for sid in failed_scene_ids or []:
+        clip = Path(job_dir) / "clips" / f"{sid}.mp4"
+        info = clip_provenance.read_lost(clip)
+        clip_provenance.clear_lost(clip)   # counted once: a later failed round must not count the same call again
+        if info:
+            out.append({"scene_id": sid, "duration": info.get("duration", 5), "lost_generation": info.get("id")})
+    return out
+
+
 def record_rework_cost(job, redone, model_tier, redo_video, job_dir=None):
     """Prices one rework round and folds it into job["cost_actual"].
     redone = list of {"duration", "had_voiceover", "voiceover_chars"}.

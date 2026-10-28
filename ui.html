@@ -3224,7 +3224,8 @@ function showQcReview(job) {
   const awaiting = job.awaiting_scenes || {};
   const rejected = awaiting.rejected || [];
   const flagged  = awaiting.flagged  || [];
-  const allFlagged = [...new Set([...rejected, ...flagged])];
+  const failed   = awaiting.failed   || [];   // 2026-10-28 (P1): clip not generated: only "redo" is possible
+  const allFlagged = [...new Set([...rejected, ...flagged, ...failed])];
 
 
   if (allFlagged.length === 0) {
@@ -3236,16 +3237,17 @@ function showQcReview(job) {
 
   body.innerHTML = allFlagged.map(idx => {
     const scene   = (job.scenes || []).find(s => s.index === idx) || {};
-    const verdict = rejected.includes(idx) ? 'reject' : 'flag';
+    const isFailed = failed.includes(idx);
+    const verdict = isFailed ? 'fail' : (rejected.includes(idx) ? 'reject' : 'flag');
     const issues  = (job.qc_results || [])
       .filter(q => q.scene === idx && q.type === 'video')
-      .flatMap(q => q.issues || []).join('; ') || 'Verificare manualmente';
+      .flatMap(q => q.issues || []).join('; ') || (isFailed ? 'Clip non generata (errore o timeout del modello): va rifatta' : 'Verificare manualmente');
     const thumb   = files[idx] ? `<img class="qc-thumb" src="${URL.createObjectURL(files[idx])}" />` : '';
 
 
     // Video preview — link to the generated clip
     const clipUrl  = `${API_BASE}/jobs/${currentJobId}/clip/${idx}/preview`;
-    const videoPreview = `
+    const videoPreview = isFailed ? '' : `
       <details style="margin-top:8px">
         <summary style="font-size:.76rem;color:var(--green);cursor:pointer">▶ Anteprima clip generata</summary>
         <video src="${clipUrl}" preload="metadata" controls style="width:100%;max-width:320px;margin-top:6px;border-radius:4px;border:1px solid var(--rule)"></video>
@@ -3257,12 +3259,12 @@ function showQcReview(job) {
       <div class="qc-info">
         <div class="qc-title">
           Scena ${idx} (scene_${String(idx).padStart(3,'0')}) — ${scene.caption || '(senza didascalia)'}
-          <span class="qc-verdict ${verdict}">${verdict === 'reject' ? '✗ Rifiutata' : '⚠ Segnalata'}</span>
+          <span class="qc-verdict ${verdict === 'fail' ? 'reject' : verdict}">${verdict === 'fail' ? '✗ Clip non generata' : (verdict === 'reject' ? '✗ Rifiutata' : '⚠ Segnalata')}</span>
         </div>
         <div class="qc-issues">${issues}</div>
         ${videoPreview}
         <div class="qc-actions">
-          <button class="btn-approve" onclick="setQcDecision(${idx},'approve')">✓ Approva comunque</button>
+          ${isFailed ? '' : `<button class="btn-approve" onclick="setQcDecision(${idx},'approve')">✓ Approva comunque</button>`}
           <button class="btn-redo" onclick="setQcDecision(${idx},'redo')">↺ Rifai</button>
         </div>
         <div id="qc-decision-${idx}" style="font-size:.74rem;color:var(--muted);margin-top:4px"></div>
@@ -3272,7 +3274,7 @@ function showQcReview(job) {
 
 
   // Auto-mark rejected as needing redo
-  rejected.forEach(idx => setQcDecision(idx, 'redo'));
+  [...rejected, ...failed].forEach(idx => setQcDecision(idx, 'redo'));
   updateAssembleBtn(allFlagged);
 }
 

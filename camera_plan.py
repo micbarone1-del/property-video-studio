@@ -37,13 +37,37 @@ ROOM_MOVEMENT = {
 SHALLOW_LARGE_MOVEMENT = "stand_look_around"
 
 
+# 2026-10-28 (P3): an outside space the analysis could NOT name (no room, or a room outside ROOM_MOVEMENT) used to get the facade approach
+# (SPACE_DEFAULT_MOVEMENT["outdoor"]): job cc33f8af's closing scene, an aerial photo, got a drone-like push toward a "facade" that
+# does not exist. Not knowing what the space is, the safe move is the smallest one: almost static, nothing invented.
+OUTDOOR_UNRECOGNISED_MOVEMENT = "subtle_rotate"
+
+
 def movement_for(space: str, depth: str = None, room: str = None) -> str:
-    """Movement for a photo analysed as (space type, depth, room). Room first, then the shallow-large rule, then the space default."""
+    """Movement for a photo analysed as (space type, depth, room). Room first, then the shallow-large rule, then the space default.
+    An outdoor space without a recognised room gets OUTDOOR_UNRECOGNISED_MOVEMENT, never the facade approach."""
     if room in ROOM_MOVEMENT:
         return ROOM_MOVEMENT[room]
+    if space == "outdoor":
+        return OUTDOOR_UNRECOGNISED_MOVEMENT
     if space == "large" and depth == "shallow":
         return SHALLOW_LARGE_MOVEMENT
     return SPACE_DEFAULT_MOVEMENT.get(space, DEFAULT_MOVEMENT)
+
+
+def keep_first_facade_approach(scenes_config: list) -> list:
+    """2026-10-28 (P3): the facade approach belongs to the FIRST facade of the video only. Any later scene that also got it
+    is changed to OUTDOOR_UNRECOGNISED_MOVEMENT. Mutates the scenes; returns the indexes that were changed."""
+    seen, changed = False, []
+    for i, sc in enumerate(scenes_config or []):
+        if (sc or {}).get("pov_movement") != "approach_facade":
+            continue
+        if seen:
+            sc["pov_movement"] = OUTDOOR_UNRECOGNISED_MOVEMENT
+            changed.append(i)
+        else:
+            seen = True
+    return changed
 
 
 # the URL scraper's photo categories -> the movement a scene starts with, before (and if) the photo analysis overrides it. The two

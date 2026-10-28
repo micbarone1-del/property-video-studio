@@ -204,6 +204,7 @@ Look only at what the camera sees. Reply with ONLY a JSON object, no other text:
 Rules:
 - "balcony" or "terrace" ONLY if the camera is standing ON that outdoor space. An interior photo that shows a balcony or terrace through a window or door is the interior room (living, bedroom...).
 - "garden", "building_exterior", "pool", "other_exterior" = camera is outside at ground level (facade, yard, courtyard, driveway, land).
+- An aerial or drone photo taken from above, a map or a satellite image is "other_exterior", never "building_exterior" or "garden".
 - "hallway" = entrance hall, corridor, stairs landing.
 - "size": how much floor area is visible. small = bathroom/closet/tiny room, medium = typical bedroom/kitchen/dining, large = open-plan or big living space (or any outdoor area).
 - "depth": shallow = wall or objects close to camera, deep = long view through the space."""

@@ -22,7 +22,9 @@ from pathlib import Path
 
 HALL_SPACES = ("corridor", "hallway")
 INTERIOR_CATEGORIES = ("living", "kitchen", "bedrooms", "bathrooms")
-OUTDOOR_MOVES = ("outward_view", "approach_facade")
+from camera_plan import OUTDOOR_UNRECOGNISED_MOVEMENT
+# 2026-10-28 (P3): the minimal move is what an outdoor space gets when the analysis cannot name it: intended, not a warning
+OUTDOOR_MOVES = ("outward_view", "approach_facade", OUTDOOR_UNRECOGNISED_MOVEMENT)
 MAX_PAUSE_WARN, MAX_PAUSE_FAIL = 2.6, 4.0
 MAX_CLAUDE_EUR_WARN = 0.6
 SPEECH_MIN, SPEECH_MAX = 26.0, 32.0        # listing_scraper.STANDARD_*_SPEECH_SECS for 6 scenes (checked by the tests)

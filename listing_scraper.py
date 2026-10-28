@@ -508,6 +508,7 @@ _VISION_CLASSIFY_PROMPT = (
     "- bedrooms: bedroom or sleeping area (also the sleeping area of a studio flat).\n"
     "- bathrooms: bathroom, toilet, shower room.\n"
     "- outdoor: a PRIVATE outdoor space belonging to this home: balcony, terrace, private garden, or the view from that balcony/terrace, or the view FROM A WINDOW of this home (skyline, rooftops, city, sea, countryside) when the view itself is the main subject. A shared or condominium space (courtyard, portico, shared balcony or walkway) is NOT outdoor: answer other.\n"
+    "- An AERIAL or DRONE photo taken from above, a map or satellite image, and a landmark or monument photographed from outside the property (not as seen from this home's own balcony, terrace or window) are NOT exterior and NOT outdoor: answer other.\n"
     "- other: entrance hall, corridor, hallway, stairs, shared building areas (courtyard, portico, lobby, lift, communal garden), "
     "floor plan, close-up of a detail, a single tree or plant close up, or anything that is not one of the categories above.\n\n"
     "Answer with ONLY one word: exterior, living, kitchen, bedrooms, bathrooms, outdoor or other."

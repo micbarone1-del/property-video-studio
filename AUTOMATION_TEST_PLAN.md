@@ -385,3 +385,8 @@ Update 2026-10-25 (night): clip QC with Claude built in the sandbox (test_clip_q
 - Evidenza reale dal video cc33f8af: due clip fallite scartate in silenzio e voce oltre la fine del video. Righe FMEA PROPOSTE, da rivedere con Michele: P9a clip fallita scartata senza fermo (S8 O4 D8 RPN 256, ACT); P9b timeout Luma abbandona generazione fatturata (S6 O5 D6 RPN 180, ACT); P9c esterno non riconosciuto con approach_facade (S5 O5 D6 RPN 150, ACT). Controlli: P1, P2, P3 nel backlog.
 - Invarianti colpite: stato finale corretto e visibile; costo contato (generazioni perse).
 - Not run: percorsi di errore partner sull'istanza fake; ripetizioni; video completi su altre 2 bozze.
+
+## 2026-10-28 (sera, dopo BJ) — stato dei test P1-P4 (punteggi = proposte)
+- PASS (test con risposte finte): test_failed_clips 20/20 (P9a), test_luma_wait 19/19 (P9b), test_outdoor_rules 14/14 (P9c e prompt P4). Nessuna evidenza reale: i test non sono video veri.
+- Righe FMEA P9a/P9b/P9c: restano ACT finche' un video reale non e' passato; O (occorrenza) non riabbassata senza prova. Controllo P9a: fermo visibile + guardia all'assemblaggio + 400 all'approvazione. Controllo P9b: attesa 900 s + registro .lost.json + costo del rework. Controllo P9c: movimento minimo + prima facciata sola.
+- Not run: video reale a pagamento dopo le correzioni; prova dell'errore 400 di /approve via HTTP vera (testata solo sulla funzione).

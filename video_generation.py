@@ -726,7 +726,9 @@ _LUMA_STATE = threading.local()
 FAL_FALLBACK_ENABLED = os.environ.get("FAL_FALLBACK_ENABLED", "true").strip().lower() != "false"
 LUMA_DIRECT_API_URL = "https://agents.lumalabs.ai/v1/generations"  # Agents API, not classic Dream Machine
 _LUMA_DIRECT_POLL_INTERVAL_SECS = 4
-_LUMA_DIRECT_MAX_WAIT_SECS = 300  # 5 min ceiling, same spirit as _subscribe_with_timeout
+# 2026-10-28 (P2): was 300. On job cc33f8af two clips were abandoned at 300 s while Luma kept generating (and billing) them,
+# and the log did not even keep the generation id. Now the SAME generation is followed up to 15 minutes.
+_LUMA_DIRECT_MAX_WAIT_SECS = 900
 
 
 def _snap_luma_direct_duration(duration: int) -> str | None:
@@ -797,6 +799,7 @@ def _generate_luma_direct(image_url: str, prompt: str, duration: int, aspect_rat
         if not gen_id:
             log.error(f"[VideoGen] Luma direct: no generation id in response: {gen}")
             return None
+        log.info(f"[VideoGen] Luma direct generation id {gen_id} created (follows it up to {_LUMA_DIRECT_MAX_WAIT_SECS}s)")
 
         waited = 0
         while waited < _LUMA_DIRECT_MAX_WAIT_SECS:
@@ -816,15 +819,17 @@ def _generate_luma_direct(image_url: str, prompt: str, duration: int, aspect_rat
                 outputs = data.get("output") or []
                 video_url = outputs[0].get("url") if outputs else None
                 if video_url:
-                    log.info(f"[VideoGen] Luma direct completed after ~{waited}s")
+                    log.info(f"[VideoGen] Luma direct {gen_id} completed after ~{waited}s")
                     return video_url
-                log.error(f"[VideoGen] Luma direct completed but no output: {data}")
+                log.error(f"[VideoGen] Luma direct {gen_id} completed but no output: {data}")
+                _LUMA_STATE.lost_generation = {"id": gen_id, "reason": "completed_without_output", "waited_secs": waited}   # billed, nothing to use
                 return None
             if state == "failed":
-                log.error(f"[VideoGen] Luma direct generation failed: {data.get('failure_reason')}")
-                return None
+                log.error(f"[VideoGen] Luma direct generation {gen_id} failed: {data.get('failure_reason')}")
+                return None   # a generation Luma itself reports as failed is not assumed billed (to be checked on the Luma statement)
 
-        log.error(f"[VideoGen] Luma direct timed out after {_LUMA_DIRECT_MAX_WAIT_SECS}s")
+        log.error(f"[VideoGen] Luma direct {gen_id} timed out after {_LUMA_DIRECT_MAX_WAIT_SECS}s: it may still finish and is probably billed")
+        _LUMA_STATE.lost_generation = {"id": gen_id, "reason": "timeout", "waited_secs": waited}
         return None
     except Exception as e:
         log.error(f"[VideoGen] Luma direct exception: {e}")
@@ -1085,9 +1090,13 @@ def generate_video_single(
             # persistent problems with Veo. New default recommendation.
             _LUMA_STATE.bad_input = False
             _LUMA_STATE.direct_error = None
+            _LUMA_STATE.lost_generation = None
+            clip_provenance.clear_lost(output_path)   # an older attempt's note must not be read as this one's
             if LUMA_DIRECT:
                 video_url  = _generate_luma_direct(image_url, final_prompt, duration, aspect_ratio=luma_aspect_ratio, end_frame_url=end_frame_url)
                 used_model = "luma-ray-3.2-direct"
+                if getattr(_LUMA_STATE, "lost_generation", None):
+                    clip_provenance.write_lost(output_path, _LUMA_STATE.lost_generation, duration)   # P2: a billed call with no clip is counted in the cost
                 if not video_url:
                     if not getattr(_LUMA_STATE, "direct_error", None):
                         _LUMA_STATE.direct_error = "Luma diretto non riuscito (vedi log)"

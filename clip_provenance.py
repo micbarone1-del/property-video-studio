@@ -61,6 +61,38 @@ def read(clip_path):
         return None
 
 
+LOST_SUFFIX = ".lost.json"
+
+
+def lost_path(clip_path):
+    return Path(str(clip_path) + LOST_SUFFIX)
+
+
+def write_lost(clip_path, info, duration):
+    """2026-10-28 (P2): a generation that was started (and is probably billed) but gave no usable clip. Best effort."""
+    try:
+        data = dict(info or {})
+        data.update({"duration": int(duration), "at": time.strftime("%Y-%m-%dT%H:%M:%S")})
+        lost_path(clip_path).write_text(json.dumps(data), encoding="utf-8")
+        return True
+    except Exception:
+        return False
+
+
+def read_lost(clip_path):
+    try:
+        return json.loads(lost_path(clip_path).read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def clear_lost(clip_path):
+    try:
+        lost_path(clip_path).unlink()
+    except Exception:
+        pass
+
+
 def used_model_of(clip_path):
     """The model that really made this clip (from its sidecar), or None if unknown (clips made before the sidecars)."""
     meta = read(clip_path) if clip_path else None

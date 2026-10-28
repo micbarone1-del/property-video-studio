@@ -874,3 +874,9 @@ Requirements, in his words/intent (confirm in plain language before any code; ea
 - Aperto: backup dei job: conservare per capacita' invece che 30 giorni (prima leggere backup_jobs.sh e le dimensioni degli archivi).
 - Aperto: batch immobiliare: 6 annunci non ancora creati (limite 5 job/ora per IP); video completi su d8ba3cf0 e sulla bozza vuota eed70d53 in attesa di P1-P4.
 - Aperto: rilevamento duplicati per contenuto; test_partner_errors (W2/W3); decisione sullo stem `curat`; criterio arredato solo in misura (PVS_FURNISHED_ENFORCE=0).
+
+## 2026-10-28 (sera, aggiornamento) — P1-P4 costruiti, NON verificati su video reale
+- P1, P2, P3, P4 sono nel codice (dettagli in status.md BJ) e provati solo con test e risposte finte. Restano aperti finche' un video a pagamento non li conferma: prossimo passo = un video reale (d8ba3cf0), poi controllo di cost_actual contro Luma.
+- Aperto (nuovo): se Luma fattura una generazione in stato "failed", oggi non e' contata; verificare sull'estratto conto.
+- Aperto (nuovo): un job con fallback fal attivo che passa a fal dopo un timeout Luma paga due chiamate e la prima non e' contata (in produzione FAL_FALLBACK_ENABLED=false, quindi caso non attivo).
+- Aperto: il minimo per un esterno non riconosciuto e' subtle_rotate; se fosse ancora poco curato, valutare un lento avvicinamento a un'ancora (PVS_ANCHOR) dopo il confronto con altri modelli.
