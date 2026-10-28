@@ -137,8 +137,8 @@ check("H5 _is_hall_photo uses the shared one-word helper", ls._is_hall_photo("u"
 api = open("api_server.py", encoding="utf-8").read()
 url_part = api.split("async def _prepare_url_draft_work")[1].split("async def ")[0]   # Patch M: the URL path now runs in this background worker
 rel_part = api.split("async def _build_relinx_job_in_background")[1].split("\ndef ")[0]
-check("W1 URL path: resolve unlabeled, then refine exterior/outdoor, then acceptance", url_part.index("resolve_uncategorized_photos") < url_part.index("refine_exterior_outdoor_with_vision") < url_part.index("check_listing_acceptance"))
-check("W2 Relinx path: same two shared functions, before acceptance", rel_part.index("resolve_uncategorized_photos") < rel_part.index("refine_exterior_outdoor_with_vision") < rel_part.index("check_listing_acceptance"))
+check("W1 URL path: resolve unlabeled, then refine exterior/outdoor, then acceptance", url_part.index("resolve_uncategorized_photos") < url_part.index("refine_exterior_outdoor_with_vision") < url_part.index("check_listing_scope"))
+check("W2 Relinx path: same two shared functions, before acceptance", rel_part.index("resolve_uncategorized_photos") < rel_part.index("refine_exterior_outdoor_with_vision") < rel_part.index("check_listing_scope"))
 check("W3 summary saved in selection_report in both paths", api.count('selection_report["classification"] = classification_summary') == 2)
 check("W5 old whole-listing reclassification is gone (no duplicate implementation)", not hasattr(ls, "reclassify_photos_with_vision") and "reclassify_photos_with_vision" not in api)
 check("W4 usage counter is thread safe", hasattr(ls, "_claude_lock"))

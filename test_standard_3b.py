@@ -112,11 +112,11 @@ check("S2 full listing -> one photo per category (6 categories)", sorted(sel["se
 
 # ---- api_server wiring (static): both paths run the check before narration; premium bypass; code returned
 api = open("api_server.py", encoding="utf-8").read()
-i_url_check = api.index("check_listing_acceptance(extraction[\"photos\"])")
+i_url_check = api.index("check_listing_scope(extraction[\"photos\"])")
 i_url_narr = api.index("scraper.generate_narration_and_derive_scenes", i_url_check - 3000)
 check("W1 URL path: check runs before narration", i_url_check < api.index("scraper.generate_narration_and_derive_scenes,", i_url_check))
-check("W2 URL path: premium skips the check; the rejection keeps its code (Patch M: on the preparation ticket, message in PrepError)", "if not premium:\n        acceptance = scraper.check_listing_acceptance" in api and 'INTAKES[job_id]["code"] = acceptance.get("code")' in api and 'raise _jr.PrepError(acceptance["message"])' in api)
-i_rel_check = api.index("check_listing_acceptance(photos_for_selection)")
+check("W2 URL path: premium skips the check; the rejection keeps its code (Patch M: on the preparation ticket, message in PrepError)", "if not premium:\n        acceptance = scraper.check_listing_scope" in api and 'INTAKES[job_id]["code"] = acceptance.get("code")' in api and 'raise _jr.PrepError(acceptance["message"])' in api)
+i_rel_check = api.index("check_listing_scope(photos_for_selection)")
 check("W3 Relinx path: check runs before narration and sets failure_code", i_rel_check < api.index("scraper.generate_narration_and_derive_scenes,", i_rel_check) and '"failure_code": acceptance["code"]' in api)
 check("W4 Relinx path: photos built once (no second copy after narration)", api.count("photos_for_selection = []") == 1)
 check("W5 acceptance saved in selection_report on both paths", api.count('selection_report["acceptance"] = acceptance') == 2)

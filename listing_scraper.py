@@ -1503,7 +1503,115 @@ def _block_narration(description: str, address: str, price: str, voice_id: str, 
         return {"ok": False, "reason": f"error: {e}", "tts_calls": tts_calls}
 
 
+# ── Scene facts: what each of the 6 scenes plainly shows (2026-10-28, Michele option 1) ──
+# The voice writers only knew the listing text: a thin listing gave short sentences and room names heard over the wrong scene (draft 832cb4f4).
+# ONE vision call looks at the 6 selected photos. Its facts are appended to the listing text that BOTH the prompt and the validator read,
+# so every existing fact rule applies to them unchanged. Facts hold no digits, so the number checks still come from the listing alone.
+def scene_facts_enabled() -> bool:
+    return os.environ.get("PVS_SCENE_FACTS", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+SCENE_FACTS_PROMPT = (
+    "You see {n} photos of ONE property, in the order of the scenes of a short video: photo 1 is scene 1, and so on.\n"
+    "For each photo write ONE short Italian phrase (4 to 12 words) that says only what is PLAINLY VISIBLE: natural light, windows, "
+    "the colour of the floor and walls, the sense of space, a view. Rules:\n"
+    "- Describe only what you can clearly see. No numbers at all (say finestre, not due finestre). Give COLOURS, never materials "
+    "(say pavimento rosso, not terracotta or cotto; pareti chiare, not intonaco).\n"
+    "- Never name the room or its use (no cucina, bagno, stanza, camera) and never say it is empty: the scene already says which room it is.\n"
+    "- No judgement of condition or value (new, renovated, luxury, recent), no price, no location.\n"
+    "- If the room is empty, do not mention furniture: speak of light, windows, floor and space.\n"
+    "- If you cannot say anything certain about a photo, write an empty string for it.\n"
+    "Answer with ONLY a JSON array of {n} strings, in the photo order."
+)
+_SCENE_FACT_VISIBLE_OK = ("piscin", "giardin", "terrazz", "balcon", "vista", "mare", "lago", "parco", "pergol", "portic", "veranda", "uliv", "cancell", "camin")
+_SCENE_FACT_WORDS = ("ristruttur", "recent", "lusso", "pregio", "€", "euro", "prezzo", "vuot", "terracott", "cotto", "ceramic", "legno",
+                     "stanza", "cucina", "bagno", "camera", "soggiorno", "salone")
+
+
+def _scene_fact_banned() -> tuple:
+    # a fact is a place where a word becomes allowed in the voice, so it must not introduce a word a photo cannot prove: the promotional
+    # stems and the feature stems of the validator (scene_script) are read from there, except the few that a photo can show
+    import scene_script as ss
+    return _SCENE_FACT_WORDS + tuple(ss._PROMO_STEMS) + tuple(x for x in ss._FEATURE_STEMS if x not in _SCENE_FACT_VISIBLE_OK)
+
+
+def parse_scene_facts(raw: str, n: int):
+    # n short strings, or None when the reply is not usable. A phrase with a banned word, a digit or over 14 words becomes empty.
+    try:
+        data = json.loads(raw[raw.index("["):raw.rindex("]") + 1])
+    except Exception:
+        return None
+    if not isinstance(data, list) or len(data) != n or not all(isinstance(x, str) for x in data):
+        return None
+    facts, banned = [], _scene_fact_banned()
+    for x in data:
+        x = " ".join(x.split())
+        if len(x.split()) > 14 or any(c.isdigit() for c in x) or any(w in x.lower() for w in banned):
+            x = ""
+        facts.append(x)
+    return facts if any(facts) else None
+
+
+def describe_scenes_for_narration(scene_photos: list) -> dict:
+    # ONE vision call for the scene photos in scene order. Never raises: {"ok": True, "facts": [...]} or {"ok": False, "error": str}
+    n = len(scene_photos)
+    try:
+        content = [{"type": "text", "text": SCENE_FACTS_PROMPT.format(n=n)}]
+        for i, p in enumerate(scene_photos):
+            fetched = fetch_photo_bytes(p.get("url"), p.get("original_url"), timeout=15)
+            if not fetched["ok"]:
+                why = fetched.get("error")
+                return {"ok": False, "error": f"photo {i + 1} could not be downloaded: {why}"}
+            content.append({"type": "text", "text": f"Photo {i + 1}:"})
+            content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": _image_b64_for_vision(fetched["content"])}})
+        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        response = _track_claude(client.messages.create(model=MODEL, max_tokens=700, messages=[{"role": "user", "content": content}]))
+        raw = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
+        facts = parse_scene_facts(raw, n)
+        if facts is None:
+            return {"ok": False, "error": "the reply was not a usable list of facts: " + raw[:200]}
+        return {"ok": True, "facts": facts}
+    except Exception as e:
+        return {"ok": False, "error": f"error: {e}"}
+
+
+def scene_facts_block(facts: list, scene_sequence: list) -> str:
+    # scene numbers are WORDS and there is no room label here: digits would weaken the number checks, and the labels hold words such as
+    # giardino and terrazza that the validator would then accept for every listing
+    words = ["one", "two", "three", "four", "five", "six", "seven", "eight"]
+    lines = [f"Scene {words[i]}: {fact}" for i, fact in enumerate(facts) if fact and i < len(words)]
+    return "WHAT THE PHOTOS PLAINLY SHOW (in the order of the video; true facts about this property, usable like the rest of the listing text):\n" + "\n".join(lines)
+
+
+def standard_scene_photos(selection: dict) -> list:
+    return [photo for _, photo in standard_scene_slots(selection)]
+
+
 def generate_narration_and_derive_scenes(
+    description: str, address: str = None, price: str = None, voice_id: str = None,
+    premium: bool = False, agency_name: str = None, scene_category_order: list = None,
+    scene_sequence: list = None, scene_photos: list = None,
+) -> dict:
+    # the ONE entry point of both workflows. With PVS_SCENE_FACTS on (standard 6-scene video only) the plainly visible facts of the scene
+    # photos are appended to the listing text, then the unchanged narration core runs. Any failure leaves the listing text as it was.
+    facts, facts_error = None, None
+    if (scene_photos and scene_facts_enabled() and (not premium) and scene_sequence
+            and len(scene_sequence) == STANDARD_SCENES and len(scene_photos) == STANDARD_SCENES):
+        info = describe_scenes_for_narration(scene_photos)
+        if info["ok"]:
+            facts = info["facts"]
+            description = (description or "") + "\n\n" + scene_facts_block(facts, scene_sequence)
+        else:
+            facts_error = info["error"]
+            log.warning(f"[Scraper] Scene facts not used: {facts_error}")
+    result = _generate_narration_core(description, address, price, voice_id, premium, agency_name, scene_category_order, scene_sequence)
+    if isinstance(result, dict):
+        result["scene_facts"] = facts
+        result["scene_facts_error"] = facts_error
+    return result
+
+
+def _generate_narration_core(
     description: str, address: str = None, price: str = None, voice_id: str = None,
     premium: bool = False, agency_name: str = None, scene_category_order: list = None,
     scene_sequence: list = None,

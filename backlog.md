@@ -846,3 +846,11 @@ Requirements, in his words/intent (confirm in plain language before any code; ea
 - To decide with data: (1) share of empty listings in the GIAL feed, measured with the measure-only field furnished_status; (2) one paid test video on an empty listing now free of the stairs bug (about EUR 6.6); then keep empty flats in, or enforce and tell the client up front.
 - Relinx spec note: failure_code unfurnished and the message Annuncio non supportato: appartamento non arredato only appear when enforcement is on.
 - Open: a posteriori failure policy (notify, hold for review, try again, close as not feasible); partner API reply text; exterior/outdoor label-first question; step_out_onto in production; temperature 0 for judgment calls; draft_check fix for refused drafts; gitignore for *.bak_*.
+
+
+## 2026-10-28 — scene facts: open items
+- Not done: second length pass in the per-scene fallback (option 1 of the earlier proposal); deferred because the facts fixed the vuoto case. Revisit if a thin listing still falls back below 26 s.
+- Tighten: view facts should say what is seen (alberi, edifici, cielo), not what place it is (piazza, cortile); add more materials to the banned words (cemento, pietra, mattoni).
+- Consider adding material stems (terracott, cotto, graniglia) to the validator feature list in scene_script so a material that is in neither the listing nor the facts is rejected.
+- Larger sample before calling it stable (more listings, repeated runs); measure the cost of the facts call on its own; decide if a stronger vision model is worth it.
+- Show scene_facts in the review UI so a person can compare them with the photos.

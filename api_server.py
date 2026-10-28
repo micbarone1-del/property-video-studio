@@ -1681,6 +1681,7 @@ async def _prepare_url_draft_work(job_id, url, property_name, agency_id, voice_i
         scraper.generate_narration_and_derive_scenes,
         extraction["description"], extraction["address"], extraction["price"], voice_id or None,
         premium, agency_name, scene_category_order, scene_sequence,
+        scraper.standard_scene_photos(pre_selection) if pre_selection is not None else None,
     )
     if not narration["ok"]:
         raise _jr.PrepError(f"Narration generation failed: {narration['error']}")
@@ -1859,6 +1860,8 @@ async def _prepare_url_draft_work(job_id, url, property_name, agency_id, voice_i
         "narration_sync": narration.get("sync"),
         "narration_mode": narration.get("narration_mode"),   # 2026-10-22 (Patch B): per_scene | single_text
         "narration_script_fallback": narration.get("script_fallback_reason"),
+        "scene_facts": narration.get("scene_facts"),   # 2026-10-28: what the photos plainly showed, for review
+        "scene_facts_error": narration.get("scene_facts_error"),
         "timeline": narration.get("timeline"),   # 2026-10-23 (Patch J): anchor-driven timeline (None = classic 5 s clips)
         "timeline_fallback": narration.get("timeline_fallback_reason"),
         "source_url": url,
@@ -2127,6 +2130,7 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
             scraper.generate_narration_and_derive_scenes,
             description_full, None, None, payload.voice_id or None, False,
             agency.get("name"), scene_category_order, scene_sequence,
+            scraper.standard_scene_photos(pre_selection),
         )
         if not narration["ok"]:
             JOBS[job_id].update({"status": "failed", "message": f"Narration generation failed: {narration['error']}"})
@@ -2241,6 +2245,8 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
             "narration_sync": narration.get("sync"),
             "narration_mode": narration.get("narration_mode"),   # 2026-10-22 (Patch B): per_scene | single_text
             "narration_script_fallback": narration.get("script_fallback_reason"),
+            "scene_facts": narration.get("scene_facts"),   # 2026-10-28: what the photos plainly showed, for review
+            "scene_facts_error": narration.get("scene_facts_error"),
             "timeline": narration.get("timeline"),   # 2026-10-23 (Patch J)
             "timeline_fallback": narration.get("timeline_fallback_reason"),
             "source_description": description_full,

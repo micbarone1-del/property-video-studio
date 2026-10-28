@@ -87,9 +87,9 @@ check("C1 the functions exist", bool(ep and worker and runner and getj))
 check("C2 the endpoint takes BackgroundTasks and schedules the preparation", "background_tasks: BackgroundTasks" in ep and "background_tasks.add_task(_prepare_url_draft" in ep)
 check("C3 the endpoint answers at once with the id and status 'preparing'", 'return {"job_id": job_id, "status": "preparing"}' in ep)
 check("C4 the endpoint does NOT read the listing, create a job or touch the disk (only a ticket in memory)",
-      all(k not in ep for k in ["extract_listing", "check_listing_acceptance", "JOBS[", "mkdir", "_save_job", "resolve_uncategorized_photos"]) and "INTAKES[job_id] = {" in ep)
+      all(k not in ep for k in ["extract_listing", "check_listing_scope", "JOBS[", "mkdir", "_save_job", "resolve_uncategorized_photos"]) and "INTAKES[job_id] = {" in ep)
 check("C4b the quick checks stay in the request: rate limit (429) and generation paused", "status_code=429" in ep and "_raise_if_generation_paused()" in ep)
-i_ext, i_acc, i_mk, i_job = worker.index("extract_listing"), worker.index("check_listing_acceptance"), worker.index("mkdir"), worker.index("JOBS[job_id] = {")
+i_ext, i_acc, i_mk, i_job = worker.index("extract_listing"), worker.index("check_listing_scope"), worker.index("mkdir"), worker.index("JOBS[job_id] = {")
 check("C5 order inside the worker: read listing -> acceptance rule -> folder created -> job registered LAST (a rejected listing leaves no folder, no job)", i_ext < i_acc < i_mk < i_job)
 check("C5b a rejected listing raises PrepError with the same message the 422 carried (and keeps code/reason on the ticket)",
       'raise _jr.PrepError(acceptance["message"])' in worker and 'INTAKES[job_id]["code"]' in worker and "status_code" not in worker)

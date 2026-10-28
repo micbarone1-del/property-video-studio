@@ -152,6 +152,16 @@ def create_drafts(listings: list, base="http://localhost:8000") -> list:
     return ids
 
 
+def _status_from_api(jid: str, base="http://localhost:8000"):
+    # 2026-10-28: a refused draft (prep_failed) never writes job_meta.json, so wait_for used to wait the full 900 s.
+    # The server keeps the status in memory and returns it on GET /jobs/{id}.
+    try:
+        d = requests.get(f"{base}/jobs/{jid}", headers={"X-Access-Key": _env_key()}, timeout=30).json()
+        return d.get("status")
+    except Exception:
+        return None
+
+
 def wait_for(ids: list, jobs_dir: Path = Path("jobs"), max_secs=900) -> None:
     """Wait until every created draft has a job_meta.json whose status is no longer 'preparing' (file based: no HTTP, no guessing)."""
     t0 = time.time()
@@ -163,7 +173,7 @@ def wait_for(ids: list, jobs_dir: Path = Path("jobs"), max_secs=900) -> None:
             try:
                 st = json.loads((jobs_dir / jid / "job_meta.json").read_text()).get("status")
             except Exception:
-                st = None
+                st = _status_from_api(jid)
             pending += st in (None, "preparing")
         if not pending:
             return

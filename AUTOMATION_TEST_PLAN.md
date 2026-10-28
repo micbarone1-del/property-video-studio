@@ -365,3 +365,10 @@ Update 2026-10-25 (night): clip QC with Claude built in the sandbox (test_clip_q
 - Real evidence: vuoto draft with stairs fix = 1/1 without FAIL (EUR 0.10); same listing before the measure-only switch was rejected as unfurnished (living and bedrooms 2 of 2 empty).
 - Not run: paid video on an empty listing; villa and loft golden tests (URLs needed); concurrency and reporting tests.
 - Scores remain proposals until reviewed by the user.
+
+
+## 2026-10-28 — scene facts test status
+- test_scene_facts.py F1-F6, F4b-F4d, W1-W4, D1-D2, S1: PASS 16/16 (mocked vision).
+- Real evidence: golden set of 4 in draft with PVS_SCENE_FACTS=1: 4/4 without FAIL, all anchored, voice 27.4-30.4 s.
+- Not run: paid video on an empty listing; repeated runs for variance; villa/loft golden tests with new URLs.
+- Scores remain proposals until reviewed by the user.
