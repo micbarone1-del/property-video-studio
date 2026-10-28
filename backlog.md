@@ -836,3 +836,5 @@ Requirements, in his words/intent (confirm in plain language before any code; ea
 2026-10-27 label width 420 accepted for now by Michele on one real frame; darker grey only if it proves too faint. Plant test: the still clip showed no palm but a flat 2D movement, judged unusable by Michele; photo used by the clip being checked; target variant not run yet (1.20 EUR left of the 10 EUR cap).
 
 2026-10-27 foreground risk rule deployed (see BD in status.md). Open: golden set run to count how often the flag fires; if it fires on many scenes decide whether to tighten the question wording; one clip is the only video evidence; label contrast unverified.
+
+2026-10-28 DECISION: launch scope limited to reliable apartment types, empty apartments excluded if not reliable (see PRODUCT DECISION in status.md); detection method and partner-API reply to be scoped. Room recognition = label first, vision as fallback; open question: apply the same rule to the exterior/outdoor check. Open bug: vuoto draft voice 24.96 s below the 26 s floor (per_scene mode).

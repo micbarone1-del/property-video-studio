@@ -23,7 +23,7 @@ m = good(); m["narration_duration_secs"] = 40; t("T4 voice too long", ("FAIL", "
 m = good(); m["scenes_config"].pop(); t("T5 five scenes", ("FAIL", "C4") in ids(m))
 t("T6 duplicate photo", ("FAIL", "C5") in ids(good(), image_hashes=["a", "b", "a", "c", "d", "e"]))
 m = good(); m["scenes_config"][5]["category"] = "exterior"; t("T7 repeated category warns", ("WARN", "C6") in ids(m))
-m = good(); m["scenes_config"][1]["space_type"] = "corridor"; t("T8 living read as corridor", ("FAIL", "C7") in ids(m))
+m = good(); m["scenes_config"][1]["space_type"] = "corridor"; t("T8 living read as corridor only warns (the page label wins)", ("WARN", "C7") in ids(m))
 m = good(); m["scenes_config"][5]["category"] = "kitchen"; t("T9 missing outdoor warns", ("WARN", "C8") in ids(m))
 t("T10 pause 3 s warns", ("WARN", "C9") in ids(good(), silences=[3.0]))
 t("T11 pause 5 s fails", ("FAIL", "C9") in ids(good(), silences=[5.0]))

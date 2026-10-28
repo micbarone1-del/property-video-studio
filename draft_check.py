@@ -61,7 +61,7 @@ def evaluate(meta: dict, silences=None, image_hashes=None) -> list:
         add("WARN", "C6", f"category used twice: {repeated} (backfill because another category had no photo?)")
     for i, c in enumerate(cfg):
         if c.get("category") in INTERIOR_CATEGORIES and c.get("space_type") in HALL_SPACES:
-            add("FAIL", "C7", f"scene {i} is '{c.get('category')}' but the photo reads as a {c.get('space_type')} (entrance hall / corridor)")
+            add("WARN", "C7", f"scene {i} is '{c.get('category')}' but the photo reads as a {c.get('space_type')} (entrance hall / corridor)")
     cand = sr.get("candidates_by_category") or {}
     for cat, label in (("exterior", "facade"), ("outdoor", "balcony / garden / view")):
         if cand.get(cat) and cat not in cats:

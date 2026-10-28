@@ -547,7 +547,10 @@ def refine_exterior_outdoor_with_vision(photos: list, max_photos: int = MAX_PHOT
     # 2026-10-27: photos labelled "living" are checked for the entrance hall / corridor / stairs mix-up (see _VISION_HALL_PROMPT).
     # A hall leaves the selection (category "uncategorized"); anything else keeps the page label. Standard video only has the
     # six rooms; a premium "entrance" scene is a separate backlog item.
-    living = [p for p in photos if p.get("category") == "living" and p.get("category_source") is None and p.get("url")][:MAX_LIVING_TO_CHECK]
+    # 2026-10-28 (Michele): the agency label comes FIRST, Claude vision only when there is no label. A living photo that has a caption on the page keeps it
+    # (an empty flat reads as a corridor to vision but its caption says living room); only a living photo WITHOUT a caption is checked for the hall mix-up.
+    living = [p for p in photos if p.get("category") == "living" and p.get("category_source") is None and p.get("url")
+              and not str(p.get("label_it") or "").strip()][:MAX_LIVING_TO_CHECK]
     with ThreadPoolExecutor(max_workers=CLASSIFY_WORKERS) as ex:
         hall_results = list(ex.map(lambda p: _is_hall_photo(p["url"], p.get("original_url")), living))
     halls = 0
