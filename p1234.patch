@@ -1,0 +1,734 @@
+diff --git a/api_server.py b/api_server.py
+index 9be18fb..7015423 100644
+--- a/api_server.py
++++ b/api_server.py
+@@ -1628,6 +1628,10 @@ async def _apply_vision_analysis_to_scenes(scenes_config: list, scene_image_path
+         except Exception as e:
+             log.warning(f"[{log_prefix}] Vision analysis failed for scene {i}, "
+                         f"keeping category-based default: {e}")
++    # 2026-10-28 (P3): the facade approach is for the first facade only (one shared rule, both URL and partner paths come through here)
++    _demoted = camera_plan.keep_first_facade_approach(scenes_config)
++    if _demoted:
++        log.info(f"[{log_prefix}] facade approach kept for the first facade only: scenes {_demoted} changed to a minimal move")
+ 
+ 
+ # 2026-10-23 (Patch M): draft preparations in progress or failed. NOT jobs: nothing is written under jobs/ and nothing shows
+@@ -2689,6 +2693,12 @@ async def approve_job(
+     redo_scenes     = data.get("redo_scenes", [])
+     approved_scenes = data.get("approved_scenes", [])
+ 
++    # 2026-10-28 (P1): a scene without a clip cannot be approved, only redone.
++    _still_missing = [i for i in _missing_clip_scenes(job_id) if i not in redo_scenes]
++    if _still_missing:
++        raise HTTPException(status_code=400,
++                            detail=f"Scene senza clip: {_still_missing}. Vanno rifatte, non approvate.")
++
+ 
+     # Update qc_verdict for manually approved scenes so the library
+     # preview reflects the accurate final status, not the stale AI verdict
+@@ -2915,6 +2925,27 @@ async def _rework_gate(job_id: str, scene_ids: list, force: bool = False):
+                f"(POST /jobs/{job_id}/rework-budget/reset oppure force_rework=1).")
+ 
+ 
++class _MissingClips(Exception):
++    """2026-10-28 (P1): the assembly was asked to run while some scenes have no clip.
++    A video is never assembled with scenes silently left out: the job stops in review."""
++    def __init__(self, scenes):
++        super().__init__(f"clip mancanti per le scene {scenes}")
++        self.scenes = list(scenes)
++
++
++def _awaiting_payload(rejected, flagged, failed):
++    """The ONE shape of job['awaiting_scenes'] (QC gate in the pipeline AND the safety net at assembly)."""
++    return {"rejected": list(rejected), "flagged": list(flagged), "failed": list(failed)}
++
++
++def _missing_clip_scenes(job_id: str) -> list:
++    """Indexes of the job's scenes that have no clip file (same resolver as the assembly)."""
++    import clip_provenance
++    job_dir = JOBS_DIR / job_id
++    return [i for i, sc in enumerate(JOBS[job_id].get("scenes_config", []) or [])
++            if clip_provenance.clip_file_for_scene(job_dir, i, (sc or {}).get("scene_id")) is None]
++
++
+ async def _rework_after(job_id: str, failed_ids: list):
+     """After a batch rework: scenes whose regeneration failed silently kept
+     their OLD clip. The job must not look like a clean success."""
+@@ -3009,6 +3040,13 @@ async def _run_redo(job_id: str, scene_ids: list, *, video: bool, strict: bool,
+         result = await _sr.redo_scenes(job, job_dir, scene_ids, _redo_deps(job_id),
+                                        video=video, strict=strict, label=label)
+         _sr.record_rework_cost(job, result["redone"], job.get("model_tier", "premium"), video, job_dir=job_dir)
++        # 2026-10-28 (P2): a rework that gave no clip but left a billed generation behind is still money spent
++        if video:
++            _lost = _sr.lost_generations(job_dir, result["failed"])
++            if _lost:
++                log.warning(f"[Job {job_id}] rework: {len(_lost)} billed generation(s) without a clip counted in the cost: "
++                            f"{[x['lost_generation'] for x in _lost]}")
++                _sr.record_rework_cost(job, _lost, job.get("model_tier", "premium"), True, job_dir=job_dir)
+         _save_job(job_id)
+ 
+         await run_reassemble_only(job_id)
+@@ -3164,6 +3202,7 @@ async def run_reassemble_only(job_id: str):
+ 
+         clip_paths  = []
+         audio_paths = []
++        missing_clips = []
+         for scene_idx, scene in enumerate(scenes_config):
+             sid = scene.get("scene_id")
+             clip_path  = job_dir / "clips" / f"{sid}.mp4"
+@@ -3191,12 +3230,17 @@ async def run_reassemble_only(job_id: str):
+ 
+ 
+             if not clip_path.exists():
+-                log.warning(f"[Job {job_id}] Missing clip for scene {sid} (index {scene_idx}) — skipping from assembly")
++                # 2026-10-28 (P1): the old code dropped the scene silently: it vanished from the video while the voice kept
++                # talking about it (job cc33f8af). Now collected and the job stops below.
++                log.warning(f"[Job {job_id}] Missing clip for scene {sid} (index {scene_idx}) — assembly will not run")
++                missing_clips.append(scene_idx)
+                 continue
+             clip_paths.append(str(clip_path))
+             audio_paths.append(str(audio_path) if audio_path.exists() else None)
+ 
+ 
++        if missing_clips:
++            raise _MissingClips(missing_clips)
+         if not clip_paths:
+             raise RuntimeError("Nessuna clip disponibile per l'assemblaggio")
+ 
+@@ -3262,6 +3306,20 @@ async def run_reassemble_only(job_id: str):
+         # 2026-10-02: webhook "completed" spostato su /jobs/{id}/release
+ 
+ 
++    except _MissingClips as mc:
++        job = JOBS[job_id]
++        job["awaiting_scenes"] = _awaiting_payload([], [], mc.scenes)
++        update("awaiting_approval", 75,
++               f"Assemblaggio non eseguito: clip mancante per le scene {mc.scenes}. Rifai queste scene dalla revisione.")
++        try:
++            await _notify_operator(
++                job_id, "Clip missing",
++                subject=f"Clip mancanti: {job.get('property_name') or job_id}",
++                body_html=f"<p>Assemblaggio fermato: nessuna clip per le scene {mc.scenes}.</p><p>Job {job_id}.</p>",
++                push_message=f"{job.get('property_name') or job_id} - clip mancanti {mc.scenes}", tags=["warning"],
++            )
++        except Exception as e2:
++            log.warning(f"[Job {job_id}] Missing-clips notification failed (non-fatal): {e2}")
+     except Exception as e:
+         log.error(f"[Job {job_id}] reassembly failed: {e}", exc_info=True)
+         JOBS[job_id].update({"status": "failed", "message": f"Errore assemblaggio: {str(e)[:200]}"})
+@@ -3684,6 +3742,7 @@ async def run_pipeline(
+ 
+         flagged_scenes  = []
+         rejected_scenes = []
++        failed_scenes   = []   # 2026-10-28 (P1): clip not generated at all
+ 
+ 
+         for i, (scene, img) in enumerate(zip(scenes_config, enhanced_paths)):
+@@ -3751,6 +3810,7 @@ async def run_pipeline(
+                     flagged_scenes.append(i)
+             elif not ok:
+                 video_verdict = "failed"
++                failed_scenes.append(i)
+ 
+ 
+             scene_statuses.append({
+@@ -3773,11 +3833,8 @@ async def run_pipeline(
+ 
+ 
+         # ── QC gate: pause if any scenes rejected or flagged ──────────────
+-        if rejected_scenes or flagged_scenes:
+-            awaiting = {
+-                "rejected": rejected_scenes,
+-                "flagged":  flagged_scenes,
+-            }
++        if rejected_scenes or flagged_scenes or failed_scenes:
++            awaiting = _awaiting_payload(rejected_scenes, flagged_scenes, failed_scenes)
+             JOBS[job_id]["awaiting_scenes"]  = awaiting
+             JOBS[job_id]["video_clip_paths"] = video_clip_paths
+             JOBS[job_id]["audio_paths"]      = audio_paths
+@@ -3785,7 +3842,7 @@ async def run_pipeline(
+             update(
+                 "awaiting_approval", 75,
+                 f"QC review needed: {len(rejected_scenes)} rejected, "
+-                f"{len(flagged_scenes)} flagged. Please review before assembly."
++                f"{len(flagged_scenes)} flagged, {len(failed_scenes)} clip not generated. Please review before assembly."
+             )
+             _save_job(job_id)
+             _warm_previews(job_id)   # 2026-10-27: the QC screen opens the clip previews: build them now, in the background
+@@ -3794,9 +3851,9 @@ async def run_pipeline(
+                 job_id, "QC flagged",
+                 subject=f"QC da rivedere: {prop_name}",
+                 body_html=(f"<p><b>{prop_name}</b> - QC ha fermato il job: "
+-                           f"{len(rejected_scenes)} scene rifiutate, {len(flagged_scenes)} segnalate.</p>"
++                           f"{len(rejected_scenes)} scene rifiutate, {len(flagged_scenes)} segnalate, {len(failed_scenes)} clip non generate.</p>"
+                            f"<p>Job ID: {job_id}</p>"),
+-                push_message=f"{prop_name} - QC: {len(rejected_scenes)} rifiutate, {len(flagged_scenes)} segnalate",
++                push_message=f"{prop_name} - QC: {len(rejected_scenes)} rifiutate, {len(flagged_scenes)} segnalate, {len(failed_scenes)} non generate",
+                 tags=["warning"],
+             )
+             # 2026-10-09: the money is already spent here (clips generated). Cost used to be
+diff --git a/camera_plan.py b/camera_plan.py
+index b7ff40d..554c88f 100644
+--- a/camera_plan.py
++++ b/camera_plan.py
+@@ -37,15 +37,39 @@ ROOM_MOVEMENT = {
+ SHALLOW_LARGE_MOVEMENT = "stand_look_around"
+ 
+ 
++# 2026-10-28 (P3): an outside space the analysis could NOT name (no room, or a room outside ROOM_MOVEMENT) used to get the facade approach
++# (SPACE_DEFAULT_MOVEMENT["outdoor"]): job cc33f8af's closing scene, an aerial photo, got a drone-like push toward a "facade" that
++# does not exist. Not knowing what the space is, the safe move is the smallest one: almost static, nothing invented.
++OUTDOOR_UNRECOGNISED_MOVEMENT = "subtle_rotate"
++
++
+ def movement_for(space: str, depth: str = None, room: str = None) -> str:
+-    """Movement for a photo analysed as (space type, depth, room). Room first, then the shallow-large rule, then the space default."""
++    """Movement for a photo analysed as (space type, depth, room). Room first, then the shallow-large rule, then the space default.
++    An outdoor space without a recognised room gets OUTDOOR_UNRECOGNISED_MOVEMENT, never the facade approach."""
+     if room in ROOM_MOVEMENT:
+         return ROOM_MOVEMENT[room]
++    if space == "outdoor":
++        return OUTDOOR_UNRECOGNISED_MOVEMENT
+     if space == "large" and depth == "shallow":
+         return SHALLOW_LARGE_MOVEMENT
+     return SPACE_DEFAULT_MOVEMENT.get(space, DEFAULT_MOVEMENT)
+ 
+ 
++def keep_first_facade_approach(scenes_config: list) -> list:
++    """2026-10-28 (P3): the facade approach belongs to the FIRST facade of the video only. Any later scene that also got it
++    is changed to OUTDOOR_UNRECOGNISED_MOVEMENT. Mutates the scenes; returns the indexes that were changed."""
++    seen, changed = False, []
++    for i, sc in enumerate(scenes_config or []):
++        if (sc or {}).get("pov_movement") != "approach_facade":
++            continue
++        if seen:
++            sc["pov_movement"] = OUTDOOR_UNRECOGNISED_MOVEMENT
++            changed.append(i)
++        else:
++            seen = True
++    return changed
++
++
+ # the URL scraper's photo categories -> the movement a scene starts with, before (and if) the photo analysis overrides it. The two
+ # outside categories are DERIVED from ROOM_MOVEMENT, the others keep the values they always had.
+ CATEGORY_MOVEMENT = {
+diff --git a/clip_provenance.py b/clip_provenance.py
+index e634a08..8816088 100644
+--- a/clip_provenance.py
++++ b/clip_provenance.py
+@@ -61,6 +61,38 @@ def read(clip_path):
+         return None
+ 
+ 
++LOST_SUFFIX = ".lost.json"
++
++
++def lost_path(clip_path):
++    return Path(str(clip_path) + LOST_SUFFIX)
++
++
++def write_lost(clip_path, info, duration):
++    """2026-10-28 (P2): a generation that was started (and is probably billed) but gave no usable clip. Best effort."""
++    try:
++        data = dict(info or {})
++        data.update({"duration": int(duration), "at": time.strftime("%Y-%m-%dT%H:%M:%S")})
++        lost_path(clip_path).write_text(json.dumps(data), encoding="utf-8")
++        return True
++    except Exception:
++        return False
++
++
++def read_lost(clip_path):
++    try:
++        return json.loads(lost_path(clip_path).read_text(encoding="utf-8"))
++    except Exception:
++        return None
++
++
++def clear_lost(clip_path):
++    try:
++        lost_path(clip_path).unlink()
++    except Exception:
++        pass
++
++
+ def used_model_of(clip_path):
+     """The model that really made this clip (from its sidecar), or None if unknown (clips made before the sidecars)."""
+     meta = read(clip_path) if clip_path else None
+diff --git a/draft_check.py b/draft_check.py
+index 21c8632..793f133 100644
+--- a/draft_check.py
++++ b/draft_check.py
+@@ -22,7 +22,9 @@ from pathlib import Path
+ 
+ HALL_SPACES = ("corridor", "hallway")
+ INTERIOR_CATEGORIES = ("living", "kitchen", "bedrooms", "bathrooms")
+-OUTDOOR_MOVES = ("outward_view", "approach_facade")
++from camera_plan import OUTDOOR_UNRECOGNISED_MOVEMENT
++# 2026-10-28 (P3): the minimal move is what an outdoor space gets when the analysis cannot name it: intended, not a warning
++OUTDOOR_MOVES = ("outward_view", "approach_facade", OUTDOOR_UNRECOGNISED_MOVEMENT)
+ MAX_PAUSE_WARN, MAX_PAUSE_FAIL = 2.6, 4.0
+ MAX_CLAUDE_EUR_WARN = 0.6
+ SPEECH_MIN, SPEECH_MAX = 26.0, 32.0        # listing_scraper.STANDARD_*_SPEECH_SECS for 6 scenes (checked by the tests)
+diff --git a/listing_scraper.py b/listing_scraper.py
+index 2fa629c..aaff7b9 100644
+--- a/listing_scraper.py
++++ b/listing_scraper.py
+@@ -508,6 +508,7 @@ _VISION_CLASSIFY_PROMPT = (
+     "- bedrooms: bedroom or sleeping area (also the sleeping area of a studio flat).\n"
+     "- bathrooms: bathroom, toilet, shower room.\n"
+     "- outdoor: a PRIVATE outdoor space belonging to this home: balcony, terrace, private garden, or the view from that balcony/terrace, or the view FROM A WINDOW of this home (skyline, rooftops, city, sea, countryside) when the view itself is the main subject. A shared or condominium space (courtyard, portico, shared balcony or walkway) is NOT outdoor: answer other.\n"
++    "- An AERIAL or DRONE photo taken from above, a map or satellite image, and a landmark or monument photographed from outside the property (not as seen from this home's own balcony, terrace or window) are NOT exterior and NOT outdoor: answer other.\n"
+     "- other: entrance hall, corridor, hallway, stairs, shared building areas (courtyard, portico, lobby, lift, communal garden), "
+     "floor plan, close-up of a detail, a single tree or plant close up, or anything that is not one of the categories above.\n\n"
+     "Answer with ONLY one word: exterior, living, kitchen, bedrooms, bathrooms, outdoor or other."
+diff --git a/scene_rework.py b/scene_rework.py
+index ae1450b..c664659 100644
+--- a/scene_rework.py
++++ b/scene_rework.py
+@@ -94,6 +94,20 @@ def update_scene_status(statuses, scene_id, scene_idx, scene, **fields):
+     return entry
+ 
+ 
++def lost_generations(job_dir, failed_scene_ids, scenes_config=None):
++    """2026-10-28 (P2): for scenes whose rework gave NO clip, the generations the provider started and probably billed
++    (clip_provenance .lost.json, written by video_generation). Returned in the shape record_rework_cost takes."""
++    import clip_provenance
++    out = []
++    for sid in failed_scene_ids or []:
++        clip = Path(job_dir) / "clips" / f"{sid}.mp4"
++        info = clip_provenance.read_lost(clip)
++        clip_provenance.clear_lost(clip)   # counted once: a later failed round must not count the same call again
++        if info:
++            out.append({"scene_id": sid, "duration": info.get("duration", 5), "lost_generation": info.get("id")})
++    return out
++
++
+ def record_rework_cost(job, redone, model_tier, redo_video, job_dir=None):
+     """Prices one rework round and folds it into job["cost_actual"].
+     redone = list of {"duration", "had_voiceover", "voiceover_chars"}.
+diff --git a/test_camera_plan.py b/test_camera_plan.py
+index 50aeb10..5a463e3 100644
+--- a/test_camera_plan.py
++++ b/test_camera_plan.py
+@@ -64,8 +64,8 @@ check("M1 rooms: facade approaches, garden/pool/other/balcony/terrace look outwa
+ check("M2 interior rooms follow the space type; the shallow large room keeps its old special case",
+       cp.movement_for("large", "medium", "living") == "walk_in_explore" and cp.movement_for("large", "shallow", "living") == "stand_look_around"
+       and cp.movement_for("bedroom", "medium", "bedroom") == "walk_in_gentle" and cp.movement_for("small", "shallow", "bathroom") == "subtle_rotate")
+-check("M3 unknown room (the Florence fallback) -> the space default; unknown space -> walk_in_explore",
+-      cp.movement_for("outdoor", "deep", None) == "approach_facade" and cp.movement_for("nonsense") == "walk_in_explore")
++check("M3 unknown room (the Florence fallback) -> the space default; unknown space -> walk_in_explore; 2026-10-28 (P3): an outdoor space with no recognised room -> the minimal move, NOT the facade approach",
++      cp.movement_for("outdoor", "deep", None) == "subtle_rotate" and cp.movement_for("nonsense") == "walk_in_explore")
+ check("M4 the photo analysis result carries the room-based movement (no second table)",
+       va._build_input_result("ground_exterior", "deep", 0.9, "x", "claude", room="garden")["suggested_movement"] == "outward_view"
+       and va._build_input_result("ground_exterior", "deep", 0.9, "x", "claude", room="building_exterior")["suggested_movement"] == "approach_facade"
+diff --git a/test_failed_clips.py b/test_failed_clips.py
+new file mode 100644
+index 0000000..d299fa6
+--- /dev/null
++++ b/test_failed_clips.py
+@@ -0,0 +1,126 @@
++"""P1 (2026-10-28): a clip that failed to generate is a visible stop, never a partial video.
++Found on job cc33f8af: two clips failed, were neither 'rejected' nor 'flagged', the QC gate did not stop and the video was
++assembled with 4 scenes under a 6-scene voice. api_server.py cannot be imported here (no fastapi): the real functions are cut
++out of the source and run with stand-ins for the outside world. No network, no key, no cost.
++Run: python3 test_failed_clips.py"""
++import os, sys, ast, asyncio, tempfile, shutil, types, json, subprocess, re
++from pathlib import Path
++sys.path.insert(0, os.getcwd())
++
++fails = []; total = 0
++def check(name, cond, extra=""):
++    global total
++    total += 1
++    print(("PASS " if cond else "FAIL ") + name + (f"  [{extra}]" if (extra and not cond) else ""))
++    if not cond: fails.append(name)
++
++SRC = open("api_server.py").read()
++TREE = ast.parse(SRC)
++def cut(*names):
++    out = []
++    for n in TREE.body:
++        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and n.name in names:
++            out.append(ast.get_source_segment(SRC, n))
++    assert len(out) == len(names), (names, len(out))
++    return "\n\n".join(out)
++
++class HTTPException(Exception):
++    def __init__(self, status_code, detail): self.status_code, self.detail = status_code, detail
++class Log:
++    def __getattr__(self, k): return lambda *a, **kw: None
++
++tmp = Path(tempfile.mkdtemp())
++def make_job(jid, n, existing):
++    d = tmp / jid; (d / "clips").mkdir(parents=True); (d / "audio").mkdir()
++    cfg = [{"scene_id": f"sc{i}"} for i in range(n)]
++    for i in existing:
++        (d / "clips" / f"sc{i}.mp4").write_bytes(b"x")
++    return cfg
++
++calls = {"assemble": 0, "notify": 0}
++fake_va = types.ModuleType("video_assembly")
++def fake_assemble(**kw):
++    calls["assemble"] += 1; calls["clips"] = list(kw["video_clip_paths"]); return True
++fake_va.assemble_property_video = fake_assemble
++sys.modules["video_assembly"] = fake_va
++
++JOBS = {}
++async def _notify_operator(*a, **kw): calls["notify"] += 1
++async def _send_partner_webhook(*a, **kw): pass
++ns = dict(os=os, shutil=shutil, asyncio=asyncio, json=json, Path=Path, log=Log(), JOBS=JOBS, JOBS_DIR=tmp,
++          HTTPException=HTTPException, _notify_operator=_notify_operator, _send_partner_webhook=_send_partner_webhook,
++          _save_job=lambda j: None, _warm_previews=lambda *a, **kw: None, _release_job_lock=lambda j: None,
++          _overlay_narration_audio=lambda *a, **kw: None, cost_model=types.SimpleNamespace(get_agency=lambda x: None))
++exec(cut("_MissingClips", "_awaiting_payload", "_missing_clip_scenes", "run_reassemble_only"), ns)
++
++# --- F1 helper shapes
++check("F1 awaiting payload always has the three lists", ns["_awaiting_payload"]([1], [2], [3]) == {"rejected": [1], "flagged": [2], "failed": [3]})
++
++# --- F2 4 of 6 clips: assembly does NOT run, the job waits in review and lists the missing scenes
++JOBS["a"] = {"status": "running", "scenes_config": make_job("a", 6, [0, 1, 4, 5]), "property_name": "P", "timeline": {"mode": "anchored", "targets": [5]*6}}
++check("F2a missing scenes are found by index", ns["_missing_clip_scenes"]("a") == [2, 3])
++calls.update(assemble=0, notify=0)
++asyncio.run(ns["run_reassemble_only"]("a"))
++check("F2b assembly NOT called with 4 of 6 clips", calls["assemble"] == 0)
++check("F2c job waits in awaiting_approval (visible), not 'failed' and not 'done'", JOBS["a"]["status"] == "awaiting_approval", JOBS["a"]["status"])
++check("F2d the missing scenes are listed as failed", JOBS["a"]["awaiting_scenes"].get("failed") == [2, 3], JOBS["a"].get("awaiting_scenes"))
++check("F2e operator informed exactly once", calls["notify"] == 1, calls["notify"])
++check("F2f no output file claimed", "output_path" not in JOBS["a"])
++
++# --- F3 all clips: normal assembly, unchanged
++JOBS["b"] = {"status": "running", "scenes_config": make_job("b", 6, range(6)), "property_name": "P"}
++calls.update(assemble=0, notify=0)
++asyncio.run(ns["run_reassemble_only"]("b"))
++check("F3a all 6 clips: assembled once with 6 clips", calls["assemble"] == 1 and len(calls["clips"]) == 6)
++check("F3b job done, no operator notice", JOBS["b"]["status"] == "done" and calls["notify"] == 0, JOBS["b"]["status"])
++
++# --- F4 legacy file names still count as a clip (older jobs)
++cfg = make_job("c", 2, [])
++(tmp / "c" / "clips" / "scene_000.mp4").write_bytes(b"x"); (tmp / "c" / "clips" / "scene_001.mp4").write_bytes(b"x")
++JOBS["c"] = {"status": "running", "scenes_config": cfg, "property_name": "P"}
++check("F4 legacy scene_NNN.mp4 clips are not reported missing", ns["_missing_clip_scenes"]("c") == [])
++
++# --- F5 approve: a scene without clip cannot be approved, only redone
++async def _rework_gate(*a, **kw): pass
++class BG:
++    def __init__(self): self.tasks = []
++    def add_task(self, *a, **kw): self.tasks.append(a)
++ns2 = dict(ns, Form=lambda *a, **kw: None, BackgroundTasks=BG, app=types.SimpleNamespace(post=lambda *a, **kw: (lambda f: f)),
++           _rework_gate=_rework_gate, _acquire_job_lock=lambda *a: True, run_redo_scenes_batch=None, run_reassemble_only=None)
++exec(cut("approve_job"), ns2)
++JOBS["d"] = {"status": "awaiting_approval", "scenes_config": make_job("d", 6, [0, 1, 4, 5]), "scenes": []}
++def approve(approved, redo):
++    try:
++        asyncio.run(ns2["approve_job"]("d", BG(), json.dumps({"approved_scenes": approved, "redo_scenes": redo}))); return None
++    except HTTPException as e:
++        return e.status_code
++check("F5a approving everything while 2 and 3 have no clip -> 400", approve([0, 1, 2, 3, 4, 5], []) == 400)
++check("F5b redoing only scene 2 while 3 has no clip -> 400", approve([], [2]) == 400)
++check("F5c redoing both missing scenes is accepted", approve([], [2, 3]) is None)
++JOBS["d"]["status"] = "awaiting_approval"
++JOBS["e"] = {"status": "awaiting_approval", "scenes_config": make_job("e", 3, range(3)), "scenes": []}
++try:
++    asyncio.run(ns2["approve_job"]("e", BG(), json.dumps({"approved_scenes": [0], "redo_scenes": []}))); ok = True
++except HTTPException: ok = False
++check("F5d a normal approval (all clips present) still goes through", ok)
++
++# --- F6 the pipeline gate counts failed clips (source) and UI
++pipe = SRC[SRC.index("async def run_pipeline("):]
++check("F6a pipeline records a failed clip in failed_scenes", "elif not ok:" in pipe and "failed_scenes.append(i)" in pipe)
++check("F6b the QC gate opens for failed clips too", "if rejected_scenes or flagged_scenes or failed_scenes:" in pipe)
++check("F6c the gate state uses the single payload function", "_awaiting_payload(rejected_scenes, flagged_scenes, failed_scenes)" in pipe)
++check("F6d no code path left that skips a missing clip", "skipping from assembly" not in SRC)
++ui = open("ui.html").read()
++check("F6e the review panel knows failed clips and offers only redo for them", "awaiting.failed" in ui and "isFailed ? ''" in ui and "Clip non generata" in ui)
++scripts = re.findall(r"<script[^>]*>(.*?)</script>", ui, re.S)
++big = max(scripts, key=len)
++p = Path(tmp / "ui_check.js"); p.write_text(big)
++try:
++    r = subprocess.run(["node", "--check", str(p)], capture_output=True, text=True); okjs = r.returncode == 0; msg = r.stderr[:200]
++except FileNotFoundError:
++    okjs = True; msg = "node missing: skipped"
++check("F6f ui.html script still parses", okjs, msg)
++
++shutil.rmtree(tmp, ignore_errors=True)
++print(f"\nRESULT: {'ALL PASS' if not fails else 'FAILURES'} ({total - len(fails)}/{total})")
++sys.exit(1 if fails else 0)
+diff --git a/test_luma_wait.py b/test_luma_wait.py
+new file mode 100644
+index 0000000..51148bb
+--- /dev/null
++++ b/test_luma_wait.py
+@@ -0,0 +1,92 @@
++"""P2 (2026-10-28): Luma direct follows the SAME generation up to 900 s (was 300), keeps its id in the log, and a billed generation that
++gave no clip is counted in the cost of a failed rework. Fake HTTP and a fake clock: no network, no key, no cost.
++Run: python3 test_luma_wait.py"""
++import os, sys, logging, tempfile, shutil, json
++from pathlib import Path
++sys.path.insert(0, os.getcwd())
++os.environ["LUMA_API_KEY"] = "test-key"; os.environ.pop("PVS_FAKE_PROVIDERS", None)
++import types
++for _m in ("fal_client", "anthropic"):     # only where the package is missing (the sandbox); on the server the real ones load
++    try: __import__(_m)
++    except ImportError: sys.modules[_m] = types.ModuleType(_m)
++import video_generation as vg
++import clip_provenance as cp
++import scene_rework as sr
++
++fails = []; total = 0
++def check(name, cond, extra=""):
++    global total
++    total += 1
++    print(("PASS " if cond else "FAIL ") + name + (f"  [{extra}]" if (extra and not cond) else ""))
++    if not cond: fails.append(name)
++
++class Resp:
++    def __init__(self, code, payload): self.status_code, self._p, self.text = code, payload, json.dumps(payload)
++    def json(self): return self._p
++
++class Clock:
++    t = 0
++def run(done_at=None, fail_at=None, gen_id="gen-XYZ"):
++    """done_at: seconds after which Luma reports completed; fail_at: ... reports failed; neither: never finishes."""
++    Clock.t = 0; polls = []
++    def fake_sleep(s): Clock.t += s
++    def fake_post(url, **kw): return Resp(201, {"id": gen_id})
++    def fake_get(url, **kw):
++        polls.append(url)
++        if done_at is not None and Clock.t >= done_at:
++            return Resp(200, {"state": "completed", "output": [{"url": "http://x/v.mp4"}]})
++        if fail_at is not None and Clock.t >= fail_at:
++            return Resp(200, {"state": "failed", "failure_reason": "nope"})
++        return Resp(200, {"state": "dreaming"})
++    vg.time.sleep = fake_sleep; vg.requests.post = fake_post; vg.requests.get = fake_get
++    vg._LUMA_STATE.lost_generation = None
++    msgs = []
++    class H(logging.Handler):
++        def emit(self, r): msgs.append(r.getMessage())
++    h = H(); vg.log.addHandler(h); vg.log.setLevel(logging.INFO)
++    try:
++        url = vg._generate_luma_direct("http://x/i.jpg", "p", 5)
++    finally:
++        vg.log.removeHandler(h)
++    return url, msgs, polls, Clock.t
++
++check("L1 ceiling is 900 s", vg._LUMA_DIRECT_MAX_WAIT_SECS == 900)
++url, msgs, polls, t = run(done_at=420)
++check("L2 a generation that needs 420 s (old code gave up at 300) is collected", url == "http://x/v.mp4", (url, t))
++check("L3 the same generation id is polled all along", all(p.endswith("/gen-XYZ") for p in polls) and len(polls) > 75)
++check("L4 the id is in the log at creation and at completion", sum("gen-XYZ" in m for m in msgs) >= 2, msgs)
++check("L5 a finished generation leaves no 'lost' note", getattr(vg._LUMA_STATE, "lost_generation", None) is None)
++
++url, msgs, polls, t = run()
++check("L6 never finishing: gives up after 900 s, not before", url is None and 896 <= t <= 904, t)
++lg = getattr(vg._LUMA_STATE, "lost_generation", None)
++check("L7 the abandoned generation is remembered with its id", lg and lg["id"] == "gen-XYZ" and lg["reason"] == "timeout", lg)
++check("L8 the timeout line names the id and says it is probably billed", any("gen-XYZ" in m and "billed" in m for m in msgs), msgs[-2:])
++
++url, msgs, polls, t = run(fail_at=60)
++check("L9 a generation Luma reports as failed is not counted as lost", url is None and getattr(vg._LUMA_STATE, "lost_generation", None) is None)
++check("L10 its id is in the failure log line", any("gen-XYZ" in m and "failed" in m for m in msgs))
++
++# ---- cost of a failed rework with a billed generation
++tmp = Path(tempfile.mkdtemp()); (tmp / "clips").mkdir()
++clip = tmp / "clips" / "sc9.mp4"
++cp.write_lost(clip, {"id": "gen-A", "reason": "timeout"}, 5)
++check("C1 the note is stored next to the clip and can be read", (cp.read_lost(clip) or {}).get("id") == "gen-A")
++job = {"cost_actual_raw": {"type": "actual", "total_eur": 6.0, "model_tier": "luma", "video_eur": 5.0}}
++lost = sr.lost_generations(tmp, ["sc9", "sc-none"])
++check("C2 only the scene with a note is returned, with duration and id", lost == [{"scene_id": "sc9", "duration": 5, "lost_generation": "gen-A"}], lost)
++check("C3 the note is consumed: a later failed round cannot count the same call twice", sr.lost_generations(tmp, ["sc9"]) == [])
++rec = sr.record_rework_cost(job, lost, "luma", True, job_dir=tmp)
++check("C4 the lost generation is priced as one Luma clip and added to the job", rec is not None and len(job["reworks"]) == 1 and rec.get("video_eur", 0) > 0, rec)
++check("C5 the displayed total grew", (job["cost_actual"].get("grand_total_eur") or 0) > 6.0, job["cost_actual"])
++cp.write_lost(clip, {"id": "gen-B", "reason": "timeout"}, 5); cp.clear_lost(clip)
++check("C6 a new attempt clears the old note", cp.read_lost(clip) is None)
++
++# ---- wiring (source)
++vsrc = open("video_generation.py").read(); asrc = open("api_server.py").read()
++check("W1 the note is written right after the direct call, whatever happens next", "clip_provenance.write_lost(output_path, _LUMA_STATE.lost_generation, duration)" in vsrc)
++check("W2 each luma attempt clears the previous note first", "clip_provenance.clear_lost(output_path)" in vsrc)
++check("W3 the redo runner counts lost generations of failed scenes", "_sr.lost_generations(job_dir, result[\"failed\"])" in asrc)
++shutil.rmtree(tmp, ignore_errors=True)
++print(f"\nRESULT: {'ALL PASS' if not fails else 'FAILURES'} ({total - len(fails)}/{total})")
++sys.exit(1 if fails else 0)
+diff --git a/test_outdoor_rules.py b/test_outdoor_rules.py
+new file mode 100644
+index 0000000..7bceb22
+--- /dev/null
++++ b/test_outdoor_rules.py
+@@ -0,0 +1,43 @@
++"""P3 + P4 (2026-10-28), from job cc33f8af: the closing scene was an aerial photo of the Colosseum that moved like a drone toward a 'facade'.
++P3: an outside space that is not recognised gets the minimal move; the facade approach only for the first facade of the video.
++P4: aerial / drone views and landmarks not seen from the property are neither exterior nor outdoor (classifier prompts).
++No network, no key. Run: python3 test_outdoor_rules.py"""
++import os, sys, types
++sys.path.insert(0, os.getcwd())
++for _m in ("fal_client", "anthropic"):
++    try: __import__(_m)
++    except ImportError: sys.modules[_m] = types.ModuleType(_m)
++import camera_plan as cp
++fails = []; total = 0
++def check(name, cond, extra=""):
++    global total
++    total += 1
++    print(("PASS " if cond else "FAIL ") + name + (f"  [{extra}]" if (extra and not cond) else ""))
++    if not cond: fails.append(name)
++
++# ---- P3 movement
++check("O1 outdoor, room not recognised (None) -> minimal", cp.movement_for("outdoor", "deep", None) == "subtle_rotate")
++check("O2 outdoor, a room outside the table -> minimal", cp.movement_for("outdoor", "deep", "other_interior") == "subtle_rotate")
++check("O3 the real facade still gets the approach", cp.movement_for("outdoor", "deep", "building_exterior") == "approach_facade")
++check("O4 garden / pool / other_exterior / terrace / balcony keep the outward look",
++      all(cp.movement_for("outdoor" if r in ("garden", "pool", "other_exterior") else "elevated", "deep", r) == "outward_view"
++          for r in ("garden", "pool", "other_exterior", "terrace", "balcony")))
++check("O5 interiors are untouched", cp.movement_for("large", "medium", "living") == "walk_in_explore" and cp.movement_for("bedroom", None, "bedroom") == "walk_in_gentle")
++scenes = [{"pov_movement": "approach_facade"}, {"pov_movement": "walk_in_explore"}, {"pov_movement": "approach_facade"}, {"pov_movement": "outward_view"}]
++ch = cp.keep_first_facade_approach(scenes)
++check("O6 the first facade approach stays, a later one becomes minimal", ch == [2] and scenes[0]["pov_movement"] == "approach_facade" and scenes[2]["pov_movement"] == "subtle_rotate")
++check("O7 nothing else is touched", scenes[1]["pov_movement"] == "walk_in_explore" and scenes[3]["pov_movement"] == "outward_view")
++check("O8 no facade at all / empty list: no change, no error", cp.keep_first_facade_approach([{"pov_movement": "walk_in_explore"}]) == [] and cp.keep_first_facade_approach([]) == [] and cp.keep_first_facade_approach(None) == [])
++check("O9 the rule is applied in the ONE shared function of both URL and partner paths", "camera_plan.keep_first_facade_approach(scenes_config)" in open("api_server.py").read())
++
++# ---- P4 prompts
++import listing_scraper as ls
++import vision_analysis as va
++p = ls._VISION_CLASSIFY_PROMPT
++check("O10 classifier: aerial / drone / satellite are NOT exterior or outdoor -> other", "AERIAL" in p and "DRONE" in p and "answer other" in p.split("AERIAL")[1])
++check("O11 classifier: landmark or monument from outside the property is excluded", "landmark or monument" in p)
++check("O12 classifier: the view from the home's OWN window / balcony is still allowed", "view FROM A WINDOW of this home" in p and "this home's own balcony, terrace or window" in p)
++check("O13 classifier still ends with the one-word answer line", p.rstrip().endswith("exterior, living, kitchen, bedrooms, bathrooms, outdoor or other."))
++check("O14 room prompt: an aerial photo is other_exterior, not building_exterior", "aerial or drone photo" in va.ROOM_PROMPT and "other_exterior" in va.ROOM_PROMPT.split("aerial or drone photo")[1][:120])
++print(f"\nRESULT: {'ALL PASS' if not fails else 'FAILURES'} ({total - len(fails)}/{total})")
++sys.exit(1 if fails else 0)
+diff --git a/ui.html b/ui.html
+index 1982b5d..9c303d1 100644
+--- a/ui.html
++++ b/ui.html
+@@ -3224,7 +3224,8 @@ function showQcReview(job) {
+   const awaiting = job.awaiting_scenes || {};
+   const rejected = awaiting.rejected || [];
+   const flagged  = awaiting.flagged  || [];
+-  const allFlagged = [...new Set([...rejected, ...flagged])];
++  const failed   = awaiting.failed   || [];   // 2026-10-28 (P1): clip not generated: only "redo" is possible
++  const allFlagged = [...new Set([...rejected, ...flagged, ...failed])];
+ 
+ 
+   if (allFlagged.length === 0) {
+@@ -3236,16 +3237,17 @@ function showQcReview(job) {
+ 
+   body.innerHTML = allFlagged.map(idx => {
+     const scene   = (job.scenes || []).find(s => s.index === idx) || {};
+-    const verdict = rejected.includes(idx) ? 'reject' : 'flag';
++    const isFailed = failed.includes(idx);
++    const verdict = isFailed ? 'fail' : (rejected.includes(idx) ? 'reject' : 'flag');
+     const issues  = (job.qc_results || [])
+       .filter(q => q.scene === idx && q.type === 'video')
+-      .flatMap(q => q.issues || []).join('; ') || 'Verificare manualmente';
++      .flatMap(q => q.issues || []).join('; ') || (isFailed ? 'Clip non generata (errore o timeout del modello): va rifatta' : 'Verificare manualmente');
+     const thumb   = files[idx] ? `<img class="qc-thumb" src="${URL.createObjectURL(files[idx])}" />` : '';
+ 
+ 
+     // Video preview — link to the generated clip
+     const clipUrl  = `${API_BASE}/jobs/${currentJobId}/clip/${idx}/preview`;
+-    const videoPreview = `
++    const videoPreview = isFailed ? '' : `
+       <details style="margin-top:8px">
+         <summary style="font-size:.76rem;color:var(--green);cursor:pointer">▶ Anteprima clip generata</summary>
+         <video src="${clipUrl}" preload="metadata" controls style="width:100%;max-width:320px;margin-top:6px;border-radius:4px;border:1px solid var(--rule)"></video>
+@@ -3257,12 +3259,12 @@ function showQcReview(job) {
+       <div class="qc-info">
+         <div class="qc-title">
+           Scena ${idx} (scene_${String(idx).padStart(3,'0')}) — ${scene.caption || '(senza didascalia)'}
+-          <span class="qc-verdict ${verdict}">${verdict === 'reject' ? '✗ Rifiutata' : '⚠ Segnalata'}</span>
++          <span class="qc-verdict ${verdict === 'fail' ? 'reject' : verdict}">${verdict === 'fail' ? '✗ Clip non generata' : (verdict === 'reject' ? '✗ Rifiutata' : '⚠ Segnalata')}</span>
+         </div>
+         <div class="qc-issues">${issues}</div>
+         ${videoPreview}
+         <div class="qc-actions">
+-          <button class="btn-approve" onclick="setQcDecision(${idx},'approve')">✓ Approva comunque</button>
++          ${isFailed ? '' : `<button class="btn-approve" onclick="setQcDecision(${idx},'approve')">✓ Approva comunque</button>`}
+           <button class="btn-redo" onclick="setQcDecision(${idx},'redo')">↺ Rifai</button>
+         </div>
+         <div id="qc-decision-${idx}" style="font-size:.74rem;color:var(--muted);margin-top:4px"></div>
+@@ -3272,7 +3274,7 @@ function showQcReview(job) {
+ 
+ 
+   // Auto-mark rejected as needing redo
+-  rejected.forEach(idx => setQcDecision(idx, 'redo'));
++  [...rejected, ...failed].forEach(idx => setQcDecision(idx, 'redo'));
+   updateAssembleBtn(allFlagged);
+ }
+ 
+diff --git a/video_generation.py b/video_generation.py
+index fbf8055..cbb3ab2 100644
+--- a/video_generation.py
++++ b/video_generation.py
+@@ -726,7 +726,9 @@ _LUMA_STATE = threading.local()
+ FAL_FALLBACK_ENABLED = os.environ.get("FAL_FALLBACK_ENABLED", "true").strip().lower() != "false"
+ LUMA_DIRECT_API_URL = "https://agents.lumalabs.ai/v1/generations"  # Agents API, not classic Dream Machine
+ _LUMA_DIRECT_POLL_INTERVAL_SECS = 4
+-_LUMA_DIRECT_MAX_WAIT_SECS = 300  # 5 min ceiling, same spirit as _subscribe_with_timeout
++# 2026-10-28 (P2): was 300. On job cc33f8af two clips were abandoned at 300 s while Luma kept generating (and billing) them,
++# and the log did not even keep the generation id. Now the SAME generation is followed up to 15 minutes.
++_LUMA_DIRECT_MAX_WAIT_SECS = 900
+ 
+ 
+ def _snap_luma_direct_duration(duration: int) -> str | None:
+@@ -797,6 +799,7 @@ def _generate_luma_direct(image_url: str, prompt: str, duration: int, aspect_rat
+         if not gen_id:
+             log.error(f"[VideoGen] Luma direct: no generation id in response: {gen}")
+             return None
++        log.info(f"[VideoGen] Luma direct generation id {gen_id} created (follows it up to {_LUMA_DIRECT_MAX_WAIT_SECS}s)")
+ 
+         waited = 0
+         while waited < _LUMA_DIRECT_MAX_WAIT_SECS:
+@@ -816,15 +819,17 @@ def _generate_luma_direct(image_url: str, prompt: str, duration: int, aspect_rat
+                 outputs = data.get("output") or []
+                 video_url = outputs[0].get("url") if outputs else None
+                 if video_url:
+-                    log.info(f"[VideoGen] Luma direct completed after ~{waited}s")
++                    log.info(f"[VideoGen] Luma direct {gen_id} completed after ~{waited}s")
+                     return video_url
+-                log.error(f"[VideoGen] Luma direct completed but no output: {data}")
++                log.error(f"[VideoGen] Luma direct {gen_id} completed but no output: {data}")
++                _LUMA_STATE.lost_generation = {"id": gen_id, "reason": "completed_without_output", "waited_secs": waited}   # billed, nothing to use
+                 return None
+             if state == "failed":
+-                log.error(f"[VideoGen] Luma direct generation failed: {data.get('failure_reason')}")
+-                return None
++                log.error(f"[VideoGen] Luma direct generation {gen_id} failed: {data.get('failure_reason')}")
++                return None   # a generation Luma itself reports as failed is not assumed billed (to be checked on the Luma statement)
+ 
+-        log.error(f"[VideoGen] Luma direct timed out after {_LUMA_DIRECT_MAX_WAIT_SECS}s")
++        log.error(f"[VideoGen] Luma direct {gen_id} timed out after {_LUMA_DIRECT_MAX_WAIT_SECS}s: it may still finish and is probably billed")
++        _LUMA_STATE.lost_generation = {"id": gen_id, "reason": "timeout", "waited_secs": waited}
+         return None
+     except Exception as e:
+         log.error(f"[VideoGen] Luma direct exception: {e}")
+@@ -1085,9 +1090,13 @@ def generate_video_single(
+             # persistent problems with Veo. New default recommendation.
+             _LUMA_STATE.bad_input = False
+             _LUMA_STATE.direct_error = None
++            _LUMA_STATE.lost_generation = None
++            clip_provenance.clear_lost(output_path)   # an older attempt's note must not be read as this one's
+             if LUMA_DIRECT:
+                 video_url  = _generate_luma_direct(image_url, final_prompt, duration, aspect_ratio=luma_aspect_ratio, end_frame_url=end_frame_url)
+                 used_model = "luma-ray-3.2-direct"
++                if getattr(_LUMA_STATE, "lost_generation", None):
++                    clip_provenance.write_lost(output_path, _LUMA_STATE.lost_generation, duration)   # P2: a billed call with no clip is counted in the cost
+                 if not video_url:
+                     if not getattr(_LUMA_STATE, "direct_error", None):
+                         _LUMA_STATE.direct_error = "Luma diretto non riuscito (vedi log)"
+diff --git a/vision_analysis.py b/vision_analysis.py
+index 1c08246..ddb742b 100644
+--- a/vision_analysis.py
++++ b/vision_analysis.py
+@@ -204,6 +204,7 @@ Look only at what the camera sees. Reply with ONLY a JSON object, no other text:
+ Rules:
+ - "balcony" or "terrace" ONLY if the camera is standing ON that outdoor space. An interior photo that shows a balcony or terrace through a window or door is the interior room (living, bedroom...).
+ - "garden", "building_exterior", "pool", "other_exterior" = camera is outside at ground level (facade, yard, courtyard, driveway, land).
++- An aerial or drone photo taken from above, a map or a satellite image is "other_exterior", never "building_exterior" or "garden".
+ - "hallway" = entrance hall, corridor, stairs landing.
+ - "size": how much floor area is visible. small = bathroom/closet/tiny room, medium = typical bedroom/kitchen/dining, large = open-plan or big living space (or any outdoor area).
+ - "depth": shallow = wall or objects close to camera, deep = long view through the space."""
