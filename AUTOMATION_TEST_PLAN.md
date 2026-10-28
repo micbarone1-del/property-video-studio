@@ -357,3 +357,11 @@ Update 2026-10-25 (night): clip QC with Claude built in the sandbox (test_clip_q
 2026-10-27 test_foreground_risk.py: 10/10 PASS (output seen). Live check on the failing photo: flag fired 2 of 2. FMEA row for Luma hallucination and scoreboard not re-counted; scores are proposals pending review.
 
 2026-10-28 test_label_first.py 5/5 PASS and test_draft_check.py 17/17 PASS (outputs seen). C7 downgraded FAIL to WARN by the label-first rule. New open failure: vuoto C3 voice 24.96 s. Scoreboard and FMEA rows not re-counted; scores are proposals pending review.
+
+
+## 2026-10-28 — test status additions
+- L1-L5 (label-first hall check): PASS 5/5, mocked, 2026-10-28.
+- U1-U15 (scope gate: photo rule, furnished rule, push message, measure-only switch): PASS 15/15, mocked vision answers, 2026-10-28.
+- Real evidence: vuoto draft with stairs fix = 1/1 without FAIL (EUR 0.10); same listing before the measure-only switch was rejected as unfurnished (living and bedrooms 2 of 2 empty).
+- Not run: paid video on an empty listing; villa and loft golden tests (URLs needed); concurrency and reporting tests.
+- Scores remain proposals until reviewed by the user.

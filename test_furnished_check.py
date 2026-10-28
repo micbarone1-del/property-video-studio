@@ -1,0 +1,65 @@
+import os; os.environ["PVS_FURNISHED_ENFORCE"] = "1"
+import sys
+import listing_scraper as ls
+res = []
+
+
+def check(name, ok):
+    res.append(bool(ok))
+    print(("PASS " if ok else "FAIL ") + name)
+
+
+def photo(cat, n):
+    return {"url": "u/" + cat + str(n), "original_url": "o/" + cat + str(n), "category": cat, "label_it": ""}
+
+
+BASE = [photo("living", 1), photo("living", 2), photo("kitchen", 1), photo("bedrooms", 1), photo("bedrooms", 2), photo("bathrooms", 1), photo("outdoor", 1), photo("exterior", 1)]
+
+
+def answers(table):
+    calls = []
+
+    def ask(url, fb, prompt):
+        calls.append(url)
+        return table(url)
+    return ask, calls
+
+
+empty = lambda u: ("empty", True)
+furn = lambda u: ("furnished", True)
+r = ls.check_listing_scope(BASE, ask=answers(empty)[0])
+check("U1 living and bedroom both empty -> out of scope, code unfurnished", (not r["ok"]) and r["code"] == "unfurnished")
+check("U2 the message is the agreed Italian text", r["message"] == "Annuncio non supportato: appartamento non arredato (al momento non disponibile).")
+r = ls.check_listing_scope(BASE, ask=answers(furn)[0])
+check("U3 furnished rooms -> accepted, detail kept", r["ok"] and r["furnished_check"]["living"] == "furnished")
+r = ls.check_listing_scope(BASE, ask=answers(lambda u: empty(u) if "living" in u else furn(u))[0])
+check("U4 empty living but furnished bedroom -> accepted (partly furnished stays in scope)", r["ok"])
+r = ls.check_listing_scope(BASE, ask=answers(lambda u: ("", False))[0])
+check("U5 a failed vision call never blocks a listing", r["ok"])
+r = ls.check_listing_scope(BASE, ask=answers(lambda u: ("empty", True) if u.endswith("1") else ("furnished", True))[0])
+check("U6 one empty and one furnished photo of the same room is not a clear majority -> accepted", r["ok"])
+poor = [photo("living", 1), photo("kitchen", 1), photo("bathrooms", 1)]
+ask, calls = answers(empty)
+r = ls.check_listing_scope(poor, ask=ask)
+check("U7 the photo rule runs first and its result is returned unchanged, with no vision call", (not r["ok"]) and r["code"] == "insufficient_photos" and calls == [])
+many = [photo("living", i) for i in range(1, 6)] + [photo("kitchen", 1), photo("bedrooms", 1), photo("bathrooms", 1), photo("outdoor", 1)]
+ask, calls = answers(furn)
+ls.check_listing_scope(many, ask=ask)
+check("U8 at most 2 photos per room are asked (5 living photos -> 2 calls + 1 bedroom)", len(calls) == 3)
+nobed = [photo("living", 1), photo("kitchen", 1), photo("bathrooms", 1), photo("outdoor", 1), photo("exterior", 1)]
+r = ls.check_listing_scope(nobed, ask=answers(empty)[0])
+check("U9 with only a living room to judge, an empty one is out", (not r["ok"]) and r["furnished_check"]["bedrooms"] == "no photo")
+check("U10 push reasons come from one table", ls.acceptance_short_reason({"code": "unfurnished"}) == "non arredato" and ls.acceptance_short_reason({"code": "insufficient_photos"}) == "foto insufficienti" and ls.acceptance_short_reason(None) == "non idoneo")
+api = open("api_server.py").read()
+check("U11 both workflows call the one gate and none calls the photo rule directly", api.count("scraper.check_listing_scope(") == 2 and "scraper.check_listing_acceptance(" not in api)
+check("U12 the push message no longer says photos in every case", "rifiutato (foto insufficienti)" not in api)
+os.environ["PVS_FURNISHED_ENFORCE"] = "0"
+r = ls.check_listing_scope(BASE, ask=answers(empty)[0])
+check("U13 measure-only: empty flat passes but is recorded as unfurnished", r["ok"] and r.get("furnished_status") == "unfurnished" and bool(r.get("furnished_check")))
+r = ls.check_listing_scope(BASE, ask=answers(furn)[0])
+check("U14 measure-only: furnished flat passes, status ok", r["ok"] and r.get("furnished_status") == "ok")
+os.environ["PVS_FURNISHED_ENFORCE"] = "1"
+r = ls.check_listing_scope(BASE, ask=answers(empty)[0])
+check("U15 switch on again rejects with code unfurnished", (not r["ok"]) and r["code"] == "unfurnished")
+print(str(sum(res)) + "/" + str(len(res)))
+sys.exit(0 if all(res) else 1)

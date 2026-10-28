@@ -192,6 +192,84 @@ def check_listing_acceptance(photos: list) -> dict:
     return result
 
 
+# 2026-10-28 (Michele): launch scope. A listing whose living room AND bedroom show no furniture is "not furnished" and out of scope for now.
+# It is checked in the SAME gate as the photo rule (check_listing_scope), before any narration or voice is paid for. Page labels decide which
+# photos are the living room and the bedroom; Claude vision is asked only whether furniture is visible (kitchen units do not count).
+FURNISHED_SAMPLE_PER_ROOM = 2
+FURNISHED_ROOMS = ("living", "bedrooms")
+UNFURNISHED_MESSAGE = "Annuncio non supportato: appartamento non arredato (al momento non disponibile)."
+ACCEPTANCE_SHORT_REASON = {"insufficient_photos": "foto insufficienti", "unfurnished": "non arredato"}
+_VISION_FURNISHED_PROMPT = (
+    "Look at this real estate interior photo. Does the room contain furniture (a sofa, table, chairs, a bed, a wardrobe, a desk, shelves "
+    "or similar movable furniture)? Built-in kitchen units, fixed lights and curtains do NOT count as furniture.\n"
+    "Answer with ONLY one word: furnished or empty."
+)
+
+
+def acceptance_short_reason(acceptance: dict) -> str:
+    # short Italian reason for a push notification, from the failure code (one table for every gate)
+    return ACCEPTANCE_SHORT_REASON.get((acceptance or {}).get("code"), "non idoneo")
+
+
+def check_listing_furnished(photos: list, ask=None) -> dict:
+    # returns ok False ONLY when every room that has photos (living, bedrooms) was judged empty by a clear majority of its sampled photos
+    # with no failed call. Anything unsure (no photo, failed call, unclear answer) never blocks a listing.
+    ask = ask or _vision_one_word
+    detail, verdicts, seen = {}, [], set()
+    for room in FURNISHED_ROOMS:
+        sample = []
+        for p in photos or []:
+            url = p.get("url")
+            if p.get("category") == room and url and url not in seen and len(sample) < FURNISHED_SAMPLE_PER_ROOM:
+                seen.add(url)
+                sample.append(p)
+        if not sample:
+            detail[room] = "no photo"
+            continue
+        words = [ask(p["url"], p.get("original_url"), _VISION_FURNISHED_PROMPT) for p in sample]
+        if any(not ok for _, ok in words):
+            detail[room] = "unknown (a vision call failed)"
+            verdicts.append(None)
+            continue
+        empties = sum(1 for w, _ in words if w == "empty")
+        furnished = sum(1 for w, _ in words if w.startswith("furnished"))
+        if empties * 2 > len(words):
+            detail[room] = "empty (" + str(empties) + " of " + str(len(words)) + " photos)"
+            verdicts.append("empty")
+        elif furnished:
+            detail[room] = "furnished"
+            verdicts.append("furnished")
+        else:
+            detail[room] = "unknown (unclear answer)"
+            verdicts.append(None)
+    blocked = bool(verdicts) and all(v == "empty" for v in verdicts)
+    return {"ok": not blocked, "detail": detail}
+
+
+def furnished_enforced() -> bool:
+    # 2026-10-28: measure-only by default. An empty flat is recorded (furnished_status = unfurnished) but NOT rejected.
+    # Set PVS_FURNISHED_ENFORCE=1 in .env and restart to reject unfurnished listings again.
+    return os.environ.get("PVS_FURNISHED_ENFORCE", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def check_listing_scope(photos: list, ask=None) -> dict:
+    # the ONE gate both workflows call before narration: the photo rule (check_listing_acceptance) first, then the furnished rule.
+    # same result shape as check_listing_acceptance, so every caller reads it exactly as before
+    result = check_listing_acceptance(photos)
+    if not result["ok"]:
+        return result
+    furn = check_listing_furnished(photos, ask=ask)
+    result["furnished_check"] = furn["detail"]
+    result["furnished_status"] = "ok" if furn["ok"] else "unfurnished"
+    if not furn["ok"]:
+        if furnished_enforced():
+            result.update({"ok": False, "code": "unfurnished", "message": UNFURNISHED_MESSAGE})
+            log.warning("[Scraper] Listing rejected (unfurnished): " + str(furn["detail"]))
+        else:
+            log.info("[Scraper] Listing looks unfurnished, measure-only mode (not rejected): " + str(furn["detail"]))
+    return result
+
+
 SUPPORTED_DOMAINS = {"immobiliare.it", "www.immobiliare.it", "idealista.it", "www.idealista.it",
                      "casa.it", "www.casa.it", "annunci.getrix.it"}
 
@@ -214,7 +292,7 @@ Extract and return ONLY a JSON object (no other text, no markdown code fences) w
 Rules:
 - Only include real property photos in "photos" — EXCLUDE floor plan diagrams and any agent/agency headshot or logo images.
 - "label_it" is the photo's own caption/label as shown on the page, in whatever language the site uses.
-- Map each photo's label to exactly one category: exterior (building facade, outdoor view of the property itself), living (living room, dining room, study, hallway, stairs), kitchen, bedrooms, bathrooms, outdoor (garden, terrace, courtyard, parking area, land/terrain), laundry (laundry/utility room -- 2026-07-24: previously lumped into bathrooms, now its own category so it can appear as an extra scene when a longer video needs it), office (study/home office, distinct from a general living-area study), garage (garage, carport, covered parking specifically -- distinct from general outdoor parking). If a label doesn't clearly fit any of these, use "uncategorized".
+- Map each photo's label to exactly one category: exterior (building facade, outdoor view of the property itself), living (living room, dining room, study; NOT entrance hall, corridor, hallway or stairs, which must be uncategorized), kitchen, bedrooms, bathrooms, outdoor (garden, terrace, courtyard, parking area, land/terrain), laundry (laundry/utility room -- 2026-07-24: previously lumped into bathrooms, now its own category so it can appear as an extra scene when a longer video needs it), office (study/home office, distinct from a general living-area study), garage (garage, carport, covered parking specifically -- distinct from general outdoor parking). If a label doesn't clearly fit any of these, use "uncategorized".
 - If the page provides a larger/original-resolution version of each photo (e.g. via a lightbox, srcset, or a "view full size" link), use that URL instead of a thumbnail/compressed variant.
 - "description" is the full property description text from the listing (not a shortened meta/preview version).
 - "price" and "address" as shown on the page.

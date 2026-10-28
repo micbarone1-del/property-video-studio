@@ -1653,7 +1653,7 @@ async def _prepare_url_draft_work(job_id, url, property_name, agency_id, voice_i
     # 2026-10-12 (3B): standard-video acceptance rule BEFORE narration/TTS is paid for. Premium is unchanged.
     acceptance = None
     if not premium:
-        acceptance = scraper.check_listing_acceptance(extraction["photos"])
+        acceptance = scraper.check_listing_scope(extraction["photos"])
         if not acceptance["ok"]:
             INTAKES[job_id]["code"] = acceptance.get("code")
             INTAKES[job_id]["reason"] = acceptance
@@ -2101,7 +2101,7 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
         classification_summary = await asyncio.to_thread(scraper.refine_exterior_outdoor_with_vision, photos_for_selection)
 
         # 2026-10-12 (3B): standard-video acceptance rule BEFORE narration/TTS is paid for.
-        acceptance = scraper.check_listing_acceptance(photos_for_selection)
+        acceptance = scraper.check_listing_scope(photos_for_selection)
         if not acceptance["ok"]:
             JOBS[job_id].update({"status": "failed", "message": acceptance["message"],
                                  "failure_code": acceptance["code"], "failure_reason": acceptance})
@@ -2111,7 +2111,7 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
                 subject=f"Job Relinx rifiutato: {payload.property_name}",
                 body_html=f"<p><b>{payload.property_name}</b> - {acceptance['message']}</p>"
                           f"<p>Job ID: {job_id}, external_ref: {payload.external_ref}</p>",
-                push_message=f"{payload.property_name} - rifiutato (foto insufficienti)", tags=["x"])
+                push_message=f"{payload.property_name} - rifiutato ({scraper.acceptance_short_reason(acceptance)})", tags=["x"])
             return
 
         scene_category_order = scraper.derive_available_category_order(photos_for_selection)

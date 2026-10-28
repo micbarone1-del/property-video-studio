@@ -838,3 +838,11 @@ Requirements, in his words/intent (confirm in plain language before any code; ea
 2026-10-27 foreground risk rule deployed (see BD in status.md). Open: golden set run to count how often the flag fires; if it fires on many scenes decide whether to tighten the question wording; one clip is the only video evidence; label contrast unverified.
 
 2026-10-28 DECISION: launch scope limited to reliable apartment types, empty apartments excluded if not reliable (see PRODUCT DECISION in status.md); detection method and partner-API reply to be scoped. Room recognition = label first, vision as fallback; open question: apply the same rule to the exterior/outdoor check. Open bug: vuoto draft voice 24.96 s below the 26 s floor (per_scene mode).
+
+
+## 2026-10-28 — Launch scope v1 (draft) and the furnished question
+- Draft scope: apartments including monolocali; villas and lofts stay in the pipeline but are not promised; listing photos must meet the acceptance rule (provisional minimum 12 photos, required rooms not yet implemented); room labels from the feed first, Claude vision only when the label is missing or other.
+- Furnished requirement: SUSPENDED to measure-only on 2026-10-28. Reason: Michele estimates at least half of GIAL sale listings are empty, so rejecting them would remove most of the pilot feed. The gate stays in the code and is switched by PVS_FURNISHED_ENFORCE.
+- To decide with data: (1) share of empty listings in the GIAL feed, measured with the measure-only field furnished_status; (2) one paid test video on an empty listing now free of the stairs bug (about EUR 6.6); then keep empty flats in, or enforce and tell the client up front.
+- Relinx spec note: failure_code unfurnished and the message Annuncio non supportato: appartamento non arredato only appear when enforcement is on.
+- Open: a posteriori failure policy (notify, hold for review, try again, close as not feasible); partner API reply text; exterior/outdoor label-first question; step_out_onto in production; temperature 0 for judgment calls; draft_check fix for refused drafts; gitignore for *.bak_*.

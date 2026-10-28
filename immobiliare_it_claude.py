@@ -66,7 +66,7 @@ Extract and return ONLY a JSON object (no other text, no markdown code fences) w
 Rules:
 - Only include real property photos in "photos" — EXCLUDE floor plan diagrams and any agent/agency headshot or logo images.
 - "label_it" is the photo's own caption/label as shown on the page (in Italian).
-- Map each photo's label to exactly one category: exterior (building facade, outdoor view of the property itself), living (living room, dining room, study, hallway, stairs), kitchen, bedrooms, bathrooms (including laundry/utility rooms), outdoor (garden, terrace, courtyard, parking area, land/terrain). If a label doesn't clearly fit any of these, use "uncategorized".
+- Map each photo's label to exactly one category: exterior (building facade, outdoor view of the property itself), living (living room, dining room, study; NOT entrance hall, corridor, hallway or stairs, which must be uncategorized), kitchen, bedrooms, bathrooms (including laundry/utility rooms), outdoor (garden, terrace, courtyard, parking area, land/terrain). If a label doesn't clearly fit any of these, use "uncategorized".
 - "description" is the full property description text from the listing (not the shortened meta/preview version).
 - "price" and "address" as shown on the page.
 """
