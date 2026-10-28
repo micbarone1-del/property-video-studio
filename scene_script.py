@@ -53,6 +53,8 @@ _FEATURE_STEMS = [
 _PROMO_STEMS = [
     "prestigios", "esclusiv", "meraviglios", "splendid", "lussuos", "incantevol", "mozzafiato", "unic",
     "straordinari", "eccezional", "elegant", "raffinat", "pregiat", "magnific", "favolos", "sontuos",
+    # 2026-10-28: words about the STATE or QUALITY of the property (a draft said completamente rifiniti for a flat to be renovated)
+    "rifinit", "perfett", "impeccabil", "ottim", "eccellent",
 ]
 
 # Floors are never named in the standard video (Michele, 2026-10-22): a photo's floor is not known.

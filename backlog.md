@@ -854,3 +854,9 @@ Requirements, in his words/intent (confirm in plain language before any code; ea
 - Consider adding material stems (terracott, cotto, graniglia) to the validator feature list in scene_script so a material that is in neither the listing nor the facts is rejected.
 - Larger sample before calling it stable (more listings, repeated runs); measure the cost of the facts call on its own; decide if a stronger vision model is worth it.
 - Show scene_facts in the review UI so a person can compare them with the photos.
+
+
+## 2026-10-28 — decisions and open items after the scene facts
+- Decision for Michele: accept or reject curato nei dettagli and similar emphasis when the listing does not say it (stem curat). Today it is accepted.
+- Facts: the cheapest vision model still describes views loosely (vista luminosa); consider a stronger model once the cost of the call is measured on its own.
+- Next area: partner error paths on the fake instance (port 8001, faults.json): not enough photos, narration failure, clip failure with the fallback off, provider quota. Check the four invariants of the test plan on each.

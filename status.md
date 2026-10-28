@@ -894,3 +894,11 @@ PRODUCT DECISION (2026-10-28, Michele): the automation launches only for the apa
 - draft_check: wait_for now asks GET /jobs/{id} when job_meta.json is missing, so a refused draft (prep_failed) no longer waits 900 s. Real check: refused draft returns in 0.0 s, preparing keeps waiting; test_draft_check 17/17.
 - Stale tests fixed (my omission after commit c02ccd6): test_standard_3b, test_url_draft_background, test_vision_classify looked for check_listing_acceptance in api_server.py; now check_listing_scope (32/32, 32/32, 36/36).
 - Rollback: commit c02ccd6, or PVS_SCENE_FACTS=0 in .env plus restart.
+
+
+## BH — 2026-10-28 — scene facts tightened; the validator knows words of state and quality
+- Facts prompt: colours only (no materials), no room names, never empty, a view says what is seen and not what place it is. Banned words extended: place names (piazz, cortil, strad) and materials (cement, pietra, mattoni, intonac, metall, ferro, vetro, granit, plastic). Evidence: vuoto draft eed70d53 anchored, 27.9 s, no FAIL, facts without place names or materials.
+- Defect found in the voice text of that draft: completamente rifiniti for a flat the listing describes as to be renovated. Cause: scene_script _PROMO_STEMS did not know words of state or quality. Added rifinit, perfett, impeccabil, ottim, eccellent: allowed only when the listing text itself uses them (the scene facts cannot carry them either, they read the same list). The stem curat was NOT added: curati nei dettagli is a good sentence in the fixtures of test_block_narration and test_anchor_timeline; decision for Michele.
+- Tests: test_scene_facts 19/19 (V1, V2 for the new words, F4e for place names and materials); scene_script 83/83, block_narration 75/75, anchor_timeline 102/102, vision_classify 36/36, standard_3b 32/32, url_draft_background 32/32, furnished 15/15, draft_check 17/17, narration_sync 22/22, italian_check 33/33.
+- Not run: test_block_robustness (slow); test_batch_redo is never run (it touches a real job). The new words were not yet seen on a second real draft.
+- Rollback: commit 5b6d979, or PVS_SCENE_FACTS=0 in .env plus restart (the validator words stay).

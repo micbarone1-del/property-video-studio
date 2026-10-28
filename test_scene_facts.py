@@ -26,6 +26,9 @@ bad3 = list(six); bad3[1] = "Stanza vuota con pareti chiare"; bad3[2] = "Bagno s
 r3 = ls.parse_scene_facts(j(bad3), 6)
 check("F4c a fact that names the room, says empty or names a material is dropped", r3 is not None and r3[1] == "" and r3[2] == "" and r3[3] == "" and r3[0] == six[0])
 check("F4d the prompt asks for colours not materials and forbids naming the room", "COLOURS, never materials" in ls.SCENE_FACTS_PROMPT and "Never name the room" in ls.SCENE_FACTS_PROMPT)
+bad4 = list(six); bad4[0] = "Vista su piazza con alberi"; bad4[5] = "Balcone in cemento grigio"; bad4[2] = "Vista su alberi e edifici"
+r4 = ls.parse_scene_facts(j(bad4), 6)
+check("F4e a place name or a material is dropped, a view of trees and buildings is kept", r4 is not None and r4[0] == "" and r4[5] == "" and r4[2] == "Vista su alberi e edifici")
 check("F5 all phrases empty -> None", ls.parse_scene_facts(j([""] * 6), 6) is None)
 blk = ls.scene_facts_block(six, seq)
 check("F6 the block lists only non-empty facts, scene numbers as words, no room label, no digit", "Scene three: Luce naturale e pareti chiare" in blk and "Scene two" not in blk and "terrazza" not in blk and not any(c.isdigit() for c in blk))
@@ -67,6 +70,12 @@ check("D1 one call carries the 6 photos and returns the facts", d == {"ok": True
 ls.fetch_photo_bytes = lambda u, fb=None, timeout=20, attempts=1: {"ok": False, "error": "404"}
 check("D2 a photo that cannot be downloaded -> ok False", ls.describe_scenes_for_narration(photos)["ok"] is False)
 
+import scene_script as ss
+_t = "La proprieta e completamente rifinita e perfetta. Ottima esposizione."
+_p1 = ss._fact_problems(_t, "t", _t.lower(), "appartamento da ristrutturare", set(), set())
+_p2 = ss._fact_problems(_t, "t", _t.lower(), "appartamento rifinito e perfetto, ottima esposizione", set(), set())
+check("V1 words of state or quality (rifinit, perfett, ottim) are rejected when the listing text does not use them", all(any(k in x for x in _p1) for k in ("rifinit", "perfett", "ottim")))
+check("V2 the same words are accepted when the listing text uses them", not any("promotional" in x for x in _p2))
 api = open("api_server.py").read()
 q = chr(34)
 check("S1 both workflows pass the scene photos and store the facts", api.count("scraper.standard_scene_photos(") == 2 and api.count(q + "scene_facts" + q + ": narration.get(") == 2)

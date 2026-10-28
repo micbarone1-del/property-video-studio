@@ -372,3 +372,9 @@ Update 2026-10-25 (night): clip QC with Claude built in the sandbox (test_clip_q
 - Real evidence: golden set of 4 in draft with PVS_SCENE_FACTS=1: 4/4 without FAIL, all anchored, voice 27.4-30.4 s.
 - Not run: paid video on an empty listing; repeated runs for variance; villa/loft golden tests with new URLs.
 - Scores remain proposals until reviewed by the user.
+
+
+## 2026-10-28 (later) — status additions
+- test_scene_facts V1, V2 (state and quality words), F4e (place names and materials): PASS, total 19/19, mocked. Real evidence: vuoto draft eed70d53 (27.9 s, anchored, no FAIL).
+- Not run: partner error paths on the fake instance (T-C4, T-C5, T-B7, T-D4, T-E), repeated runs for variance, paid video on an empty listing.
+- Scores remain proposals until reviewed by the user.

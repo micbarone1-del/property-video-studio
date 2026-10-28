@@ -1518,6 +1518,7 @@ SCENE_FACTS_PROMPT = (
     "- Describe only what you can clearly see. No numbers at all (say finestre, not due finestre). Give COLOURS, never materials "
     "(say pavimento rosso, not terracotta or cotto; pareti chiare, not intonaco).\n"
     "- Never name the room or its use (no cucina, bagno, stanza, camera) and never say it is empty: the scene already says which room it is.\n"
+    "- For a view, say what is seen (alberi, edifici, cielo), never what kind of place it is (no piazza, cortile, strada).\n"
     "- No judgement of condition or value (new, renovated, luxury, recent), no price, no location.\n"
     "- If the room is empty, do not mention furniture: speak of light, windows, floor and space.\n"
     "- If you cannot say anything certain about a photo, write an empty string for it.\n"
@@ -1525,7 +1526,8 @@ SCENE_FACTS_PROMPT = (
 )
 _SCENE_FACT_VISIBLE_OK = ("piscin", "giardin", "terrazz", "balcon", "vista", "mare", "lago", "parco", "pergol", "portic", "veranda", "uliv", "cancell", "camin")
 _SCENE_FACT_WORDS = ("ristruttur", "recent", "lusso", "pregio", "€", "euro", "prezzo", "vuot", "terracott", "cotto", "ceramic", "legno",
-                     "stanza", "cucina", "bagno", "camera", "soggiorno", "salone")
+                     "stanza", "cucina", "bagno", "camera", "soggiorno", "salone",
+                     "piazz", "cortil", "strad", "cement", "pietra", "mattoni", "intonac", "metall", "ferro", "vetro", "granit", "graniglia", "plastic")
 
 
 def _scene_fact_banned() -> tuple:
