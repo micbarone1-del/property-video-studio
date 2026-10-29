@@ -1210,3 +1210,6 @@ test_selection_report.py RESULT: ALL PASS (29/29)
 test_vision_classify.py RESULT: ALL PASS (36/36)
 - Not verified: rerun on the same 64 photos after the fix; the white-band detector on the 1307 page (Michele sees no bands on the site; the tool found bands on 25 of 25).
 - Rollback: commit 839a59a.
+
+## 2026-10-29 (BV) - Pronuncia GIAL
+- Feedback Relinx: GIAL si legge come parola (gial), non come sigla. Aggiunta in pronunciation_fixes.json la voce GIAL -> gial (parola intera, maiuscole/minuscole distinte). Test con apply_pronunciation_fixes: vedi esecuzione del blocco 275. NON ancora verificato all'ascolto su un video reale.
