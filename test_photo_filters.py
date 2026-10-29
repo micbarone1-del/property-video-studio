@@ -71,23 +71,30 @@ class Msgs:
     def create(self, **kw):
         content = kw["messages"][0]["content"]
         SENT.append([c for c in content if c.get("type") == "image"])
-        SENT_PROMPT.append(content[0]["text"])
+        SENT_PROMPT.append(content[0]["text"]); MAXTOK.append(kw.get("max_tokens"))
         if ANSWER["raise"]: raise RuntimeError("api down")
         return types.SimpleNamespace(content=[types.SimpleNamespace(type="text", text=ANSWER["text"])])
-SENT_PROMPT = []
+SENT_PROMPT = []; MAXTOK = []
 class FakeClient:
     def __init__(self, api_key=None): self.messages = Msgs()
 ls.anthropic.Anthropic = FakeClient
 
-ANSWER.update(text="Blocky."); SENT.clear()
+ANSWER.update(text="ANSWER: blocky"); SENT.clear()
 v = ls.assess_photo_quality(jpeg(2000, 1500), "t")
-check("Q1 reply 'Blocky.' (one word only) -> verdict blocky, overlay unknown, call ok", v == {"verdict": "blocky", "overlay": "unknown", "call_ok": True}, v)
-ANSWER.update(text="Soft portal"); v2 = ls.assess_photo_quality(jpeg())
-ANSWER.update(text="ok none."); v3 = ls.assess_photo_quality(jpeg())
-ANSWER.update(text="Blocky, agency"); v4 = ls.assess_photo_quality(jpeg())
+check("Q1 'ANSWER: blocky' (one word after the marker) -> verdict blocky, overlay unknown, call ok", v == {"verdict": "blocky", "overlay": "unknown", "call_ok": True}, v)
+ANSWER.update(text="Smooth and smeared at 100%.\nANSWER: Soft portal"); v2 = ls.assess_photo_quality(jpeg())
+ANSWER.update(text="ANSWER: ok none."); v3 = ls.assess_photo_quality(jpeg())
+ANSWER.update(text="Two sentences. I rate it ok at first.\nANSWER: ok none\nCorrection, final: ANSWER: Blocky, agency"); v4 = ls.assess_photo_quality(jpeg())
 check("Q1b two-word answers: the technical verdict and the overlay are read separately", v2 == {"verdict": "soft", "overlay": "portal", "call_ok": True} and v3["verdict"] == "ok" and v3["overlay"] == "none" and v4["verdict"] == "blocky" and v4["overlay"] == "agency", (v2, v3, v4))
-ANSWER.update(text="portal")
+ANSWER.update(text="ANSWER: portal")
 check("Q1c the old combined word 'portal' is NOT a technical verdict (unknown, never a problem)", ls.assess_photo_quality(jpeg())["verdict"] == "unknown")
+ANSWER.update(text="soft portal")
+check("Q1d no ANSWER line (bare words, or reasoning cut off): unknown, never a problem", ls.assess_photo_quality(jpeg())["verdict"] == "unknown")
+ANSWER.update(text="")
+check("Q1e a reply with no text at all (a model that only 'thought') -> unknown, call ok, no exception", ls.assess_photo_quality(jpeg()) == {"verdict": "unknown", "overlay": "unknown", "call_ok": True})
+MAXTOK.clear(); ANSWER.update(text="ANSWER: ok none"); ls.assess_photo_quality(jpeg())
+check("Q1f the judge call leaves room for reasoning (max_tokens 600)", MAXTOK == [600], MAXTOK)
+ANSWER.update(text="ANSWER: blocky")
 ANSWER.update(text="Blocky.")
 check("Q2 two images are sent: the whole photo and a crop", len(SENT[0]) == 2, len(SENT))
 crop = Image.open(io.BytesIO(base64.b64decode(SENT[0][1]["source"]["data"])))
@@ -98,7 +105,7 @@ check("Q4 an answer outside the four words is 'unknown', never a problem", ls.as
 ANSWER.update(raise_=True); ANSWER["raise"] = True
 check("Q5 API error -> unknown, call_ok False, no exception", ls.assess_photo_quality(jpeg()) == {"verdict": "unknown", "call_ok": False})
 ANSWER["raise"] = False
-check("Q6 the prompt asks for two words: technical (ok/soft/blocky) then overlay (none/portal/agency), the technical one not influenced by the overlay", all(w in SENT_PROMPT[0] for w in ("TWO words", "FIRST word", "SECOND word", "- ok:", "- soft:", "- blocky:", "- none:", "- portal:", "- agency:", "never influenced by the second word")))
+check("Q6 the prompt asks for two words: technical (ok/soft/blocky) then overlay (none/portal/agency), the technical one not influenced by the overlay", all(w in SENT_PROMPT[0] for w in ("TWO words", "FIRST word", "SECOND word", "- ok:", "- soft:", "- blocky:", "- none:", "- portal:", "- agency:", "never influenced by the second word", "ANSWER:", "at most two short sentences")))
 check("Q6b only soft and blocky are poor: a portal watermark or an agency logo is never a reason to discard", ls.PHOTO_QUALITY_POOR == ("soft", "blocky") and set(ls.PHOTO_QUALITY_WORDS) == {"ok", "soft", "blocky"} and set(ls.PHOTO_OVERLAY_WORDS) == {"none", "portal", "agency"})
 
 # ── the quality filter works in the SELECTION (2026-10-29) ───────────────────
@@ -184,7 +191,8 @@ ls.fetch_photo_bytes = real_fetch
 
 # the shared sender is still the only place that calls the API: the old one-photo function goes through it
 ANSWER.update(text="hall"); SENT.clear()
-check("Q16 _vision_one_word (room questions) still works through the same sender", ls._vision_one_word("u", None, "q") == ("hall", True) and len(SENT[0]) == 1)
+MAXTOK.clear()
+check("Q16 _vision_one_word (room questions) still works through the same sender, unchanged: bare word, small token limit", ls._vision_one_word("u", None, "q") == ("hall", True) and len(SENT[0]) == 1 and MAXTOK == [20], MAXTOK)
 
 # ── watermark flag per origin ───────────────────────────────────────────────
 sel = {"selected": {"exterior": [{"local_path": "a"}], "living": [{"local_path": "b"}]}}

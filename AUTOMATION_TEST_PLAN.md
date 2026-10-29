@@ -430,3 +430,8 @@ Update 2026-10-25 (night): clip QC with Claude built in the sandbox (test_clip_q
 ## BP — 2026-10-29 (sera) — aggiunte di stato (punteggi proposti, da rivedere con Michele)
 - P10d (foto sfocata o a blocchi accettata): mitigazione parziale misurata, 14 su 18 copie peggiorate riconosciute (12 prima), 0 falsi allarmi su 6; sotto la soglia proposta di 16 su 18, quindi lo scarto resta spento. Rischio residuo aperto. Punteggi da rivedere.
 - Not run: confronto con altri modelli.
+
+
+## BQ — 2026-10-29 (sera) — aggiunte di stato (punteggi proposti, da rivedere con Michele)
+- P10d: un confronto reale tra modelli ha mostrato un secondo difetto di processo (formato di risposta non adatto a modelli che ragionano); correzione con riga ANSWER testata solo con client finto (Q1b-Q1f). Rischio residuo aperto; scarto spento.
+- Not run: corsa reale con la riga ANSWER.

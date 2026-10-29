@@ -530,9 +530,11 @@ def _image_b64_for_vision(content: bytes) -> str:
         return base64.b64encode(content).decode("utf-8")
 
 
-def _vision_word_from_b64(b64_images: list, prompt: str, label: str = "", words: int = 1) -> tuple:
+def _vision_word_from_b64(b64_images: list, prompt: str, label: str = "", words: int = 1, max_tokens: int = 20, marker: str = "") -> tuple:
     """The ONE place that sends one or more photos (already base64 JPEG) and a short question to Claude vision and returns the
     answer as one lowercase word (words=2: the first two words, joined by one space). (word, ok): ok is False only when the call itself failed.
+    marker (e.g. "answer:"): the model may reason first; the words are read from AFTER the last marker (stronger models do not answer with
+    the bare words: control test 2026-10-29), with max_tokens big enough for the reasoning (some models also "think" before the text).
     2026-10-29: split out of _vision_one_word so a question that needs a second image (the photo-quality check sends the whole
     photo and a crop at its real pixels) uses the same sender instead of a copy of it."""
     try:
@@ -541,9 +543,13 @@ def _vision_word_from_b64(b64_images: list, prompt: str, label: str = "", words:
         for b64 in b64_images:
             content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}})
         response = _track_claude(client.messages.create(
-            model=MODEL, max_tokens=20, messages=[{"role": "user", "content": content}],
+            model=MODEL, max_tokens=max_tokens, messages=[{"role": "user", "content": content}],
         ))
         raw = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip().lower()
+        if marker:
+            if marker not in raw:
+                return "", True          # no final answer line (reasoning cut off or ignored the format): unknown, never a problem
+            raw = raw.rsplit(marker, 1)[1]
         if words > 1:
             return " ".join(re.findall(r"[a-z]+", raw)[:words]), True
         return re.sub(r"[^a-z]", "", raw), True
@@ -584,7 +590,8 @@ def _classify_photo_vision(image_url: str, fallback_url: str = None) -> tuple:
 PHOTO_QUALITY_PROMPT = (
     "You will see two images of the SAME real estate photo: first the whole photo scaled down, then a crop of its centre at the "
     "original pixels (100%). A video model will build a 5 second clip from this photo as the first frame, so its technical quality "
-    "matters. Answer with exactly TWO words separated by a space.\n"
+    "matters. You may write at most two short sentences of reasoning first. Then finish with ONE final line of exactly this form: "
+    "ANSWER: <first word> <second word> (the answer line has exactly TWO words).\n"
     "FIRST word = the technical quality of the picture itself, whatever is written or drawn on it, never influenced by the second word:\n"
     "- ok: normal sharpness and detail (ordinary phone or camera photos are ok).\n"
     "- soft: clearly blurred, out of focus or smeared, or a low-resolution picture stretched up: smooth, no fine detail, edges look "
@@ -594,7 +601,7 @@ PHOTO_QUALITY_PROMPT = (
     "- none: nothing.\n"
     "- portal: a semi-transparent text or logo of a listing portal, such as immobiliare.it.\n"
     "- agency: a solid logo, banner, ribbon, contact bar or text of the real estate agency (for example kw HOME, a ribbon in a corner).\n"
-    "Examples of complete answers: ok none / soft portal / blocky agency / ok portal."
+    "Examples of final lines: ANSWER: ok none / ANSWER: soft portal / ANSWER: blocky agency / ANSWER: ok portal."
 )
 PHOTO_QUALITY_WORDS = ("ok", "soft", "blocky")
 PHOTO_OVERLAY_WORDS = ("none", "portal", "agency")
@@ -603,6 +610,7 @@ PHOTO_OVERLAY_WORDS = ("none", "portal", "agency")
 # (p["overlay"], selection_report). It is asked as a separate second word because with one combined answer the judge named the overlay and
 # skipped the technical verdict (control test: 5 of 6 pixelated copies answered "portal"). TEMPORARY: review after the real GIAL job.
 PHOTO_QUALITY_POOR = ("soft", "blocky")
+QUALITY_JUDGE_MAX_TOKENS = 600          # room for a short reasoning (and for models that think first) before the ANSWER line
 QUALITY_JUDGE_PER_CATEGORY = 4      # the best-ranked candidates of each category that get a verdict (the rest are never reached)
 
 
@@ -626,7 +634,7 @@ def assess_photo_quality(content: bytes, label: str = "") -> dict:
     except Exception as e:
         log.warning(f"[Scraper] Photo quality: could not prepare {label}: {e}")
         return {"verdict": "unknown", "call_ok": False}
-    word, ok = _vision_word_from_b64(images, PHOTO_QUALITY_PROMPT, label, words=2)
+    word, ok = _vision_word_from_b64(images, PHOTO_QUALITY_PROMPT, label, words=2, max_tokens=QUALITY_JUDGE_MAX_TOKENS, marker="answer:")
     if not ok:
         return {"verdict": "unknown", "call_ok": False}
     parts = word.split()

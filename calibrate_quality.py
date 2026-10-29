@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import listing_scraper as ls
 
 EXTS = {".jpg", ".jpeg", ".png", ".webp"}
-EST_IN_TOKENS, EST_OUT_TOKENS = 1900, 5     # per photo: two 768 px images + the question (estimate; the real run prints the real figure)
+EST_IN_TOKENS, EST_OUT_TOKENS = 1900, 90    # per photo: two 768 px images + the question in; a short reasoning plus the ANSWER line out (estimate; the real run prints the real figure)
 
 
 def collect(jobs_dir: Path):

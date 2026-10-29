@@ -918,3 +918,8 @@ Requirements, in his words/intent (confirm in plain language before any code; ea
 
 ## BP — 2026-10-29 (sera) — voci aperte
 - Confrontare altri modelli come giudice con la stessa prova (--model claude-haiku-5-5, poi claude-sonnet-5-5 se serve): scegliere il modello solo se supera la soglia (16/18 e 0 falsi allarmi su 6). Usare un modello diverso in produzione per il solo giudice richiede un costo per modello nel contatore Claude (oggi un solo prezzo, quello di MODEL): da fare PRIMA di cambiare il modello del giudice, altrimenti il costo mostrato sarebbe sbagliato.
+
+
+## BQ — 2026-10-29 (sera) — voci aperte
+- Rilanciare la prova con la riga ANSWER su tre modelli: claude-haiku-4-5-20251001 (produzione), claude-haiku-5-5, claude-sonnet-5-5 (costo totale stimato circa 0.13 EUR). Se solo un modello non-default supera la soglia: prima il conteggio del costo per modello, poi il cambio.
+- Lettura troppo permissiva del JPEG a blocchi da parte di Sonnet: se resta dopo la riga ANSWER, rafforzare la definizione di "blocky" (banding o blocchi visibili al ritaglio a 100% anche se lievi) e ripetere la prova, controllando i falsi allarmi sugli originali.

@@ -1091,3 +1091,31 @@ PRODUCT DECISION (2026-10-28, Michele): the automation launches only for the apa
   - test_scene_facts.py :: 19/19 | FAILS=0
 - Not verified: nessun confronto ancora eseguito con altri modelli; scarto soft/blocky ancora in sola misura (.env PVS_QUALITY_ENFORCE=0). I prezzi di claude-haiku-5-5 e claude-sonnet-5-5 sono quelli gia' in CLAUDE_PRICES (listing_scraper), non verificati dal vivo.
 - Rollback: commit 9e61c10 (prima di questo commit).
+
+
+## BQ — 2026-10-29 (sera) — confronto di modelli per il giudice: i modelli piu' forti non rispondono con due parole; risposta con riga ANSWER
+- Evidence (corse reali sulle stesse 6 foto, 24 chiamate a giro): Haiku 5.5 (costo reale 0.0039 EUR): 24 risposte su 24 "unknown"; diagnostica diretta: stop_reason max_tokens a 80 token con SOLO un blocco "thinking" e nessun testo, cioe' il modello pensa prima e il limite di 20 token del giudice lo tagliava. Sonnet 5.5 (costo reale 0.0750 EUR): blur 6/6 e pixelated 6/6 riconosciute, jpegblocks 1/6 con 5 "unknown"; originali: 1 chiamato soft (457d5590, falso allarme da verificare a occhio) e 1 unknown; la diagnostica mostra che scrive una frase di ragionamento invece delle due parole (tagliata a 80 token) e, sulla copia a blocchi, la giudica "acceptable... ok" pur notando il banding: oltre al formato c'e' anche una lettura troppo permissiva del JPEG a blocchi. Haiku 4.5 con prompt in due parole (BP): 14 su 18, 0 falsi allarmi su 6. Nessun modello ha ancora superato la soglia (16 su 18 e 0 falsi allarmi).
+- Changed: il giudice puo' ragionare (al massimo due frasi) e chiude con una riga "ANSWER: <tecnico> <sovrapposizione>"; le parole si leggono DOPO l'ultimo "answer:" (_vision_word_from_b64 ha ora max_tokens e marker; il valore predefinito e le domande sulle stanze restano identici: parola unica, 20 token). Senza riga ANSWER, o con la risposta tagliata, il verdetto e' unknown (mai un problema). max_tokens del giudice 600 (QUALITY_JUDGE_MAX_TOKENS). Il giudice produce ora circa 70-100 token in uscita a foto (prima circa 5): costo in uscita trascurabile ma reale, da verificare con la corsa; calibrate_quality.py stima ora 90 token in uscita.
+- Tests (output reale del server):
+  - test_partner_failure.py :: RESULT: ALL PASS (20/20) | FAILS=0
+  - test_calibrate_quality.py :: RESULT: ALL PASS (20/20) | FAILS=0
+  - test_upscale_default.py :: RESULT: ALL PASS (15/15) | FAILS=0
+  - test_photo_filters.py :: RESULT: ALL PASS (50/50) | FAILS=0
+  - test_scene_rework.py :: RESULT: ALL PASS (77/77) | FAILS=0
+  - test_relinx_loader.py :: 21/21 | FAILS=0
+  - test_package1.py :: RESULT: ALL PASS (26/26) | FAILS=0
+  - test_selection_report.py :: RESULT: ALL PASS (29/29) | FAILS=0
+  - test_standard_3b.py :: RESULT: ALL PASS (32/32) | FAILS=0
+  - test_url_draft_background.py :: RESULT: ALL PASS (32/32) | FAILS=0
+  - test_vision_classify.py :: RESULT: ALL PASS (36/36) | FAILS=0
+  - test_download_retry.py :: 5/5 | FAILS=0
+  - test_draft_check.py :: 17/17 | FAILS=0
+  - test_camera_plan.py :: 20/20 PASS | FAILS=0
+  - test_failed_clips.py :: RESULT: ALL PASS (20/20) | FAILS=0
+  - test_luma_wait.py :: RESULT: ALL PASS (19/19) | FAILS=0
+  - test_outdoor_rules.py :: RESULT: ALL PASS (14/14) | FAILS=0
+  - test_anchor_timeline.py :: RESULT: ALL PASS (102/102) | FAILS=0
+  - test_photo_ranking_prompt.py :: RESULT: ALL PASS (7/7) | FAILS=0
+  - test_scene_facts.py :: 19/19 | FAILS=0
+- Not verified: NESSUNA corsa reale con la riga ANSWER (i test usano un client finto): non so se cambia i risultati ne' se Haiku 4.5, Haiku 5.5 e Sonnet 5.5 ora superano la soglia. Scarto soft/blocky ancora in sola misura (.env PVS_QUALITY_ENFORCE=0). Produzione: il giudice di produzione usa il prompt nuovo (chiamate piu' lunghe di qualche secondo possibile) ma i suoi verdetti non scartano nulla.
+- Rollback: commit b2d6f11 (prima di questo commit).
