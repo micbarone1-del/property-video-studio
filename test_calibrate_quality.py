@@ -116,6 +116,19 @@ buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
     cq.main()
 check("M2 failed judge calls are reported loudly (wrong model name)", "12 of 12 judge calls FAILED" in buf.getvalue(), buf.getvalue()[-300:])
+# ── free blockiness report ────────────────────────────────────────────────
+shutil.rmtree(out, ignore_errors=True)
+calls3 = []
+ls.assess_photo_quality = lambda content, label="": calls3.append(label) or {"verdict": "ok", "call_ok": True}
+ls.anthropic.Anthropic = None
+sys.argv = ["x", "--blockiness", "--jobs-dir", jobs, "--out", out]
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    cq.main()
+txt = buf.getvalue()
+check("Z1 --blockiness makes no judge call and says so", calls3 == [] and "no Claude call is made" in txt, txt[:200])
+check("Z2 it prints the distribution of the real photos and the control table of damaged copies", "REAL photos scored: 3" in txt and "DAMAGED copies" in txt and "jpegblocks" in txt, txt[-600:])
+check("Z3 it writes blockiness.csv with one row per photo and a contact sheet; jobs/ untouched", len(open(os.path.join(out, "blockiness.csv")).read().splitlines()) == 4 and snapshot() == before)
 src = open("calibrate_quality.py").read()
 check("C10 tool has no delete/move/write-to-jobs calls", not any(w in src for w in ("unlink", "rmtree", "os.remove", ".rename(", "shutil.move")))
 shutil.rmtree(root)

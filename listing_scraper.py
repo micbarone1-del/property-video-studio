@@ -659,11 +659,49 @@ def _assess_with_model(images: list, model: str, label: str) -> dict:
     return {"verdict": tech, "overlay": overlay, "call_ok": True}
 
 
+BLOCKINESS_MAX_DEFAULT = 4.0      # provisional (2026-10-29): about JPEG quality 20 and below on a photo; to be set from the real photos' distribution
+BLOCKINESS_CAP = 50.0
+
+
+def photo_blockiness_max() -> float:
+    """Score at or above which a photo counts as blocky without asking any model. PVS_BLOCKINESS_MAX overrides; 0 or less switches the check off."""
+    try:
+        return float(os.environ.get("PVS_BLOCKINESS_MAX", BLOCKINESS_MAX_DEFAULT))
+    except ValueError:
+        return BLOCKINESS_MAX_DEFAULT
+
+
+def blockiness_score(content: bytes):
+    """Free pixel check for JPEG blocking, no model involved: how much stronger the brightness jumps are ACROSS the 8-pixel block borders than
+    inside the blocks, for rows and columns, at the best of the 8 possible grid offsets. About 1.0 = no block grid (also for blurred photos);
+    a normal photo is roughly 1.0-1.5, heavy compression grows it (quality 50 about 1.6-1.9, 20 about 2-5, 10 and below 5 or much more).
+    Capped at BLOCKINESS_CAP. None when the image cannot be read."""
+    try:
+        import io
+        import numpy as np
+        from PIL import Image
+        a = np.asarray(Image.open(io.BytesIO(content)).convert("L"), dtype=np.float32)
+        if a.shape[0] < 32 or a.shape[1] < 32:
+            return None
+        dh = np.abs(np.diff(a, axis=1)); dv = np.abs(np.diff(a, axis=0))
+        ch = np.arange(dh.shape[1]) % 8; cv = np.arange(dv.shape[0]) % 8
+        best = 0.0
+        for phase in range(8):
+            ih = ch == ((phase - 1) % 8); iv = cv == ((phase - 1) % 8)
+            r_h = dh[:, ih].mean() / max(float(dh[:, ~ih].mean()), 1e-6)
+            r_v = dv[iv, :].mean() / max(float(dv[~iv, :].mean()), 1e-6)
+            best = max(best, (r_h + r_v) / 2)
+        return round(min(float(best), BLOCKINESS_CAP), 3)
+    except Exception:
+        return None
+
+
 def assess_photo_quality(content: bytes, label: str = "", models: tuple = None) -> dict:
-    """{"verdict": ok|soft|blocky|unknown, "overlay": none|portal|agency|unknown, "call_ok": bool, "by_model": {model: verdict}}
-    ("overlay" and "by_model" only when at least one call worked). Every judge model looks at the photo; the photo is poor when ANY of them
-    says soft or blocky (the first one that does decides the word), ok when at least one says ok and none a problem, otherwise unknown.
-    A model whose call fails is ignored (one broken judge does not stop the other). "unknown" is never treated as a problem."""
+    """{"verdict": ok|soft|blocky|unknown, "overlay": none|portal|agency|unknown, "call_ok": bool, "by_model": {judge: verdict}, "blockiness": float|None}
+    Every judge model looks at the photo, and so does the free pixel check (blockiness_score against photo_blockiness_max, listed in
+    by_model as "blockiness"). The photo is poor when ANY of them says soft or blocky (the first model that does decides the word, the
+    pixel check says "blocky"), ok when at least one model says ok and nothing a problem, otherwise unknown. A model whose call fails is
+    ignored (one broken judge does not stop the others). "unknown" is never treated as a problem."""
     try:
         images = [_image_b64_for_vision(content), _native_crop_b64(content)]
     except Exception as e:
@@ -671,12 +709,20 @@ def assess_photo_quality(content: bytes, label: str = "", models: tuple = None) 
         return {"verdict": "unknown", "call_ok": False}
     results = [(m, _assess_with_model(images, m, label)) for m in (models or photo_quality_models())]
     worked = [(m, r) for m, r in results if r["call_ok"]]
-    if not worked:
-        return {"verdict": "unknown", "call_ok": False}
+    score = blockiness_score(content)
+    limit = photo_blockiness_max()
+    pixel_poor = score is not None and limit > 0 and score >= limit
+    if not worked and not pixel_poor:
+        return {"verdict": "unknown", "call_ok": False, "blockiness": score}
     poor = next((r["verdict"] for m, r in worked if r["verdict"] in PHOTO_QUALITY_POOR), None)
+    if poor is None and pixel_poor:
+        poor = "blocky"
     verdict = poor or ("ok" if any(r["verdict"] == "ok" for m, r in worked) else "unknown")
     overlay = next((r["overlay"] for m, r in worked if r["overlay"] != "unknown"), "unknown")
-    return {"verdict": verdict, "overlay": overlay, "call_ok": True, "by_model": {m: r["verdict"] for m, r in worked}}
+    by_model = {m: r["verdict"] for m, r in worked}
+    if score is not None and limit > 0:
+        by_model["blockiness"] = "blocky" if pixel_poor else "ok"
+    return {"verdict": verdict, "overlay": overlay, "call_ok": True, "by_model": by_model, "blockiness": score}
 
 
 def photo_quality_check_enabled() -> bool:
@@ -721,6 +767,7 @@ def filter_poor_quality_candidates(by_category: dict, assess=None, enforce=None)
             p["quality"] = r["verdict"]
             p["overlay"] = r.get("overlay")
             p["quality_by_model"] = r.get("by_model")
+            p["blockiness"] = r.get("blockiness")
             if r["verdict"] in PHOTO_QUALITY_POOR:
                 poor += 1
                 p["quality_poor"] = True
@@ -975,6 +1022,7 @@ def build_selection_report(photos: list, selection: dict, scene_count_requested=
             "resolution_upgraded": p.get("resolution_upgraded"),
             "rank_position": p.get("rank_position"), "rank_status": p.get("rank_status"),
             "quality": p.get("quality"), "overlay": p.get("overlay"), "quality_by_model": p.get("quality_by_model"),
+            "blockiness": p.get("blockiness"),
         } for p in plist]
 
     used = {("outdoor" if c in ("outdoor_early", "outdoor_late") else c)

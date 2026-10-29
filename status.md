@@ -1151,3 +1151,34 @@ PRODUCT DECISION (2026-10-28, Michele): the automation launches only for the apa
   - test_infra_cost.py :: 5/5 | FAILS=0
 - Not verified: la prova di controllo con i DUE modelli insieme non e' stata ancora eseguita dal codice (il 18/18 e' un calcolo a mano sui verdetti di due corse separate); nessun falso allarme misurato su foto reali oltre le 101+6 gia' viste (prima corsa con prompt diverso); scarto soft/blocky ancora in sola misura (.env PVS_QUALITY_ENFORCE=0).
 - Rollback: commit 806c823 (prima di questo commit).
+
+
+## BS — 2026-10-29 (sera) — prova reale a due modelli: 17/18; controllo gratuito sui pixel contro i blocchi JPEG (provvisorio, misura-solo)
+- Evidence (corse reali, 2026-10-29): (1) prova di controllo con il codice a due modelli (Haiku 4.5 + Haiku 5.5, 24 copie + originali, costo reale 0.0487 EUR, 48 chiamate): copie peggiorate riconosciute 17 su 18 (blur 6/6, pixelated 6/6, jpegblocks 5/6); originali chiamati difettosi 1 su 6, ma Michele ha guardato la foto (457d5590, originale giudicato soft da Haiku 5.5): E' DAVVERO sfocata, quindi 0 falsi allarmi su 6. La copia a blocchi che e' passata (5f44c77a, jpegblocks) e' stata giudicata ok da ENTRAMBI i modelli: per Michele "inaccettabile". CORREZIONE a BR: il 18/18 calcolato a mano era errato; i modelli non rispondono uguale da una corsa all'altra (Haiku 5.5 aveva scartato quella copia e prima dato ok all'originale sfocato). (2) Giudice a due modelli sulle 101 foto originali dei job passati (costo reale 0.2088 EUR, 202 chiamate): ok=89, soft=12, blocky=0; i 12 "soft" sono in un foglio di miniature che Michele deve ancora guardare (quanti sono davvero sfocati = misura dei falsi allarmi su foto vere): NON ANCORA VERIFICATI.
+- Changed: listing_scraper.blockiness_score(content): controllo gratuito sui pixel (nessun modello): rapporto tra i salti di luminosita' ai bordi della griglia 8x8 del JPEG e quelli dentro i blocchi, miglior fase su 8, righe e colonne, tetto 50, None se illeggibile o troppo piccola; circa 1.0-1.5 per una foto normale o sfocata, sale con la compressione (nei test sintetici: q95 circa 1, q70 sotto 2.5, q20 sopra 4, q10 sopra 8, q3 al tetto). assess_photo_quality lo conta come TERZO voto (by_model["blockiness"], campo blockiness in rapporto): e' blocky se il punteggio e' >= PVS_BLOCKINESS_MAX (predefinito 4.0, PROVVISORIO, non tarato sulle foto vere; 0 lo spegne); se nessun modello ha risposto ma i pixel dicono blocky, il verdetto e' blocky (call_ok vero); se un modello ha gia' detto soft/blocky decide la sua parola. calibrate_quality.py --blockiness: misura GRATUITA (nessuna chiamata Claude) di tutte le foto vere (distribuzione, le piu' alte in un foglio, csv) e confronto con le copie peggiorate.
+- Tests (output reale del server):
+  - test_claude_cost_models.py :: RESULT: ALL PASS (10/10) | FAILS=0
+  - test_partner_failure.py :: RESULT: ALL PASS (20/20) | FAILS=0
+  - test_calibrate_quality.py :: RESULT: ALL PASS (23/23) | FAILS=0
+  - test_upscale_default.py :: RESULT: ALL PASS (15/15) | FAILS=0
+  - test_photo_filters.py :: RESULT: ALL PASS (73/73) | FAILS=0
+  - test_scene_rework.py :: RESULT: ALL PASS (77/77) | FAILS=0
+  - test_relinx_loader.py :: 21/21 | FAILS=0
+  - test_package1.py :: RESULT: ALL PASS (26/26) | FAILS=0
+  - test_selection_report.py :: RESULT: ALL PASS (29/29) | FAILS=0
+  - test_standard_3b.py :: RESULT: ALL PASS (32/32) | FAILS=0
+  - test_url_draft_background.py :: RESULT: ALL PASS (32/32) | FAILS=0
+  - test_vision_classify.py :: RESULT: ALL PASS (36/36) | FAILS=0
+  - test_download_retry.py :: 5/5 | FAILS=0
+  - test_draft_check.py :: 17/17 | FAILS=0
+  - test_camera_plan.py :: 20/20 PASS | FAILS=0
+  - test_failed_clips.py :: RESULT: ALL PASS (20/20) | FAILS=0
+  - test_luma_wait.py :: RESULT: ALL PASS (19/19) | FAILS=0
+  - test_outdoor_rules.py :: RESULT: ALL PASS (14/14) | FAILS=0
+  - test_anchor_timeline.py :: RESULT: ALL PASS (102/102) | FAILS=0
+  - test_photo_ranking_prompt.py :: RESULT: ALL PASS (7/7) | FAILS=0
+  - test_scene_facts.py :: 19/19 | FAILS=0
+  - test_cost_real_model.py :: RESULT: ALL PASS (20/20) | FAILS=0
+  - test_infra_cost.py :: 5/5 | FAILS=0
+- Not verified: la distribuzione del punteggio sulle 101 foto vere (il limite 4.0 e' una scelta mia dai test sintetici: nessuna foto vera misurata); non so se il controllo sui pixel prende la copia 5f44c77a ne' se segnala foto vere buone; il controllo vale solo per blocchi sulla griglia 8x8 del JPEG (non per foto ingrandite da miniature, che sono "soft": le prendono i modelli). Scarto soft/blocky ancora in sola misura (.env PVS_QUALITY_ENFORCE=0).
+- Rollback: commit e8b4b55 (prima di questo commit).

@@ -929,3 +929,9 @@ Requirements, in his words/intent (confirm in plain language before any code; ea
 - Rieseguire la prova di controllo con il codice a due modelli (python3 calibrate_quality.py --degrade-test 6 --run --cap 0.15, circa 0.05 EUR): attesi 18/18 e 0 falsi allarmi; se confermato, proporre a Michele di togliere PVS_QUALITY_ENFORCE=0 dal .env (riattiva lo scarto di soft/blocky).
 - Controllare il costo dei calcoli Claude di vision_analysis.py: chiama ls._track_claude(resp) (conteggio al prezzo del modello predefinito) E somma il proprio costo per use_model in usage_out: possibile doppio conteggio o prezzo sbagliato (non toccato, solo segnalato).
 - Provare altre foto reali cattive quando capitano, per allargare il campione (oggi 6 foto con danni sintetici).
+
+
+## BS — 2026-10-29 (sera) — voci aperte
+- Lanciare python3 calibrate_quality.py --blockiness (gratuito) e leggere la distribuzione sulle 101 foto vere: fissare PVS_BLOCKINESS_MAX tra le foto vere e le copie a blocchi (la 5f44c77a deve risultare sopra il limite, nessuna foto vera buona sopra).
+- Michele guarda i 12 "soft" delle 101 foto vere: se sono davvero sfocati il giudice e' affidabile sulla sfocatura; se alcuni sono buoni, valutare di far scartare solo se i DUE modelli concordano, accettando di perdere recall.
+- Poi: ripetere la prova di controllo (--degrade-test 6 --run, circa 0.05 EUR) e, se la copia 5f44c77a viene presa e i falsi allarmi restano zero, proporre a Michele di togliere PVS_QUALITY_ENFORCE=0.

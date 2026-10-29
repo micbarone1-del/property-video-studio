@@ -441,3 +441,9 @@ Update 2026-10-25 (night): clip QC with Claude built in the sandbox (test_clip_q
 - P10d (foto sfocata o a blocchi accettata): mitigazione migliorata, due giudici (Haiku 4.5 + Haiku 5.5) con 18/18 calcolato a mano sui verdetti delle due corse e 0/6 falsi allarmi; test E1-E11 (regole dei due giudici) e K1-K9 (costo per modello). Resta aperto: prova con il codice reale a due modelli e campione piccolo. Scarto ancora spento.
 - Costo (architettura): il conteggio del costo Claude ora distingue i modelli (K1-K9); possibile duplicato in vision_analysis.py da verificare (voce di backlog BR).
 - Not run: corsa reale con il codice a due modelli.
+
+
+## BS — 2026-10-29 (sera) — aggiunte di stato (punteggi proposti, da rivedere con Michele)
+- P10d (foto sfocata o a blocchi accettata): osservata ancora UNA copia a blocchi (q3, 5f44c77a) accettata da entrambi i modelli: rischio reale. Mitigazione aggiunta: controllo gratuito sui pixel (test B1-B10, Z1-Z3). Non tarato sulle foto vere. Rischio residuo aperto; scarto spento.
+- P10e (falso positivo): l'unico "falso allarme" della prova era una foto davvero sfocata (verificato da Michele): 0 su 6; su 101 foto vere i "soft" sono 12 (da verificare a occhio).
+- Not run: --blockiness sulle foto vere; prova di controllo con il terzo voto.

@@ -3,6 +3,7 @@ READ-ONLY on jobs/: it only opens files, never writes, moves or deletes anything
 
   python3 calibrate_quality.py                      # DRY RUN (default): counts unique photos, shows the cost estimate, calls nothing
   python3 calibrate_quality.py --run --max 120      # real Claude calls (cents), stops by itself at --cap EUR
+  python3 calibrate_quality.py --blockiness              # FREE (no Claude call): the pixel check for JPEG blocks on every real photo + on damaged copies
   python3 calibrate_quality.py --degrade-test 6          # DRY RUN of the control test (see below)
   python3 calibrate_quality.py --degrade-test 6 --run    # control test: 6 photos x (original + 3 deliberately damaged copies) = 24 calls
 
@@ -153,6 +154,45 @@ def degrade_test(photos, n, run, cap, out_dir):
         print("  ", p)
 
 
+def blockiness_report(photos, out_dir: Path, n_variants: int):
+    """No API call at all. Score of every real photo (distribution + the highest ones, as a contact sheet to look at) and, for n_variants
+    photos, the score of the original and of its three damaged copies, so the threshold can be set between 'real photos' and 'damaged'."""
+    import statistics
+    out_dir.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for p in photos:
+        s = ls.blockiness_score(p["path"].read_bytes())
+        rows.append({**p, "score": s})
+    scores = sorted(r["score"] for r in rows if r["score"] is not None)
+    if not scores:
+        print("no readable photo"); return
+    def pct(q):
+        return scores[min(len(scores) - 1, int(round(q * (len(scores) - 1))))]
+    print(f"\nREAL photos scored: {len(scores)} (of {len(rows)}).  min {scores[0]}  median {statistics.median(scores)}  p90 {pct(0.9)}  p95 {pct(0.95)}  max {scores[-1]}")
+    for limit in (2.0, 3.0, 4.0, 6.0):
+        print(f"  photos with score >= {limit}: {sum(1 for s in scores if s >= limit)}")
+    print(f"  current limit (PVS_BLOCKINESS_MAX): {ls.photo_blockiness_max()}")
+    top = sorted((r for r in rows if r["score"] is not None), key=lambda r: -r["score"])[:12]
+    print("\nHIGHEST real photos:  score  job/file")
+    for r in top:
+        print(f"  {r['score']:>7}  {r['job'][:8]}/{r['file']}")
+    with open(out_dir / "blockiness.csv", "w", newline="") as fh:
+        w = csv.writer(fh); w.writerow(["job", "file", "width", "height", "score"])
+        for r in sorted(rows, key=lambda r: -(r["score"] or 0)):
+            w.writerow([r["job"], r["file"], r["w"], r["h"], r["score"]])
+    made = sheets([{**r, "verdict": "highest_blockiness"} for r in top], out_dir) if top else []
+    if n_variants:
+        print("\nDAMAGED copies of the same photos (control):  photo     original  blur  pixelated  jpegblocks")
+        for p in pick(photos, n_variants):
+            content = p["path"].read_bytes()
+            v = make_variants(content)
+            sc = [ls.blockiness_score(content)] + [ls.blockiness_score(v[k]) for k in VARIANTS]
+            print(f"  {p['sha'][:8]}  " + "  ".join(f"{x!s:>9}" for x in sc))
+    print(f"\nwritten: {out_dir}/blockiness.csv" + (" and contact sheet(s) of the highest scores:" if made else ""))
+    for m in made:
+        print("  ", m)
+
+
 def sheets(results, out_dir: Path):
     from PIL import Image, ImageDraw
     groups = {}
@@ -186,12 +226,17 @@ def main():
     ap.add_argument("--run", action="store_true", help="really call Claude (without it: dry run, nothing is sent)")
     ap.add_argument("--cap", type=float, default=0.50, help="stop when the real Claude cost reaches this many EUR")
     ap.add_argument("--degrade-test", type=int, default=0, metavar="N", help="control test on N photos damaged on purpose (see top of file)")
+    ap.add_argument("--blockiness", action="store_true", help="FREE: score every real photo with the pixel check for JPEG blocks (no Claude call) and compare with damaged copies")
     ap.add_argument("--model", default="", help="judge with this model (or 'a,b' for several) FOR THIS RUN ONLY, instead of the production judge models")
     a = ap.parse_args()
     if a.model:
         os.environ["PVS_QUALITY_MODELS"] = a.model   # this process only: ONE judge model for this run (or "a,b" for several)
 
     photos, stats = collect(Path(a.jobs_dir))
+    if a.blockiness:
+        print(f"unique usable photos: {len(photos)} | no Claude call is made")
+        blockiness_report(photos, Path(a.out), 6)
+        return
     if a.degrade_test:
         print(f"unique usable photos: {len(photos)} | judge models: {', '.join(ls.photo_quality_models())}")
         degrade_test(photos, a.degrade_test, a.run, a.cap, Path(a.out))

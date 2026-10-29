@@ -66,6 +66,7 @@ check("P1 the ranking prompt now also penalises blur, blocks and a watermark ove
 
 # ── vision quality verdict through the real sender ──────────────────────────
 SENT = []; ANSWER = {"text": "ok", "raise": False, "per_model": {}, "raise_models": set()}
+os.environ["PVS_BLOCKINESS_MAX"] = "0"      # pixel check off in the tests of the model judges (it has its own B section)
 os.environ["PVS_QUALITY_MODELS"] = "judge-a"      # the single-judge tests below; the two-judge rules are tested in the E section
 ls._track_claude = lambda r, model=None: r
 class Msgs:
@@ -82,7 +83,7 @@ class FakeClient:
 ls.anthropic.Anthropic = FakeClient
 
 def core(r):
-    return {k: v for k, v in r.items() if k != "by_model"}
+    return {k: v for k, v in r.items() if k not in ("by_model", "blockiness")}
 ANSWER.update(text="ANSWER: blocky"); SENT.clear()
 v = ls.assess_photo_quality(jpeg(2000, 1500), "t")
 check("Q1 'ANSWER: blocky' (one word after the marker) -> verdict blocky, overlay unknown, call ok", core(v) == {"verdict": "blocky", "overlay": "unknown", "call_ok": True}, v)
@@ -107,7 +108,7 @@ check("Q3 the second image is a 768x768 crop at the REAL pixels (not scaled); th
 ANSWER.update(text="great")
 check("Q4 an answer outside the four words is 'unknown', never a problem", ls.assess_photo_quality(jpeg())["verdict"] == "unknown")
 ANSWER.update(raise_=True); ANSWER["raise"] = True
-check("Q5 API error -> unknown, call_ok False, no exception", ls.assess_photo_quality(jpeg()) == {"verdict": "unknown", "call_ok": False})
+check("Q5 API error -> unknown, call_ok False, no exception", core(ls.assess_photo_quality(jpeg())) == {"verdict": "unknown", "call_ok": False})
 ANSWER["raise"] = False
 check("Q6 the prompt asks for two words: technical (ok/soft/blocky) then overlay (none/portal/agency), the technical one not influenced by the overlay", all(w in SENT_PROMPT[0] for w in ("TWO words", "FIRST word", "SECOND word", "- ok:", "- soft:", "- blocky:", "- none:", "- portal:", "- agency:", "never influenced by the second word", "ANSWER:", "at most two short sentences")))
 check("Q6b only soft and blocky are poor: a portal watermark or an agency logo is never a reason to discard", ls.PHOTO_QUALITY_POOR == ("soft", "blocky") and set(ls.PHOTO_QUALITY_WORDS) == {"ok", "soft", "blocky"} and set(ls.PHOTO_OVERLAY_WORDS) == {"none", "portal", "agency"})
@@ -135,7 +136,7 @@ check("E6a the second judge's call fails -> the first judge decides, call ok, th
 r = run_two("x", "ANSWER: soft none", raise_models={"judge-a"})
 check("E6b the first judge's call fails -> the second decides (soft)", r["verdict"] == "soft" and r["call_ok"], r)
 r = run_two("x", "x", raise_models={"judge-a", "judge-b"})
-check("E7 both calls fail -> unknown, call_ok False, no by_model", r == {"verdict": "unknown", "call_ok": False}, r)
+check("E7 both calls fail -> unknown, call_ok False, no by_model", core(r) == {"verdict": "unknown", "call_ok": False} and "by_model" not in r, r)
 r = run_two("no answer line here", "ANSWER: ok none")
 check("E8a one answers without an ANSWER line (unknown), the other ok -> ok", r["verdict"] == "ok", r)
 r = run_two("no answer line", "also none")
@@ -147,6 +148,46 @@ check("E10 two overlays: the first judge's wins", r["overlay"] == "agency", r)
 rr = ls.assess_photo_quality(jpeg(), models=("only-this",))
 check("E11 models= argument overrides the setting for one call", MODELS[-1] == "only-this", MODELS)
 os.environ["PVS_QUALITY_MODELS"] = "judge-a"
+
+# ── free pixel check for JPEG blocks (2026-10-29) ────────────────────────────
+import numpy as np
+from PIL import ImageFilter
+_rng = np.random.RandomState(3)
+_base = Image.fromarray(_rng.randint(0, 255, (180, 320, 3), dtype=np.uint8)).resize((1440, 810), Image.BICUBIC).filter(ImageFilter.GaussianBlur(6))
+_photo = Image.fromarray(np.clip(np.asarray(_base).astype(np.float32) + _rng.normal(0, 4, (810, 1440, 3)), 0, 255).astype(np.uint8))
+def jq(img, q):
+    b = io.BytesIO(); img.save(b, "JPEG", quality=q); return b.getvalue()
+s95, s70, s20, s10, s3 = (ls.blockiness_score(jq(_photo, q)) for q in (95, 70, 20, 10, 3))
+check("B1 the score grows with compression: q95 about 1, q70 under 2.5, q20 above 4, q10 well above, q3 at the cap", s95 < 1.3 and s70 < 2.5 and s20 > 4 and s10 > 8 and s3 == ls.BLOCKINESS_CAP, (s95, s70, s20, s10, s3))
+sb = ls.blockiness_score(jq(_photo.filter(ImageFilter.GaussianBlur(8)), 95))
+check("B2 a blurred (smooth) photo has no block grid: score about 1, so blur is never read as blocks", sb < 1.3, sb)
+buf = io.BytesIO(); Image.new("RGB", (800, 600), (120, 120, 120)).save(buf, "JPEG")
+check("B3 a perfectly flat image scores 0 (never a problem); a tiny image or garbage bytes give None", ls.blockiness_score(buf.getvalue()) == 0.0 and ls.blockiness_score(jpeg(20, 20)) is None and ls.blockiness_score(b"not an image") is None)
+check("B4 default limit 4.0; PVS_BLOCKINESS_MAX overrides; a bad value falls back to the default; 0 switches off",
+      (os.environ.pop("PVS_BLOCKINESS_MAX"), ls.photo_blockiness_max())[1] == 4.0 and (os.environ.__setitem__("PVS_BLOCKINESS_MAX", "2.5"), ls.photo_blockiness_max())[1] == 2.5
+      and (os.environ.__setitem__("PVS_BLOCKINESS_MAX", "abc"), ls.photo_blockiness_max())[1] == 4.0 and (os.environ.__setitem__("PVS_BLOCKINESS_MAX", "0"), ls.photo_blockiness_max())[1] == 0.0)
+os.environ["PVS_BLOCKINESS_MAX"] = "4"
+os.environ["PVS_QUALITY_MODELS"] = "judge-a"
+ANSWER.update(text="ANSWER: ok none"); ANSWER["per_model"] = {}
+bad = jq(_photo, 10); good = jq(_photo, 95)
+r = ls.assess_photo_quality(bad)
+check("B5 the model says ok but the pixel check sees blocks -> blocky (the miss that was unacceptable), the pixel vote is in by_model with the score", r["verdict"] == "blocky" and r["by_model"] == {"judge-a": "ok", "blockiness": "blocky"} and r["blockiness"] > 8, r)
+r = ls.assess_photo_quality(good)
+check("B6 a normal photo: ok, pixel vote ok, score reported", r["verdict"] == "ok" and r["by_model"]["blockiness"] == "ok" and r["blockiness"] < 1.3, r)
+ANSWER.update(text="ANSWER: soft none")
+r = ls.assess_photo_quality(bad)
+check("B7 the model already says soft: its word decides (the pixel vote is only the fallback word)", r["verdict"] == "soft", r)
+ANSWER.update(raise_=True); ANSWER["raise"] = True
+r = ls.assess_photo_quality(bad)
+check("B8 every model call fails but the pixel check sees blocks -> blocky, call_ok True (a check that worked)", r["verdict"] == "blocky" and r["call_ok"] and r["by_model"] == {"blockiness": "blocky"}, r)
+r = ls.assess_photo_quality(good)
+check("B9 every model call fails and the pixels are fine -> unknown, call_ok False (as before)", r["verdict"] == "unknown" and not r["call_ok"], r)
+ANSWER["raise"] = False
+os.environ["PVS_BLOCKINESS_MAX"] = "0"
+ANSWER.update(text="ANSWER: ok none")
+r = ls.assess_photo_quality(bad)
+check("B10 limit 0: the pixel check is off (no pixel vote, the model decides)", r["verdict"] == "ok" and "blockiness" not in r["by_model"], r)
+os.environ["PVS_BLOCKINESS_MAX"] = "0"
 
 # ── the quality filter works in the SELECTION (2026-10-29) ───────────────────
 def pool(cats):
