@@ -904,3 +904,9 @@ Requirements, in his words/intent (confirm in plain language before any code; ea
 - Comunicare a Relinx i due nuovi campi (failure_code, failure_message) con l'elenco dei codici; il messaggio di "unfurnished" e' in italiano mentre gli altri sono in inglese: decidere la lingua dei messaggi pubblici.
 - Calibrazione del giudice: lanciare prima la simulazione (nessuna spesa), poi --run --max ~120 con tetto, guardare i fogli di miniature insieme a Michele. Nota: il giudice usa Haiku 4.5 (il modello economico); se i verdetti sono deboli, provare un modello piu' forte solo per questo giudizio.
 - Prova GIAL 1307 con upscale spento: avviare l'istanza di prova 8002 con PVS_UPSCALE_DEFAULT=0 e lanciare l'annuncio con relinx_pilot_check; confrontare con i video gia' fatti. Nessuna spesa reale senza OK di Michele.
+
+
+## BN — 2026-10-29 (sera) — voci aperte
+- Lanciare la prova di controllo (--degrade-test 6 --run, circa 0.03 EUR, 24 chiamate) e leggere i risultati con Michele; solo se le copie peggiorate sono riconosciute e gli originali non danno falsi allarmi, riattivare PVS_QUALITY_ENFORCE (rimuovere la riga =0 dal .env) per soft/blocky.
+- Rivedere con Michele il ruolo di portal/agency dopo il lavoro reale GIAL (provvisorio). Il prompt del RANKING penalizza ancora il watermark sul soggetto: coerenza da decidere.
+- Il test sulle foto di job passati non contiene foto cattive vere: raccogliere esempi reali di foto sfocate/a blocchi (da annunci futuri) per una calibrazione piu' onesta.

@@ -70,6 +70,36 @@ with contextlib.redirect_stdout(buf):
     cq.main()
 n_rows = len(open(os.path.join(out, "verdicts.csv")).read().splitlines()) - 1
 check("C9 cap stops the run early (fewer than 3 judged)", n_rows < 3 and "stopped at the cap" in buf.getvalue(), (n_rows, buf.getvalue()[-200:]))
+# ── control test with damaged copies ─────────────────────────────────────────
+shutil.rmtree(out, ignore_errors=True)
+calls2 = []
+def judge_by_label(content, label=""):
+    calls2.append(label)
+    return {"verdict": "ok" if label.startswith("original") else ("soft" if label.startswith("blur") else "blocky"), "call_ok": True}
+ls.reset_claude_usage(); ls.assess_photo_quality = judge_by_label
+sys.argv = ["x", "--degrade-test", "3", "--jobs-dir", jobs, "--out", out]
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    cq.main()
+check("D1 control-test dry run: no judge call, nothing written", calls2 == [] and not os.path.exists(out) and "12 calls" in buf.getvalue(), buf.getvalue()[-200:])
+sys.argv = ["x", "--degrade-test", "3", "--run", "--jobs-dir", jobs, "--out", out]
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    cq.main()
+txt = buf.getvalue()
+check("D2 control test: 3 photos x 4 = 12 judge calls", len(calls2) == 12, len(calls2))
+check("D3 the report says 9 of 9 damaged copies recognised and 0 of 3 false alarms", "recognised as soft/blocky: 9 of 9" in txt and "false alarms): 0 of 3" in txt, txt[-500:])
+check("D4 9 damaged copies written under out/degraded, none under jobs/", len(os.listdir(os.path.join(out, "degraded"))) == 9 and snapshot() == before)
+check("D5 results csv written", os.path.exists(os.path.join(out, "degrade_test.csv")))
+orig = jpg(1200, 800, 7)
+v = cq.make_variants(orig)
+sizes = {k: Image.open(io.BytesIO(b)).size for k, b in v.items()}
+check("D6 the three damaged copies keep the photo size and decode", set(v) == {"blur", "pixelated", "jpegblocks"} and all(s == (1200, 800) for s in sizes.values()), sizes)
+def detail(b):
+    a = np.asarray(Image.open(io.BytesIO(b)).convert("L"), dtype=float)
+    return float(np.abs(np.diff(a, axis=1)).mean())
+check("D7 blur and pixelated really remove fine detail (much lower edge energy than the original)", detail(v["blur"]) < detail(orig) * 0.5 and detail(v["pixelated"]) < detail(orig) * 0.7, (detail(orig), detail(v["blur"]), detail(v["pixelated"])))
+check("D8 jpegblocks is much smaller than the original file (heavy compression)", len(v["jpegblocks"]) < len(orig) * 0.5, (len(v["jpegblocks"]), len(orig)))
 src = open("calibrate_quality.py").read()
 check("C10 tool has no delete/move/write-to-jobs calls", not any(w in src for w in ("unlink", "rmtree", "os.remove", ".rename(", "shutil.move")))
 shutil.rmtree(root)

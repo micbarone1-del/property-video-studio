@@ -91,7 +91,8 @@ check("Q4 an answer outside the four words is 'unknown', never a problem", ls.as
 ANSWER.update(raise_=True); ANSWER["raise"] = True
 check("Q5 API error -> unknown, call_ok False, no exception", ls.assess_photo_quality(jpeg()) == {"verdict": "unknown", "call_ok": False})
 ANSWER["raise"] = False
-check("Q6 the prompt asks for ONE of ok/soft/blocky/watermark", "ok, soft, blocky or watermark" in SENT_PROMPT[0])
+check("Q6 the prompt asks for ONE of ok/soft/blocky/portal/agency", "ok, soft, blocky, portal or agency" in SENT_PROMPT[0])
+check("Q6b only soft and blocky are poor: a portal watermark or an agency logo is never a reason to discard", ls.PHOTO_QUALITY_POOR == ("soft", "blocky") and set(ls.PHOTO_QUALITY_WORDS) == {"ok", "soft", "blocky", "portal", "agency"})
 
 # ── the quality filter works in the SELECTION (2026-10-29) ───────────────────
 def pool(cats):
@@ -108,11 +109,12 @@ real_fetch = ls.fetch_photo_bytes
 ls.fetch_photo_bytes = fetch_named
 os.environ.pop("PVS_QUALITY_CHECK", None); os.environ.pop("PVS_QUALITY_ENFORCE", None)
 
-VERDICT.clear(); VERDICT.update({"liv1": "blocky", "kit2": "watermark"})
+VERDICT.clear(); VERDICT.update({"liv1": "blocky", "kit2": "soft", "bed1": "portal", "liv3": "agency"})
 bc = pool({"living": ["liv1", "liv2", "liv3"], "kitchen": ["kit1", "kit2"], "bedrooms": ["bed1"]})
 s_ = ls.filter_poor_quality_candidates(bc, assess=assess_named)
 check("Q7 enforcing is the default: the blocky top candidate is removed, the next one comes first", [p["url"] for p in bc["living"]] == ["liv2", "liv3"], bc["living"])
 check("Q8 a poor photo that was not first is removed too, the good ones stay in order", [p["url"] for p in bc["kitchen"]] == ["kit1"] and [p["url"] for p in bc["bedrooms"]] == ["bed1"])
+check("Q8b photos labelled portal / agency are KEPT (only labelled)", [p["url"] for p in bc["living"]] == ["liv2", "liv3"] and bc["bedrooms"][0]["quality"] == "portal" and bc["living"][1]["quality"] == "agency" and not bc["bedrooms"][0].get("quality_rejected"))
 check("Q9 summary: 6 judged, 2 poor, enforced", s_["checked"] == 6 and s_["poor"] == 2 and s_["enforced"], s_)
 check("Q10 every judged photo is tagged with its verdict; removed ones carry quality_rejected",
       all("quality" in p for pl in bc.values() for p in pl) and ls._quality_gap_note([{"quality_rejected": True}]).startswith(" 1 photo(s)"))
@@ -166,7 +168,7 @@ check("S3 the selection report lists the rejected photos with their verdicts and
 VERDICT.clear()
 sel = ls.select_photos_for_scene_count_premium(listing({"exterior": ["e1"], "living": ["l1"]}), 11)
 check("S4 the premium selection goes through the same filter (its gap text exists and carries no quality note when nothing was discarded)", sel["gaps"] and "discarded" not in sel["gaps"][0], sel["gaps"])
-VERDICT.update({"e1": "watermark", "l1": "soft"})
+VERDICT.update({"e1": "blocky", "l1": "soft"})
 sel = ls.select_photos_for_scene_count_premium(listing({"exterior": ["e1"], "living": ["l1"]}), 11)
 check("S5 premium: the quality note is in the gap when photos were discarded", "discarded for insufficient image quality" in sel["gaps"][0], sel["gaps"])
 ls.assess_photo_quality = orig_assess

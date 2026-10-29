@@ -1006,3 +1006,32 @@ PRODUCT DECISION (2026-10-28, Michele): the automation launches only for the apa
   - test_scene_facts.py :: 19/19 | FAILS=0
 - Not verified: nessun fallimento reale con i nuovi campi (solo funzioni e lettura del sorgente); webhook mai inviato con i nuovi campi; calibrazione non lanciata; nessun video con upscale spento; l'annuncio GIAL 1307 non e' stato eseguito.
 - Rollback: commit e1d7122 (prima di questo commit).
+
+
+## BN — 2026-10-29 (sera) — calibrazione del giudice qualita' sulle foto passate: "watermark" non e' piu' motivo di scarto; verdetti portal/agency; prova di controllo con foto peggiorate
+- Evidence (corsa reale, 2026-10-29, blocco 227+): 101 foto uniche originali dei job passati (361 file letti, 255 duplicati, 5 troppo piccole), giudice Claude Haiku 4.5 con il prompt di BL. Esito: watermark=78, ok=23, soft=0, blocky=0; costo reale 0.1348 EUR (101 chiamate, 142513 token in, 482 out). Fogli di miniature guardati da Michele e da me: le 78 foto "watermark" hanno tutte davvero il marchio del portale (immobiliare.it) o il logo kw HOME; tra le 23 "ok" ci sono foto col fiocco blu dell'agenzia Honard (giudicate ok) e alcune con il marchio immobiliare.it piu' sbiadito (giudicate ok): il giudice segnalava la presenza del marchio, in modo incoerente. In nessun foglio ho visto una foto sfocata o a blocchi, e il giudice non ne ha trovate: la parte soft/blocky NON e' mai stata messa alla prova da foto cattive.
+- Consequence: con lo scarto attivo (default di BL) uno scraping da portale avrebbe perso circa 3 foto su 4. Michele: PVS_QUALITY_ENFORCE=0 impostato nel .env del server e server riavviato (blocco 228, verificato: riga presente, health ok). Questo stato e' SOLO nel .env, non nel codice.
+- Changed (questo commit): (1) PHOTO_QUALITY_PROMPT: parole ok / soft / blocky / portal / agency; prima i difetti tecnici (soft, blocky), poi, solo se non ci sono, portal = marchio semitrasparente di un portale, agency = logo/fiocco/barra dell'agenzia. (2) PHOTO_QUALITY_POOR = (soft, blocky): portal e agency sono solo etichette nel verdetto (p["quality"], selection_report), mai scarto. Provvisorio per decisione di Michele: da rivedere dopo la prova di controllo e il lavoro reale GIAL. (3) La frase del gap di qualita' dice "blurred or pixelated". (4) calibrate_quality.py --degrade-test N: prova di controllo, N foto x (originale + 3 copie peggiorate apposta: blur, pixelated, jpegblocks) scritte in --out/degraded (mai in jobs/); riporta quante copie peggiorate sono riconosciute soft/blocky e quanti originali sono falsi allarmi; senza --run e' una simulazione. Il prompt del RANKING (QUALITY_RANKING_PROMPT) penalizza ancora un watermark grande sul soggetto: non toccato.
+- Tests (output reale del server):
+  - test_partner_failure.py :: RESULT: ALL PASS (20/20) | FAILS=0
+  - test_calibrate_quality.py :: RESULT: ALL PASS (18/18) | FAILS=0
+  - test_upscale_default.py :: RESULT: ALL PASS (15/15) | FAILS=0
+  - test_photo_filters.py :: RESULT: ALL PASS (45/45) | FAILS=0
+  - test_scene_rework.py :: RESULT: ALL PASS (77/77) | FAILS=0
+  - test_relinx_loader.py :: 21/21 | FAILS=0
+  - test_package1.py :: RESULT: ALL PASS (26/26) | FAILS=0
+  - test_selection_report.py :: RESULT: ALL PASS (29/29) | FAILS=0
+  - test_standard_3b.py :: RESULT: ALL PASS (32/32) | FAILS=0
+  - test_url_draft_background.py :: RESULT: ALL PASS (32/32) | FAILS=0
+  - test_vision_classify.py :: RESULT: ALL PASS (36/36) | FAILS=0
+  - test_download_retry.py :: 5/5 | FAILS=0
+  - test_draft_check.py :: 17/17 | FAILS=0
+  - test_camera_plan.py :: 20/20 PASS | FAILS=0
+  - test_failed_clips.py :: RESULT: ALL PASS (20/20) | FAILS=0
+  - test_luma_wait.py :: RESULT: ALL PASS (19/19) | FAILS=0
+  - test_outdoor_rules.py :: RESULT: ALL PASS (14/14) | FAILS=0
+  - test_anchor_timeline.py :: RESULT: ALL PASS (102/102) | FAILS=0
+  - test_photo_ranking_prompt.py :: RESULT: ALL PASS (7/7) | FAILS=0
+  - test_scene_facts.py :: 19/19 | FAILS=0
+- Not verified: la prova di controllo non e' stata ancora lanciata (nessun dato su soft/blocky); i nuovi verdetti portal/agency non sono mai stati visti da Claude reale; scarto per soft/blocky NON riattivato.
+- Rollback: commit 12e92ed (prima di questo commit).

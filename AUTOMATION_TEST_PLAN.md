@@ -414,3 +414,9 @@ Update 2026-10-25 (night): clip QC with Claude built in the sandbox (test_clip_q
 - Nuova riga PROPOSTA P10g "upscale acceso senza motivo: costo e artefatti su ogni foto da scraping/partner" S4 O6 D6 RPN 144 ACT; controllo: PVS_UPSCALE_DEFAULT, prova GIAL con upscale spento (non eseguita).
 - Invarianti: nessun job perso; operatore informato una volta (invariato); stato finale visibile anche al partner (motivo).
 - Not run: nessuna prova con provider reali.
+
+
+## BN — 2026-10-29 (sera) — aggiunte di stato (punteggi proposti, da rivedere con Michele)
+- P10e (falso positivo del giudice) CONFERMATO dalla calibrazione: 78 di 101 foto giudicate "watermark", cioe' il rischio era reale. Mitigazione: watermark tolto dai motivi di scarto e scarto in sola misura (PVS_QUALITY_ENFORCE=0). Rischio residuo: soft/blocky non verificato (prova di controllo non ancora eseguita). Punteggi da rivedere: O sale (osservato), D scende (rilevato dalla calibrazione).
+- P10d (foto sfocata o a blocchi accettata) resta aperta: nessun test con foto cattive vere finora.
+- Not run: prova di controllo con foto peggiorate; nessuna prova con provider reali sul giudice con le nuove parole.

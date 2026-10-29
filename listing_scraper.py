@@ -581,17 +581,23 @@ def _classify_photo_vision(image_url: str, fallback_url: str = None) -> tuple:
 # that were chosen: the whole photo plus a crop at its real pixels.
 PHOTO_QUALITY_PROMPT = (
     "You will see two images of the SAME real estate photo: first the whole photo scaled down, then a crop of its centre at the "
-    "original pixels (100%). Judge only the technical quality of the picture, because a video model will build a 5 second clip "
-    "from it as the first frame. Ordinary phone or camera photos with normal sharpness are ok: answer another word ONLY when the "
-    "problem is clearly visible.\n"
+    "original pixels (100%). Judge the technical quality of the picture, because a video model will build a 5 second clip "
+    "from it as the first frame. Ordinary phone or camera photos with normal sharpness are fine: answer soft or blocky ONLY when "
+    "the problem is clearly visible. Check the technical problems FIRST, even when an overlay is also present.\n"
     "- soft: clearly blurred, out of focus or smeared, with no fine detail left.\n"
     "- blocky: clearly pixelated, with visible JPEG blocks, banding or heavy noise.\n"
-    "- watermark: a large semi-transparent text, logo or stamp across the main subject.\n"
+    "- portal: (only if the photo is NOT soft or blocky) a semi-transparent text or logo of a listing portal, such as immobiliare.it, "
+    "laid over the photo.\n"
+    "- agency: (only if the photo is NOT soft or blocky, and has no portal mark) a solid logo, banner, ribbon or contact bar of the "
+    "real estate agency in a corner or along an edge.\n"
     "- ok: none of these.\n"
-    "Answer with ONLY one word: ok, soft, blocky or watermark."
+    "Answer with ONLY one word: ok, soft, blocky, portal or agency."
 )
-PHOTO_QUALITY_WORDS = ("ok", "soft", "blocky", "watermark")
-PHOTO_QUALITY_POOR = ("soft", "blocky", "watermark")
+PHOTO_QUALITY_WORDS = ("ok", "soft", "blocky", "portal", "agency")
+# 2026-10-29 (Michele, after the calibration on 101 past photos): a portal watermark or an agency logo is NOT a reason to discard a photo
+# (scraped photos nearly all carry one; the removal chosen in the UI handles it, API photos arrive clean). They are only labelled, in the
+# verdict, so the report shows what is on each photo. TEMPORARY: to be reviewed after the degraded-photo test and the GIAL real job.
+PHOTO_QUALITY_POOR = ("soft", "blocky")
 QUALITY_JUDGE_PER_CATEGORY = 4      # the best-ranked candidates of each category that get a verdict (the rest are never reached)
 
 
@@ -608,8 +614,8 @@ def _native_crop_b64(content: bytes, side: int = VISION_MAX_SIDE) -> str:
 
 
 def assess_photo_quality(content: bytes, label: str = "") -> dict:
-    """{"verdict": ok|soft|blocky|watermark|unknown, "call_ok": bool}. "unknown" = the call failed or the answer was not one of
-    the four words; unknown is never treated as a problem."""
+    """{"verdict": ok|soft|blocky|portal|agency|unknown, "call_ok": bool}. "unknown" = the call failed or the answer was not one of
+    the known words; unknown is never treated as a problem."""
     try:
         images = [_image_b64_for_vision(content), _native_crop_b64(content)]
     except Exception as e:
@@ -635,7 +641,7 @@ def filter_poor_quality_candidates(by_category: dict, assess=None, enforce=None)
     """The photo-quality filter of the SELECTION (one place, shared by the standard and the premium selection through
     _categorize_and_rank_photos, so both the URL path and the Relinx path get it). Runs on the best-ranked candidates of each category
     (QUALITY_JUDGE_PER_CATEGORY): downloads each, asks Claude vision for the verdict (whole photo + crop at real pixels), tags the
-    photo p["quality"], and, when enforcing, removes the soft / blocky / watermarked ones from the pool (p["quality_rejected"] = True),
+    photo p["quality"], and, when enforcing, removes the soft / blocky ones from the pool (p["quality_rejected"] = True),
     so the selection simply takes the next candidate. When too few photos are left the selection reports a gap and the job fails with
     a reason (see _quality_gap_note). Never raises; a failed call is "unknown" and keeps the photo."""
     if not photo_quality_check_enabled():
@@ -688,7 +694,7 @@ def _quality_gap_note(photos: list) -> str:
     if not n:
         return ""
     return (f" {n} photo(s) of the listing were {QUALITY_GAP_MARKER} "
-            f"(blurred, pixelated or with a watermark across the subject).")
+            f"(blurred or pixelated).")
 
 
 # 2026-10-27: a photo the listing page labels "living" is sometimes the entrance hall, a corridor or a staircase (villa job
@@ -2191,7 +2197,7 @@ def _categorize_and_rank_photos(photos: list, categories: list) -> dict:
     for cat in by_category:
         by_category[cat] = rank_photos_by_quality(cat, by_category[cat])
 
-    # 2026-10-29: the technical-quality filter (blurred / pixelated / watermark over the subject) acts HERE, on the ranked pool, so a
+    # 2026-10-29: the technical-quality filter (blurred / pixelated; watermark and agency logo are only labelled) acts HERE, on the ranked pool, so a
     # bad photo is never selected and the next candidate takes its place
     filter_poor_quality_candidates(by_category)
 
