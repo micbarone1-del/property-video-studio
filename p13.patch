@@ -1,0 +1,344 @@
+diff --git a/calibrate_quality.py b/calibrate_quality.py
+index 6d6de2c..c6afa05 100644
+--- a/calibrate_quality.py
++++ b/calibrate_quality.py
+@@ -3,6 +3,7 @@ READ-ONLY on jobs/: it only opens files, never writes, moves or deletes anything
+ 
+   python3 calibrate_quality.py                      # DRY RUN (default): counts unique photos, shows the cost estimate, calls nothing
+   python3 calibrate_quality.py --run --max 120      # real Claude calls (cents), stops by itself at --cap EUR
++  python3 calibrate_quality.py --blockiness              # FREE (no Claude call): the pixel check for JPEG blocks on every real photo + on damaged copies
+   python3 calibrate_quality.py --degrade-test 6          # DRY RUN of the control test (see below)
+   python3 calibrate_quality.py --degrade-test 6 --run    # control test: 6 photos x (original + 3 deliberately damaged copies) = 24 calls
+ 
+@@ -153,6 +154,45 @@ def degrade_test(photos, n, run, cap, out_dir):
+         print("  ", p)
+ 
+ 
++def blockiness_report(photos, out_dir: Path, n_variants: int):
++    """No API call at all. Score of every real photo (distribution + the highest ones, as a contact sheet to look at) and, for n_variants
++    photos, the score of the original and of its three damaged copies, so the threshold can be set between 'real photos' and 'damaged'."""
++    import statistics
++    out_dir.mkdir(parents=True, exist_ok=True)
++    rows = []
++    for p in photos:
++        s = ls.blockiness_score(p["path"].read_bytes())
++        rows.append({**p, "score": s})
++    scores = sorted(r["score"] for r in rows if r["score"] is not None)
++    if not scores:
++        print("no readable photo"); return
++    def pct(q):
++        return scores[min(len(scores) - 1, int(round(q * (len(scores) - 1))))]
++    print(f"\nREAL photos scored: {len(scores)} (of {len(rows)}).  min {scores[0]}  median {statistics.median(scores)}  p90 {pct(0.9)}  p95 {pct(0.95)}  max {scores[-1]}")
++    for limit in (2.0, 3.0, 4.0, 6.0):
++        print(f"  photos with score >= {limit}: {sum(1 for s in scores if s >= limit)}")
++    print(f"  current limit (PVS_BLOCKINESS_MAX): {ls.photo_blockiness_max()}")
++    top = sorted((r for r in rows if r["score"] is not None), key=lambda r: -r["score"])[:12]
++    print("\nHIGHEST real photos:  score  job/file")
++    for r in top:
++        print(f"  {r['score']:>7}  {r['job'][:8]}/{r['file']}")
++    with open(out_dir / "blockiness.csv", "w", newline="") as fh:
++        w = csv.writer(fh); w.writerow(["job", "file", "width", "height", "score"])
++        for r in sorted(rows, key=lambda r: -(r["score"] or 0)):
++            w.writerow([r["job"], r["file"], r["w"], r["h"], r["score"]])
++    made = sheets([{**r, "verdict": "highest_blockiness"} for r in top], out_dir) if top else []
++    if n_variants:
++        print("\nDAMAGED copies of the same photos (control):  photo     original  blur  pixelated  jpegblocks")
++        for p in pick(photos, n_variants):
++            content = p["path"].read_bytes()
++            v = make_variants(content)
++            sc = [ls.blockiness_score(content)] + [ls.blockiness_score(v[k]) for k in VARIANTS]
++            print(f"  {p['sha'][:8]}  " + "  ".join(f"{x!s:>9}" for x in sc))
++    print(f"\nwritten: {out_dir}/blockiness.csv" + (" and contact sheet(s) of the highest scores:" if made else ""))
++    for m in made:
++        print("  ", m)
++
++
+ def sheets(results, out_dir: Path):
+     from PIL import Image, ImageDraw
+     groups = {}
+@@ -186,12 +226,17 @@ def main():
+     ap.add_argument("--run", action="store_true", help="really call Claude (without it: dry run, nothing is sent)")
+     ap.add_argument("--cap", type=float, default=0.50, help="stop when the real Claude cost reaches this many EUR")
+     ap.add_argument("--degrade-test", type=int, default=0, metavar="N", help="control test on N photos damaged on purpose (see top of file)")
++    ap.add_argument("--blockiness", action="store_true", help="FREE: score every real photo with the pixel check for JPEG blocks (no Claude call) and compare with damaged copies")
+     ap.add_argument("--model", default="", help="judge with this model (or 'a,b' for several) FOR THIS RUN ONLY, instead of the production judge models")
+     a = ap.parse_args()
+     if a.model:
+         os.environ["PVS_QUALITY_MODELS"] = a.model   # this process only: ONE judge model for this run (or "a,b" for several)
+ 
+     photos, stats = collect(Path(a.jobs_dir))
++    if a.blockiness:
++        print(f"unique usable photos: {len(photos)} | no Claude call is made")
++        blockiness_report(photos, Path(a.out), 6)
++        return
+     if a.degrade_test:
+         print(f"unique usable photos: {len(photos)} | judge models: {', '.join(ls.photo_quality_models())}")
+         degrade_test(photos, a.degrade_test, a.run, a.cap, Path(a.out))
+diff --git a/docs_p13.py b/docs_p13.py
+new file mode 100644
+index 0000000..818cdb0
+--- /dev/null
++++ b/docs_p13.py
+@@ -0,0 +1,54 @@
++"""One-off (2026-10-29, evening): appends the dated BS entry to status.md, backlog.md and AUTOMATION_TEST_PLAN.md with the REAL test results
++of the server run. Usage:  python3 docs_p13.py <rollback_hash> /tmp/p13_tests.txt
++/tmp/p13_tests.txt = lines "test_name :: <last line> | FAILS=<n>" written by the test block on the server. The script refuses to
++write anything unless every line shows a passing result, so the docs never claim more than the server really showed.
++Delete this file after use (git rm docs_p13.py)."""
++import re, sys
++from pathlib import Path
++
++MARK = "BS — 2026-10-29"
++rollback = sys.argv[1]
++lines = [l.strip() for l in Path(sys.argv[2]).read_text().splitlines() if l.strip()]
++bad = [l for l in lines if "FAILS=0" not in l or not re.search(r"ALL PASS|\b(\d+)/\1\b|\bPASS\b", l)]
++if not lines or bad:
++    print("REFUSED: the test results are missing or not all passing:")
++    for l in bad or ["(empty file)"]:
++        print("  ", l)
++    sys.exit(2)
++evidence = "\n".join("  - " + l for l in lines)
++
++STATUS = f"""
++
++## {MARK} (sera) — prova reale a due modelli: 17/18; controllo gratuito sui pixel contro i blocchi JPEG (provvisorio, misura-solo)
++- Evidence (corse reali, 2026-10-29): (1) prova di controllo con il codice a due modelli (Haiku 4.5 + Haiku 5.5, 24 copie + originali, costo reale 0.0487 EUR, 48 chiamate): copie peggiorate riconosciute 17 su 18 (blur 6/6, pixelated 6/6, jpegblocks 5/6); originali chiamati difettosi 1 su 6, ma Michele ha guardato la foto (457d5590, originale giudicato soft da Haiku 5.5): E' DAVVERO sfocata, quindi 0 falsi allarmi su 6. La copia a blocchi che e' passata (5f44c77a, jpegblocks) e' stata giudicata ok da ENTRAMBI i modelli: per Michele "inaccettabile". CORREZIONE a BR: il 18/18 calcolato a mano era errato; i modelli non rispondono uguale da una corsa all'altra (Haiku 5.5 aveva scartato quella copia e prima dato ok all'originale sfocato). (2) Giudice a due modelli sulle 101 foto originali dei job passati (costo reale 0.2088 EUR, 202 chiamate): ok=89, soft=12, blocky=0; i 12 "soft" sono in un foglio di miniature che Michele deve ancora guardare (quanti sono davvero sfocati = misura dei falsi allarmi su foto vere): NON ANCORA VERIFICATI.
++- Changed: listing_scraper.blockiness_score(content): controllo gratuito sui pixel (nessun modello): rapporto tra i salti di luminosita' ai bordi della griglia 8x8 del JPEG e quelli dentro i blocchi, miglior fase su 8, righe e colonne, tetto 50, None se illeggibile o troppo piccola; circa 1.0-1.5 per una foto normale o sfocata, sale con la compressione (nei test sintetici: q95 circa 1, q70 sotto 2.5, q20 sopra 4, q10 sopra 8, q3 al tetto). assess_photo_quality lo conta come TERZO voto (by_model["blockiness"], campo blockiness in rapporto): e' blocky se il punteggio e' >= PVS_BLOCKINESS_MAX (predefinito 4.0, PROVVISORIO, non tarato sulle foto vere; 0 lo spegne); se nessun modello ha risposto ma i pixel dicono blocky, il verdetto e' blocky (call_ok vero); se un modello ha gia' detto soft/blocky decide la sua parola. calibrate_quality.py --blockiness: misura GRATUITA (nessuna chiamata Claude) di tutte le foto vere (distribuzione, le piu' alte in un foglio, csv) e confronto con le copie peggiorate.
++- Tests (output reale del server):
++{evidence}
++- Not verified: la distribuzione del punteggio sulle 101 foto vere (il limite 4.0 e' una scelta mia dai test sintetici: nessuna foto vera misurata); non so se il controllo sui pixel prende la copia 5f44c77a ne' se segnala foto vere buone; il controllo vale solo per blocchi sulla griglia 8x8 del JPEG (non per foto ingrandite da miniature, che sono "soft": le prendono i modelli). Scarto soft/blocky ancora in sola misura (.env PVS_QUALITY_ENFORCE=0).
++- Rollback: commit {rollback} (prima di questo commit).
++"""
++
++BACKLOG = f"""
++
++## {MARK} (sera) — voci aperte
++- Lanciare python3 calibrate_quality.py --blockiness (gratuito) e leggere la distribuzione sulle 101 foto vere: fissare PVS_BLOCKINESS_MAX tra le foto vere e le copie a blocchi (la 5f44c77a deve risultare sopra il limite, nessuna foto vera buona sopra).
++- Michele guarda i 12 "soft" delle 101 foto vere: se sono davvero sfocati il giudice e' affidabile sulla sfocatura; se alcuni sono buoni, valutare di far scartare solo se i DUE modelli concordano, accettando di perdere recall.
++- Poi: ripetere la prova di controllo (--degrade-test 6 --run, circa 0.05 EUR) e, se la copia 5f44c77a viene presa e i falsi allarmi restano zero, proporre a Michele di togliere PVS_QUALITY_ENFORCE=0.
++"""
++
++PLAN = f"""
++
++## {MARK} (sera) — aggiunte di stato (punteggi proposti, da rivedere con Michele)
++- P10d (foto sfocata o a blocchi accettata): osservata ancora UNA copia a blocchi (q3, 5f44c77a) accettata da entrambi i modelli: rischio reale. Mitigazione aggiunta: controllo gratuito sui pixel (test B1-B10, Z1-Z3). Non tarato sulle foto vere. Rischio residuo aperto; scarto spento.
++- P10e (falso positivo): l'unico "falso allarme" della prova era una foto davvero sfocata (verificato da Michele): 0 su 6; su 101 foto vere i "soft" sono 12 (da verificare a occhio).
++- Not run: --blockiness sulle foto vere; prova di controllo con il terzo voto.
++"""
++
++for fname, text in (("status.md", STATUS), ("backlog.md", BACKLOG), ("AUTOMATION_TEST_PLAN.md", PLAN)):
++    p = Path(fname)
++    cur = p.read_text()
++    if MARK in cur:
++        print(fname, ": already has", MARK, "- left alone")
++        continue
++    p.write_text(cur.rstrip("\n") + "\n" + text)
++    print(fname, ": entry added")
+diff --git a/listing_scraper.py b/listing_scraper.py
+index f35869f..83cbeca 100644
+--- a/listing_scraper.py
++++ b/listing_scraper.py
+@@ -659,11 +659,49 @@ def _assess_with_model(images: list, model: str, label: str) -> dict:
+     return {"verdict": tech, "overlay": overlay, "call_ok": True}
+ 
+ 
++BLOCKINESS_MAX_DEFAULT = 4.0      # provisional (2026-10-29): about JPEG quality 20 and below on a photo; to be set from the real photos' distribution
++BLOCKINESS_CAP = 50.0
++
++
++def photo_blockiness_max() -> float:
++    """Score at or above which a photo counts as blocky without asking any model. PVS_BLOCKINESS_MAX overrides; 0 or less switches the check off."""
++    try:
++        return float(os.environ.get("PVS_BLOCKINESS_MAX", BLOCKINESS_MAX_DEFAULT))
++    except ValueError:
++        return BLOCKINESS_MAX_DEFAULT
++
++
++def blockiness_score(content: bytes):
++    """Free pixel check for JPEG blocking, no model involved: how much stronger the brightness jumps are ACROSS the 8-pixel block borders than
++    inside the blocks, for rows and columns, at the best of the 8 possible grid offsets. About 1.0 = no block grid (also for blurred photos);
++    a normal photo is roughly 1.0-1.5, heavy compression grows it (quality 50 about 1.6-1.9, 20 about 2-5, 10 and below 5 or much more).
++    Capped at BLOCKINESS_CAP. None when the image cannot be read."""
++    try:
++        import io
++        import numpy as np
++        from PIL import Image
++        a = np.asarray(Image.open(io.BytesIO(content)).convert("L"), dtype=np.float32)
++        if a.shape[0] < 32 or a.shape[1] < 32:
++            return None
++        dh = np.abs(np.diff(a, axis=1)); dv = np.abs(np.diff(a, axis=0))
++        ch = np.arange(dh.shape[1]) % 8; cv = np.arange(dv.shape[0]) % 8
++        best = 0.0
++        for phase in range(8):
++            ih = ch == ((phase - 1) % 8); iv = cv == ((phase - 1) % 8)
++            r_h = dh[:, ih].mean() / max(float(dh[:, ~ih].mean()), 1e-6)
++            r_v = dv[iv, :].mean() / max(float(dv[~iv, :].mean()), 1e-6)
++            best = max(best, (r_h + r_v) / 2)
++        return round(min(float(best), BLOCKINESS_CAP), 3)
++    except Exception:
++        return None
++
++
+ def assess_photo_quality(content: bytes, label: str = "", models: tuple = None) -> dict:
+-    """{"verdict": ok|soft|blocky|unknown, "overlay": none|portal|agency|unknown, "call_ok": bool, "by_model": {model: verdict}}
+-    ("overlay" and "by_model" only when at least one call worked). Every judge model looks at the photo; the photo is poor when ANY of them
+-    says soft or blocky (the first one that does decides the word), ok when at least one says ok and none a problem, otherwise unknown.
+-    A model whose call fails is ignored (one broken judge does not stop the other). "unknown" is never treated as a problem."""
++    """{"verdict": ok|soft|blocky|unknown, "overlay": none|portal|agency|unknown, "call_ok": bool, "by_model": {judge: verdict}, "blockiness": float|None}
++    Every judge model looks at the photo, and so does the free pixel check (blockiness_score against photo_blockiness_max, listed in
++    by_model as "blockiness"). The photo is poor when ANY of them says soft or blocky (the first model that does decides the word, the
++    pixel check says "blocky"), ok when at least one model says ok and nothing a problem, otherwise unknown. A model whose call fails is
++    ignored (one broken judge does not stop the others). "unknown" is never treated as a problem."""
+     try:
+         images = [_image_b64_for_vision(content), _native_crop_b64(content)]
+     except Exception as e:
+@@ -671,12 +709,20 @@ def assess_photo_quality(content: bytes, label: str = "", models: tuple = None)
+         return {"verdict": "unknown", "call_ok": False}
+     results = [(m, _assess_with_model(images, m, label)) for m in (models or photo_quality_models())]
+     worked = [(m, r) for m, r in results if r["call_ok"]]
+-    if not worked:
+-        return {"verdict": "unknown", "call_ok": False}
++    score = blockiness_score(content)
++    limit = photo_blockiness_max()
++    pixel_poor = score is not None and limit > 0 and score >= limit
++    if not worked and not pixel_poor:
++        return {"verdict": "unknown", "call_ok": False, "blockiness": score}
+     poor = next((r["verdict"] for m, r in worked if r["verdict"] in PHOTO_QUALITY_POOR), None)
++    if poor is None and pixel_poor:
++        poor = "blocky"
+     verdict = poor or ("ok" if any(r["verdict"] == "ok" for m, r in worked) else "unknown")
+     overlay = next((r["overlay"] for m, r in worked if r["overlay"] != "unknown"), "unknown")
+-    return {"verdict": verdict, "overlay": overlay, "call_ok": True, "by_model": {m: r["verdict"] for m, r in worked}}
++    by_model = {m: r["verdict"] for m, r in worked}
++    if score is not None and limit > 0:
++        by_model["blockiness"] = "blocky" if pixel_poor else "ok"
++    return {"verdict": verdict, "overlay": overlay, "call_ok": True, "by_model": by_model, "blockiness": score}
+ 
+ 
+ def photo_quality_check_enabled() -> bool:
+@@ -721,6 +767,7 @@ def filter_poor_quality_candidates(by_category: dict, assess=None, enforce=None)
+             p["quality"] = r["verdict"]
+             p["overlay"] = r.get("overlay")
+             p["quality_by_model"] = r.get("by_model")
++            p["blockiness"] = r.get("blockiness")
+             if r["verdict"] in PHOTO_QUALITY_POOR:
+                 poor += 1
+                 p["quality_poor"] = True
+@@ -975,6 +1022,7 @@ def build_selection_report(photos: list, selection: dict, scene_count_requested=
+             "resolution_upgraded": p.get("resolution_upgraded"),
+             "rank_position": p.get("rank_position"), "rank_status": p.get("rank_status"),
+             "quality": p.get("quality"), "overlay": p.get("overlay"), "quality_by_model": p.get("quality_by_model"),
++            "blockiness": p.get("blockiness"),
+         } for p in plist]
+ 
+     used = {("outdoor" if c in ("outdoor_early", "outdoor_late") else c)
+diff --git a/test_calibrate_quality.py b/test_calibrate_quality.py
+index 6c6909d..d98be36 100644
+--- a/test_calibrate_quality.py
++++ b/test_calibrate_quality.py
+@@ -116,6 +116,19 @@ buf = io.StringIO()
+ with contextlib.redirect_stdout(buf):
+     cq.main()
+ check("M2 failed judge calls are reported loudly (wrong model name)", "12 of 12 judge calls FAILED" in buf.getvalue(), buf.getvalue()[-300:])
++# ── free blockiness report ────────────────────────────────────────────────
++shutil.rmtree(out, ignore_errors=True)
++calls3 = []
++ls.assess_photo_quality = lambda content, label="": calls3.append(label) or {"verdict": "ok", "call_ok": True}
++ls.anthropic.Anthropic = None
++sys.argv = ["x", "--blockiness", "--jobs-dir", jobs, "--out", out]
++buf = io.StringIO()
++with contextlib.redirect_stdout(buf):
++    cq.main()
++txt = buf.getvalue()
++check("Z1 --blockiness makes no judge call and says so", calls3 == [] and "no Claude call is made" in txt, txt[:200])
++check("Z2 it prints the distribution of the real photos and the control table of damaged copies", "REAL photos scored: 3" in txt and "DAMAGED copies" in txt and "jpegblocks" in txt, txt[-600:])
++check("Z3 it writes blockiness.csv with one row per photo and a contact sheet; jobs/ untouched", len(open(os.path.join(out, "blockiness.csv")).read().splitlines()) == 4 and snapshot() == before)
+ src = open("calibrate_quality.py").read()
+ check("C10 tool has no delete/move/write-to-jobs calls", not any(w in src for w in ("unlink", "rmtree", "os.remove", ".rename(", "shutil.move")))
+ shutil.rmtree(root)
+diff --git a/test_photo_filters.py b/test_photo_filters.py
+index 11a030f..b3407a4 100644
+--- a/test_photo_filters.py
++++ b/test_photo_filters.py
+@@ -66,6 +66,7 @@ check("P1 the ranking prompt now also penalises blur, blocks and a watermark ove
+ 
+ # ── vision quality verdict through the real sender ──────────────────────────
+ SENT = []; ANSWER = {"text": "ok", "raise": False, "per_model": {}, "raise_models": set()}
++os.environ["PVS_BLOCKINESS_MAX"] = "0"      # pixel check off in the tests of the model judges (it has its own B section)
+ os.environ["PVS_QUALITY_MODELS"] = "judge-a"      # the single-judge tests below; the two-judge rules are tested in the E section
+ ls._track_claude = lambda r, model=None: r
+ class Msgs:
+@@ -82,7 +83,7 @@ class FakeClient:
+ ls.anthropic.Anthropic = FakeClient
+ 
+ def core(r):
+-    return {k: v for k, v in r.items() if k != "by_model"}
++    return {k: v for k, v in r.items() if k not in ("by_model", "blockiness")}
+ ANSWER.update(text="ANSWER: blocky"); SENT.clear()
+ v = ls.assess_photo_quality(jpeg(2000, 1500), "t")
+ check("Q1 'ANSWER: blocky' (one word after the marker) -> verdict blocky, overlay unknown, call ok", core(v) == {"verdict": "blocky", "overlay": "unknown", "call_ok": True}, v)
+@@ -107,7 +108,7 @@ check("Q3 the second image is a 768x768 crop at the REAL pixels (not scaled); th
+ ANSWER.update(text="great")
+ check("Q4 an answer outside the four words is 'unknown', never a problem", ls.assess_photo_quality(jpeg())["verdict"] == "unknown")
+ ANSWER.update(raise_=True); ANSWER["raise"] = True
+-check("Q5 API error -> unknown, call_ok False, no exception", ls.assess_photo_quality(jpeg()) == {"verdict": "unknown", "call_ok": False})
++check("Q5 API error -> unknown, call_ok False, no exception", core(ls.assess_photo_quality(jpeg())) == {"verdict": "unknown", "call_ok": False})
+ ANSWER["raise"] = False
+ check("Q6 the prompt asks for two words: technical (ok/soft/blocky) then overlay (none/portal/agency), the technical one not influenced by the overlay", all(w in SENT_PROMPT[0] for w in ("TWO words", "FIRST word", "SECOND word", "- ok:", "- soft:", "- blocky:", "- none:", "- portal:", "- agency:", "never influenced by the second word", "ANSWER:", "at most two short sentences")))
+ check("Q6b only soft and blocky are poor: a portal watermark or an agency logo is never a reason to discard", ls.PHOTO_QUALITY_POOR == ("soft", "blocky") and set(ls.PHOTO_QUALITY_WORDS) == {"ok", "soft", "blocky"} and set(ls.PHOTO_OVERLAY_WORDS) == {"none", "portal", "agency"})
+@@ -135,7 +136,7 @@ check("E6a the second judge's call fails -> the first judge decides, call ok, th
+ r = run_two("x", "ANSWER: soft none", raise_models={"judge-a"})
+ check("E6b the first judge's call fails -> the second decides (soft)", r["verdict"] == "soft" and r["call_ok"], r)
+ r = run_two("x", "x", raise_models={"judge-a", "judge-b"})
+-check("E7 both calls fail -> unknown, call_ok False, no by_model", r == {"verdict": "unknown", "call_ok": False}, r)
++check("E7 both calls fail -> unknown, call_ok False, no by_model", core(r) == {"verdict": "unknown", "call_ok": False} and "by_model" not in r, r)
+ r = run_two("no answer line here", "ANSWER: ok none")
+ check("E8a one answers without an ANSWER line (unknown), the other ok -> ok", r["verdict"] == "ok", r)
+ r = run_two("no answer line", "also none")
+@@ -148,6 +149,46 @@ rr = ls.assess_photo_quality(jpeg(), models=("only-this",))
+ check("E11 models= argument overrides the setting for one call", MODELS[-1] == "only-this", MODELS)
+ os.environ["PVS_QUALITY_MODELS"] = "judge-a"
+ 
++# ── free pixel check for JPEG blocks (2026-10-29) ────────────────────────────
++import numpy as np
++from PIL import ImageFilter
++_rng = np.random.RandomState(3)
++_base = Image.fromarray(_rng.randint(0, 255, (180, 320, 3), dtype=np.uint8)).resize((1440, 810), Image.BICUBIC).filter(ImageFilter.GaussianBlur(6))
++_photo = Image.fromarray(np.clip(np.asarray(_base).astype(np.float32) + _rng.normal(0, 4, (810, 1440, 3)), 0, 255).astype(np.uint8))
++def jq(img, q):
++    b = io.BytesIO(); img.save(b, "JPEG", quality=q); return b.getvalue()
++s95, s70, s20, s10, s3 = (ls.blockiness_score(jq(_photo, q)) for q in (95, 70, 20, 10, 3))
++check("B1 the score grows with compression: q95 about 1, q70 under 2.5, q20 above 4, q10 well above, q3 at the cap", s95 < 1.3 and s70 < 2.5 and s20 > 4 and s10 > 8 and s3 == ls.BLOCKINESS_CAP, (s95, s70, s20, s10, s3))
++sb = ls.blockiness_score(jq(_photo.filter(ImageFilter.GaussianBlur(8)), 95))
++check("B2 a blurred (smooth) photo has no block grid: score about 1, so blur is never read as blocks", sb < 1.3, sb)
++buf = io.BytesIO(); Image.new("RGB", (800, 600), (120, 120, 120)).save(buf, "JPEG")
++check("B3 a perfectly flat image scores 0 (never a problem); a tiny image or garbage bytes give None", ls.blockiness_score(buf.getvalue()) == 0.0 and ls.blockiness_score(jpeg(20, 20)) is None and ls.blockiness_score(b"not an image") is None)
++check("B4 default limit 4.0; PVS_BLOCKINESS_MAX overrides; a bad value falls back to the default; 0 switches off",
++      (os.environ.pop("PVS_BLOCKINESS_MAX"), ls.photo_blockiness_max())[1] == 4.0 and (os.environ.__setitem__("PVS_BLOCKINESS_MAX", "2.5"), ls.photo_blockiness_max())[1] == 2.5
++      and (os.environ.__setitem__("PVS_BLOCKINESS_MAX", "abc"), ls.photo_blockiness_max())[1] == 4.0 and (os.environ.__setitem__("PVS_BLOCKINESS_MAX", "0"), ls.photo_blockiness_max())[1] == 0.0)
++os.environ["PVS_BLOCKINESS_MAX"] = "4"
++os.environ["PVS_QUALITY_MODELS"] = "judge-a"
++ANSWER.update(text="ANSWER: ok none"); ANSWER["per_model"] = {}
++bad = jq(_photo, 10); good = jq(_photo, 95)
++r = ls.assess_photo_quality(bad)
++check("B5 the model says ok but the pixel check sees blocks -> blocky (the miss that was unacceptable), the pixel vote is in by_model with the score", r["verdict"] == "blocky" and r["by_model"] == {"judge-a": "ok", "blockiness": "blocky"} and r["blockiness"] > 8, r)
++r = ls.assess_photo_quality(good)
++check("B6 a normal photo: ok, pixel vote ok, score reported", r["verdict"] == "ok" and r["by_model"]["blockiness"] == "ok" and r["blockiness"] < 1.3, r)
++ANSWER.update(text="ANSWER: soft none")
++r = ls.assess_photo_quality(bad)
++check("B7 the model already says soft: its word decides (the pixel vote is only the fallback word)", r["verdict"] == "soft", r)
++ANSWER.update(raise_=True); ANSWER["raise"] = True
++r = ls.assess_photo_quality(bad)
++check("B8 every model call fails but the pixel check sees blocks -> blocky, call_ok True (a check that worked)", r["verdict"] == "blocky" and r["call_ok"] and r["by_model"] == {"blockiness": "blocky"}, r)
++r = ls.assess_photo_quality(good)
++check("B9 every model call fails and the pixels are fine -> unknown, call_ok False (as before)", r["verdict"] == "unknown" and not r["call_ok"], r)
++ANSWER["raise"] = False
++os.environ["PVS_BLOCKINESS_MAX"] = "0"
++ANSWER.update(text="ANSWER: ok none")
++r = ls.assess_photo_quality(bad)
++check("B10 limit 0: the pixel check is off (no pixel vote, the model decides)", r["verdict"] == "ok" and "blockiness" not in r["by_model"], r)
++os.environ["PVS_BLOCKINESS_MAX"] = "0"
++
+ # ── the quality filter works in the SELECTION (2026-10-29) ───────────────────
+ def pool(cats):
+     """by_category-like pool: {cat: [photo dicts in rank order]} from {cat: [names]}"""
