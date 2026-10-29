@@ -1,0 +1,269 @@
+diff --git a/calibrate_quality.py b/calibrate_quality.py
+index b7ea037..74f1ccb 100644
+--- a/calibrate_quality.py
++++ b/calibrate_quality.py
+@@ -111,7 +111,7 @@ def degrade_test(photos, n, run, cap, out_dir):
+         r = ls.assess_photo_quality(it["bytes"], label=f"{it['variant']}/{it['sha'][:8]}")
+         if ls.get_claude_cost()["cost_eur"] >= cap:
+             stop = True
+-        return {**it, "verdict": r["verdict"]}
++        return {**it, "verdict": r["verdict"], "overlay": r.get("overlay", "")}
+ 
+     with ThreadPoolExecutor(max_workers=4) as ex:
+         results = [r for r in ex.map(one, items) if r]
+@@ -120,12 +120,12 @@ def degrade_test(photos, n, run, cap, out_dir):
+     false_alarms = sum(1 for r in results if r["variant"] == "original" and r["verdict"] in ls.PHOTO_QUALITY_POOR)
+     originals = sum(1 for r in results if r["variant"] == "original")
+     with open(out_dir / "degrade_test.csv", "w", newline="") as fh:
+-        w = csv.writer(fh); w.writerow(["photo", "variant", "verdict"])
++        w = csv.writer(fh); w.writerow(["photo", "variant", "verdict", "overlay"])
+         for r in results:
+-            w.writerow([r["sha"][:8], r["variant"], r["verdict"]])
+-    print("\nphoto     variant      verdict")
++            w.writerow([r["sha"][:8], r["variant"], r["verdict"], r["overlay"]])
++    print("\nphoto     variant      verdict  overlay")
+     for r in results:
+-        print(f"{r['sha'][:8]}  {r['variant']:<11}  {r['verdict']}")
++        print(f"{r['sha'][:8]}  {r['variant']:<11}  {r['verdict']:<7}  {r['overlay']}")
+     by_variant = {}
+     for r in results:
+         if r["variant"] != "original":
+@@ -206,15 +206,15 @@ def main():
+         r = ls.assess_photo_quality(p["path"].read_bytes(), label=f"{p['job'][:8]}/{p['file']}")
+         if ls.get_claude_cost()["cost_eur"] >= a.cap:
+             stop = True
+-        return {**p, "verdict": r["verdict"]}
++        return {**p, "verdict": r["verdict"], "overlay": r.get("overlay", "")}
+ 
+     with ThreadPoolExecutor(max_workers=4) as ex:
+         results = [r for r in ex.map(one, chosen) if r]
+     cost = ls.get_claude_cost()
+     with open(out_dir / "verdicts.csv", "w", newline="") as fh:
+-        w = csv.writer(fh); w.writerow(["job", "file", "width", "height", "verdict"])
++        w = csv.writer(fh); w.writerow(["job", "file", "width", "height", "verdict", "overlay"])
+         for r in results:
+-            w.writerow([r["job"], r["file"], r["w"], r["h"], r["verdict"]])
++            w.writerow([r["job"], r["file"], r["w"], r["h"], r["verdict"], r["overlay"]])
+     counts = {}
+     for r in results:
+         counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
+diff --git a/docs_p9.py b/docs_p9.py
+new file mode 100644
+index 0000000..753fca2
+--- /dev/null
++++ b/docs_p9.py
+@@ -0,0 +1,51 @@
++"""One-off (2026-10-29, evening): appends the dated BO entry to status.md, backlog.md and AUTOMATION_TEST_PLAN.md with the REAL test results
++of the server run. Usage:  python3 docs_p9.py <rollback_hash> /tmp/p9_tests.txt
++/tmp/p9_tests.txt = lines "test_name :: <last line> | FAILS=<n>" written by the test block on the server. The script refuses to
++write anything unless every line shows a passing result, so the docs never claim more than the server really showed.
++Delete this file after use (git rm docs_p9.py)."""
++import re, sys
++from pathlib import Path
++
++MARK = "BO — 2026-10-29"
++rollback = sys.argv[1]
++lines = [l.strip() for l in Path(sys.argv[2]).read_text().splitlines() if l.strip()]
++bad = [l for l in lines if "FAILS=0" not in l or not re.search(r"ALL PASS|\b(\d+)/\1\b|\bPASS\b", l)]
++if not lines or bad:
++    print("REFUSED: the test results are missing or not all passing:")
++    for l in bad or ["(empty file)"]:
++        print("  ", l)
++    sys.exit(2)
++evidence = "\n".join("  - " + l for l in lines)
++
++STATUS = f"""
++
++## {MARK} (sera) — prova di controllo con foto peggiorate: il giudice trascurava il difetto tecnico; risposta in due parole
++- Evidence (corsa reale, 6 foto x [originale + blur + pixelated + jpegblocks] = 24 chiamate, Haiku 4.5, costo reale 0.0333 EUR, prompt di BN): copie peggiorate riconosciute soft/blocky 12 su 18 (blur 6/6, jpegblocks 5/6, pixelated 1/6); originali chiamati soft/blocky 0 su 6 (tutti "portal"). Michele ha guardato i fogli: le copie pixelate (risposta "portal") sono evidentemente sfocate/impoverite e la copia jpegblocks con logo kw HOME (risposta "portal") e' evidentemente posterizzata: il giudice NOMINAVA il marchio e saltava il giudizio tecnico, nonostante la frase "controlla prima i difetti tecnici". Il filtro cosi' com'era non va bene (Michele: "il filtro va migliorato").
++- Changed: il giudice risponde con DUE parole: prima il giudizio tecnico (ok / soft / blocky), poi cio' che e' sovrapposto (none / portal / agency), con la frase esplicita che la prima parola non dipende dalla seconda. "soft" copre anche una foto a bassa risoluzione ingrandita; "blocky" anche chiazze di colore piatte (posterizzazione). Verdetto tecnico = p["quality"] (unico che scarta, solo soft e blocky); overlay = p["overlay"] (solo etichetta, anche nel selection_report). La parola unica "portal" non e' piu' un verdetto tecnico (diventa unknown, mai un problema). Un solo mittente: _vision_word_from_b64 ha ora words=2. calibrate_quality.py stampa e salva anche l'overlay.
++- Tests (output reale del server):
++{evidence}
++- Not verified: la stessa prova di controllo con il nuovo prompt NON e' ancora stata rilanciata (stesse 6 foto, 24 chiamate, circa 0.033 EUR): nessun dato reale sul nuovo prompt. Scarto soft/blocky ancora in sola misura (.env PVS_QUALITY_ENFORCE=0).
++- Rollback: commit {rollback} (prima di questo commit).
++"""
++
++BACKLOG = f"""
++
++## {MARK} (sera) — voci aperte
++- Rilanciare la prova di controllo con il nuovo prompt (stesse foto, circa 0.033 EUR). Soglia per riattivare lo scarto (proposta, da confermare con Michele): copie peggiorate riconosciute in blocco >= 16 su 18 e 0 falsi allarmi sui 6 originali. Se la pixelazione resta invisibile al giudice: provare un modello piu' forte solo per questo giudizio (costo da stimare).
++"""
++
++PLAN = f"""
++
++## {MARK} (sera) — aggiunte di stato (punteggi proposti, da rivedere con Michele)
++- P10d (foto sfocata o a blocchi accettata): CONFERMATA dalla prova di controllo (12/18 riconosciute, il giudice nominava il marchio al posto del difetto). Mitigazione in prova: risposta in due parole separate. Stato: test con giudice finto (Q1b, Q1c, Q6, Q8b); nessun dato reale sul nuovo prompt. Punteggi da rivedere: O osservata alta.
++- Not run: prova di controllo con il nuovo prompt.
++"""
++
++for fname, text in (("status.md", STATUS), ("backlog.md", BACKLOG), ("AUTOMATION_TEST_PLAN.md", PLAN)):
++    p = Path(fname)
++    cur = p.read_text()
++    if MARK in cur:
++        print(fname, ": already has", MARK, "- left alone")
++        continue
++    p.write_text(cur.rstrip("\n") + "\n" + text)
++    print(fname, ": entry added")
+diff --git a/listing_scraper.py b/listing_scraper.py
+index c65d48d..0beb50c 100644
+--- a/listing_scraper.py
++++ b/listing_scraper.py
+@@ -530,9 +530,9 @@ def _image_b64_for_vision(content: bytes) -> str:
+         return base64.b64encode(content).decode("utf-8")
+ 
+ 
+-def _vision_word_from_b64(b64_images: list, prompt: str, label: str = "") -> tuple:
++def _vision_word_from_b64(b64_images: list, prompt: str, label: str = "", words: int = 1) -> tuple:
+     """The ONE place that sends one or more photos (already base64 JPEG) and a short question to Claude vision and returns the
+-    answer as one lowercase word. (word, ok): ok is False only when the call itself failed.
++    answer as one lowercase word (words=2: the first two words, joined by one space). (word, ok): ok is False only when the call itself failed.
+     2026-10-29: split out of _vision_one_word so a question that needs a second image (the photo-quality check sends the whole
+     photo and a crop at its real pixels) uses the same sender instead of a copy of it."""
+     try:
+@@ -544,6 +544,8 @@ def _vision_word_from_b64(b64_images: list, prompt: str, label: str = "") -> tup
+             model=MODEL, max_tokens=20, messages=[{"role": "user", "content": content}],
+         ))
+         raw = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip().lower()
++        if words > 1:
++            return " ".join(re.findall(r"[a-z]+", raw)[:words]), True
+         return re.sub(r"[^a-z]", "", raw), True
+     except Exception as e:
+         log.warning(f"[Scraper] Vision question failed for {label}: {e}")
+@@ -581,22 +583,25 @@ def _classify_photo_vision(image_url: str, fallback_url: str = None) -> tuple:
+ # that were chosen: the whole photo plus a crop at its real pixels.
+ PHOTO_QUALITY_PROMPT = (
+     "You will see two images of the SAME real estate photo: first the whole photo scaled down, then a crop of its centre at the "
+-    "original pixels (100%). Judge the technical quality of the picture, because a video model will build a 5 second clip "
+-    "from it as the first frame. Ordinary phone or camera photos with normal sharpness are fine: answer soft or blocky ONLY when "
+-    "the problem is clearly visible. Check the technical problems FIRST, even when an overlay is also present.\n"
+-    "- soft: clearly blurred, out of focus or smeared, with no fine detail left.\n"
+-    "- blocky: clearly pixelated, with visible JPEG blocks, banding or heavy noise.\n"
+-    "- portal: (only if the photo is NOT soft or blocky) a semi-transparent text or logo of a listing portal, such as immobiliare.it, "
+-    "laid over the photo.\n"
+-    "- agency: (only if the photo is NOT soft or blocky, and has no portal mark) a solid logo, banner, ribbon or contact bar of the "
+-    "real estate agency in a corner or along an edge.\n"
+-    "- ok: none of these.\n"
+-    "Answer with ONLY one word: ok, soft, blocky, portal or agency."
++    "original pixels (100%). A video model will build a 5 second clip from this photo as the first frame, so its technical quality "
++    "matters. Answer with exactly TWO words separated by a space.\n"
++    "FIRST word = the technical quality of the picture itself, whatever is written or drawn on it, never influenced by the second word:\n"
++    "- ok: normal sharpness and detail (ordinary phone or camera photos are ok).\n"
++    "- soft: clearly blurred, out of focus or smeared, or a low-resolution picture stretched up: smooth, no fine detail, edges look "
++    "painted. Answer soft only when this is clearly visible.\n"
++    "- blocky: clearly pixelated, with visible squares or JPEG blocks, banding, flat posterized colour patches or heavy noise.\n"
++    "SECOND word = what is laid over the photo, independent of the first word:\n"
++    "- none: nothing.\n"
++    "- portal: a semi-transparent text or logo of a listing portal, such as immobiliare.it.\n"
++    "- agency: a solid logo, banner, ribbon, contact bar or text of the real estate agency (for example kw HOME, a ribbon in a corner).\n"
++    "Examples of complete answers: ok none / soft portal / blocky agency / ok portal."
+ )
+-PHOTO_QUALITY_WORDS = ("ok", "soft", "blocky", "portal", "agency")
++PHOTO_QUALITY_WORDS = ("ok", "soft", "blocky")
++PHOTO_OVERLAY_WORDS = ("none", "portal", "agency")
+ # 2026-10-29 (Michele, after the calibration on 101 past photos): a portal watermark or an agency logo is NOT a reason to discard a photo
+-# (scraped photos nearly all carry one; the removal chosen in the UI handles it, API photos arrive clean). They are only labelled, in the
+-# verdict, so the report shows what is on each photo. TEMPORARY: to be reviewed after the degraded-photo test and the GIAL real job.
++# (scraped photos nearly all carry one; the removal chosen in the UI handles it, API photos arrive clean). The overlay is only LABELLED
++# (p["overlay"], selection_report). It is asked as a separate second word because with one combined answer the judge named the overlay and
++# skipped the technical verdict (control test: 5 of 6 pixelated copies answered "portal"). TEMPORARY: review after the real GIAL job.
+ PHOTO_QUALITY_POOR = ("soft", "blocky")
+ QUALITY_JUDGE_PER_CATEGORY = 4      # the best-ranked candidates of each category that get a verdict (the rest are never reached)
+ 
+@@ -614,17 +619,20 @@ def _native_crop_b64(content: bytes, side: int = VISION_MAX_SIDE) -> str:
+ 
+ 
+ def assess_photo_quality(content: bytes, label: str = "") -> dict:
+-    """{"verdict": ok|soft|blocky|portal|agency|unknown, "call_ok": bool}. "unknown" = the call failed or the answer was not one of
+-    the known words; unknown is never treated as a problem."""
++    """{"verdict": ok|soft|blocky|unknown, "overlay": none|portal|agency|unknown, "call_ok": bool} ("overlay" only when the call worked).
++    "unknown" = the call failed or the answer was not one of the known words; unknown is never treated as a problem."""
+     try:
+         images = [_image_b64_for_vision(content), _native_crop_b64(content)]
+     except Exception as e:
+         log.warning(f"[Scraper] Photo quality: could not prepare {label}: {e}")
+         return {"verdict": "unknown", "call_ok": False}
+-    word, ok = _vision_word_from_b64(images, PHOTO_QUALITY_PROMPT, label)
++    word, ok = _vision_word_from_b64(images, PHOTO_QUALITY_PROMPT, label, words=2)
+     if not ok:
+         return {"verdict": "unknown", "call_ok": False}
+-    return {"verdict": word if word in PHOTO_QUALITY_WORDS else "unknown", "call_ok": True}
++    parts = word.split()
++    tech = parts[0] if parts and parts[0] in PHOTO_QUALITY_WORDS else "unknown"
++    overlay = parts[1] if len(parts) > 1 and parts[1] in PHOTO_OVERLAY_WORDS else "unknown"
++    return {"verdict": tech, "overlay": overlay, "call_ok": True}
+ 
+ 
+ def photo_quality_check_enabled() -> bool:
+@@ -667,6 +675,7 @@ def filter_poor_quality_candidates(by_category: dict, assess=None, enforce=None)
+         poor = 0
+         for (cat, p), r in zip(items, results):
+             p["quality"] = r["verdict"]
++            p["overlay"] = r.get("overlay")
+             if r["verdict"] in PHOTO_QUALITY_POOR:
+                 poor += 1
+                 p["quality_poor"] = True
+@@ -920,7 +929,7 @@ def build_selection_report(photos: list, selection: dict, scene_count_requested=
+             "url_used": p.get("url_used"), "used_fallback": bool(p.get("used_fallback", False)),
+             "resolution_upgraded": p.get("resolution_upgraded"),
+             "rank_position": p.get("rank_position"), "rank_status": p.get("rank_status"),
+-            "quality": p.get("quality"),
++            "quality": p.get("quality"), "overlay": p.get("overlay"),
+         } for p in plist]
+ 
+     used = {("outdoor" if c in ("outdoor_early", "outdoor_late") else c)
+diff --git a/test_photo_filters.py b/test_photo_filters.py
+index 86c0aad..4be0a3d 100644
+--- a/test_photo_filters.py
++++ b/test_photo_filters.py
+@@ -81,7 +81,14 @@ ls.anthropic.Anthropic = FakeClient
+ 
+ ANSWER.update(text="Blocky."); SENT.clear()
+ v = ls.assess_photo_quality(jpeg(2000, 1500), "t")
+-check("Q1 reply 'Blocky.' -> verdict blocky, call ok", v == {"verdict": "blocky", "call_ok": True}, v)
++check("Q1 reply 'Blocky.' (one word only) -> verdict blocky, overlay unknown, call ok", v == {"verdict": "blocky", "overlay": "unknown", "call_ok": True}, v)
++ANSWER.update(text="Soft portal"); v2 = ls.assess_photo_quality(jpeg())
++ANSWER.update(text="ok none."); v3 = ls.assess_photo_quality(jpeg())
++ANSWER.update(text="Blocky, agency"); v4 = ls.assess_photo_quality(jpeg())
++check("Q1b two-word answers: the technical verdict and the overlay are read separately", v2 == {"verdict": "soft", "overlay": "portal", "call_ok": True} and v3["verdict"] == "ok" and v3["overlay"] == "none" and v4["verdict"] == "blocky" and v4["overlay"] == "agency", (v2, v3, v4))
++ANSWER.update(text="portal")
++check("Q1c the old combined word 'portal' is NOT a technical verdict (unknown, never a problem)", ls.assess_photo_quality(jpeg())["verdict"] == "unknown")
++ANSWER.update(text="Blocky.")
+ check("Q2 two images are sent: the whole photo and a crop", len(SENT[0]) == 2, len(SENT))
+ crop = Image.open(io.BytesIO(base64.b64decode(SENT[0][1]["source"]["data"])))
+ whole = Image.open(io.BytesIO(base64.b64decode(SENT[0][0]["source"]["data"])))
+@@ -91,8 +98,8 @@ check("Q4 an answer outside the four words is 'unknown', never a problem", ls.as
+ ANSWER.update(raise_=True); ANSWER["raise"] = True
+ check("Q5 API error -> unknown, call_ok False, no exception", ls.assess_photo_quality(jpeg()) == {"verdict": "unknown", "call_ok": False})
+ ANSWER["raise"] = False
+-check("Q6 the prompt asks for ONE of ok/soft/blocky/portal/agency", "ok, soft, blocky, portal or agency" in SENT_PROMPT[0])
+-check("Q6b only soft and blocky are poor: a portal watermark or an agency logo is never a reason to discard", ls.PHOTO_QUALITY_POOR == ("soft", "blocky") and set(ls.PHOTO_QUALITY_WORDS) == {"ok", "soft", "blocky", "portal", "agency"})
++check("Q6 the prompt asks for two words: technical (ok/soft/blocky) then overlay (none/portal/agency), the technical one not influenced by the overlay", all(w in SENT_PROMPT[0] for w in ("TWO words", "FIRST word", "SECOND word", "- ok:", "- soft:", "- blocky:", "- none:", "- portal:", "- agency:", "never influenced by the second word")))
++check("Q6b only soft and blocky are poor: a portal watermark or an agency logo is never a reason to discard", ls.PHOTO_QUALITY_POOR == ("soft", "blocky") and set(ls.PHOTO_QUALITY_WORDS) == {"ok", "soft", "blocky"} and set(ls.PHOTO_OVERLAY_WORDS) == {"none", "portal", "agency"})
+ 
+ # ── the quality filter works in the SELECTION (2026-10-29) ───────────────────
+ def pool(cats):
+@@ -100,7 +107,7 @@ def pool(cats):
+     return {c: [{"url": n, "category": c} for n in names] for c, names in cats.items()}
+ VERDICT = {}
+ def assess_named(content, label=""):
+-    return {"verdict": VERDICT.get(content, "ok"), "call_ok": True}
++    return {"verdict": VERDICT.get(content, "ok"), "overlay": OVERLAY.get(content, "none"), "call_ok": True}
+ FETCHED = []
+ def fetch_named(url, fallback_url=None, timeout=20, attempts=1):
+     FETCHED.append(url)
+@@ -109,12 +116,13 @@ real_fetch = ls.fetch_photo_bytes
+ ls.fetch_photo_bytes = fetch_named
+ os.environ.pop("PVS_QUALITY_CHECK", None); os.environ.pop("PVS_QUALITY_ENFORCE", None)
+ 
+-VERDICT.clear(); VERDICT.update({"liv1": "blocky", "kit2": "soft", "bed1": "portal", "liv3": "agency"})
++VERDICT.clear(); VERDICT.update({"liv1": "blocky", "kit2": "soft"})
++OVERLAY = {"bed1": "portal", "liv3": "agency"}
+ bc = pool({"living": ["liv1", "liv2", "liv3"], "kitchen": ["kit1", "kit2"], "bedrooms": ["bed1"]})
+ s_ = ls.filter_poor_quality_candidates(bc, assess=assess_named)
+ check("Q7 enforcing is the default: the blocky top candidate is removed, the next one comes first", [p["url"] for p in bc["living"]] == ["liv2", "liv3"], bc["living"])
+ check("Q8 a poor photo that was not first is removed too, the good ones stay in order", [p["url"] for p in bc["kitchen"]] == ["kit1"] and [p["url"] for p in bc["bedrooms"]] == ["bed1"])
+-check("Q8b photos labelled portal / agency are KEPT (only labelled)", [p["url"] for p in bc["living"]] == ["liv2", "liv3"] and bc["bedrooms"][0]["quality"] == "portal" and bc["living"][1]["quality"] == "agency" and not bc["bedrooms"][0].get("quality_rejected"))
++check("Q8b photos labelled portal / agency are KEPT (only labelled)", [p["url"] for p in bc["living"]] == ["liv2", "liv3"] and bc["bedrooms"][0]["overlay"] == "portal" and bc["living"][1]["overlay"] == "agency" and bc["bedrooms"][0]["quality"] == "ok" and not bc["bedrooms"][0].get("quality_rejected"))
+ check("Q9 summary: 6 judged, 2 poor, enforced", s_["checked"] == 6 and s_["poor"] == 2 and s_["enforced"], s_)
+ check("Q10 every judged photo is tagged with its verdict; removed ones carry quality_rejected",
+       all("quality" in p for pl in bc.values() for p in pl) and ls._quality_gap_note([{"quality_rejected": True}]).startswith(" 1 photo(s)"))
