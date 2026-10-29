@@ -880,3 +880,14 @@ Requirements, in his words/intent (confirm in plain language before any code; ea
 - Aperto (nuovo): se Luma fattura una generazione in stato "failed", oggi non e' contata; verificare sull'estratto conto.
 - Aperto (nuovo): un job con fallback fal attivo che passa a fal dopo un timeout Luma paga due chiamate e la prima non e' contata (in produzione FAL_FALLBACK_ENABLED=false, quindi caso non attivo).
 - Aperto: il minimo per un esterno non riconosciuto e' subtle_rotate; se fosse ancora poco curato, valutare un lento avvicinamento a un'ancora (PVS_ANCHOR) dopo il confronto con altri modelli.
+
+
+## BK — 2026-10-29 — voci aperte emerse dalla causa radice dell'albero sbavato
+- Calibrare il giudizio di qualita' Claude vision (measure-only) sulle foto reali: confrontare i verdetti salvati in selection_report.photo_quality con la qualita' dei clip; solo dopo, valutare PVS_QUALITY_ENFORCE=1. Prerequisito per scartare: sostituire una foto scartata con un'altra candidata della stessa categoria (oggi la scena resterebbe corta). Soglia 800 px (lato lungo) e' una scelta mia, da confermare.
+- Upscale aura-sr: provare un job GIAL completo con upscale_images=False e confrontarlo coi video gia' fatti; poi decidere il default. Il flag e' oggi fisso a True alla creazione dei job da URL e partner (api_server): da rendere configurabile per la prova.
+- Rimozione watermark per le foto da scraping: la nostra rimozione sbava le zone coperte (albero di cc33f8af). Da cercare un metodo migliore o accettare il watermark visibile solo in prova; non toccare il percorso API.
+- Correzione luce: sposta i colori (ulivo verso il blu). Da migliorare piu' avanti; per ora resta.
+- Percorso partner: in caso di foto insufficienti il job_dir viene cancellato con shutil.rmtree (api_server, flusso partner), mentre nel percorso da URL la patch L/M non cancella piu' nulla sotto jobs/. Divergenza tra i due percorsi: da allineare (decisione di Michele sul rischio).
+- Pannello QC: numerazione scene 0-based contro elenco 1-based.
+- Rifai: la rimozione watermark nel Rifai non riusa il file della prima generazione (nome per posizione, rischio scena spostata): puo' costare una seconda rimozione. Possibile ottimizzazione solo con un controllo certo che la foto sia la stessa.
+- Filtro foto di Relinx/GIAL: lo scarto delle copie con bande esiste solo nello strumento di prova (relinx_pilot_check); il percorso API reale riceve foto pulite (verificato su cc2aead8), nessuna regola equivalente li' per scelta.

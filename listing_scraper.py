@@ -530,27 +530,38 @@ def _image_b64_for_vision(content: bytes) -> str:
         return base64.b64encode(content).decode("utf-8")
 
 
-def _vision_one_word(image_url: str, fallback_url: str, prompt: str) -> tuple:
-    """The ONE place that sends a (downscaled) listing photo and a short question to Claude vision and returns the answer as one
-    lowercase word. (word, ok): ok is False only when the call itself failed (download or API)."""
+def _vision_word_from_b64(b64_images: list, prompt: str, label: str = "") -> tuple:
+    """The ONE place that sends one or more photos (already base64 JPEG) and a short question to Claude vision and returns the
+    answer as one lowercase word. (word, ok): ok is False only when the call itself failed.
+    2026-10-29: split out of _vision_one_word so a question that needs a second image (the photo-quality check sends the whole
+    photo and a crop at its real pixels) uses the same sender instead of a copy of it."""
     try:
-        fetched = fetch_photo_bytes(image_url, fallback_url, timeout=15)
-        if not fetched["ok"]:
-            raise RuntimeError(fetched["error"])
-        b64 = _image_b64_for_vision(fetched["content"])
         client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-        content = [
-            {"type": "text", "text": prompt},
-            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
-        ]
+        content = [{"type": "text", "text": prompt}]
+        for b64 in b64_images:
+            content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}})
         response = _track_claude(client.messages.create(
             model=MODEL, max_tokens=20, messages=[{"role": "user", "content": content}],
         ))
         raw = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip().lower()
         return re.sub(r"[^a-z]", "", raw), True
     except Exception as e:
+        log.warning(f"[Scraper] Vision question failed for {label}: {e}")
+        return "", False
+
+
+def _vision_one_word(image_url: str, fallback_url: str, prompt: str) -> tuple:
+    """Downloads a listing photo, sends it downscaled with a short question to Claude vision (see _vision_word_from_b64) and
+    returns the answer as one lowercase word. (word, ok): ok is False only when the call itself failed (download or API)."""
+    try:
+        fetched = fetch_photo_bytes(image_url, fallback_url, timeout=15)
+        if not fetched["ok"]:
+            raise RuntimeError(fetched["error"])
+        b64 = _image_b64_for_vision(fetched["content"])
+    except Exception as e:
         log.warning(f"[Scraper] Vision question failed for {image_url}: {e}")
         return "", False
+    return _vision_word_from_b64([b64], prompt, image_url)
 
 
 def _classify_photo_vision(image_url: str, fallback_url: str = None) -> tuple:
@@ -561,6 +572,114 @@ def _classify_photo_vision(image_url: str, fallback_url: str = None) -> tuple:
     if not ok:
         return "uncategorized", False
     return (word if word in CATEGORIES else "uncategorized"), True
+
+
+# ── Photo technical quality via Claude vision (2026-10-29) ───────────────────────────────────────────────────────────────
+# Job cc33f8af: a portal photo full of JPEG blocks and with the portal's watermark across the main subject gave a bad clip
+# start frame. The ranking prompt now also penalises such photos (rank_photos_by_quality, no extra call), but it skips a category
+# with one candidate and it sees the photo scaled down, where blocks disappear. This is the absolute check on the photos
+# that were chosen: the whole photo plus a crop at its real pixels.
+PHOTO_QUALITY_PROMPT = (
+    "You will see two images of the SAME real estate photo: first the whole photo scaled down, then a crop of its centre at the "
+    "original pixels (100%). Judge only the technical quality of the picture, because a video model will build a 5 second clip "
+    "from it as the first frame. Ordinary phone or camera photos with normal sharpness are ok: answer another word ONLY when the "
+    "problem is clearly visible.\n"
+    "- soft: clearly blurred, out of focus or smeared, with no fine detail left.\n"
+    "- blocky: clearly pixelated, with visible JPEG blocks, banding or heavy noise.\n"
+    "- watermark: a large semi-transparent text, logo or stamp across the main subject.\n"
+    "- ok: none of these.\n"
+    "Answer with ONLY one word: ok, soft, blocky or watermark."
+)
+PHOTO_QUALITY_WORDS = ("ok", "soft", "blocky", "watermark")
+PHOTO_QUALITY_POOR = ("soft", "blocky", "watermark")
+QUALITY_MIN_KEEP = 5      # enforcing never leaves fewer photos than this (a video needs its scenes)
+
+
+def _native_crop_b64(content: bytes, side: int = VISION_MAX_SIDE) -> str:
+    """Centre crop of the photo at its REAL pixels (no scaling), base64 JPEG: what a scaled-down picture hides."""
+    import base64, io
+    from PIL import Image
+    img = Image.open(io.BytesIO(content)).convert("RGB")
+    w, h = img.size
+    cw, ch = min(side, w), min(side, h)
+    x0, y0 = (w - cw) // 2, (h - ch) // 2
+    buf = io.BytesIO(); img.crop((x0, y0, x0 + cw, y0 + ch)).save(buf, "JPEG", quality=95)
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
+
+
+def assess_photo_quality(content: bytes, label: str = "") -> dict:
+    """{"verdict": ok|soft|blocky|watermark|unknown, "call_ok": bool}. "unknown" = the call failed or the answer was not one of
+    the four words; unknown is never treated as a problem."""
+    try:
+        images = [_image_b64_for_vision(content), _native_crop_b64(content)]
+    except Exception as e:
+        log.warning(f"[Scraper] Photo quality: could not prepare {label}: {e}")
+        return {"verdict": "unknown", "call_ok": False}
+    word, ok = _vision_word_from_b64(images, PHOTO_QUALITY_PROMPT, label)
+    if not ok:
+        return {"verdict": "unknown", "call_ok": False}
+    return {"verdict": word if word in PHOTO_QUALITY_WORDS else "unknown", "call_ok": True}
+
+
+def photo_quality_check_enabled() -> bool:
+    return os.environ.get("PVS_QUALITY_CHECK", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def photo_quality_enforce_enabled() -> bool:
+    """Off by default: the judge is not calibrated yet (a photo that looks grainy to a person can still give a good clip), and
+    dropping a chosen photo leaves a scene short, because a replacement from the unselected candidates is not built.
+    Set PVS_QUALITY_ENFORCE=1 in .env and restart to drop the photos judged soft/blocky/watermark."""
+    return os.environ.get("PVS_QUALITY_ENFORCE", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def check_selected_photo_quality(selection: dict, assess=None, enforce=None) -> dict:
+    """ONE shared check for the URL path and the Relinx path, run on the photos that were downloaded and chosen. Tags every photo
+    with p["quality"] and returns a summary for the selection report. Never raises (a failed call is "unknown").
+    Measure-only unless enforcing: then a photo judged soft/blocky/watermark is removed from selection["selected"] and listed in
+    selection["quality_rejected"], but never below QUALITY_MIN_KEEP photos in total."""
+    if not photo_quality_check_enabled():
+        return {"enabled": False}
+    assess = assess or assess_photo_quality
+    enforce = photo_quality_enforce_enabled() if enforce is None else bool(enforce)
+    try:
+        items = [(cat, i, p) for cat, photos in selection["selected"].items() for i, p in enumerate(photos) if p.get("local_path")]
+
+        def one(item):
+            cat, i, p = item
+            try:
+                return assess(Path(p["local_path"]).read_bytes(), label=f"{cat}[{i}]")
+            except Exception as e:
+                log.warning(f"[Scraper] Photo quality failed for {cat}[{i}]: {e}")
+                return {"verdict": "unknown", "call_ok": False}
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=CLASSIFY_WORKERS) as ex:
+            results = list(ex.map(one, items))
+        poor = []
+        for (cat, i, p), r in zip(items, results):
+            p["quality"] = r["verdict"]
+            if r["verdict"] in PHOTO_QUALITY_POOR:
+                poor.append((cat, i, p))
+        total = sum(len(v) for v in selection["selected"].values())
+        dropped, kept_for_count = [], []
+        if enforce:
+            for cat, i, p in poor:
+                if total - len(dropped) > QUALITY_MIN_KEEP:
+                    dropped.append((cat, i, p))
+                else:
+                    kept_for_count.append((cat, i, p))
+            for cat in selection["selected"]:
+                selection["selected"][cat] = [q for q in selection["selected"][cat] if not any(q is d[2] for d in dropped)]
+            selection["quality_rejected"] = [{"category": c, "url": p.get("url"), "verdict": p["quality"]} for c, _, p in dropped]
+        summary = {"enabled": True, "enforced": enforce, "checked": len(items),
+                   "ok": sum(1 for r in results if r["verdict"] == "ok"),
+                   "unknown": sum(1 for r in results if r["verdict"] == "unknown"),
+                   "poor": [{"category": c, "url": p.get("url"), "verdict": p["quality"]} for c, _, p in poor],
+                   "dropped": len(dropped), "kept_for_count": len(kept_for_count)}
+        log.info(f"[Scraper] Photo quality: {summary}")
+        return summary
+    except Exception as e:
+        log.warning(f"[Scraper] Photo quality check failed as a whole: {e}")
+        return {"enabled": True, "error": str(e)[:160]}
 
 
 # 2026-10-27: a photo the listing page labels "living" is sometimes the entrance hall, a corridor or a staircase (villa job
@@ -669,6 +788,25 @@ def resolve_uncategorized_photos(photos: list) -> list:
 
 DOWNLOAD_ATTEMPTS = 3
 
+# 2026-10-29: a photo whose long side is under this is not a usable start frame for the video model: job bd3f0f77 held three
+# 4x2 pixel files, and 14 jobs held a 486x273 thumbnail (the real photos of the other jobs are 1024 px or more). The check is
+# on the pixels of the downloaded file, not on the size the page declares.
+MIN_PHOTO_LONG_SIDE = 800
+
+
+def photo_usability(content: bytes) -> dict:
+    """{"ok", "width", "height", "reason"}: ok when the bytes open as an image and the long side is at least MIN_PHOTO_LONG_SIDE."""
+    import io
+    try:
+        from PIL import Image
+        with Image.open(io.BytesIO(content)) as im:
+            w, h = im.size
+    except Exception as e:
+        return {"ok": False, "width": None, "height": None, "reason": f"file non leggibile come immagine ({type(e).__name__})"}
+    if max(w, h) < MIN_PHOTO_LONG_SIDE:
+        return {"ok": False, "width": w, "height": h, "reason": f"foto troppo piccola: {w}x{h} px (lato lungo minimo {MIN_PHOTO_LONG_SIDE} px)"}
+    return {"ok": True, "width": w, "height": h, "reason": None}
+
 
 def download_photo(photo_url: str, output_dir: Path, filename_stem: str, fallback_url: str = None) -> dict:
     """
@@ -683,6 +821,10 @@ def download_photo(photo_url: str, output_dir: Path, filename_stem: str, fallbac
     fetched = fetch_photo_bytes(photo_url, fallback_url, timeout=20, attempts=DOWNLOAD_ATTEMPTS)
     if not fetched["ok"]:
         return {"ok": False, "path": None, "error": fetched["error"], "url_used": None, "used_fallback": False}
+    use = photo_usability(fetched["content"])
+    if not use["ok"]:     # permanent: downloading again gives the same file, so the retry rounds skip it ("unusable")
+        return {"ok": False, "path": None, "error": use["reason"], "url_used": fetched["url_used"],
+                "used_fallback": fetched["used_fallback"], "unusable": True}
     dest_path.write_bytes(fetched["content"])
     return {"ok": True, "path": str(dest_path), "error": None,
             "url_used": fetched["url_used"], "used_fallback": fetched["used_fallback"]}
@@ -703,7 +845,7 @@ def download_selected_photos(selection: dict, output_dir: Path) -> dict:
     This one function serves BOTH the from-url and the partner-payload preparation, so the retry is in one place only.
     """
     todo = [(cat, i, p) for cat, photos in selection["selected"].items() for i, p in enumerate(photos)]
-    got, errors = {}, {}
+    got, errors, unusable = {}, {}, []
     for rnd in range(len(DOWNLOAD_RETRY_WAITS) + 1):
         if rnd:
             log.warning(f"[Scraper] {len(todo)} photo(s) failed to download, retry round {rnd} in {DOWNLOAD_RETRY_WAITS[rnd - 1]}s")
@@ -716,6 +858,9 @@ def download_selected_photos(selection: dict, output_dir: Path) -> dict:
                 p["url_used"] = result["url_used"]
                 p["used_fallback"] = result["used_fallback"]
                 got[(cat, i)] = p
+            elif result.get("unusable"):
+                errors[(cat, i)] = result["error"]
+                unusable.append((cat, i, p))      # never retried: the file itself is the problem
             else:
                 errors[(cat, i)] = result["error"]
                 still.append((cat, i, p))
@@ -723,6 +868,9 @@ def download_selected_photos(selection: dict, output_dir: Path) -> dict:
         if not todo:
             break
     download_failures = []
+    for cat, i, p in unusable:
+        download_failures.append({"category": cat, "url": p["url"], "error": errors[(cat, i)], "unusable": True})
+        log.warning(f"[Scraper] photo dropped, not usable: {cat}[{i}] {p['url'][:90]} -> {errors[(cat, i)]}")
     for cat, i, p in todo:
         download_failures.append({"category": cat, "url": p["url"], "error": errors[(cat, i)]})
         log.warning(f"[Scraper] photo dropped after {len(DOWNLOAD_RETRY_WAITS) + 1} rounds: {cat}[{i}] {p['url'][:90]} -> {errors[(cat, i)]}")
@@ -1941,7 +2089,7 @@ _CATEGORY_TO_SPACE_TYPE = {
 _CATEGORY_TO_POV_MOVEMENT = camera_plan.CATEGORY_MOVEMENT
 
 
-def build_standard_video_scenes_config(selection: dict, captions: dict, clip_duration_secs: int = 5) -> list:
+def build_standard_video_scenes_config(selection: dict, captions: dict, clip_duration_secs: int = 5, remove_watermark: bool = True) -> list:
     """
     Returns a scenes_config list in PRIORITY_ORDER, ONE SCENE PER SELECTED
     PHOTO (not one scene per category — a category can have more than one
@@ -1960,6 +2108,10 @@ def build_standard_video_scenes_config(selection: dict, captions: dict, clip_dur
     watermark, and this reuses the SAME existing per-scene toggle manual
     uploads already have, rather than a separate eager removal pass during
     scraping (see download_selected_photos).
+
+    2026-10-29: remove_watermark is the value every scene gets: True (the default) for a listing scraped from a portal, whose
+    photos carry the portal's watermark; the partner API passes False, because the photos a partner sends are the agency's own
+    originals and our removal only smears the area it paints over (job cc33f8af, the tree).
     """
     scenes = []
     for category, photo in standard_scene_slots(selection):
@@ -1971,7 +2123,7 @@ def build_standard_video_scenes_config(selection: dict, captions: dict, clip_dur
             "duration": clip_duration_secs,
             "local_image_path": photo.get("local_path"),
             "category": category,
-            "remove_watermark": True,
+            "remove_watermark": bool(remove_watermark),
         })
     return scenes
 
@@ -2036,6 +2188,7 @@ Rank them from best to worst based on:
 - Mirrors, mirrored wardrobes and large glass surfaces dominating the frame are a penalty: reflections make the AI video model drift and invent things. A photo with the same room and no big reflective surface is better.
 - A clear, fixed point of interest FAR from the camera in the middle of the frame (a window with a view, the far end of the room, a balcony opening) is a plus: it gives the video camera a safe, natural place to move toward. A photo whose centre is a near object, a blank wall close up, or a door is weaker.
 - Natural light present, well-lit rather than dark or harshly artificial
+- Technical quality of the picture itself: sharp and clean is better. Clearly visible blur, pixelation, blocky JPEG compression, heavy noise, or a large semi-transparent watermark, text or logo across the main subject (a portal's stamp over the room or the building) are a significant penalty: the video model builds the whole clip from this one picture and cannot repair them. An ordinary phone photo with normal sharpness is fine, only clearly visible problems count.
 - The room/space is shown fully and spaciously in frame, not a cramped or heavily cropped angle — a fuller, more complete view is better. This also matters practically: a fuller frame gives the AI video-generation model more real visual information to work with, which reduces the risk of it inventing or distorting details in an ambiguous or heavily-cropped area.
 
 Return ONLY a JSON array of integers, the photo numbers ordered best to worst, e.g. [3, 1, 2]. No other text.
@@ -2295,7 +2448,7 @@ def select_photos_for_scene_count_premium(photos: list, scene_count: int) -> dic
     }
 
 
-def build_premium_video_scenes_config(selection: dict, captions: dict, clip_duration_secs: int = 5) -> list:
+def build_premium_video_scenes_config(selection: dict, captions: dict, clip_duration_secs: int = 5, remove_watermark: bool = True) -> list:
     """
     Premium counterpart to build_standard_video_scenes_config() -- same
     "one scene per selected photo" pattern, but iterates
@@ -2318,7 +2471,7 @@ def build_premium_video_scenes_config(selection: dict, captions: dict, clip_dura
                 "duration": clip_duration_secs,
                 "local_image_path": photo.get("local_path"),
                 "category": real_category,
-                "remove_watermark": True,
+                "remove_watermark": bool(remove_watermark),
             })
     return scenes
 

@@ -923,3 +923,31 @@ PRODUCT DECISION (2026-10-28, Michele): the automation launches only for the apa
 - Tests: test_failed_clips 20/20, test_luma_wait 19/19, test_outdoor_rules 14/14, test_camera_plan 20/20 (M3 aggiornato di proposito), cascata 13/13, scene_rework 65/65, anchor_timeline 102/102, narration_sync 22/22, url_draft_background 32/32, draft_check 17/17, vision_classify 36/36, room_recognition 31/31, selection_report 29/29, scene_script 83/83, cost_real_model 20/20, data_dir 5/5, relinx_loader 14/14.
 - Not run: NESSUNA prova con Luma reale ne' video completo dopo le correzioni (i test usano HTTP e orologio finti). Non so se la chiusura di cc33f8af fosse stata letta come building_exterior o fosse finita nel ripiego senza stanza: P3 e P4 coprono entrambi i casi, nessuno dei due e' confermato dal log. Costi Luma da riconciliare con l'estratto conto.
 - Rollback: commit 830f5d4.
+
+
+## BK — 2026-10-29 — "Rifai" allineato alla generazione, filtri foto, watermark solo da scraping, bande GIAL
+- Evidence (causa dell'albero sbavato, cc33f8af scena 0, stesso movimento, Luma ray 3.2 direct): foto dopo la nostra rimozione watermark (variante plain: senza luce e senza upscale) = albero sbavato; foto originale intatta (variante orig) = albero nitido, ma il watermark del portale resta visibile nel clip (Luma non lo toglie). UNA sola coppia di generazioni e Luma non e' deterministico: forte indizio, non prova ripetuta.
+- Evidence: ogni clip Luma esce a 1920x1080, 24 fps, 5.04 s qualunque sia l'input (4800x2700 dopo aura-sr o 1920x1080): l'upscale aura-sr 4x non aggiunge pixel al video; costa tempo e denaro e puo' introdurre difetti. NON ancora provato su un video completo con upscale spento.
+- Evidence: la nitidezza misurata (Laplaciano) su 360 foto di tutti i job NON separa le foto cattive: fogliame e watermark contano come dettaglio (le scene 0 e 5 di cc33f8af risultano tra le piu' "nitide"). Scartata come criterio. Trovati: file da 4x2 px in bd3f0f77, miniature da 486 px in 14 job.
+- Changed (tutto provato solo offline con provider finti): (1) scene_rework: il "Rifai" prepara la foto come la prima generazione: rimozione watermark solo se la scena la chiede, flag del job enhance_images/upscale_images (prima forzati a True/True), file migliorato col nome che dice cosa e' stato fatto (un vecchio file con altre impostazioni non viene riusato), rimozione fallita = foto originale + scena in watermark_failed. (2) build_standard/premium_video_scenes_config: parametro remove_watermark (True per scraping, come prima); il percorso partner/API passa False (prima passava True: foto pulite degli agenti sarebbero state ritoccate). (3) listing_scraper: foto con lato lungo sotto 800 px o non leggibili scartate al download, senza tentativi ripetuti, riportate in download_failures; criteri di qualita' tecnica (sfocata, a blocchi, watermark sul soggetto) aggiunti al ranking Claude vision che c'era gia'; giudizio ok/soft/blocky/watermark sulle foto scelte (intera + ritaglio a pixel reali) in modalita' SOLO MISURA (selection_report.photo_quality); PVS_QUALITY_CHECK=0 lo spegne, PVS_QUALITY_ENFORCE=1 scarta le foto giudicate cattive (mai sotto 5 foto). Un solo mittente vision condiviso. (4) relinx_pilot_check: la copia con bande bianche viene scartata, il ritaglio resta solo come ripiego se restano meno di 5 foto pulite.
+- Decisions (Michele 2026-10-29): il watermark si sceglie da UI nello scraping, mai sul percorso API; per le bande: scartare la copia con bande; upscale: provarlo spento almeno su un caso; luci restano (il cambio colore va migliorato piu' avanti); nessuna spesa senza una strategia chiara.
+- Tests (output reale del server, 275ed79 = punto di ritorno):
+  - test_photo_filters.py :: RESULT: ALL PASS (35/35) | FAILS=0
+  - test_scene_rework.py :: RESULT: ALL PASS (77/77) | FAILS=0
+  - test_relinx_loader.py :: 21/21 | FAILS=0
+  - test_package1.py :: RESULT: ALL PASS (26/26) | FAILS=0
+  - test_selection_report.py :: RESULT: ALL PASS (29/29) | FAILS=0
+  - test_standard_3b.py :: RESULT: ALL PASS (32/32) | FAILS=0
+  - test_url_draft_background.py :: RESULT: ALL PASS (32/32) | FAILS=0
+  - test_vision_classify.py :: RESULT: ALL PASS (36/36) | FAILS=0
+  - test_download_retry.py :: 5/5 | FAILS=0
+  - test_draft_check.py :: 17/17 | FAILS=0
+  - test_camera_plan.py :: 20/20 PASS | FAILS=0
+  - test_failed_clips.py :: RESULT: ALL PASS (20/20) | FAILS=0
+  - test_luma_wait.py :: RESULT: ALL PASS (19/19) | FAILS=0
+  - test_outdoor_rules.py :: RESULT: ALL PASS (14/14) | FAILS=0
+  - test_anchor_timeline.py :: RESULT: ALL PASS (102/102) | FAILS=0
+  - test_photo_ranking_prompt.py :: RESULT: ALL PASS (7/7) | FAILS=0
+  - test_scene_facts.py :: 19/19 | FAILS=0
+- Not verified: il giudizio di qualita' di Claude vision su foto reali (calibrazione); "Rifai" con fal reale; nessun video con upscale spento; qualita' del video sui job GIAL; il filtro dimensioni su annunci reali.
+- Rollback: commit 275ed79 (prima di questo commit).

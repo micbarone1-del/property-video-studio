@@ -21,9 +21,15 @@ def check(name, cond, extra=""):
 sleeps = []
 ls.time.sleep = lambda s: sleeps.append(s)
 
+import io as _io
+from PIL import Image as _Image
+def _real_jpeg(w=1200, h=675):
+    _b = _io.BytesIO(); _Image.new("RGB", (w, h), (120, 130, 140)).save(_b, "JPEG"); return _b.getvalue()
+REAL_JPEG = _real_jpeg()   # 2026-10-29: the download now refuses a file that is not a usable image (long side >= 800 px)
+
 class Resp:
-    def __init__(self, code, content=b"JPEGDATA"):
-        self.status_code = code; self.content = content
+    def __init__(self, code, content=None):
+        self.status_code = code; self.content = REAL_JPEG if content is None else content
     def raise_for_status(self):
         if self.status_code >= 400:
             raise requests.HTTPError(f"{self.status_code} error")
@@ -43,7 +49,7 @@ def run_download(seq):
     return r, len(calls), d
 
 r, n, d = run_download([Resp(200)])
-check("D0 first try ok, no sleep", r["ok"] and n == 1 and not sleeps and (d / "p.jpg").read_bytes() == b"JPEGDATA")
+check("D0 first try ok, no sleep", r["ok"] and n == 1 and not sleeps and (d / "p.jpg").read_bytes() == REAL_JPEG)
 r, n, d = run_download([requests.ConnectionError("boom"), requests.Timeout("slow"), Resp(200)])
 check("D1 two transient errors then ok", r["ok"] and n == 3 and len(sleeps) == 2, (r, n))
 r, n, d = run_download([Resp(500), Resp(503), Resp(200)])

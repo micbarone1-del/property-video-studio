@@ -45,6 +45,26 @@ def clip_seconds_for_audio(audio_secs, fallback):
     return max(CLIP_MIN_SECS, min(CLIP_MAX_SECS, int(round(buffered / 2) * 2)))
 
 
+def enhance_flags(job):
+    """(do_lighting, do_upscale) exactly as the first generation reads them from the job (api_server run_pipeline):
+    job["enhance_images"] and job["upscale_images"], both True when the job does not say. 2026-10-29: the rework used to
+    force (True, True) whatever the job said, so a job created without the 4x upscale got it back on the first "Rifai"."""
+    return bool(job.get("enhance_images", True)), bool(job.get("upscale_images", True))
+
+
+def dewatermarked_name(scene_id):
+    """File (in enhanced/) that holds a scene's photo after watermark removal, made by the rework. Named by scene id, NOT by
+    position: the first generation's scene_NNN_dewatermarked.jpg is by position and a scene swapped or moved since would
+    point at another photo."""
+    return f"{scene_id}_dewatermarked.jpg"
+
+
+def enhanced_name(scene_id, watermark_removed, do_lighting, do_upscale):
+    """File (in enhanced/) the rework sends to the video model. The name carries what was done to the photo, so a file made
+    earlier with other settings (for example by the old forced lighting+upscale) is never reused by mistake."""
+    return f"{scene_id}{'_dewm' if watermark_removed else ''}_L{int(do_lighting)}U{int(do_upscale)}_enhanced.jpg"
+
+
 def find_source_image(job_dir, scene_id, scene_idx, log=None):
     """Original photo of a scene: {scene_id}.ext first, then the legacy
     scene_NNN.ext of jobs created before scene ids (copied to the new name so
@@ -155,10 +175,12 @@ async def redo_scenes(job, job_dir, scene_ids, deps, *, video=True, strict=False
                  a scene); otherwise the scene is skipped and reported.
 
     deps (all injected): generate_speech(text, out_path, voice_id=None)->bool,
-    audio_seconds(path)->float|None, enhance(src, dst), generate_video(img,
-    seconds, out, **kw)->bool, to_thread(fn, *a, **kw) awaitable, save(),
-    progress(percent, message), log.
-    Returns {"redone": [...], "failed": [scene_id], "skipped": [scene_id]}."""
+    audio_seconds(path)->float|None, enhance(src, dst, do_lighting, do_upscale),
+    remove_watermark(src, dst)->{"ok": bool, ...} (only called for a scene whose
+    own remove_watermark flag is set), generate_video(img, seconds, out, **kw)->bool,
+    to_thread(fn, *a, **kw) awaitable, save(), progress(percent, message), log.
+    Returns {"redone": [...], "failed": [scene_id], "skipped": [scene_id]}
+    (plus "watermark_failed": [scene_id] when a requested removal did not work)."""
     job_dir = Path(job_dir)
     scenes_config = job.get("scenes_config", [])
     statuses = job.setdefault("scenes", [])
@@ -217,11 +239,31 @@ async def redo_scenes(job, job_dir, scene_ids, deps, *, video=True, strict=False
             continue
         enhanced_dir = job_dir / "enhanced"
         enhanced_dir.mkdir(exist_ok=True)
-        enhanced_img = enhanced_dir / f"{scene_id}_enhanced.jpg"
+
+        # 2026-10-29: the SAME preparation the first generation does: watermark removal only on a scene that asks for it
+        # (the scene's own remove_watermark flag: set from a scraped listing, never from the partner API), then the job's own
+        # lighting / upscale flags. A failed removal falls back to the original photo, as the first generation does.
+        working_img = source_img
+        watermark_removed = False
+        if scene.get("remove_watermark"):
+            wm_img = enhanced_dir / dewatermarked_name(scene_id)
+            wm_ok = wm_img.exists() and wm_img.stat().st_size > 0
+            if not wm_ok:
+                deps.progress(int(8 + (idx / n) * 80), f"{label}: tolgo il watermark ({idx+1}/{n})…")
+                wm = await deps.to_thread(deps.remove_watermark, str(source_img), str(wm_img))
+                wm_ok = bool(wm and wm.get("ok")) and wm_img.exists()
+            if wm_ok:
+                working_img = wm_img
+                watermark_removed = True
+            else:
+                log.warning(f"[rework] watermark removal failed for {scene_id}: original photo used, watermark still present")
+                out.setdefault("watermark_failed", []).append(scene_id)
+        do_lighting, do_upscale = enhance_flags(job)
+        enhanced_img = enhanced_dir / enhanced_name(scene_id, watermark_removed, do_lighting, do_upscale)
         if not enhanced_img.exists():
             deps.progress(int(10 + (idx / n) * 80), f"{label}: miglioro immagine ({idx+1}/{n})…")
-            await deps.to_thread(deps.enhance, str(source_img), str(enhanced_img))
-        img_for_generation = str(enhanced_img) if enhanced_img.exists() else str(source_img)
+            await deps.to_thread(deps.enhance, str(working_img), str(enhanced_img), do_lighting, do_upscale)
+        img_for_generation = str(enhanced_img) if enhanced_img.exists() else str(working_img)
 
         # ── clip ─────────────────────────────────────────────────────────
         clips_dir = job_dir / "clips"

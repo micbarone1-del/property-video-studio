@@ -1716,7 +1716,9 @@ async def _prepare_url_draft_work(job_id, url, property_name, agency_id, voice_i
     img_dir.mkdir(parents=True, exist_ok=True)
 
     selection = await asyncio.to_thread(scraper.download_selected_photos, selection, img_dir)
+    photo_quality = await asyncio.to_thread(scraper.check_selected_photo_quality, selection)      # 2026-10-29: measure (and optionally drop) soft / blocky / watermarked photos
     selection_report = scraper.build_selection_report(extraction["photos"], selection, narration["scene_count"], premium=premium)
+    selection_report["photo_quality"] = photo_quality
     if acceptance is not None:
         selection_report["acceptance"] = acceptance
     selection_report["classification"] = classification_summary
@@ -2161,7 +2163,9 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
         img_dir.mkdir(parents=True, exist_ok=True)
 
         selection = await asyncio.to_thread(scraper.download_selected_photos, selection, img_dir)
+        photo_quality = await asyncio.to_thread(scraper.check_selected_photo_quality, selection)      # 2026-10-29: same shared check as the URL path
         selection_report = scraper.build_selection_report(photos_for_selection, selection, narration["scene_count"])
+        selection_report["photo_quality"] = photo_quality
         selection_report["acceptance"] = acceptance
         selection_report["classification"] = classification_summary
         total_downloaded = sum(len(ps) for ps in selection["selected"].values())
@@ -2190,8 +2194,9 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
         job_narration_path = str(job_dir / "narration.mp3")
         shutil.copy2(narration["audio_path"], job_narration_path)
 
+        # 2026-10-29: a partner (API) job never asks for watermark removal: the photos are the agency's originals
         scenes_config = scraper.build_standard_video_scenes_config(
-            selection, captions, clip_duration_secs=scraper.SCENE_CLIP_SECS
+            selection, captions, clip_duration_secs=scraper.SCENE_CLIP_SECS, remove_watermark=False
         )
         scenes_config = _ensure_scene_ids(scenes_config)
 
@@ -3002,16 +3007,22 @@ def _redo_deps(job_id: str):
             log.warning(f"[Job {job_id}] Could not measure audio {path}: {e}")
             return None
 
-    def enhance(src, dst):
+    def enhance(src, dst, do_lighting, do_upscale):
+        # 2026-10-29: the flags come from the job through scene_rework.enhance_flags (the same ones the first generation uses);
+        # this used to be a hard-coded (True, True)
         from image_enhance import enhance_image
-        return enhance_image(src, dst, True, True)
+        return enhance_image(src, dst, do_lighting, do_upscale)
+
+    def remove_watermark(src, dst):
+        from watermark_removal import remove_watermark as _rm
+        return _rm(src, dst)
 
     def generate_video(*args, **kwargs):
         from video_generation import generate_video_single
         return generate_video_single(*args, **kwargs)
 
     return _types.SimpleNamespace(
-        generate_speech=_gen_speech, audio_seconds=audio_seconds, enhance=enhance,
+        generate_speech=_gen_speech, audio_seconds=audio_seconds, enhance=enhance, remove_watermark=remove_watermark,
         generate_video=generate_video, to_thread=asyncio.to_thread,
         save=lambda: _save_job(job_id), progress=progress, log=log,
     )
@@ -3040,6 +3051,8 @@ async def _run_redo(job_id: str, scene_ids: list, *, video: bool, strict: bool,
         result = await _sr.redo_scenes(job, job_dir, scene_ids, _redo_deps(job_id),
                                        video=video, strict=strict, label=label)
         _sr.record_rework_cost(job, result["redone"], job.get("model_tier", "premium"), video, job_dir=job_dir)
+        if result.get("watermark_failed"):
+            log.warning(f"[Job {job_id}] rework: watermark removal failed for {result['watermark_failed']}, original photo used")
         # 2026-10-28 (P2): a rework that gave no clip but left a billed generation behind is still money spent
         if video:
             _lost = _sr.lost_generations(job_dir, result["failed"])

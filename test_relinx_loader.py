@@ -63,5 +63,23 @@ try:
     check("R3 an incomplete partner request file is refused", False)
 except ValueError:
     check("R3 an incomplete partner request file is refused", True)
+# 2026-10-29: the copy WITH white bands is discarded, the one without is kept (trimming only as a fallback)
+def padded(): 
+    im = Image.new("RGB", (400, 400), (255, 255, 255)); im.paste(Image.new("RGB", (400, 300), (90, 120, 160)), (0, 50)); return im
+def clean(): return Image.new("RGB", (400, 300), (90, 120, 160))
+check("B1 has_bands: padded copy True, clean photo False, bright room photo False, all-white False",
+      rc.has_bands(padded()) and not rc.has_bands(clean()) and not rc.has_bands(bright) and not rc.has_bands(white))
+imgs = [clean(), padded(), clean(), padded(), clean(), padded(), clean(), padded(), clean(), padded()]
+kept, info = rc.choose_clean_photos(imgs, 5)
+check("B2 half the page banded, 5 clean left: the banded copies are discarded", [i for i, _ in kept] == [0, 2, 4, 6, 8] and info["mode"] == "discarded" and info["banded"] == [1, 3, 5, 7, 9], (info, [i for i, _ in kept]))
+check("B3 the kept photos are the untouched originals (same size, nothing cropped)", all(im.size == (400, 300) for _, im in kept))
+kept, info = rc.choose_clean_photos([clean(), padded(), clean(), padded(), padded(), padded()], 5)
+check("B4 too few clean photos (2 < 5): fallback keeps all 6 with the banded ones trimmed", info["mode"] == "trimmed_fallback" and len(kept) == 6 and all(im.size == (400, 300) for _, im in kept), (info, [im.size for _, im in kept]))
+kept, info = rc.choose_clean_photos([clean() for _ in range(6)], 5)
+check("B5 no bands anywhere: everything kept, mode no_bands", info["mode"] == "no_bands" and len(kept) == 6 and info["banded"] == [])
+kept, info = rc.choose_clean_photos([], 5)
+check("B6 empty list is not an error", kept == [] and info["mode"] == "no_bands")
+check("B7 trim_bands still behaves as before (T1-T5 unchanged)", rc.trim_bands(padded()).size == (400, 300) and rc.trim_bands(clean()).size == (400, 300))
+
 print("%d/%d" % (sum(res), len(res)))
 sys.exit(0 if all(res) else 1)

@@ -1,7 +1,8 @@
 """relinx_pilot_check.py - draft-level check of GIAL listings as Relinx will send them (2026-10-28).
 
-We play Relinx: read a public relinx.it listing page, take its ORIGINAL photos (no category: the site shows none), remove the white
-square padding that the site's own copies carry (the API photos Relinx really sent were clean - checked on job cc2aead8), serve them from a
+We play Relinx: read a public relinx.it listing page, take its ORIGINAL photos (no category: the site shows none), DISCARD the copies
+that carry the white square padding of the site (half of the page; 2026-10-29: discarded, not cropped - the API photos Relinx really
+sent were clean, checked on job cc2aead8; trimming is only the fallback when too few clean photos are left), serve them from a
 tiny local server and POST them to /v1/videos on the TEST instance (start_test.sh, port 8002: real Claude, own jobs and data folders).
 POST /v1/videos stops in draft, so no video is generated: cost = a few cents of Claude per listing. Then the same checks as draft_check.py.
 
@@ -49,8 +50,9 @@ def parse_listing(page: str, url: str) -> dict:
             "photos": list(found.values())}
 
 
-def trim_bands(img):
-    """Pure: removes pure-white padding rows/columns at the edges. Returns img unchanged if there is nothing to remove or the result looks wrong."""
+def _content_box(img):
+    """Pure: (x0, y0, x1, y1) of the non-white content when the picture carries pure-white padding worth removing; None when there is
+    nothing to remove or the result would look wrong (all white, or less than half the picture left)."""
     import numpy as np
     a = np.asarray(img.convert("RGB"))
     h, w, _ = a.shape
@@ -58,11 +60,36 @@ def trim_bands(img):
     rows = np.where(content.mean(axis=1) > 0.01)[0]
     cols = np.where(content.mean(axis=0) > 0.01)[0]
     if len(rows) == 0 or len(cols) == 0:
-        return img
+        return None
     y0, y1, x0, x1 = rows.min(), rows.max() + 1, cols.min(), cols.max() + 1
     if (y1 - y0) * (x1 - x0) < 0.5 * h * w or ((y0 + (h - y1)) < 0.03 * h and (x0 + (w - x1)) < 0.03 * w):
-        return img
-    return img.crop((int(x0), int(y0), int(x1), int(y1)))
+        return None
+    return (int(x0), int(y0), int(x1), int(y1))
+
+
+def has_bands(img) -> bool:
+    """Pure: True when the picture carries white padding (the site's own padded copy of a photo)."""
+    return _content_box(img) is not None
+
+
+def trim_bands(img):
+    """Pure: removes pure-white padding rows/columns at the edges. Returns img unchanged if there is nothing to remove or the result looks wrong."""
+    box = _content_box(img)
+    return img if box is None else img.crop(box)
+
+
+def choose_clean_photos(imgs, min_keep):
+    """Pure. 2026-10-29 rule (Michele): half of the photos on a relinx.it page are copies with white bands, so the copy WITH bands
+    is discarded and the one without is kept. Only when that would leave fewer than min_keep photos (a listing whose photos all
+    carry bands) the banded ones are kept trimmed, so the listing is not lost. Returns (kept, info): kept = [(position, image)] in
+    page order; info = {"banded": [positions], "mode": "discarded" | "trimmed_fallback" | "no_bands"}."""
+    banded = [i for i, im in enumerate(imgs) if has_bands(im)]
+    if not banded:
+        return [(i, im) for i, im in enumerate(imgs)], {"banded": [], "mode": "no_bands"}
+    clean = [(i, im) for i, im in enumerate(imgs) if i not in banded]
+    if len(clean) >= min_keep:
+        return clean, {"banded": banded, "mode": "discarded"}
+    return [(i, trim_bands(im) if i in banded else im) for i, im in enumerate(imgs)], {"banded": banded, "mode": "trimmed_fallback"}
 
 
 def main(argv):
@@ -144,12 +171,16 @@ def main(argv):
                 d = tmp / L["id"]
                 d.mkdir(exist_ok=True)
                 photos = []
-                for i, rel in enumerate(L["photos"]):
-                    im = Image.open(io.BytesIO(requests.get("https://relinx.it" + rel, headers=UA, timeout=60).content)).convert("RGB")
-                    im = trim_bands(im)
-                    im.save(d / ("%03d.jpg" % i), quality=95)
-                    photos.append({"url": local + "/" + L["id"] + "/%03d.jpg?u=%s" % (i, uuid.uuid4().hex[:6]), "order": i})
-                print("  photos: %d (first %s after trimming)" % (len(photos), Image.open(d / "000.jpg").size if photos else None), flush=True)
+                import listing_scraper
+                imgs = [Image.open(io.BytesIO(requests.get("https://relinx.it" + rel, headers=UA, timeout=60).content)).convert("RGB")
+                        for rel in L["photos"]]
+                kept, binfo = choose_clean_photos(imgs, listing_scraper.MIN_USABLE_PHOTOS)
+                for n_out, (pos, im) in enumerate(kept):
+                    im.save(d / ("%03d.jpg" % n_out), quality=95)
+                    photos.append({"url": local + "/" + L["id"] + "/%03d.jpg?u=%s" % (n_out, uuid.uuid4().hex[:6]), "order": n_out})
+                print("  photos: %d of %d on the page; copies with white bands: %d (%s)%s" % (
+                    len(photos), len(imgs), len(binfo["banded"]), binfo["mode"],
+                    " first %s" % (Image.open(d / "000.jpg").size,) if photos else ""), flush=True)
                 payload = {"external_ref": "T-%s-%s" % (L["id"], uuid.uuid4().hex[:6]), "agency_name": "GIAL IMMOBILIARE",
                            "agency_external_id": "gial-test-" + L["id"], "property_name": L["name"], "description": L["description"],
                            "features": [], "photos": photos, "voice_id": "", "callback_url": local + "/hook"}

@@ -92,8 +92,9 @@ check("C3 nothing redone -> no cost record", sr.record_rework_cost({"reworks": [
 
 # ── the engine with fakes ───────────────────────────────────────────────────
 class Fakes:
-    def __init__(self, tts_ok=True, video_ok=None, audio_secs=3.0):
+    def __init__(self, tts_ok=True, video_ok=None, audio_secs=3.0, wm_ok=True):
         self.calls = []; self.tts_ok = tts_ok; self.video_ok = video_ok or {}; self.audio_secs = audio_secs
+        self.wm_ok = wm_ok; self.enh_args = None
         self.saved = 0; self.progress_log = []
     def deps(self):
         async def to_thread(fn, *a, **kw): return fn(*a, **kw)
@@ -107,9 +108,14 @@ class Fakes:
             ok = self.video_ok.get(sid, True)
             if ok: Path(out).write_bytes(b"mp4")
             return ok
-        def enh(src, dst):
-            self.calls.append(("enhance", Path(src).name)); Path(dst).write_bytes(b"jpg")
-        return types.SimpleNamespace(generate_speech=gs, audio_seconds=lambda p: self.audio_secs, enhance=enh,
+        def enh(src, dst, do_lighting=True, do_upscale=True):
+            self.calls.append(("enhance", Path(src).name)); self.enh_args = (Path(src).name, Path(dst).name, do_lighting, do_upscale)
+            Path(dst).write_bytes(b"jpg")
+        def rm(src, dst):
+            self.calls.append(("watermark", Path(src).name))
+            if self.wm_ok: Path(dst).write_bytes(b"dewm")
+            return {"ok": self.wm_ok}
+        return types.SimpleNamespace(generate_speech=gs, audio_seconds=lambda p: self.audio_secs, enhance=enh, remove_watermark=rm,
                                      generate_video=vid, to_thread=to_thread, save=lambda: setattr(self, "saved", self.saved + 1),
                                      progress=lambda pct, msg: self.progress_log.append((pct, msg)), log=log)
     def kinds(self): return [c[0] for c in self.calls]
@@ -189,6 +195,43 @@ with tempfile.TemporaryDirectory() as d:     # audio-only
     f2 = Fakes(tts_ok=False)
     r = run(sr.redo_scenes(job, d, ["sc_0"], f2.deps(), video=False))
     check("E21 audio-only TTS failure: skipped, nothing recorded", r["skipped"] == ["sc_0"] and not r["redone"])
+
+# ── 2026-10-29: rework prepares the photo like the first generation (watermark only if asked, the job's own flags) ──
+check("F0 enhance_flags: job flags, both True when the job does not say",
+      sr.enhance_flags({}) == (True, True) and sr.enhance_flags({"enhance_images": True, "upscale_images": False}) == (True, False)
+      and sr.enhance_flags({"enhance_images": False, "upscale_images": False}) == (False, False))
+with tempfile.TemporaryDirectory() as d:     # job made WITHOUT the 4x upscale: the rework must not put it back
+    job = make_job(d); job["upscale_images"] = False; f = Fakes()
+    run(sr.redo_scenes(job, d, ["sc_4"], f.deps()))
+    check("F1 job with upscale_images=False: enhance called with (lighting True, upscale False)", f.enh_args and f.enh_args[2:] == (True, False), f.enh_args)
+    check("F2 no watermark call on a scene without the flag (API / unchecked)", "watermark" not in f.kinds(), f.calls)
+with tempfile.TemporaryDirectory() as d:     # both flags off: the photo goes through unchanged settings
+    job = make_job(d); job["enhance_images"] = False; job["upscale_images"] = False; f = Fakes()
+    run(sr.redo_scenes(job, d, ["sc_4"], f.deps()))
+    check("F3 both flags off: enhance called with (False, False)", f.enh_args and f.enh_args[2:] == (False, False), f.enh_args)
+with tempfile.TemporaryDirectory() as d:     # watermark requested: removal first, enhancement works on the dewatermarked photo
+    job = make_job(d); job["scenes_config"][4]["remove_watermark"] = True; f = Fakes()
+    r = run(sr.redo_scenes(job, d, ["sc_4"], f.deps()))
+    check("F4 flagged scene: watermark removal, then enhance, then clip (in this order)", f.kinds() == ["watermark", "enhance", "video"], f.calls)
+    check("F5 enhance works on the dewatermarked photo and writes the dewm-named file", f.enh_args[0] == sr.dewatermarked_name("sc_4") and "_dewm_" in f.enh_args[1], f.enh_args)
+    check("F6 removal is done on the ORIGINAL photo of the scene", f.calls[0] == ("watermark", "sc_4.jpg"), f.calls)
+    check("F7 clean run: no watermark_failed in the result", "watermark_failed" not in r and r["redone"], r)
+    f2 = Fakes()
+    run(sr.redo_scenes(job, d, ["sc_4"], f2.deps()))
+    check("F8 second rework of the same scene reuses both files: no removal, no enhancement, only the clip", f2.kinds() == ["video"], f2.calls)
+with tempfile.TemporaryDirectory() as d:     # removal fails: original photo used, scene still redone, failure reported
+    job = make_job(d); job["scenes_config"][4]["remove_watermark"] = True; f = Fakes(wm_ok=False)
+    r = run(sr.redo_scenes(job, d, ["sc_4"], f.deps()))
+    check("F9 failed removal: original photo enhanced, clip made, scene reported in watermark_failed",
+          f.enh_args[0] == "sc_4.jpg" and "_dewm_" not in f.enh_args[1] and r["watermark_failed"] == ["sc_4"] and len(r["redone"]) == 1, (f.enh_args, r))
+with tempfile.TemporaryDirectory() as d:     # an old enhanced file made with other settings is never reused
+    job = make_job(d); job["upscale_images"] = False
+    (Path(d) / "enhanced").mkdir(); (Path(d) / "enhanced" / "sc_4_enhanced.jpg").write_bytes(b"old forced lighting+upscale")
+    f = Fakes()
+    run(sr.redo_scenes(job, d, ["sc_4"], f.deps()))
+    check("F10 a stale sc_NN_enhanced.jpg from the old forced settings is ignored", "enhance" in f.kinds() and f.enh_args[1] == sr.enhanced_name("sc_4", False, True, False), f.enh_args)
+check("F11 enhanced_name differs for every combination of flags and watermark",
+      len({sr.enhanced_name("s", w, l, u) for w in (0, 1) for l in (0, 1) for u in (0, 1)}) == 8)
 
 # ── call sites in api_server.py (it cannot be imported here: no fastapi) ─────
 src = open("api_server.py").read()

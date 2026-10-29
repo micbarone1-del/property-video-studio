@@ -390,3 +390,11 @@ Update 2026-10-25 (night): clip QC with Claude built in the sandbox (test_clip_q
 - PASS (test con risposte finte): test_failed_clips 20/20 (P9a), test_luma_wait 19/19 (P9b), test_outdoor_rules 14/14 (P9c e prompt P4). Nessuna evidenza reale: i test non sono video veri.
 - Righe FMEA P9a/P9b/P9c: restano ACT finche' un video reale non e' passato; O (occorrenza) non riabbassata senza prova. Controllo P9a: fermo visibile + guardia all'assemblaggio + 400 all'approvazione. Controllo P9b: attesa 900 s + registro .lost.json + costo del rework. Controllo P9c: movimento minimo + prima facciata sola.
 - Not run: video reale a pagamento dopo le correzioni; prova dell'errore 400 di /approve via HTTP vera (testata solo sulla funzione).
+
+
+## BK — 2026-10-29 — aggiunte di stato (i punteggi restano proposte, da rivedere con Michele)
+- Aree di rischio toccate: rework (stato job, costo), qualita' foto, percorso partner. Verifica: test elencati nell'entry BK di status.md (output reale del server). NON verificato con provider reali.
+- F69 (tre percorsi di rework diversi): ulteriore allineamento, il Rifai ora prepara la foto come la prima generazione (test F0-F11 di test_scene_rework). Stato: verificato per funzione, non dal vivo.
+- Righe FMEA PROPOSTE: P10a "Rifai produce un'immagine diversa dalla prima generazione (flag del job ignorati, niente rimozione watermark)" S5 O6 D7 RPN 210 ACT, controllo enhance_flags + test F1-F11; P10b "foto pulite del partner passate dalla rimozione watermark" S6 O9 D5 RPN 270 ACT, controllo remove_watermark=False nel percorso partner (test R2, R4); P10c "foto rotte o miniature accettate (4x2 px, 486 px)" S5 O4 D5 RPN 100 ACT, controllo soglia 800 px (test U1-U6, D3-D6); P10d "foto sfocata, a blocchi o con watermark sul soggetto accettata" S6 O6 D7 RPN 252 ACT, controllo parziale: criteri nel ranking + verdetto in sola misura (non calibrato, scarto spento).
+- Invarianti colpite: stato finale corretto e visibile (il Rifai riproduce la preparazione della prima generazione); costo contato (un Rifai non rifa piu' l'upscale se il job lo aveva spento).
+- Not run: nessuna prova con provider reali; nessuna prova di carico; ripetizioni dell'A/B albero.

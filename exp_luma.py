@@ -12,7 +12,7 @@ import sys
 import time
 from pathlib import Path
 
-CAP_EUR = 10.0
+CAP_EUR = 12.2   # 2026-10-29: +2.2 EUR approved by Michele to confirm the root cause of the exterior defect
 HERE = Path(__file__).resolve().parent
 JOBS_DIR = Path(os.environ.get("PVS_JOBS_DIR") or (HERE / "jobs"))
 SCRATCH = JOBS_DIR / "_test_scratch"
@@ -24,7 +24,7 @@ TARGET_MOTION = camera_plan.CENTRE_MOTION
 STILL_ADD = ("plants, foliage, curtains and every other object in the room stay perfectly still and never appear, grow, move or sway, only the camera moves, the foreground of the last frame contains exactly what the photo contains")
 STRICT_ADD = camera_plan.ANCHOR_STRICT   # the same first-frame text production adds in anchor mode
 ANCHOR_MOTION = camera_plan.ANCHOR_MOTION   # one text, shared with production
-VARIANTS = ("base", "still", "strict", "straight", "pair", "subtle", "target", "anchor", "anchormove")
+VARIANTS = ("base", "still", "strict", "straight", "pair", "subtle", "target", "anchor", "anchormove", "plain", "plainsubtle", "orig")
 # ONE implementation of the anchor texts and parsing: camera_plan (production reads the same functions)
 import camera_plan as _cp
 parse_anchor_side = _cp.parse_anchor_answer
@@ -105,6 +105,29 @@ def load_scene(job: str, index: int) -> dict:
     return {"scene": sc, "image": img, "qc": qc, "meta": meta}
 
 
+def plain_image(job: str, index: int, raw: bool = False):
+    """2026-10-29 (variant plain): the photo AFTER watermark removal but WITHOUT the lighting correction and WITHOUT the aura-sr 4x upscale,
+    only a plain Lanczos resize to 1920 px wide. Written in the scratch folder. None if neither file exists."""
+    from PIL import Image
+    jd = JOBS_DIR / job
+    meta = json.loads((jd / "job_meta.json").read_text())
+    sid = (meta.get("scenes_config") or [])[index].get("scene_id")
+    cands = ([] if raw else [jd / "enhanced" / f"scene_{index:03d}_dewatermarked.jpg"]) + [jd / "images" / f"{sid}{e}" for e in (".jpg", ".jpeg", ".png")] \
+        + [jd / "images" / f"scene_{index:03d}.jpg"]
+    src = next((c for c in cands if c.exists()), None)
+    if not src:
+        return None
+    im = Image.open(src).convert("RGB")
+    w, h = im.size
+    if w < 1920:
+        im = im.resize((1920, round(h * 1920 / w)), Image.LANCZOS)
+    SCRATCH.mkdir(parents=True, exist_ok=True)
+    out = SCRATCH / f"{'orig' if raw else 'plain'}_{job}_{index}.jpg"
+    im.save(out, quality=95)
+    print(f"foto usata: {src.name} {w}x{h} -> {out.name} {im.size[0]}x{im.size[1]} (nessuna correzione luce, nessun aura-sr)")
+    return out
+
+
 def cmd_list(job: str):
     meta = json.loads((JOBS_DIR / job / "job_meta.json").read_text())
     for i, sc in enumerate(meta.get("scenes_config") or []):
@@ -118,6 +141,8 @@ def cmd_run(job: str, index: int, variant: str, go: bool, generate=None, anchor_
     if variant not in VARIANTS:
         print("variante non valida:", variant, VARIANTS); return 2
     s = load_scene(job, index)
+    if variant in ("plain", "plainsubtle", "orig"):
+        s["image"] = plain_image(job, index, raw=(variant == "orig"))
     if not s["image"]:
         print("foto non trovata"); return 2
     if variant == "pair":
@@ -140,7 +165,7 @@ def cmd_run(job: str, index: int, variant: str, go: bool, generate=None, anchor_
     if variant in ("strict", "straight", "subtle", "target", "pair", "anchor", "anchormove"):
         vg._LUMA_RULES = vg._LUMA_RULES + ", " + STRICT_ADD + (STRAIGHT_ADD if variant in ("straight", "target") else "")
     movement = s["scene"].get("pov_movement", "walk_in_explore")
-    if variant == "subtle":
+    if variant in ("subtle", "plainsubtle"):
         movement = "subtle_rotate"          # the almost-static production movement
     if variant == "target":
         vg._LUMA_MOVEMENT_TOKENS["walk_in_explore"] = TARGET_MOTION
