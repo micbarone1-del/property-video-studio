@@ -659,7 +659,10 @@ def _assess_with_model(images: list, model: str, label: str) -> dict:
     return {"verdict": tech, "overlay": overlay, "call_ok": True}
 
 
-BLOCKINESS_MAX_DEFAULT = 4.0      # provisional (2026-10-29): about JPEG quality 20 and below on a photo; to be set from the real photos' distribution
+# 2026-10-29, measured on the server (calibrate_quality.py --blockiness): the 101 real photos of all past jobs score 1.03-1.436 (median 1.153,
+# p95 1.326); the six q3 damaged copies score 3.246-7.174 (lowest 3.246). 2.5 keeps a wide margin on both sides (real max 1.44 -> 74% below;
+# lowest damaged copy 3.25 -> 30% above). A photo at JPEG quality 50 scores about 1.6-1.9 and is NOT flagged; roughly quality 20 and below is.
+BLOCKINESS_MAX_DEFAULT = 2.5
 BLOCKINESS_CAP = 50.0
 
 

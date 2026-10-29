@@ -169,7 +169,7 @@ def blockiness_report(photos, out_dir: Path, n_variants: int):
     def pct(q):
         return scores[min(len(scores) - 1, int(round(q * (len(scores) - 1))))]
     print(f"\nREAL photos scored: {len(scores)} (of {len(rows)}).  min {scores[0]}  median {statistics.median(scores)}  p90 {pct(0.9)}  p95 {pct(0.95)}  max {scores[-1]}")
-    for limit in (2.0, 3.0, 4.0, 6.0):
+    for limit in (1.5, 2.0, 2.5, 3.0, 4.0):
         print(f"  photos with score >= {limit}: {sum(1 for s in scores if s >= limit)}")
     print(f"  current limit (PVS_BLOCKINESS_MAX): {ls.photo_blockiness_max()}")
     top = sorted((r for r in rows if r["score"] is not None), key=lambda r: -r["score"])[:12]

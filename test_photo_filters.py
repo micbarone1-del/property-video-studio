@@ -163,9 +163,11 @@ sb = ls.blockiness_score(jq(_photo.filter(ImageFilter.GaussianBlur(8)), 95))
 check("B2 a blurred (smooth) photo has no block grid: score about 1, so blur is never read as blocks", sb < 1.3, sb)
 buf = io.BytesIO(); Image.new("RGB", (800, 600), (120, 120, 120)).save(buf, "JPEG")
 check("B3 a perfectly flat image scores 0 (never a problem); a tiny image or garbage bytes give None", ls.blockiness_score(buf.getvalue()) == 0.0 and ls.blockiness_score(jpeg(20, 20)) is None and ls.blockiness_score(b"not an image") is None)
-check("B4 default limit 4.0; PVS_BLOCKINESS_MAX overrides; a bad value falls back to the default; 0 switches off",
-      (os.environ.pop("PVS_BLOCKINESS_MAX"), ls.photo_blockiness_max())[1] == 4.0 and (os.environ.__setitem__("PVS_BLOCKINESS_MAX", "2.5"), ls.photo_blockiness_max())[1] == 2.5
-      and (os.environ.__setitem__("PVS_BLOCKINESS_MAX", "abc"), ls.photo_blockiness_max())[1] == 4.0 and (os.environ.__setitem__("PVS_BLOCKINESS_MAX", "0"), ls.photo_blockiness_max())[1] == 0.0)
+check("B4 default limit 2.5 (measured: real photos max 1.44, damaged copies min 3.25); PVS_BLOCKINESS_MAX overrides; a bad value falls back to the default; 0 switches off",
+      (os.environ.pop("PVS_BLOCKINESS_MAX"), ls.photo_blockiness_max())[1] == 2.5 and (os.environ.__setitem__("PVS_BLOCKINESS_MAX", "3.5"), ls.photo_blockiness_max())[1] == 3.5
+      and (os.environ.__setitem__("PVS_BLOCKINESS_MAX", "abc"), ls.photo_blockiness_max())[1] == 2.5 and (os.environ.__setitem__("PVS_BLOCKINESS_MAX", "0"), ls.photo_blockiness_max())[1] == 0.0)
+REAL_MAX, DAMAGED_MIN = 1.436, 3.246      # measured on the server 2026-10-29: 101 real photos / six q3 copies
+check("B4b the default limit sits between the measured real photos (max 1.436) and the lowest damaged copy (3.246), with margin on both sides", REAL_MAX * 1.5 < ls.BLOCKINESS_MAX_DEFAULT < DAMAGED_MIN * 0.85, ls.BLOCKINESS_MAX_DEFAULT)
 os.environ["PVS_BLOCKINESS_MAX"] = "4"
 os.environ["PVS_QUALITY_MODELS"] = "judge-a"
 ANSWER.update(text="ANSWER: ok none"); ANSWER["per_model"] = {}

@@ -63,12 +63,16 @@ def costly(content, label=""):
     ls._claude_usage["input_tokens"] += 50_000_000
     return {"verdict": "ok", "call_ok": True}
 ls.reset_claude_usage(); ls.assess_photo_quality = costly
+# the cap is checked after each call; with 4 parallel workers all 3 test photos can start before the first finishes (race) -> one worker makes the test deterministic
+_RealPool = cq.ThreadPoolExecutor
+cq.ThreadPoolExecutor = lambda max_workers=1: _RealPool(max_workers=1)
 sys.argv = ["x", "--run", "--cap", "0.10", "--jobs-dir", jobs, "--out", out]
 import contextlib
 buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
     cq.main()
 n_rows = len(open(os.path.join(out, "verdicts.csv")).read().splitlines()) - 1
+cq.ThreadPoolExecutor = _RealPool
 check("C9 cap stops the run early (fewer than 3 judged)", n_rows < 3 and "stopped at the cap" in buf.getvalue(), (n_rows, buf.getvalue()[-200:]))
 # ── control test with damaged copies ─────────────────────────────────────────
 shutil.rmtree(out, ignore_errors=True)

@@ -1182,3 +1182,16 @@ PRODUCT DECISION (2026-10-28, Michele): the automation launches only for the apa
   - test_infra_cost.py :: 5/5 | FAILS=0
 - Not verified: la distribuzione del punteggio sulle 101 foto vere (il limite 4.0 e' una scelta mia dai test sintetici: nessuna foto vera misurata); non so se il controllo sui pixel prende la copia 5f44c77a ne' se segnala foto vere buone; il controllo vale solo per blocchi sulla griglia 8x8 del JPEG (non per foto ingrandite da miniature, che sono "soft": le prendono i modelli). Scarto soft/blocky ancora in sola misura (.env PVS_QUALITY_ENFORCE=0).
 - Rollback: commit e8b4b55 (prima di questo commit).
+
+
+## 2026-10-29 (BT) - Blockiness limit set from measured data (p14)
+- Done: BLOCKINESS_MAX_DEFAULT 4.0 -> 2.5. Measured on the server (block 253): 101 real photos score 1.03-1.436 (median 1.153); the six q3 damaged copies score 3.246-7.174. The old 4.0 let copy 5f44c77a (3.246) through; 2.5 sits ~74% above the real max and ~30% below the lowest damaged copy.
+- Honest limits: flags JPEG-grid damage only (roughly quality 20 and below). Pixelated copies (1.44-2.16) and soft/blur are still the models' job. Real-photo false-alarm rate at 2.5 is 0/101 by measurement. Enforcement is STILL OFF (PVS_QUALITY_ENFORCE=0 in .env).
+- Also: test C9 (calibrate cap) was flaky (4 parallel workers race); now deterministic (15/15 reruns).
+- Control test with the new limit: NOT run yet. 12 'soft' real photos NOT yet verified by Michele.
+- Tests: test_photo_filters.py RESULT: ALL PASS (74/74)
+test_calibrate_quality.py RESULT: ALL PASS (23/23)
+test_partner_failure.py RESULT: ALL PASS (20/20)
+test_claude_cost_models.py RESULT: ALL PASS (10/10)
+test_upscale_default.py RESULT: ALL PASS (15/15)
+- Rollback: commit b99168e.

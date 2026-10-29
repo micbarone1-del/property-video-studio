@@ -447,3 +447,12 @@ Update 2026-10-25 (night): clip QC with Claude built in the sandbox (test_clip_q
 - P10d (foto sfocata o a blocchi accettata): osservata ancora UNA copia a blocchi (q3, 5f44c77a) accettata da entrambi i modelli: rischio reale. Mitigazione aggiunta: controllo gratuito sui pixel (test B1-B10, Z1-Z3). Non tarato sulle foto vere. Rischio residuo aperto; scarto spento.
 - P10e (falso positivo): l'unico "falso allarme" della prova era una foto davvero sfocata (verificato da Michele): 0 su 6; su 101 foto vere i "soft" sono 12 (da verificare a occhio).
 - Not run: --blockiness sulle foto vere; prova di controllo con il terzo voto.
+
+
+## 2026-10-29 (BT) - Blockiness limit 2.5 (p14)
+- Test B4/B4b (test_photo_filters 74/74): default sits between real max 1.436 and damaged min 3.246. Status: PASS (sandbox + server run below). Control test with real Claude after the change: not run.
+- test_photo_filters.py RESULT: ALL PASS (74/74)
+test_calibrate_quality.py RESULT: ALL PASS (23/23)
+test_partner_failure.py RESULT: ALL PASS (20/20)
+test_claude_cost_models.py RESULT: ALL PASS (10/10)
+test_upscale_default.py RESULT: ALL PASS (15/15)

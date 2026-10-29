@@ -935,3 +935,10 @@ Requirements, in his words/intent (confirm in plain language before any code; ea
 - Lanciare python3 calibrate_quality.py --blockiness (gratuito) e leggere la distribuzione sulle 101 foto vere: fissare PVS_BLOCKINESS_MAX tra le foto vere e le copie a blocchi (la 5f44c77a deve risultare sopra il limite, nessuna foto vera buona sopra).
 - Michele guarda i 12 "soft" delle 101 foto vere: se sono davvero sfocati il giudice e' affidabile sulla sfocatura; se alcuni sono buoni, valutare di far scartare solo se i DUE modelli concordano, accettando di perdere recall.
 - Poi: ripetere la prova di controllo (--degrade-test 6 --run, circa 0.05 EUR) e, se la copia 5f44c77a viene presa e i falsi allarmi restano zero, proporre a Michele di togliere PVS_QUALITY_ENFORCE=0.
+
+
+## 2026-10-29 (BT) - Quality judge: next steps after p14
+- Rerun control test (~0.05 EUR, needs OK): criterion >=16/18 recognised and 0 false alarms on originals; then decide on removing PVS_QUALITY_ENFORCE=0.
+- Michele to check the 12 real photos flagged 'soft' (real_sheet_soft_1.jpg) -> real false-alarm rate.
+- Tell Relinx about failure_code / failure_message (language of messages to decide).
+- GIAL 1307 with upscale off: not run.
