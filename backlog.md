@@ -942,3 +942,9 @@ Requirements, in his words/intent (confirm in plain language before any code; ea
 - Michele to check the 12 real photos flagged 'soft' (real_sheet_soft_1.jpg) -> real false-alarm rate.
 - Tell Relinx about failure_code / failure_message (language of messages to decide).
 - GIAL 1307 with upscale off: not run.
+
+
+## 2026-10-29 (BU) - Open after p15
+- Rerun the 64 test-instance photos with the fix; if false alarms are gone, switch enforcement on again and run 1307 end to end (upscale off).
+- Band detector (relinx_pilot_check._content_box): found bands on 25 of 25 photos of the 1307 page, Michele sees none on the site. Check per photo (size, content box).
+- Batch of GIAL listings with report and links to the videos; then e2e automation, parallel runs, live report (to be scoped).

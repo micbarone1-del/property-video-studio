@@ -166,6 +166,17 @@ check("B3 a perfectly flat image scores 0 (never a problem); a tiny image or gar
 check("B4 default limit 2.5 (measured: real photos max 1.44, damaged copies min 3.25); PVS_BLOCKINESS_MAX overrides; a bad value falls back to the default; 0 switches off",
       (os.environ.pop("PVS_BLOCKINESS_MAX"), ls.photo_blockiness_max())[1] == 2.5 and (os.environ.__setitem__("PVS_BLOCKINESS_MAX", "3.5"), ls.photo_blockiness_max())[1] == 3.5
       and (os.environ.__setitem__("PVS_BLOCKINESS_MAX", "abc"), ls.photo_blockiness_max())[1] == 2.5 and (os.environ.__setitem__("PVS_BLOCKINESS_MAX", "0"), ls.photo_blockiness_max())[1] == 0.0)
+from PIL import Image as _PI
+_big, _mid, _edge = _PI.new("RGB", (4096, 3041)), _PI.new("RGB", (1500, 1000)), _PI.new("RGB", (1920, 1080))
+_v = ls.to_video_scale(_big)
+check("B5 a photo above the video scale is brought to long side 1920 (aspect kept); smaller or equal ones are untouched",
+      max(_v.size) == 1920 and abs(_v.size[0] / _v.size[1] - 4096 / 3041) < 0.002 and ls.to_video_scale(_mid) is _mid and ls.to_video_scale(_edge) is _edge, _v.size)
+import base64 as _b64, io as _io
+_buf = _io.BytesIO(); _big.save(_buf, "JPEG")
+_c = _PI.open(_io.BytesIO(_b64.b64decode(ls._native_crop_b64(_buf.getvalue()))))
+_buf2 = _io.BytesIO(); _mid.save(_buf2, "JPEG")
+_c2 = _PI.open(_io.BytesIO(_b64.b64decode(ls._native_crop_b64(_buf2.getvalue()))))
+check("B5b the crop is 768 x 768 for a big photo, and the whole 1000 px height of a smaller photo is cropped to 768 too", _c.size == (768, 768) and _c2.size == (768, 768), (_c.size, _c2.size))
 REAL_MAX, DAMAGED_MIN = 1.436, 3.246      # measured on the server 2026-10-29: 101 real photos / six q3 copies
 check("B4b the default limit sits between the measured real photos (max 1.436) and the lowest damaged copy (3.246), with margin on both sides", REAL_MAX * 1.5 < ls.BLOCKINESS_MAX_DEFAULT < DAMAGED_MIN * 0.85, ls.BLOCKINESS_MAX_DEFAULT)
 os.environ["PVS_BLOCKINESS_MAX"] = "4"

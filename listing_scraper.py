@@ -627,11 +627,28 @@ QUALITY_JUDGE_MAX_TOKENS = 600          # room for a short reasoning (and for mo
 QUALITY_JUDGE_PER_CATEGORY = 4      # the best-ranked candidates of each category that get a verdict (the rest are never reached)
 
 
+# 2026-10-29 (listing 1307, relinx.it page copies 4096 px wide): a centre crop at the REAL pixels of a very large photo is a tiny patch of plain wall
+# and looked "soft" to the judge (33 of 36 photos above 3000 px, 0 of 7 between 1300 and 2000 px; Michele saw all of them sharp). The video is
+# 1920x1080 whatever the photo size, so the photo is first brought to the video's scale (long side VIDEO_LONG_SIDE) and the crop is taken there.
+VIDEO_LONG_SIDE = 1920
+
+
+def to_video_scale(img):
+    """Pure: the photo scaled DOWN so its long side is VIDEO_LONG_SIDE (the scale at which the video shows it); smaller photos are unchanged."""
+    from PIL import Image
+    w, h = img.size
+    long_side = max(w, h)
+    if long_side <= VIDEO_LONG_SIDE:
+        return img
+    k = VIDEO_LONG_SIDE / long_side
+    return img.resize((max(1, round(w * k)), max(1, round(h * k))), Image.LANCZOS)
+
+
 def _native_crop_b64(content: bytes, side: int = VISION_MAX_SIDE) -> str:
-    """Centre crop of the photo at its REAL pixels (no scaling), base64 JPEG: what a scaled-down picture hides."""
+    """Centre crop of the photo at the video's scale (real pixels for photos up to VIDEO_LONG_SIDE), base64 JPEG: what a scaled-down picture hides."""
     import base64, io
     from PIL import Image
-    img = Image.open(io.BytesIO(content)).convert("RGB")
+    img = to_video_scale(Image.open(io.BytesIO(content)).convert("RGB"))
     w, h = img.size
     cw, ch = min(side, w), min(side, h)
     x0, y0 = (w - cw) // 2, (h - ch) // 2

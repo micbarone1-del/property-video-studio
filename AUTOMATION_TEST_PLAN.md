@@ -456,3 +456,14 @@ test_calibrate_quality.py RESULT: ALL PASS (23/23)
 test_partner_failure.py RESULT: ALL PASS (20/20)
 test_claude_cost_models.py RESULT: ALL PASS (10/10)
 test_upscale_default.py RESULT: ALL PASS (15/15)
+
+
+## 2026-10-29 (BU) - Judge crop at video scale (p15)
+- B5/B5b (test_photo_filters 76/76): scale rule and crop size. Status PASS in sandbox. test_photo_filters.py RESULT: ALL PASS (76/76)
+test_calibrate_quality.py RESULT: ALL PASS (23/23)
+test_partner_failure.py RESULT: ALL PASS (20/20)
+test_claude_cost_models.py RESULT: ALL PASS (10/10)
+test_upscale_default.py RESULT: ALL PASS (15/15)
+test_selection_report.py RESULT: ALL PASS (29/29)
+test_vision_classify.py RESULT: ALL PASS (36/36)
+- Real-photo check after the fix: not run yet (rerun on 64 photos).
