@@ -425,3 +425,8 @@ Update 2026-10-25 (night): clip QC with Claude built in the sandbox (test_clip_q
 ## BO — 2026-10-29 (sera) — aggiunte di stato (punteggi proposti, da rivedere con Michele)
 - P10d (foto sfocata o a blocchi accettata): CONFERMATA dalla prova di controllo (12/18 riconosciute, il giudice nominava il marchio al posto del difetto). Mitigazione in prova: risposta in due parole separate. Stato: test con giudice finto (Q1b, Q1c, Q6, Q8b); nessun dato reale sul nuovo prompt. Punteggi da rivedere: O osservata alta.
 - Not run: prova di controllo con il nuovo prompt.
+
+
+## BP — 2026-10-29 (sera) — aggiunte di stato (punteggi proposti, da rivedere con Michele)
+- P10d (foto sfocata o a blocchi accettata): mitigazione parziale misurata, 14 su 18 copie peggiorate riconosciute (12 prima), 0 falsi allarmi su 6; sotto la soglia proposta di 16 su 18, quindi lo scarto resta spento. Rischio residuo aperto. Punteggi da rivedere.
+- Not run: confronto con altri modelli.

@@ -100,6 +100,21 @@ def detail(b):
     return float(np.abs(np.diff(a, axis=1)).mean())
 check("D7 blur and pixelated really remove fine detail (much lower edge energy than the original)", detail(v["blur"]) < detail(orig) * 0.5 and detail(v["pixelated"]) < detail(orig) * 0.7, (detail(orig), detail(v["blur"]), detail(v["pixelated"])))
 check("D8 jpegblocks is much smaller than the original file (heavy compression)", len(v["jpegblocks"]) < len(orig) * 0.5, (len(v["jpegblocks"]), len(orig)))
+# ── --model: another model for one run, and failed calls are reported ─────────
+shutil.rmtree(out, ignore_errors=True)
+old_model = ls.MODEL
+sys.argv = ["x", "--degrade-test", "3", "--model", "claude-sonnet-5-5", "--jobs-dir", jobs, "--out", out]
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    cq.main()
+check("M1 --model changes the model of this run (and so the cost estimate formula)", ls.MODEL == "claude-sonnet-5-5" and "model: claude-sonnet-5-5" in buf.getvalue(), buf.getvalue()[:200])
+ls.MODEL = old_model
+ls.reset_claude_usage(); ls.assess_photo_quality = lambda content, label="": {"verdict": "unknown", "call_ok": False}
+sys.argv = ["x", "--degrade-test", "3", "--run", "--jobs-dir", jobs, "--out", out]
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    cq.main()
+check("M2 failed judge calls are reported loudly (wrong model name)", "12 of 12 judge calls FAILED" in buf.getvalue(), buf.getvalue()[-300:])
 src = open("calibrate_quality.py").read()
 check("C10 tool has no delete/move/write-to-jobs calls", not any(w in src for w in ("unlink", "rmtree", "os.remove", ".rename(", "shutil.move")))
 shutil.rmtree(root)

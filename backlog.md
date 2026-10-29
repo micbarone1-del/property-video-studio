@@ -914,3 +914,7 @@ Requirements, in his words/intent (confirm in plain language before any code; ea
 
 ## BO — 2026-10-29 (sera) — voci aperte
 - Rilanciare la prova di controllo con il nuovo prompt (stesse foto, circa 0.033 EUR). Soglia per riattivare lo scarto (proposta, da confermare con Michele): copie peggiorate riconosciute in blocco >= 16 su 18 e 0 falsi allarmi sui 6 originali. Se la pixelazione resta invisibile al giudice: provare un modello piu' forte solo per questo giudizio (costo da stimare).
+
+
+## BP — 2026-10-29 (sera) — voci aperte
+- Confrontare altri modelli come giudice con la stessa prova (--model claude-haiku-5-5, poi claude-sonnet-5-5 se serve): scegliere il modello solo se supera la soglia (16/18 e 0 falsi allarmi su 6). Usare un modello diverso in produzione per il solo giudice richiede un costo per modello nel contatore Claude (oggi un solo prezzo, quello di MODEL): da fare PRIMA di cambiare il modello del giudice, altrimenti il costo mostrato sarebbe sbagliato.

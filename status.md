@@ -1063,3 +1063,31 @@ PRODUCT DECISION (2026-10-28, Michele): the automation launches only for the apa
   - test_scene_facts.py :: 19/19 | FAILS=0
 - Not verified: la stessa prova di controllo con il nuovo prompt NON e' ancora stata rilanciata (stesse 6 foto, 24 chiamate, circa 0.033 EUR): nessun dato reale sul nuovo prompt. Scarto soft/blocky ancora in sola misura (.env PVS_QUALITY_ENFORCE=0).
 - Rollback: commit dff8612 (prima di questo commit).
+
+
+## BP — 2026-10-29 (sera) — prova di controllo con il prompt in due parole: 14/18; opzione --model per confrontare altri modelli
+- Evidence (corsa reale, stesse 6 foto, 24 chiamate, Haiku 4.5, costo reale 0.0341 EUR): copie peggiorate riconosciute soft/blocky 14 su 18 (blur 6/6, pixelated 3/6, jpegblocks 5/6); originali chiamati soft/blocky 0 su 6; i marchi sovrapposti sono ora etichettati a parte (portal / agency / none). Prima del prompt in due parole: 12 su 18 (pixelated 1/6). Non raggiunge la soglia proposta (16 su 18): il giudice con questo modello resta una rete di sicurezza incompleta (sfocatura sempre riconosciuta, JPEG a blocchi 5/6, pixelazione 3/6). Un campione di 6 foto e 3 tipi di danno sintetico: indicativo, non una misura statistica.
+- Changed: calibrate_quality.py --model NOME giudica UN giro con un altro modello (solo quel processo: chiamate e formula del costo usano quel modello); la produzione non cambia (listing_scraper.MODEL invariato). Il report segnala a gran voce le chiamate fallite (nome modello sbagliato o accesso mancante).
+- Tests (output reale del server):
+  - test_partner_failure.py :: RESULT: ALL PASS (20/20) | FAILS=0
+  - test_calibrate_quality.py :: RESULT: ALL PASS (20/20) | FAILS=0
+  - test_upscale_default.py :: RESULT: ALL PASS (15/15) | FAILS=0
+  - test_photo_filters.py :: RESULT: ALL PASS (47/47) | FAILS=0
+  - test_scene_rework.py :: RESULT: ALL PASS (77/77) | FAILS=0
+  - test_relinx_loader.py :: 21/21 | FAILS=0
+  - test_package1.py :: RESULT: ALL PASS (26/26) | FAILS=0
+  - test_selection_report.py :: RESULT: ALL PASS (29/29) | FAILS=0
+  - test_standard_3b.py :: RESULT: ALL PASS (32/32) | FAILS=0
+  - test_url_draft_background.py :: RESULT: ALL PASS (32/32) | FAILS=0
+  - test_vision_classify.py :: RESULT: ALL PASS (36/36) | FAILS=0
+  - test_download_retry.py :: 5/5 | FAILS=0
+  - test_draft_check.py :: 17/17 | FAILS=0
+  - test_camera_plan.py :: 20/20 PASS | FAILS=0
+  - test_failed_clips.py :: RESULT: ALL PASS (20/20) | FAILS=0
+  - test_luma_wait.py :: RESULT: ALL PASS (19/19) | FAILS=0
+  - test_outdoor_rules.py :: RESULT: ALL PASS (14/14) | FAILS=0
+  - test_anchor_timeline.py :: RESULT: ALL PASS (102/102) | FAILS=0
+  - test_photo_ranking_prompt.py :: RESULT: ALL PASS (7/7) | FAILS=0
+  - test_scene_facts.py :: 19/19 | FAILS=0
+- Not verified: nessun confronto ancora eseguito con altri modelli; scarto soft/blocky ancora in sola misura (.env PVS_QUALITY_ENFORCE=0). I prezzi di claude-haiku-5-5 e claude-sonnet-5-5 sono quelli gia' in CLAUDE_PRICES (listing_scraper), non verificati dal vivo.
+- Rollback: commit 9e61c10 (prima di questo commit).

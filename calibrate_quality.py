@@ -111,7 +111,7 @@ def degrade_test(photos, n, run, cap, out_dir):
         r = ls.assess_photo_quality(it["bytes"], label=f"{it['variant']}/{it['sha'][:8]}")
         if ls.get_claude_cost()["cost_eur"] >= cap:
             stop = True
-        return {**it, "verdict": r["verdict"], "overlay": r.get("overlay", "")}
+        return {**it, "verdict": r["verdict"], "overlay": r.get("overlay", ""), "call_ok": r.get("call_ok", True)}
 
     with ThreadPoolExecutor(max_workers=4) as ex:
         results = [r for r in ex.map(one, items) if r]
@@ -135,7 +135,10 @@ def degrade_test(photos, n, run, cap, out_dir):
     print(f"\nDAMAGED copies recognised as soft/blocky: {caught} of {damaged}  ({', '.join(f'{k} {v[0]}/{v[1]}' for k, v in by_variant.items())})")
     print(f"ORIGINALS wrongly called soft/blocky (false alarms): {false_alarms} of {originals}")
     cost = ls.get_claude_cost()
-    print(f"REAL Claude cost: {cost['cost_eur']:.4f} EUR ({cost['calls']} calls){' - stopped at the cap' if stop else ''}")
+    failed = sum(1 for r in results if not r["call_ok"])
+    print(f"REAL Claude cost: {cost['cost_eur']:.4f} EUR ({cost['calls']} calls){' - stopped at the cap' if stop else ''} | model: {ls.MODEL}")
+    if failed:
+        print(f"WARNING: {failed} of {len(results)} judge calls FAILED (verdict unknown): wrong model name or no access? Results are not usable.")
     for r in results:
         r["verdict"] = f"{r['variant']}_judged_{r['verdict']}"
         r["w"], r["h"] = r.get("w"), r.get("h")
@@ -178,7 +181,10 @@ def main():
     ap.add_argument("--run", action="store_true", help="really call Claude (without it: dry run, nothing is sent)")
     ap.add_argument("--cap", type=float, default=0.50, help="stop when the real Claude cost reaches this many EUR")
     ap.add_argument("--degrade-test", type=int, default=0, metavar="N", help="control test on N photos damaged on purpose (see top of file)")
+    ap.add_argument("--model", default="", help="judge with another Claude model FOR THIS RUN ONLY (e.g. claude-haiku-5-5); the production model is not changed")
     a = ap.parse_args()
+    if a.model:
+        ls.MODEL = a.model      # this process only: calls AND the cost formula use it (claude_cost_eur reads MODEL at call time)
 
     photos, stats = collect(Path(a.jobs_dir))
     if a.degrade_test:
