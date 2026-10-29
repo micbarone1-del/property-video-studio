@@ -530,9 +530,9 @@ def _image_b64_for_vision(content: bytes) -> str:
         return base64.b64encode(content).decode("utf-8")
 
 
-def _vision_word_from_b64(b64_images: list, prompt: str, label: str = "") -> tuple:
+def _vision_word_from_b64(b64_images: list, prompt: str, label: str = "", words: int = 1) -> tuple:
     """The ONE place that sends one or more photos (already base64 JPEG) and a short question to Claude vision and returns the
-    answer as one lowercase word. (word, ok): ok is False only when the call itself failed.
+    answer as one lowercase word (words=2: the first two words, joined by one space). (word, ok): ok is False only when the call itself failed.
     2026-10-29: split out of _vision_one_word so a question that needs a second image (the photo-quality check sends the whole
     photo and a crop at its real pixels) uses the same sender instead of a copy of it."""
     try:
@@ -544,6 +544,8 @@ def _vision_word_from_b64(b64_images: list, prompt: str, label: str = "") -> tup
             model=MODEL, max_tokens=20, messages=[{"role": "user", "content": content}],
         ))
         raw = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip().lower()
+        if words > 1:
+            return " ".join(re.findall(r"[a-z]+", raw)[:words]), True
         return re.sub(r"[^a-z]", "", raw), True
     except Exception as e:
         log.warning(f"[Scraper] Vision question failed for {label}: {e}")
@@ -581,22 +583,25 @@ def _classify_photo_vision(image_url: str, fallback_url: str = None) -> tuple:
 # that were chosen: the whole photo plus a crop at its real pixels.
 PHOTO_QUALITY_PROMPT = (
     "You will see two images of the SAME real estate photo: first the whole photo scaled down, then a crop of its centre at the "
-    "original pixels (100%). Judge the technical quality of the picture, because a video model will build a 5 second clip "
-    "from it as the first frame. Ordinary phone or camera photos with normal sharpness are fine: answer soft or blocky ONLY when "
-    "the problem is clearly visible. Check the technical problems FIRST, even when an overlay is also present.\n"
-    "- soft: clearly blurred, out of focus or smeared, with no fine detail left.\n"
-    "- blocky: clearly pixelated, with visible JPEG blocks, banding or heavy noise.\n"
-    "- portal: (only if the photo is NOT soft or blocky) a semi-transparent text or logo of a listing portal, such as immobiliare.it, "
-    "laid over the photo.\n"
-    "- agency: (only if the photo is NOT soft or blocky, and has no portal mark) a solid logo, banner, ribbon or contact bar of the "
-    "real estate agency in a corner or along an edge.\n"
-    "- ok: none of these.\n"
-    "Answer with ONLY one word: ok, soft, blocky, portal or agency."
+    "original pixels (100%). A video model will build a 5 second clip from this photo as the first frame, so its technical quality "
+    "matters. Answer with exactly TWO words separated by a space.\n"
+    "FIRST word = the technical quality of the picture itself, whatever is written or drawn on it, never influenced by the second word:\n"
+    "- ok: normal sharpness and detail (ordinary phone or camera photos are ok).\n"
+    "- soft: clearly blurred, out of focus or smeared, or a low-resolution picture stretched up: smooth, no fine detail, edges look "
+    "painted. Answer soft only when this is clearly visible.\n"
+    "- blocky: clearly pixelated, with visible squares or JPEG blocks, banding, flat posterized colour patches or heavy noise.\n"
+    "SECOND word = what is laid over the photo, independent of the first word:\n"
+    "- none: nothing.\n"
+    "- portal: a semi-transparent text or logo of a listing portal, such as immobiliare.it.\n"
+    "- agency: a solid logo, banner, ribbon, contact bar or text of the real estate agency (for example kw HOME, a ribbon in a corner).\n"
+    "Examples of complete answers: ok none / soft portal / blocky agency / ok portal."
 )
-PHOTO_QUALITY_WORDS = ("ok", "soft", "blocky", "portal", "agency")
+PHOTO_QUALITY_WORDS = ("ok", "soft", "blocky")
+PHOTO_OVERLAY_WORDS = ("none", "portal", "agency")
 # 2026-10-29 (Michele, after the calibration on 101 past photos): a portal watermark or an agency logo is NOT a reason to discard a photo
-# (scraped photos nearly all carry one; the removal chosen in the UI handles it, API photos arrive clean). They are only labelled, in the
-# verdict, so the report shows what is on each photo. TEMPORARY: to be reviewed after the degraded-photo test and the GIAL real job.
+# (scraped photos nearly all carry one; the removal chosen in the UI handles it, API photos arrive clean). The overlay is only LABELLED
+# (p["overlay"], selection_report). It is asked as a separate second word because with one combined answer the judge named the overlay and
+# skipped the technical verdict (control test: 5 of 6 pixelated copies answered "portal"). TEMPORARY: review after the real GIAL job.
 PHOTO_QUALITY_POOR = ("soft", "blocky")
 QUALITY_JUDGE_PER_CATEGORY = 4      # the best-ranked candidates of each category that get a verdict (the rest are never reached)
 
@@ -614,17 +619,20 @@ def _native_crop_b64(content: bytes, side: int = VISION_MAX_SIDE) -> str:
 
 
 def assess_photo_quality(content: bytes, label: str = "") -> dict:
-    """{"verdict": ok|soft|blocky|portal|agency|unknown, "call_ok": bool}. "unknown" = the call failed or the answer was not one of
-    the known words; unknown is never treated as a problem."""
+    """{"verdict": ok|soft|blocky|unknown, "overlay": none|portal|agency|unknown, "call_ok": bool} ("overlay" only when the call worked).
+    "unknown" = the call failed or the answer was not one of the known words; unknown is never treated as a problem."""
     try:
         images = [_image_b64_for_vision(content), _native_crop_b64(content)]
     except Exception as e:
         log.warning(f"[Scraper] Photo quality: could not prepare {label}: {e}")
         return {"verdict": "unknown", "call_ok": False}
-    word, ok = _vision_word_from_b64(images, PHOTO_QUALITY_PROMPT, label)
+    word, ok = _vision_word_from_b64(images, PHOTO_QUALITY_PROMPT, label, words=2)
     if not ok:
         return {"verdict": "unknown", "call_ok": False}
-    return {"verdict": word if word in PHOTO_QUALITY_WORDS else "unknown", "call_ok": True}
+    parts = word.split()
+    tech = parts[0] if parts and parts[0] in PHOTO_QUALITY_WORDS else "unknown"
+    overlay = parts[1] if len(parts) > 1 and parts[1] in PHOTO_OVERLAY_WORDS else "unknown"
+    return {"verdict": tech, "overlay": overlay, "call_ok": True}
 
 
 def photo_quality_check_enabled() -> bool:
@@ -667,6 +675,7 @@ def filter_poor_quality_candidates(by_category: dict, assess=None, enforce=None)
         poor = 0
         for (cat, p), r in zip(items, results):
             p["quality"] = r["verdict"]
+            p["overlay"] = r.get("overlay")
             if r["verdict"] in PHOTO_QUALITY_POOR:
                 poor += 1
                 p["quality_poor"] = True
@@ -920,7 +929,7 @@ def build_selection_report(photos: list, selection: dict, scene_count_requested=
             "url_used": p.get("url_used"), "used_fallback": bool(p.get("used_fallback", False)),
             "resolution_upgraded": p.get("resolution_upgraded"),
             "rank_position": p.get("rank_position"), "rank_status": p.get("rank_status"),
-            "quality": p.get("quality"),
+            "quality": p.get("quality"), "overlay": p.get("overlay"),
         } for p in plist]
 
     used = {("outdoor" if c in ("outdoor_early", "outdoor_late") else c)

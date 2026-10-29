@@ -910,3 +910,7 @@ Requirements, in his words/intent (confirm in plain language before any code; ea
 - Lanciare la prova di controllo (--degrade-test 6 --run, circa 0.03 EUR, 24 chiamate) e leggere i risultati con Michele; solo se le copie peggiorate sono riconosciute e gli originali non danno falsi allarmi, riattivare PVS_QUALITY_ENFORCE (rimuovere la riga =0 dal .env) per soft/blocky.
 - Rivedere con Michele il ruolo di portal/agency dopo il lavoro reale GIAL (provvisorio). Il prompt del RANKING penalizza ancora il watermark sul soggetto: coerenza da decidere.
 - Il test sulle foto di job passati non contiene foto cattive vere: raccogliere esempi reali di foto sfocate/a blocchi (da annunci futuri) per una calibrazione piu' onesta.
+
+
+## BO — 2026-10-29 (sera) — voci aperte
+- Rilanciare la prova di controllo con il nuovo prompt (stesse foto, circa 0.033 EUR). Soglia per riattivare lo scarto (proposta, da confermare con Michele): copie peggiorate riconosciute in blocco >= 16 su 18 e 0 falsi allarmi sui 6 originali. Se la pixelazione resta invisibile al giudice: provare un modello piu' forte solo per questo giudizio (costo da stimare).

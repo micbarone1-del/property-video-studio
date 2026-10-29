@@ -111,7 +111,7 @@ def degrade_test(photos, n, run, cap, out_dir):
         r = ls.assess_photo_quality(it["bytes"], label=f"{it['variant']}/{it['sha'][:8]}")
         if ls.get_claude_cost()["cost_eur"] >= cap:
             stop = True
-        return {**it, "verdict": r["verdict"]}
+        return {**it, "verdict": r["verdict"], "overlay": r.get("overlay", "")}
 
     with ThreadPoolExecutor(max_workers=4) as ex:
         results = [r for r in ex.map(one, items) if r]
@@ -120,12 +120,12 @@ def degrade_test(photos, n, run, cap, out_dir):
     false_alarms = sum(1 for r in results if r["variant"] == "original" and r["verdict"] in ls.PHOTO_QUALITY_POOR)
     originals = sum(1 for r in results if r["variant"] == "original")
     with open(out_dir / "degrade_test.csv", "w", newline="") as fh:
-        w = csv.writer(fh); w.writerow(["photo", "variant", "verdict"])
+        w = csv.writer(fh); w.writerow(["photo", "variant", "verdict", "overlay"])
         for r in results:
-            w.writerow([r["sha"][:8], r["variant"], r["verdict"]])
-    print("\nphoto     variant      verdict")
+            w.writerow([r["sha"][:8], r["variant"], r["verdict"], r["overlay"]])
+    print("\nphoto     variant      verdict  overlay")
     for r in results:
-        print(f"{r['sha'][:8]}  {r['variant']:<11}  {r['verdict']}")
+        print(f"{r['sha'][:8]}  {r['variant']:<11}  {r['verdict']:<7}  {r['overlay']}")
     by_variant = {}
     for r in results:
         if r["variant"] != "original":
@@ -206,15 +206,15 @@ def main():
         r = ls.assess_photo_quality(p["path"].read_bytes(), label=f"{p['job'][:8]}/{p['file']}")
         if ls.get_claude_cost()["cost_eur"] >= a.cap:
             stop = True
-        return {**p, "verdict": r["verdict"]}
+        return {**p, "verdict": r["verdict"], "overlay": r.get("overlay", "")}
 
     with ThreadPoolExecutor(max_workers=4) as ex:
         results = [r for r in ex.map(one, chosen) if r]
     cost = ls.get_claude_cost()
     with open(out_dir / "verdicts.csv", "w", newline="") as fh:
-        w = csv.writer(fh); w.writerow(["job", "file", "width", "height", "verdict"])
+        w = csv.writer(fh); w.writerow(["job", "file", "width", "height", "verdict", "overlay"])
         for r in results:
-            w.writerow([r["job"], r["file"], r["w"], r["h"], r["verdict"]])
+            w.writerow([r["job"], r["file"], r["w"], r["h"], r["verdict"], r["overlay"]])
     counts = {}
     for r in results:
         counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1

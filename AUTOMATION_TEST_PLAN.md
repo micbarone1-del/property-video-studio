@@ -420,3 +420,8 @@ Update 2026-10-25 (night): clip QC with Claude built in the sandbox (test_clip_q
 - P10e (falso positivo del giudice) CONFERMATO dalla calibrazione: 78 di 101 foto giudicate "watermark", cioe' il rischio era reale. Mitigazione: watermark tolto dai motivi di scarto e scarto in sola misura (PVS_QUALITY_ENFORCE=0). Rischio residuo: soft/blocky non verificato (prova di controllo non ancora eseguita). Punteggi da rivedere: O sale (osservato), D scende (rilevato dalla calibrazione).
 - P10d (foto sfocata o a blocchi accettata) resta aperta: nessun test con foto cattive vere finora.
 - Not run: prova di controllo con foto peggiorate; nessuna prova con provider reali sul giudice con le nuove parole.
+
+
+## BO — 2026-10-29 (sera) — aggiunte di stato (punteggi proposti, da rivedere con Michele)
+- P10d (foto sfocata o a blocchi accettata): CONFERMATA dalla prova di controllo (12/18 riconosciute, il giudice nominava il marchio al posto del difetto). Mitigazione in prova: risposta in due parole separate. Stato: test con giudice finto (Q1b, Q1c, Q6, Q8b); nessun dato reale sul nuovo prompt. Punteggi da rivedere: O osservata alta.
+- Not run: prova di controllo con il nuovo prompt.

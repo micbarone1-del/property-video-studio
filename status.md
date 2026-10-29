@@ -1035,3 +1035,31 @@ PRODUCT DECISION (2026-10-28, Michele): the automation launches only for the apa
   - test_scene_facts.py :: 19/19 | FAILS=0
 - Not verified: la prova di controllo non e' stata ancora lanciata (nessun dato su soft/blocky); i nuovi verdetti portal/agency non sono mai stati visti da Claude reale; scarto per soft/blocky NON riattivato.
 - Rollback: commit 12e92ed (prima di questo commit).
+
+
+## BO — 2026-10-29 (sera) — prova di controllo con foto peggiorate: il giudice trascurava il difetto tecnico; risposta in due parole
+- Evidence (corsa reale, 6 foto x [originale + blur + pixelated + jpegblocks] = 24 chiamate, Haiku 4.5, costo reale 0.0333 EUR, prompt di BN): copie peggiorate riconosciute soft/blocky 12 su 18 (blur 6/6, jpegblocks 5/6, pixelated 1/6); originali chiamati soft/blocky 0 su 6 (tutti "portal"). Michele ha guardato i fogli: le copie pixelate (risposta "portal") sono evidentemente sfocate/impoverite e la copia jpegblocks con logo kw HOME (risposta "portal") e' evidentemente posterizzata: il giudice NOMINAVA il marchio e saltava il giudizio tecnico, nonostante la frase "controlla prima i difetti tecnici". Il filtro cosi' com'era non va bene (Michele: "il filtro va migliorato").
+- Changed: il giudice risponde con DUE parole: prima il giudizio tecnico (ok / soft / blocky), poi cio' che e' sovrapposto (none / portal / agency), con la frase esplicita che la prima parola non dipende dalla seconda. "soft" copre anche una foto a bassa risoluzione ingrandita; "blocky" anche chiazze di colore piatte (posterizzazione). Verdetto tecnico = p["quality"] (unico che scarta, solo soft e blocky); overlay = p["overlay"] (solo etichetta, anche nel selection_report). La parola unica "portal" non e' piu' un verdetto tecnico (diventa unknown, mai un problema). Un solo mittente: _vision_word_from_b64 ha ora words=2. calibrate_quality.py stampa e salva anche l'overlay.
+- Tests (output reale del server):
+  - test_partner_failure.py :: RESULT: ALL PASS (20/20) | FAILS=0
+  - test_calibrate_quality.py :: RESULT: ALL PASS (18/18) | FAILS=0
+  - test_upscale_default.py :: RESULT: ALL PASS (15/15) | FAILS=0
+  - test_photo_filters.py :: RESULT: ALL PASS (47/47) | FAILS=0
+  - test_scene_rework.py :: RESULT: ALL PASS (77/77) | FAILS=0
+  - test_relinx_loader.py :: 21/21 | FAILS=0
+  - test_package1.py :: RESULT: ALL PASS (26/26) | FAILS=0
+  - test_selection_report.py :: RESULT: ALL PASS (29/29) | FAILS=0
+  - test_standard_3b.py :: RESULT: ALL PASS (32/32) | FAILS=0
+  - test_url_draft_background.py :: RESULT: ALL PASS (32/32) | FAILS=0
+  - test_vision_classify.py :: RESULT: ALL PASS (36/36) | FAILS=0
+  - test_download_retry.py :: 5/5 | FAILS=0
+  - test_draft_check.py :: 17/17 | FAILS=0
+  - test_camera_plan.py :: 20/20 PASS | FAILS=0
+  - test_failed_clips.py :: RESULT: ALL PASS (20/20) | FAILS=0
+  - test_luma_wait.py :: RESULT: ALL PASS (19/19) | FAILS=0
+  - test_outdoor_rules.py :: RESULT: ALL PASS (14/14) | FAILS=0
+  - test_anchor_timeline.py :: RESULT: ALL PASS (102/102) | FAILS=0
+  - test_photo_ranking_prompt.py :: RESULT: ALL PASS (7/7) | FAILS=0
+  - test_scene_facts.py :: 19/19 | FAILS=0
+- Not verified: la stessa prova di controllo con il nuovo prompt NON e' ancora stata rilanciata (stesse 6 foto, 24 chiamate, circa 0.033 EUR): nessun dato reale sul nuovo prompt. Scarto soft/blocky ancora in sola misura (.env PVS_QUALITY_ENFORCE=0).
+- Rollback: commit dff8612 (prima di questo commit).

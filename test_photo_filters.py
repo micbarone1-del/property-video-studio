@@ -81,7 +81,14 @@ ls.anthropic.Anthropic = FakeClient
 
 ANSWER.update(text="Blocky."); SENT.clear()
 v = ls.assess_photo_quality(jpeg(2000, 1500), "t")
-check("Q1 reply 'Blocky.' -> verdict blocky, call ok", v == {"verdict": "blocky", "call_ok": True}, v)
+check("Q1 reply 'Blocky.' (one word only) -> verdict blocky, overlay unknown, call ok", v == {"verdict": "blocky", "overlay": "unknown", "call_ok": True}, v)
+ANSWER.update(text="Soft portal"); v2 = ls.assess_photo_quality(jpeg())
+ANSWER.update(text="ok none."); v3 = ls.assess_photo_quality(jpeg())
+ANSWER.update(text="Blocky, agency"); v4 = ls.assess_photo_quality(jpeg())
+check("Q1b two-word answers: the technical verdict and the overlay are read separately", v2 == {"verdict": "soft", "overlay": "portal", "call_ok": True} and v3["verdict"] == "ok" and v3["overlay"] == "none" and v4["verdict"] == "blocky" and v4["overlay"] == "agency", (v2, v3, v4))
+ANSWER.update(text="portal")
+check("Q1c the old combined word 'portal' is NOT a technical verdict (unknown, never a problem)", ls.assess_photo_quality(jpeg())["verdict"] == "unknown")
+ANSWER.update(text="Blocky.")
 check("Q2 two images are sent: the whole photo and a crop", len(SENT[0]) == 2, len(SENT))
 crop = Image.open(io.BytesIO(base64.b64decode(SENT[0][1]["source"]["data"])))
 whole = Image.open(io.BytesIO(base64.b64decode(SENT[0][0]["source"]["data"])))
@@ -91,8 +98,8 @@ check("Q4 an answer outside the four words is 'unknown', never a problem", ls.as
 ANSWER.update(raise_=True); ANSWER["raise"] = True
 check("Q5 API error -> unknown, call_ok False, no exception", ls.assess_photo_quality(jpeg()) == {"verdict": "unknown", "call_ok": False})
 ANSWER["raise"] = False
-check("Q6 the prompt asks for ONE of ok/soft/blocky/portal/agency", "ok, soft, blocky, portal or agency" in SENT_PROMPT[0])
-check("Q6b only soft and blocky are poor: a portal watermark or an agency logo is never a reason to discard", ls.PHOTO_QUALITY_POOR == ("soft", "blocky") and set(ls.PHOTO_QUALITY_WORDS) == {"ok", "soft", "blocky", "portal", "agency"})
+check("Q6 the prompt asks for two words: technical (ok/soft/blocky) then overlay (none/portal/agency), the technical one not influenced by the overlay", all(w in SENT_PROMPT[0] for w in ("TWO words", "FIRST word", "SECOND word", "- ok:", "- soft:", "- blocky:", "- none:", "- portal:", "- agency:", "never influenced by the second word")))
+check("Q6b only soft and blocky are poor: a portal watermark or an agency logo is never a reason to discard", ls.PHOTO_QUALITY_POOR == ("soft", "blocky") and set(ls.PHOTO_QUALITY_WORDS) == {"ok", "soft", "blocky"} and set(ls.PHOTO_OVERLAY_WORDS) == {"none", "portal", "agency"})
 
 # ── the quality filter works in the SELECTION (2026-10-29) ───────────────────
 def pool(cats):
@@ -100,7 +107,7 @@ def pool(cats):
     return {c: [{"url": n, "category": c} for n in names] for c, names in cats.items()}
 VERDICT = {}
 def assess_named(content, label=""):
-    return {"verdict": VERDICT.get(content, "ok"), "call_ok": True}
+    return {"verdict": VERDICT.get(content, "ok"), "overlay": OVERLAY.get(content, "none"), "call_ok": True}
 FETCHED = []
 def fetch_named(url, fallback_url=None, timeout=20, attempts=1):
     FETCHED.append(url)
@@ -109,12 +116,13 @@ real_fetch = ls.fetch_photo_bytes
 ls.fetch_photo_bytes = fetch_named
 os.environ.pop("PVS_QUALITY_CHECK", None); os.environ.pop("PVS_QUALITY_ENFORCE", None)
 
-VERDICT.clear(); VERDICT.update({"liv1": "blocky", "kit2": "soft", "bed1": "portal", "liv3": "agency"})
+VERDICT.clear(); VERDICT.update({"liv1": "blocky", "kit2": "soft"})
+OVERLAY = {"bed1": "portal", "liv3": "agency"}
 bc = pool({"living": ["liv1", "liv2", "liv3"], "kitchen": ["kit1", "kit2"], "bedrooms": ["bed1"]})
 s_ = ls.filter_poor_quality_candidates(bc, assess=assess_named)
 check("Q7 enforcing is the default: the blocky top candidate is removed, the next one comes first", [p["url"] for p in bc["living"]] == ["liv2", "liv3"], bc["living"])
 check("Q8 a poor photo that was not first is removed too, the good ones stay in order", [p["url"] for p in bc["kitchen"]] == ["kit1"] and [p["url"] for p in bc["bedrooms"]] == ["bed1"])
-check("Q8b photos labelled portal / agency are KEPT (only labelled)", [p["url"] for p in bc["living"]] == ["liv2", "liv3"] and bc["bedrooms"][0]["quality"] == "portal" and bc["living"][1]["quality"] == "agency" and not bc["bedrooms"][0].get("quality_rejected"))
+check("Q8b photos labelled portal / agency are KEPT (only labelled)", [p["url"] for p in bc["living"]] == ["liv2", "liv3"] and bc["bedrooms"][0]["overlay"] == "portal" and bc["living"][1]["overlay"] == "agency" and bc["bedrooms"][0]["quality"] == "ok" and not bc["bedrooms"][0].get("quality_rejected"))
 check("Q9 summary: 6 judged, 2 poor, enforced", s_["checked"] == 6 and s_["poor"] == 2 and s_["enforced"], s_)
 check("Q10 every judged photo is tagged with its verdict; removed ones carry quality_rejected",
       all("quality" in p for pl in bc.values() for p in pl) and ls._quality_gap_note([{"quality_rejected": True}]).startswith(" 1 photo(s)"))
