@@ -65,6 +65,11 @@ def pick(photos, n):
 VARIANTS = ("blur", "pixelated", "jpegblocks")
 
 
+def estimate_cost(photos_judged: int) -> float:
+    """Estimated EUR for judging that many photos with EVERY judge model (each model looks at each photo, at its own price)."""
+    return sum(ls.claude_cost_eur(EST_IN_TOKENS * photos_judged, EST_OUT_TOKENS * photos_judged, m) for m in ls.photo_quality_models())
+
+
 def make_variants(content: bytes) -> dict:
     """Deliberately damaged copies of one photo, as JPEG bytes: blur (strong Gaussian), pixelated (shrunk to 1/6 and enlarged with big
     square pixels), jpegblocks (the same size saved at JPEG quality 3: visible 8x8 blocks and banding)."""
@@ -85,7 +90,7 @@ def make_variants(content: bytes) -> dict:
 def degrade_test(photos, n, run, cap, out_dir):
     chosen = pick(photos, n)
     calls = len(chosen) * (1 + len(VARIANTS))
-    est = ls.claude_cost_eur(EST_IN_TOKENS * calls, EST_OUT_TOKENS * calls)
+    est = estimate_cost(calls)
     print(f"CONTROL TEST: {len(chosen)} photos x (original + {len(VARIANTS)} damaged copies) = {calls} calls, estimated cost about {est:.3f} EUR (cap {cap:.2f} EUR)")
     if not run:
         print("DRY RUN: no call was made, nothing was written. Add --run to spend.")
@@ -111,7 +116,7 @@ def degrade_test(photos, n, run, cap, out_dir):
         r = ls.assess_photo_quality(it["bytes"], label=f"{it['variant']}/{it['sha'][:8]}")
         if ls.get_claude_cost()["cost_eur"] >= cap:
             stop = True
-        return {**it, "verdict": r["verdict"], "overlay": r.get("overlay", ""), "call_ok": r.get("call_ok", True)}
+        return {**it, "verdict": r["verdict"], "overlay": r.get("overlay", ""), "call_ok": r.get("call_ok", True), "by_model": r.get("by_model") or {}}
 
     with ThreadPoolExecutor(max_workers=4) as ex:
         results = [r for r in ex.map(one, items) if r]
@@ -120,12 +125,12 @@ def degrade_test(photos, n, run, cap, out_dir):
     false_alarms = sum(1 for r in results if r["variant"] == "original" and r["verdict"] in ls.PHOTO_QUALITY_POOR)
     originals = sum(1 for r in results if r["variant"] == "original")
     with open(out_dir / "degrade_test.csv", "w", newline="") as fh:
-        w = csv.writer(fh); w.writerow(["photo", "variant", "verdict", "overlay"])
+        w = csv.writer(fh); w.writerow(["photo", "variant", "verdict", "overlay", "by_model"])
         for r in results:
-            w.writerow([r["sha"][:8], r["variant"], r["verdict"], r["overlay"]])
-    print("\nphoto     variant      verdict  overlay")
+            w.writerow([r["sha"][:8], r["variant"], r["verdict"], r["overlay"], " / ".join(f"{m}={v}" for m, v in r["by_model"].items())])
+    print("\nphoto     variant      verdict  overlay  per model (in the order of the judge models)")
     for r in results:
-        print(f"{r['sha'][:8]}  {r['variant']:<11}  {r['verdict']:<7}  {r['overlay']}")
+        print(f"{r['sha'][:8]}  {r['variant']:<11}  {r['verdict']:<7}  {r['overlay']:<7}  {' / '.join(r['by_model'].values())}")
     by_variant = {}
     for r in results:
         if r["variant"] != "original":
@@ -136,7 +141,7 @@ def degrade_test(photos, n, run, cap, out_dir):
     print(f"ORIGINALS wrongly called soft/blocky (false alarms): {false_alarms} of {originals}")
     cost = ls.get_claude_cost()
     failed = sum(1 for r in results if not r["call_ok"])
-    print(f"REAL Claude cost: {cost['cost_eur']:.4f} EUR ({cost['calls']} calls){' - stopped at the cap' if stop else ''} | model: {ls.MODEL}")
+    print(f"REAL Claude cost: {cost['cost_eur']:.4f} EUR ({cost['calls']} calls){' - stopped at the cap' if stop else ''} | judge models: {', '.join(ls.photo_quality_models())}")
     if failed:
         print(f"WARNING: {failed} of {len(results)} judge calls FAILED (verdict unknown): wrong model name or no access? Results are not usable.")
     for r in results:
@@ -181,20 +186,20 @@ def main():
     ap.add_argument("--run", action="store_true", help="really call Claude (without it: dry run, nothing is sent)")
     ap.add_argument("--cap", type=float, default=0.50, help="stop when the real Claude cost reaches this many EUR")
     ap.add_argument("--degrade-test", type=int, default=0, metavar="N", help="control test on N photos damaged on purpose (see top of file)")
-    ap.add_argument("--model", default="", help="judge with another Claude model FOR THIS RUN ONLY (e.g. claude-haiku-5-5); the production model is not changed")
+    ap.add_argument("--model", default="", help="judge with this model (or 'a,b' for several) FOR THIS RUN ONLY, instead of the production judge models")
     a = ap.parse_args()
     if a.model:
-        ls.MODEL = a.model      # this process only: calls AND the cost formula use it (claude_cost_eur reads MODEL at call time)
+        os.environ["PVS_QUALITY_MODELS"] = a.model   # this process only: ONE judge model for this run (or "a,b" for several)
 
     photos, stats = collect(Path(a.jobs_dir))
     if a.degrade_test:
-        print(f"unique usable photos: {len(photos)} | model: {ls.MODEL}")
+        print(f"unique usable photos: {len(photos)} | judge models: {', '.join(ls.photo_quality_models())}")
         degrade_test(photos, a.degrade_test, a.run, a.cap, Path(a.out))
         return
     chosen = pick(photos, a.max)
-    est = ls.claude_cost_eur(EST_IN_TOKENS * len(chosen), EST_OUT_TOKENS * len(chosen))
+    est = estimate_cost(len(chosen))
     print(f"files read: {stats['files']} | duplicates skipped: {stats['duplicates']} | too small/unreadable skipped: {stats['too_small_or_unreadable']}")
-    print(f"unique usable photos: {len(photos)} | selected for this run: {len(chosen)} | model: {ls.MODEL}")
+    print(f"unique usable photos: {len(photos)} | selected for this run: {len(chosen)} | judge models: {', '.join(ls.photo_quality_models())}")
     print(f"ESTIMATED Claude cost: about {est:.3f} EUR (cap {a.cap:.2f} EUR)")
     if not a.run:
         print("DRY RUN: no call was made, nothing was written. Add --run to spend.")

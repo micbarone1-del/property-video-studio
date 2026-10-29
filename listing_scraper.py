@@ -71,20 +71,30 @@ USD_TO_EUR = 0.93
 # Accumulates real token usage across every Anthropic call made while building
 # one job (extraction, photo quality ranking, narration, captions). Reset per
 # job by the caller via reset_claude_usage().
-_claude_usage = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
+# 2026-10-29: input_tokens / output_tokens are the tokens billed at the price of MODEL (the default model). A call made with ANOTHER model
+# (the photo-quality judge uses a second, cheaper model) is priced at its own price when it is made and summed in extra_cost_eur,
+# so the job cost stays right without pretending that all tokens cost the same.
+_claude_usage = {"input_tokens": 0, "output_tokens": 0, "calls": 0, "extra_cost_eur": 0.0}
 
 def reset_claude_usage():
-    _claude_usage.update({"input_tokens": 0, "output_tokens": 0, "calls": 0})
+    _claude_usage.update({"input_tokens": 0, "output_tokens": 0, "calls": 0, "extra_cost_eur": 0.0})
 
 _claude_lock = threading.Lock()
 
 
-def _track_claude(response):
+def _track_claude(response, model=None):
+    """Counts the real usage of one call. model=None (or the default MODEL): tokens go to the default counters; another model: its own
+    cost is added to extra_cost_eur (claude_cost_eur prices it by model)."""
     try:
         u = response.usage
+        i_t = getattr(u, "input_tokens", 0) or 0
+        o_t = getattr(u, "output_tokens", 0) or 0
         with _claude_lock:
-            _claude_usage["input_tokens"]  += getattr(u, "input_tokens", 0) or 0
-            _claude_usage["output_tokens"] += getattr(u, "output_tokens", 0) or 0
+            if model and model != MODEL:
+                _claude_usage["extra_cost_eur"] += claude_cost_eur(i_t, o_t, model)
+            else:
+                _claude_usage["input_tokens"]  += i_t
+                _claude_usage["output_tokens"] += o_t
             _claude_usage["calls"] += 1
     except Exception:
         pass
@@ -120,9 +130,11 @@ def merge_claude_usage(base, extra):
 def get_claude_cost():
     """Real Claude API cost for the current job, in EUR."""
     i = _claude_usage["input_tokens"]; o = _claude_usage["output_tokens"]
+    extra = round(_claude_usage.get("extra_cost_eur", 0.0), 6)
     return {
         "input_tokens": i, "output_tokens": o, "calls": _claude_usage["calls"],
-        "cost_eur": claude_cost_eur(i, o),
+        "extra_cost_eur": extra,
+        "cost_eur": round(claude_cost_eur(i, o) + extra, 4),
     }
 
 MODEL = "claude-haiku-4-5-20251001"  # cheapest current model; upgrade to
@@ -530,7 +542,7 @@ def _image_b64_for_vision(content: bytes) -> str:
         return base64.b64encode(content).decode("utf-8")
 
 
-def _vision_word_from_b64(b64_images: list, prompt: str, label: str = "", words: int = 1, max_tokens: int = 20, marker: str = "") -> tuple:
+def _vision_word_from_b64(b64_images: list, prompt: str, label: str = "", words: int = 1, max_tokens: int = 20, marker: str = "", model: str = "") -> tuple:
     """The ONE place that sends one or more photos (already base64 JPEG) and a short question to Claude vision and returns the
     answer as one lowercase word (words=2: the first two words, joined by one space). (word, ok): ok is False only when the call itself failed.
     marker (e.g. "answer:"): the model may reason first; the words are read from AFTER the last marker (stronger models do not answer with
@@ -542,9 +554,10 @@ def _vision_word_from_b64(b64_images: list, prompt: str, label: str = "", words:
         content = [{"type": "text", "text": prompt}]
         for b64 in b64_images:
             content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}})
-        response = _track_claude(client.messages.create(
-            model=MODEL, max_tokens=max_tokens, messages=[{"role": "user", "content": content}],
-        ))
+        response = client.messages.create(
+            model=model or MODEL, max_tokens=max_tokens, messages=[{"role": "user", "content": content}],
+        )
+        response = _track_claude(response, model) if model else _track_claude(response)   # callers without a model keep the one-argument call
         raw = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip().lower()
         if marker:
             if marker not in raw:
@@ -626,21 +639,44 @@ def _native_crop_b64(content: bytes, side: int = VISION_MAX_SIDE) -> str:
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
-def assess_photo_quality(content: bytes, label: str = "") -> dict:
-    """{"verdict": ok|soft|blocky|unknown, "overlay": none|portal|agency|unknown, "call_ok": bool} ("overlay" only when the call worked).
-    "unknown" = the call failed or the answer was not one of the known words; unknown is never treated as a problem."""
+def photo_quality_models() -> tuple:
+    """The models that judge a photo. Default: the default model plus claude-haiku-5-5 (control test 2026-10-29 on 6 photos x 3 deliberate
+    damages: alone, Haiku 4.5 found 15 of 18, Haiku 5.5 15 of 18, but they miss DIFFERENT copies - together 18 of 18, with 0 false alarms
+    on the 6 originals; Haiku 5.5 costs about a seventh). PVS_QUALITY_MODELS="a,b" overrides (one name = a single judge)."""
+    env = os.environ.get("PVS_QUALITY_MODELS", "").strip()
+    if env:
+        return tuple(m.strip() for m in env.split(",") if m.strip())
+    return (MODEL, "claude-haiku-5-5")
+
+
+def _assess_with_model(images: list, model: str, label: str) -> dict:
+    word, ok = _vision_word_from_b64(images, PHOTO_QUALITY_PROMPT, label, words=2, max_tokens=QUALITY_JUDGE_MAX_TOKENS, marker="answer:", model=model)
+    if not ok:
+        return {"verdict": "unknown", "overlay": "unknown", "call_ok": False}
+    parts = word.split()
+    tech = parts[0] if parts and parts[0] in PHOTO_QUALITY_WORDS else "unknown"
+    overlay = parts[1] if len(parts) > 1 and parts[1] in PHOTO_OVERLAY_WORDS else "unknown"
+    return {"verdict": tech, "overlay": overlay, "call_ok": True}
+
+
+def assess_photo_quality(content: bytes, label: str = "", models: tuple = None) -> dict:
+    """{"verdict": ok|soft|blocky|unknown, "overlay": none|portal|agency|unknown, "call_ok": bool, "by_model": {model: verdict}}
+    ("overlay" and "by_model" only when at least one call worked). Every judge model looks at the photo; the photo is poor when ANY of them
+    says soft or blocky (the first one that does decides the word), ok when at least one says ok and none a problem, otherwise unknown.
+    A model whose call fails is ignored (one broken judge does not stop the other). "unknown" is never treated as a problem."""
     try:
         images = [_image_b64_for_vision(content), _native_crop_b64(content)]
     except Exception as e:
         log.warning(f"[Scraper] Photo quality: could not prepare {label}: {e}")
         return {"verdict": "unknown", "call_ok": False}
-    word, ok = _vision_word_from_b64(images, PHOTO_QUALITY_PROMPT, label, words=2, max_tokens=QUALITY_JUDGE_MAX_TOKENS, marker="answer:")
-    if not ok:
+    results = [(m, _assess_with_model(images, m, label)) for m in (models or photo_quality_models())]
+    worked = [(m, r) for m, r in results if r["call_ok"]]
+    if not worked:
         return {"verdict": "unknown", "call_ok": False}
-    parts = word.split()
-    tech = parts[0] if parts and parts[0] in PHOTO_QUALITY_WORDS else "unknown"
-    overlay = parts[1] if len(parts) > 1 and parts[1] in PHOTO_OVERLAY_WORDS else "unknown"
-    return {"verdict": tech, "overlay": overlay, "call_ok": True}
+    poor = next((r["verdict"] for m, r in worked if r["verdict"] in PHOTO_QUALITY_POOR), None)
+    verdict = poor or ("ok" if any(r["verdict"] == "ok" for m, r in worked) else "unknown")
+    overlay = next((r["overlay"] for m, r in worked if r["overlay"] != "unknown"), "unknown")
+    return {"verdict": verdict, "overlay": overlay, "call_ok": True, "by_model": {m: r["verdict"] for m, r in worked}}
 
 
 def photo_quality_check_enabled() -> bool:
@@ -684,6 +720,7 @@ def filter_poor_quality_candidates(by_category: dict, assess=None, enforce=None)
         for (cat, p), r in zip(items, results):
             p["quality"] = r["verdict"]
             p["overlay"] = r.get("overlay")
+            p["quality_by_model"] = r.get("by_model")
             if r["verdict"] in PHOTO_QUALITY_POOR:
                 poor += 1
                 p["quality_poor"] = True
@@ -937,7 +974,7 @@ def build_selection_report(photos: list, selection: dict, scene_count_requested=
             "url_used": p.get("url_used"), "used_fallback": bool(p.get("used_fallback", False)),
             "resolution_upgraded": p.get("resolution_upgraded"),
             "rank_position": p.get("rank_position"), "rank_status": p.get("rank_status"),
-            "quality": p.get("quality"), "overlay": p.get("overlay"),
+            "quality": p.get("quality"), "overlay": p.get("overlay"), "quality_by_model": p.get("quality_by_model"),
         } for p in plist]
 
     used = {("outdoor" if c in ("outdoor_early", "outdoor_late") else c)

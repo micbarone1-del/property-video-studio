@@ -923,3 +923,9 @@ Requirements, in his words/intent (confirm in plain language before any code; ea
 ## BQ — 2026-10-29 (sera) — voci aperte
 - Rilanciare la prova con la riga ANSWER su tre modelli: claude-haiku-4-5-20251001 (produzione), claude-haiku-5-5, claude-sonnet-5-5 (costo totale stimato circa 0.13 EUR). Se solo un modello non-default supera la soglia: prima il conteggio del costo per modello, poi il cambio.
 - Lettura troppo permissiva del JPEG a blocchi da parte di Sonnet: se resta dopo la riga ANSWER, rafforzare la definizione di "blocky" (banding o blocchi visibili al ritaglio a 100% anche se lievi) e ripetere la prova, controllando i falsi allarmi sugli originali.
+
+
+## BR — 2026-10-29 (sera) — voci aperte
+- Rieseguire la prova di controllo con il codice a due modelli (python3 calibrate_quality.py --degrade-test 6 --run --cap 0.15, circa 0.05 EUR): attesi 18/18 e 0 falsi allarmi; se confermato, proporre a Michele di togliere PVS_QUALITY_ENFORCE=0 dal .env (riattiva lo scarto di soft/blocky).
+- Controllare il costo dei calcoli Claude di vision_analysis.py: chiama ls._track_claude(resp) (conteggio al prezzo del modello predefinito) E somma il proprio costo per use_model in usage_out: possibile doppio conteggio o prezzo sbagliato (non toccato, solo segnalato).
+- Provare altre foto reali cattive quando capitano, per allargare il campione (oggi 6 foto con danni sintetici).

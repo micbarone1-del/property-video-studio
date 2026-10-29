@@ -435,3 +435,9 @@ Update 2026-10-25 (night): clip QC with Claude built in the sandbox (test_clip_q
 ## BQ — 2026-10-29 (sera) — aggiunte di stato (punteggi proposti, da rivedere con Michele)
 - P10d: un confronto reale tra modelli ha mostrato un secondo difetto di processo (formato di risposta non adatto a modelli che ragionano); correzione con riga ANSWER testata solo con client finto (Q1b-Q1f). Rischio residuo aperto; scarto spento.
 - Not run: corsa reale con la riga ANSWER.
+
+
+## BR — 2026-10-29 (sera) — aggiunte di stato (punteggi proposti, da rivedere con Michele)
+- P10d (foto sfocata o a blocchi accettata): mitigazione migliorata, due giudici (Haiku 4.5 + Haiku 5.5) con 18/18 calcolato a mano sui verdetti delle due corse e 0/6 falsi allarmi; test E1-E11 (regole dei due giudici) e K1-K9 (costo per modello). Resta aperto: prova con il codice reale a due modelli e campione piccolo. Scarto ancora spento.
+- Costo (architettura): il conteggio del costo Claude ora distingue i modelli (K1-K9); possibile duplicato in vision_analysis.py da verificare (voce di backlog BR).
+- Not run: corsa reale con il codice a due modelli.

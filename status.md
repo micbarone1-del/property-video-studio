@@ -1119,3 +1119,35 @@ PRODUCT DECISION (2026-10-28, Michele): the automation launches only for the apa
   - test_scene_facts.py :: 19/19 | FAILS=0
 - Not verified: NESSUNA corsa reale con la riga ANSWER (i test usano un client finto): non so se cambia i risultati ne' se Haiku 4.5, Haiku 5.5 e Sonnet 5.5 ora superano la soglia. Scarto soft/blocky ancora in sola misura (.env PVS_QUALITY_ENFORCE=0). Produzione: il giudice di produzione usa il prompt nuovo (chiamate piu' lunghe di qualche secondo possibile) ma i suoi verdetti non scartano nulla.
 - Rollback: commit b2d6f11 (prima di questo commit).
+
+
+## BR — 2026-10-29 (sera) — giudice con DUE modelli (Haiku 4.5 + Haiku 5.5): scarta se uno dei due vede il difetto; costo contato per modello
+- Evidence (corse reali con la riga ANSWER, stesse 6 foto x [originale + blur + pixelated + jpegblocks], 24 chiamate a giro, 0 risposte "unknown" in tutti): Haiku 4.5 (produzione) 15/18 riconosciute (blur 5/6, pixelated 5/6, jpegblocks 5/6), 0/6 falsi allarmi, costo reale 0.0424 EUR; Haiku 5.5 15/18 (blur 6/6, pixelated 6/6, jpegblocks 3/6), 0/6 falsi allarmi, costo reale 0.0066 EUR (circa un settimo); Sonnet 5.5 13/18 (blur 6/6, pixelated 6/6, jpegblocks 1/6), 1/6 falso allarme (5f44c77a originale giudicato soft), costo reale 0.0944 EUR: scartato (peggiore e il piu' caro). I due Haiku mancano copie DIVERSE: unendo i loro verdetti (poor se uno dei due dice soft/blocky), calcolo a mano sui verdetti delle due corse: 18/18, con 0/6 falsi allarmi. Campione piccolo (6 foto, 3 danni sintetici) e prompt rifinito guardando queste stesse foto: e' un'indicazione, non una misura statistica.
+- Changed: (1) listing_scraper.photo_quality_models(): modelli del giudice, predefinito (MODEL, "claude-haiku-5-5"), PVS_QUALITY_MODELS="a,b" per cambiarli. (2) assess_photo_quality: ogni modello giudica la foto; poor se UNO qualsiasi dice soft/blocky (decide la parola del primo che lo dice); ok se almeno uno dice ok e nessuno un difetto; altrimenti unknown; una chiamata fallita e' ignorata (un giudice rotto non ferma l'altro); restituisce anche by_model, salvato in selection_report (quality_by_model). (3) Costo: _track_claude(response, model) prezza una chiamata di un modello diverso dal predefinito al suo prezzo (CLAUDE_PRICES) in _claude_usage["extra_cost_eur"]; get_claude_cost().cost_eur = formula del modello predefinito + extra; input_tokens/output_tokens restano i token del modello predefinito; i chiamanti senza modello non cambiano. (4) _vision_word_from_b64 accetta model. (5) calibrate_quality.py --model ora imposta PVS_QUALITY_MODELS per quel processo (non cambia piu' MODEL) e stima il costo per modello.
+- Costo in produzione: ogni foto giudicata ora costa due chiamate (Haiku 4.5 circa 0.0018 EUR + Haiku 5.5 circa 0.0003 EUR, ragionamento breve incluso): circa +16% sul giudizio rispetto al solo Haiku 4.5. Il giudizio gira solo in sola misura finche' PVS_QUALITY_ENFORCE=0.
+- Tests (output reale del server):
+  - test_claude_cost_models.py :: RESULT: ALL PASS (10/10) | FAILS=0
+  - test_partner_failure.py :: RESULT: ALL PASS (20/20) | FAILS=0
+  - test_calibrate_quality.py :: RESULT: ALL PASS (20/20) | FAILS=0
+  - test_upscale_default.py :: RESULT: ALL PASS (15/15) | FAILS=0
+  - test_photo_filters.py :: RESULT: ALL PASS (63/63) | FAILS=0
+  - test_scene_rework.py :: RESULT: ALL PASS (77/77) | FAILS=0
+  - test_relinx_loader.py :: 21/21 | FAILS=0
+  - test_package1.py :: RESULT: ALL PASS (26/26) | FAILS=0
+  - test_selection_report.py :: RESULT: ALL PASS (29/29) | FAILS=0
+  - test_standard_3b.py :: RESULT: ALL PASS (32/32) | FAILS=0
+  - test_url_draft_background.py :: RESULT: ALL PASS (32/32) | FAILS=0
+  - test_vision_classify.py :: RESULT: ALL PASS (36/36) | FAILS=0
+  - test_download_retry.py :: 5/5 | FAILS=0
+  - test_draft_check.py :: 17/17 | FAILS=0
+  - test_camera_plan.py :: 20/20 PASS | FAILS=0
+  - test_failed_clips.py :: RESULT: ALL PASS (20/20) | FAILS=0
+  - test_luma_wait.py :: RESULT: ALL PASS (19/19) | FAILS=0
+  - test_outdoor_rules.py :: RESULT: ALL PASS (14/14) | FAILS=0
+  - test_anchor_timeline.py :: RESULT: ALL PASS (102/102) | FAILS=0
+  - test_photo_ranking_prompt.py :: RESULT: ALL PASS (7/7) | FAILS=0
+  - test_scene_facts.py :: 19/19 | FAILS=0
+  - test_cost_real_model.py :: RESULT: ALL PASS (20/20) | FAILS=0
+  - test_infra_cost.py :: 5/5 | FAILS=0
+- Not verified: la prova di controllo con i DUE modelli insieme non e' stata ancora eseguita dal codice (il 18/18 e' un calcolo a mano sui verdetti di due corse separate); nessun falso allarme misurato su foto reali oltre le 101+6 gia' viste (prima corsa con prompt diverso); scarto soft/blocky ancora in sola misura (.env PVS_QUALITY_ENFORCE=0).
+- Rollback: commit 806c823 (prima di questo commit).

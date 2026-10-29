@@ -65,33 +65,37 @@ check("P1 the ranking prompt now also penalises blur, blocks and a watermark ove
       "Technical quality" in ls.QUALITY_RANKING_PROMPT and "watermark" in ls.QUALITY_RANKING_PROMPT and "blocky" in ls.QUALITY_RANKING_PROMPT)
 
 # ── vision quality verdict through the real sender ──────────────────────────
-SENT = []; ANSWER = {"text": "ok", "raise": False}
-ls._track_claude = lambda r: r
+SENT = []; ANSWER = {"text": "ok", "raise": False, "per_model": {}, "raise_models": set()}
+os.environ["PVS_QUALITY_MODELS"] = "judge-a"      # the single-judge tests below; the two-judge rules are tested in the E section
+ls._track_claude = lambda r, model=None: r
 class Msgs:
     def create(self, **kw):
         content = kw["messages"][0]["content"]
         SENT.append([c for c in content if c.get("type") == "image"])
         SENT_PROMPT.append(content[0]["text"]); MAXTOK.append(kw.get("max_tokens"))
-        if ANSWER["raise"]: raise RuntimeError("api down")
-        return types.SimpleNamespace(content=[types.SimpleNamespace(type="text", text=ANSWER["text"])])
-SENT_PROMPT = []; MAXTOK = []
+        MODELS.append(kw.get("model"))
+        if ANSWER["raise"] or kw.get("model") in ANSWER["raise_models"]: raise RuntimeError("api down")
+        return types.SimpleNamespace(content=[types.SimpleNamespace(type="text", text=ANSWER["per_model"].get(kw.get("model"), ANSWER["text"]))])
+SENT_PROMPT = []; MAXTOK = []; MODELS = []
 class FakeClient:
     def __init__(self, api_key=None): self.messages = Msgs()
 ls.anthropic.Anthropic = FakeClient
 
+def core(r):
+    return {k: v for k, v in r.items() if k != "by_model"}
 ANSWER.update(text="ANSWER: blocky"); SENT.clear()
 v = ls.assess_photo_quality(jpeg(2000, 1500), "t")
-check("Q1 'ANSWER: blocky' (one word after the marker) -> verdict blocky, overlay unknown, call ok", v == {"verdict": "blocky", "overlay": "unknown", "call_ok": True}, v)
+check("Q1 'ANSWER: blocky' (one word after the marker) -> verdict blocky, overlay unknown, call ok", core(v) == {"verdict": "blocky", "overlay": "unknown", "call_ok": True}, v)
 ANSWER.update(text="Smooth and smeared at 100%.\nANSWER: Soft portal"); v2 = ls.assess_photo_quality(jpeg())
 ANSWER.update(text="ANSWER: ok none."); v3 = ls.assess_photo_quality(jpeg())
 ANSWER.update(text="Two sentences. I rate it ok at first.\nANSWER: ok none\nCorrection, final: ANSWER: Blocky, agency"); v4 = ls.assess_photo_quality(jpeg())
-check("Q1b two-word answers: the technical verdict and the overlay are read separately", v2 == {"verdict": "soft", "overlay": "portal", "call_ok": True} and v3["verdict"] == "ok" and v3["overlay"] == "none" and v4["verdict"] == "blocky" and v4["overlay"] == "agency", (v2, v3, v4))
+check("Q1b two-word answers: the technical verdict and the overlay are read separately", core(v2) == {"verdict": "soft", "overlay": "portal", "call_ok": True} and v3["verdict"] == "ok" and v3["overlay"] == "none" and v4["verdict"] == "blocky" and v4["overlay"] == "agency", (v2, v3, v4))
 ANSWER.update(text="ANSWER: portal")
 check("Q1c the old combined word 'portal' is NOT a technical verdict (unknown, never a problem)", ls.assess_photo_quality(jpeg())["verdict"] == "unknown")
 ANSWER.update(text="soft portal")
 check("Q1d no ANSWER line (bare words, or reasoning cut off): unknown, never a problem", ls.assess_photo_quality(jpeg())["verdict"] == "unknown")
 ANSWER.update(text="")
-check("Q1e a reply with no text at all (a model that only 'thought') -> unknown, call ok, no exception", ls.assess_photo_quality(jpeg()) == {"verdict": "unknown", "overlay": "unknown", "call_ok": True})
+check("Q1e a reply with no text at all (a model that only 'thought') -> unknown, call ok, no exception", core(ls.assess_photo_quality(jpeg())) == {"verdict": "unknown", "overlay": "unknown", "call_ok": True})
 MAXTOK.clear(); ANSWER.update(text="ANSWER: ok none"); ls.assess_photo_quality(jpeg())
 check("Q1f the judge call leaves room for reasoning (max_tokens 600)", MAXTOK == [600], MAXTOK)
 ANSWER.update(text="ANSWER: blocky")
@@ -107,6 +111,42 @@ check("Q5 API error -> unknown, call_ok False, no exception", ls.assess_photo_qu
 ANSWER["raise"] = False
 check("Q6 the prompt asks for two words: technical (ok/soft/blocky) then overlay (none/portal/agency), the technical one not influenced by the overlay", all(w in SENT_PROMPT[0] for w in ("TWO words", "FIRST word", "SECOND word", "- ok:", "- soft:", "- blocky:", "- none:", "- portal:", "- agency:", "never influenced by the second word", "ANSWER:", "at most two short sentences")))
 check("Q6b only soft and blocky are poor: a portal watermark or an agency logo is never a reason to discard", ls.PHOTO_QUALITY_POOR == ("soft", "blocky") and set(ls.PHOTO_QUALITY_WORDS) == {"ok", "soft", "blocky"} and set(ls.PHOTO_OVERLAY_WORDS) == {"none", "portal", "agency"})
+
+# ── two judge models: poor when ANY says so (2026-10-29) ─────────────────────
+def run_two(a_text, b_text, raise_models=(), unset=False):
+    os.environ["PVS_QUALITY_MODELS"] = "judge-a,judge-b"
+    ANSWER["per_model"] = {"judge-a": a_text, "judge-b": b_text}; ANSWER["raise_models"] = set(raise_models)
+    MODELS.clear(); MAXTOK.clear()
+    r = ls.assess_photo_quality(jpeg())
+    ANSWER["per_model"] = {}; ANSWER["raise_models"] = set()
+    return r
+os.environ.pop("PVS_QUALITY_MODELS")
+check("E1 default judges: the default model and claude-haiku-5-5", ls.photo_quality_models() == (ls.MODEL, "claude-haiku-5-5"), ls.photo_quality_models())
+os.environ["PVS_QUALITY_MODELS"] = " x , y "
+check("E2 PVS_QUALITY_MODELS overrides the list (spaces ignored); one name = one judge", ls.photo_quality_models() == ("x", "y"))
+r = run_two("ANSWER: ok none", "ANSWER: ok none")
+check("E3 both ok -> ok, per-model verdicts kept, one request per model with its own model name and the same token room", r["verdict"] == "ok" and r["by_model"] == {"judge-a": "ok", "judge-b": "ok"} and MODELS == ["judge-a", "judge-b"] and MAXTOK == [600, 600], (r, MODELS))
+r = run_two("ANSWER: ok none", "ANSWER: soft none")
+check("E4 one judge says soft, the other ok -> soft (the photo is poor when ANY judge says so)", r["verdict"] == "soft" and r["by_model"] == {"judge-a": "ok", "judge-b": "soft"}, r)
+r = run_two("ANSWER: blocky none", "ANSWER: soft none")
+check("E5 both see a problem, different words -> the first judge's word", r["verdict"] == "blocky", r)
+r = run_two("ANSWER: ok none", "x", raise_models={"judge-b"})
+check("E6a the second judge's call fails -> the first judge decides, call ok, the broken one is ignored", r["verdict"] == "ok" and r["call_ok"] and r["by_model"] == {"judge-a": "ok"}, r)
+r = run_two("x", "ANSWER: soft none", raise_models={"judge-a"})
+check("E6b the first judge's call fails -> the second decides (soft)", r["verdict"] == "soft" and r["call_ok"], r)
+r = run_two("x", "x", raise_models={"judge-a", "judge-b"})
+check("E7 both calls fail -> unknown, call_ok False, no by_model", r == {"verdict": "unknown", "call_ok": False}, r)
+r = run_two("no answer line here", "ANSWER: ok none")
+check("E8a one answers without an ANSWER line (unknown), the other ok -> ok", r["verdict"] == "ok", r)
+r = run_two("no answer line", "also none")
+check("E8b nobody gives a usable answer -> unknown, call ok, never a problem", r["verdict"] == "unknown" and r["call_ok"] and r["overlay"] == "unknown", r)
+r = run_two("ANSWER: ok", "ANSWER: ok portal")
+check("E9 the overlay comes from the first judge that gave one", r["overlay"] == "portal", r)
+r = run_two("ANSWER: ok agency", "ANSWER: ok portal")
+check("E10 two overlays: the first judge's wins", r["overlay"] == "agency", r)
+rr = ls.assess_photo_quality(jpeg(), models=("only-this",))
+check("E11 models= argument overrides the setting for one call", MODELS[-1] == "only-this", MODELS)
+os.environ["PVS_QUALITY_MODELS"] = "judge-a"
 
 # ── the quality filter works in the SELECTION (2026-10-29) ───────────────────
 def pool(cats):

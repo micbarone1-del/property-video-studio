@@ -107,8 +107,9 @@ sys.argv = ["x", "--degrade-test", "3", "--model", "claude-sonnet-5-5", "--jobs-
 buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
     cq.main()
-check("M1 --model changes the model of this run (and so the cost estimate formula)", ls.MODEL == "claude-sonnet-5-5" and "model: claude-sonnet-5-5" in buf.getvalue(), buf.getvalue()[:200])
-ls.MODEL = old_model
+check("M1 --model sets the judge model of this run and the cost estimate prices it", os.environ.get("PVS_QUALITY_MODELS") == "claude-sonnet-5-5" and "judge models: claude-sonnet-5-5" in buf.getvalue(), buf.getvalue()[:300])
+os.environ.pop("PVS_QUALITY_MODELS", None)
+old_model = None
 ls.reset_claude_usage(); ls.assess_photo_quality = lambda content, label="": {"verdict": "unknown", "call_ok": False}
 sys.argv = ["x", "--degrade-test", "3", "--run", "--jobs-dir", jobs, "--out", out]
 buf = io.StringIO()
