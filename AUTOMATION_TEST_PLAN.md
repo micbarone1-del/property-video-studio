@@ -406,3 +406,11 @@ Update 2026-10-25 (night): clip QC with Claude built in the sandbox (test_clip_q
 - Riga PROPOSTA P10f "il cliente riceve solo 'failed' senza motivo" S5 O6 D4 RPN 120 ACT; controllo: campo motivo nell'API (in attesa di decisione).
 - Invarianti: nessun job perso (un job rifiutato per qualita' fallisce in modo visibile con motivo, operatore avvisato dal flusso gia' esistente); operatore informato una volta.
 - Not run: nessuna prova con provider reali.
+
+
+## BM — 2026-10-29 (sera) — aggiunte di stato (punteggi proposti, da rivedere con Michele)
+- P10f aggiornata: il cliente riceve ora codice e frase del motivo (test P1-P16 di test_partner_failure). Verificato per funzione e sorgente; mai provato con un fallimento reale ne' con il webhook. Punteggi da rivedere.
+- P10e (falso positivo del giudice): strumento di calibrazione pronto e testato con giudice finto (test C1-C10); non lanciato, quindi il rischio resta aperto.
+- Nuova riga PROPOSTA P10g "upscale acceso senza motivo: costo e artefatti su ogni foto da scraping/partner" S4 O6 D6 RPN 144 ACT; controllo: PVS_UPSCALE_DEFAULT, prova GIAL con upscale spento (non eseguita).
+- Invarianti: nessun job perso; operatore informato una volta (invariato); stato finale visibile anche al partner (motivo).
+- Not run: nessuna prova con provider reali.

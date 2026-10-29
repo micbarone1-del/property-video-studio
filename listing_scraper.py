@@ -678,12 +678,16 @@ def filter_poor_quality_candidates(by_category: dict, assess=None, enforce=None)
         return {"enabled": True, "error": str(e)[:160]}
 
 
+# Phrase inside the gap text that marks "photos were thrown away for quality"; api_server reads it to pick the partner failure code.
+QUALITY_GAP_MARKER = "discarded for insufficient image quality"
+
+
 def _quality_gap_note(photos: list) -> str:
     """Sentence added to a "not enough photos" gap when photos were discarded for quality, so the operator and the customer get the reason."""
     n = len({id(p) for p in photos if p.get("quality_rejected")})
     if not n:
         return ""
-    return (f" {n} photo(s) of the listing were discarded for insufficient image quality "
+    return (f" {n} photo(s) of the listing were {QUALITY_GAP_MARKER} "
             f"(blurred, pixelated or with a watermark across the subject).")
 
 

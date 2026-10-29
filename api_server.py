@@ -84,6 +84,14 @@ BASE_DIR = Path(__file__).parent
 # PVS_JOBS_DIR lets a test instance use its own jobs folder. Unset = unchanged
 # production behaviour. A fake-providers instance MUST NOT share the real jobs/.
 JOBS_DIR = Path(os.getenv("PVS_JOBS_DIR") or (BASE_DIR / "jobs"))
+
+
+def default_upscale_images() -> bool:
+    """2026-10-29: whether jobs created from a URL or by a partner get the fal aura-sr 4x photo upscale. ONE place for the default
+    (job creation AND the cost estimate read it; generation and rework then read the job's own upscale_images flag).
+    Luma renders every clip at 1920x1080 whatever the input, so the upscale may add nothing: PVS_UPSCALE_DEFAULT=0 turns it off for a
+    test instance without touching the code. Unset = on, exactly as before."""
+    return os.getenv("PVS_UPSCALE_DEFAULT", "1").strip().lower() not in ("0", "false", "no", "off")
 if fake_providers.ENABLED and JOBS_DIR.resolve() == (BASE_DIR / "jobs").resolve():
     raise RuntimeError("PVS_FAKE_PROVIDERS=1 requires PVS_JOBS_DIR pointing to a separate folder "
                        "(refusing to run fake providers on the real jobs/ folder)")
@@ -1827,7 +1835,7 @@ async def _prepare_url_draft_work(job_id, url, property_name, agency_id, voice_i
     from cost_tracker import estimate_job_cost, format_cost_display
     rolling_jobs = _get_rolling_monthly_job_count()
     cost_estimate = estimate_job_cost(
-        scenes_config, do_upscale=True, do_video_upscale=True, do_vision_qc=True,
+        scenes_config, do_upscale=default_upscale_images(), do_video_upscale=True, do_vision_qc=True,
         model_tier=model_tier, actual_monthly_jobs=rolling_jobs,
         claude_cost_eur=claude_usage.get("cost_eur", 0.0),
         narration_chars=len(narration["narration_text"]),
@@ -1855,7 +1863,7 @@ async def _prepare_url_draft_work(job_id, url, property_name, agency_id, voice_i
         "intensity": DEFAULT_INTENSITY,
         "voice_id": voice_id,
         "enhance_images": True,
-        "upscale_images": True,
+        "upscale_images": default_upscale_images(),
         "cost_estimate": format_cost_display(cost_estimate),
         "cost_actual": None,
         "claude_usage": claude_usage,
@@ -1980,6 +1988,35 @@ def _map_internal_status_to_partner_status(internal_status: str, released: bool 
     return mapping.get(internal_status, "processing")
 
 
+# 2026-10-29: the partner used to get only "failed". failure_code is machine-readable, failure_message is a sentence safe to show
+# the agency (never an exception text). Set where the job fails (failure_code + failure_public_message on the job); a job that
+# failed anywhere else (assembly, orphan recovery after a restart) gets the generic pair. ONE place builds the response fields,
+# used by GET /v1/videos/{id}, GET /v1/videos?external_ref= and the "failed" webhook.
+PARTNER_FAILURE_GENERIC = ("generation_failed", "The video could not be produced. Our team has been notified.")
+
+
+def _partner_failure_fields(job: dict) -> dict:
+    if job.get("status") != "failed":
+        return {}
+    code = job.get("failure_code") or PARTNER_FAILURE_GENERIC[0]
+    msg = job.get("failure_public_message") or (PARTNER_FAILURE_GENERIC[1] if code == PARTNER_FAILURE_GENERIC[0] else None)
+    return {"failure_code": code, "failure_message": msg or PARTNER_FAILURE_GENERIC[1]}
+
+
+def _partner_status_payload(public_id: str, job: dict, download_id: str) -> dict:
+    """Body of the partner status responses (by id and by external_ref)."""
+    released = job.get("released", False)
+    result = {
+        "id": public_id,
+        "external_ref": job.get("external_ref"),
+        "status": _map_internal_status_to_partner_status(job.get("status"), released),
+    }
+    if job.get("status") == "done" and released:
+        result["video_url"] = f"https://api.propertyvideostudioai.com/v1/videos/{download_id}/download"
+    result.update(_partner_failure_fields(job))
+    return result
+
+
 @app.post("/v1/videos")
 async def create_video_from_partner(
     payload: RelinxVideoRequest,
@@ -2025,7 +2062,8 @@ async def create_video_from_partner(
         (None, None),
     )
     if existing:
-        return {"id": existing_id, "status": _map_internal_status_to_partner_status(existing["status"], existing.get("released", False))}
+        return {"id": existing_id, "status": _map_internal_status_to_partner_status(existing["status"], existing.get("released", False)),
+                **_partner_failure_fields(existing)}
 
     # 2026-10-01 (backlog item 48): prefer the partner's own external
     # agency id when given -- name-only matching risks merging two real,
@@ -2115,7 +2153,8 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
         acceptance = scraper.check_listing_scope(photos_for_selection)
         if not acceptance["ok"]:
             JOBS[job_id].update({"status": "failed", "message": acceptance["message"],
-                                 "failure_code": acceptance["code"], "failure_reason": acceptance})
+                                 "failure_code": acceptance["code"], "failure_reason": acceptance,
+                                 "failure_public_message": acceptance["message"]})
             _save_job(job_id)
             await _send_partner_webhook(job_id, "failed")
             await _notify_operator(job_id, "Relinx job failed",
@@ -2141,7 +2180,9 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
             scraper.standard_scene_photos(pre_selection),
         )
         if not narration["ok"]:
-            JOBS[job_id].update({"status": "failed", "message": f"Narration generation failed: {narration['error']}"})
+            JOBS[job_id].update({"status": "failed", "message": f"Narration generation failed: {narration['error']}",
+                                 "failure_code": "narration_failed",
+                                 "failure_public_message": "The narration for this listing could not be generated."})
             _save_job(job_id)
             await _send_partner_webhook(job_id, "failed")
             await _notify_operator(job_id, "Relinx job failed",
@@ -2172,7 +2213,10 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
             else:
                 n_failed = len(selection.get("download_failures", []))
                 gap_desc = f"All {n_failed} selected photo(s) failed to download"
-            JOBS[job_id].update({"status": "failed", "message": f"Not enough usable photos for this listing: {gap_desc}"})
+            JOBS[job_id].update({"status": "failed", "message": f"Not enough usable photos for this listing: {gap_desc}",
+                                 "failure_code": ("insufficient_photo_quality" if scraper.QUALITY_GAP_MARKER in gap_desc
+                                                  else "insufficient_photos"),
+                                 "failure_public_message": f"Not enough usable photos for this listing: {gap_desc}"})
             _save_job(job_id)
             await _send_partner_webhook(job_id, "failed")
             await _notify_operator(job_id, "Relinx job failed",
@@ -2224,7 +2268,7 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
         from cost_tracker import estimate_job_cost, format_cost_display
         rolling_jobs = _get_rolling_monthly_job_count()
         cost_estimate = estimate_job_cost(
-            scenes_config, do_upscale=True, do_video_upscale=True, do_vision_qc=True,
+            scenes_config, do_upscale=default_upscale_images(), do_video_upscale=True, do_vision_qc=True,
             model_tier="luma", actual_monthly_jobs=rolling_jobs,
             claude_cost_eur=claude_usage.get("cost_eur", 0.0),
             narration_chars=len(narration["narration_text"]),
@@ -2245,7 +2289,7 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
             "intensity": DEFAULT_INTENSITY,
             "voice_id": payload.voice_id,
             "enhance_images": True,
-            "upscale_images": True,
+            "upscale_images": default_upscale_images(),
             "cost_estimate": format_cost_display(cost_estimate),
             "claude_usage": claude_usage,
             "narration_text": narration["narration_text"],
@@ -2266,7 +2310,9 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
     except Exception as e:
         log.exception(f"[Relinx] Background job build failed for {job_id}")
         if job_id in JOBS:
-            JOBS[job_id].update({"status": "failed", "message": f"Internal error building job: {e}"})
+            JOBS[job_id].update({"status": "failed", "message": f"Internal error building job: {e}",
+                                 "failure_code": "internal_error",
+                                 "failure_public_message": "An internal error occurred while preparing the video. Our team has been notified."})
             _save_job(job_id)
             await _send_partner_webhook(job_id, "failed")
             await _notify_operator(job_id, "Relinx job failed",
@@ -2310,15 +2356,7 @@ async def get_video_status_for_partner(job_id: str, partner: dict = Depends(get_
     if job.get("partner_id") != partner["partner_id"]:
         raise HTTPException(status_code=403, detail="This job does not belong to your account")
     real_id, job = _resolve_real_relinx_job(job_id, job)
-    released = job.get("released", False)
-    result = {
-        "id": job_id,
-        "external_ref": job.get("external_ref"),
-        "status": _map_internal_status_to_partner_status(job.get("status"), released),
-    }
-    if job.get("status") == "done" and released:
-        result["video_url"] = f"https://api.propertyvideostudioai.com/v1/videos/{real_id}/download"
-    return result
+    return _partner_status_payload(job_id, job, real_id)
 
 
 @app.get("/v1/videos")
@@ -2336,15 +2374,7 @@ async def find_video_by_external_ref(external_ref: str, partner: dict = Depends(
     # completed job.
     real = next((m for m in matches if m[1].get("source") == "relinx"), None)
     jid, job = real if real else matches[0]
-    released = job.get("released", False)
-    result = {
-        "id": jid,
-        "external_ref": job.get("external_ref"),
-        "status": _map_internal_status_to_partner_status(job.get("status"), released),
-    }
-    if job.get("status") == "done" and released:
-        result["video_url"] = f"https://api.propertyvideostudioai.com/v1/videos/{jid}/download"
-    return result
+    return _partner_status_payload(jid, job, jid)
 
 
 @app.get("/v1/videos/{job_id}/download")
@@ -3117,6 +3147,8 @@ async def _send_partner_webhook(job_id: str, event: str):
         }
         if event == "completed":
             payload["video_url"] = f"https://api.propertyvideostudioai.com/v1/videos/{job_id}/download"
+        if event == "failed":
+            payload.update(_partner_failure_fields({**job, "status": "failed"}))
 
         body = _json.dumps(payload)
         headers = {"Content-Type": "application/json"}

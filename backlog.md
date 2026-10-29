@@ -898,3 +898,9 @@ Requirements, in his words/intent (confirm in plain language before any code; ea
 - Calibrazione del giudice di qualita' sulle foto di tutti i job (Claude reale, pochi centesimi per circa un centinaio di foto uniche): vedere quali verdetti escono e confrontarli a occhio con le foto. In attesa di OK di spesa.
 - Foto cattiva scartata nella selezione = meno candidate; se il filtro dovesse scartare troppo, si riduce con PVS_QUALITY_ENFORCE=0 senza cambiare codice.
 - Prova senza upscale su un annuncio GIAL reale (1307, attico 110 mq, Albano): serve rendere configurabile il flag upscale_images alla creazione del job (oggi fisso a True per URL e partner). Preparare dopo questo deploy.
+
+
+## BM — 2026-10-29 (sera) — voci aperte
+- Comunicare a Relinx i due nuovi campi (failure_code, failure_message) con l'elenco dei codici; il messaggio di "unfurnished" e' in italiano mentre gli altri sono in inglese: decidere la lingua dei messaggi pubblici.
+- Calibrazione del giudice: lanciare prima la simulazione (nessuna spesa), poi --run --max ~120 con tetto, guardare i fogli di miniature insieme a Michele. Nota: il giudice usa Haiku 4.5 (il modello economico); se i verdetti sono deboli, provare un modello piu' forte solo per questo giudizio.
+- Prova GIAL 1307 con upscale spento: avviare l'istanza di prova 8002 con PVS_UPSCALE_DEFAULT=0 e lanciare l'annuncio con relinx_pilot_check; confrontare con i video gia' fatti. Nessuna spesa reale senza OK di Michele.

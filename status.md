@@ -976,3 +976,33 @@ PRODUCT DECISION (2026-10-28, Michele): the automation launches only for the apa
   - test_scene_facts.py :: 19/19 | FAILS=0
 - Not verified: i verdetti di Claude vision su foto reali. Il filtro e' ATTIVO senza calibrazione, per scelta di Michele: rischio = una foto buona giudicata cattiva (meno candidate o job fallito per qualita'). Interruttore: PVS_QUALITY_ENFORCE=0 in .env e riavvio. Il partner riceve oggi solo lo stato "failed": il motivo non e' ancora esposto nell'API (campo da concordare).
 - Rollback: commit 5e0ce96 (prima di questo commit).
+
+
+## BM — 2026-10-29 (sera) — motivo del fallimento nell'API partner, strumento di calibrazione del giudice qualita', upscale configurabile
+- Decisioni di Michele: OK a esporre il motivo del fallimento al partner; OK alla calibrazione del giudice con Claude reale; upscale spento da provare su un annuncio GIAL reale (1307, attico 110 mq, Albano).
+- Changed (1) Motivo del fallimento: GET /v1/videos/{id}, GET /v1/videos?external_ref=, la risposta di un POST duplicato su job fallito e il webhook "failed" portano ora due campi AGGIUNTIVI (compatibili): failure_code e failure_message. Un solo costruttore (_partner_failure_fields / _partner_status_payload), usato da tutti: le due GET non hanno piu' un dizionario scritto a mano ciascuna. Codici: insufficient_photos, insufficient_photo_quality (stesso gap con la frase di qualita', riconosciuta tramite listing_scraper.QUALITY_GAP_MARKER), unfurnished (messaggio gia' esistente, in italiano), narration_failed, internal_error, e generation_failed per ogni altro fallimento (assemblaggio, recupero dopo riavvio). Il testo interno (eccezioni, percorsi) non esce mai: il messaggio pubblico e' scritto a mano nel punto dove il job fallisce (failure_public_message). Da comunicare a Relinx: NON ancora fatto.
+- Changed (2) calibrate_quality.py: giudica con lo STESSO giudice del filtro le foto originali (images/) dei job passati, foto uniche (stessi byte = una chiamata), solo lettura su jobs/ (non scrive, non sposta, non cancella nulla li'); senza --run e' una simulazione che non chiama Claude e non scrive; con --run si ferma da solo al tetto --cap (0.50 EUR di default); scrive verdicts.csv e fogli di miniature per verdetto in /tmp/pvs_calibration. Stima: modello Haiku, circa 0.0017 EUR a foto (circa 0.17 EUR per 100 foto); la cifra reale viene stampata a fine corsa. NON ancora lanciato.
+- Changed (3) default_upscale_images() (PVS_UPSCALE_DEFAULT, non impostata = acceso come prima): unico punto per il flag upscale_images dei job da URL e partner e per la stima del costo (prima True fisso in 4 punti). Generazione e Rework continuano a leggere il flag del job. Produzione invariata finche' la variabile non e' impostata; NON ancora impostata in nessuna istanza.
+- Tests (output reale del server):
+  - test_partner_failure.py :: RESULT: ALL PASS (20/20) | FAILS=0
+  - test_calibrate_quality.py :: RESULT: ALL PASS (10/10) | FAILS=0
+  - test_upscale_default.py :: RESULT: ALL PASS (15/15) | FAILS=0
+  - test_photo_filters.py :: RESULT: ALL PASS (43/43) | FAILS=0
+  - test_scene_rework.py :: RESULT: ALL PASS (77/77) | FAILS=0
+  - test_relinx_loader.py :: 21/21 | FAILS=0
+  - test_package1.py :: RESULT: ALL PASS (26/26) | FAILS=0
+  - test_selection_report.py :: RESULT: ALL PASS (29/29) | FAILS=0
+  - test_standard_3b.py :: RESULT: ALL PASS (32/32) | FAILS=0
+  - test_url_draft_background.py :: RESULT: ALL PASS (32/32) | FAILS=0
+  - test_vision_classify.py :: RESULT: ALL PASS (36/36) | FAILS=0
+  - test_download_retry.py :: 5/5 | FAILS=0
+  - test_draft_check.py :: 17/17 | FAILS=0
+  - test_camera_plan.py :: 20/20 PASS | FAILS=0
+  - test_failed_clips.py :: RESULT: ALL PASS (20/20) | FAILS=0
+  - test_luma_wait.py :: RESULT: ALL PASS (19/19) | FAILS=0
+  - test_outdoor_rules.py :: RESULT: ALL PASS (14/14) | FAILS=0
+  - test_anchor_timeline.py :: RESULT: ALL PASS (102/102) | FAILS=0
+  - test_photo_ranking_prompt.py :: RESULT: ALL PASS (7/7) | FAILS=0
+  - test_scene_facts.py :: 19/19 | FAILS=0
+- Not verified: nessun fallimento reale con i nuovi campi (solo funzioni e lettura del sorgente); webhook mai inviato con i nuovi campi; calibrazione non lanciata; nessun video con upscale spento; l'annuncio GIAL 1307 non e' stato eseguito.
+- Rollback: commit e1d7122 (prima di questo commit).
