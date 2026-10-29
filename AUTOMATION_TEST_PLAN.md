@@ -398,3 +398,11 @@ Update 2026-10-25 (night): clip QC with Claude built in the sandbox (test_clip_q
 - Righe FMEA PROPOSTE: P10a "Rifai produce un'immagine diversa dalla prima generazione (flag del job ignorati, niente rimozione watermark)" S5 O6 D7 RPN 210 ACT, controllo enhance_flags + test F1-F11; P10b "foto pulite del partner passate dalla rimozione watermark" S6 O9 D5 RPN 270 ACT, controllo remove_watermark=False nel percorso partner (test R2, R4); P10c "foto rotte o miniature accettate (4x2 px, 486 px)" S5 O4 D5 RPN 100 ACT, controllo soglia 800 px (test U1-U6, D3-D6); P10d "foto sfocata, a blocchi o con watermark sul soggetto accettata" S6 O6 D7 RPN 252 ACT, controllo parziale: criteri nel ranking + verdetto in sola misura (non calibrato, scarto spento).
 - Invarianti colpite: stato finale corretto e visibile (il Rifai riproduce la preparazione della prima generazione); costo contato (un Rifai non rifa piu' l'upscale se il job lo aveva spento).
 - Not run: nessuna prova con provider reali; nessuna prova di carico; ripetizioni dell'A/B albero.
+
+
+## BL — 2026-10-29 (pomeriggio) — aggiunte di stato (punteggi proposti, da rivedere con Michele)
+- P10d aggiornata: foto sfocata, a blocchi o con watermark sul soggetto non viene piu' scelta: il filtro e' nella selezione e attivo di default (test Q7-Q15, S1-S5 di test_photo_filters). Stato: verificato per funzione con giudice finto; NON calibrato su foto reali.
+- Riga PROPOSTA P10e "foto buona giudicata cattiva dal giudice (falso positivo): meno candidate o job fallito per qualita'" S6 O4 D6 RPN 144 ACT; controllo: interruttore PVS_QUALITY_ENFORCE=0, calibrazione sulle foto dei job passati (in attesa di OK di spesa), motivo nel gap/selection_report.
+- Riga PROPOSTA P10f "il cliente riceve solo 'failed' senza motivo" S5 O6 D4 RPN 120 ACT; controllo: campo motivo nell'API (in attesa di decisione).
+- Invarianti: nessun job perso (un job rifiutato per qualita' fallisce in modo visibile con motivo, operatore avvisato dal flusso gia' esistente); operatore informato una volta.
+- Not run: nessuna prova con provider reali.

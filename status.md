@@ -951,3 +951,28 @@ PRODUCT DECISION (2026-10-28, Michele): the automation launches only for the apa
   - test_scene_facts.py :: 19/19 | FAILS=0
 - Not verified: il giudizio di qualita' di Claude vision su foto reali (calibrazione); "Rifai" con fal reale; nessun video con upscale spento; qualita' del video sui job GIAL; il filtro dimensioni su annunci reali.
 - Rollback: commit 275ed79 (prima di questo commit).
+
+
+## BL — 2026-10-29 (pomeriggio) — filtro qualita' foto spostato nella SELEZIONE, soglia dimensioni 1000 px (corregge BK)
+- Decisione di Michele: lo scarto delle foto di bassa qualita' avviene nella fase di selezione (una foto sgranata non viene mai scelta); se non restano abbastanza foto buone il job fallisce con un messaggio che spiega il motivo.
+- Changed rispetto a BK: (1) il giudizio Claude vision (ok / soft / blocky / watermark, foto intera + ritaglio a pixel reali) non e' piu' un controllo dopo il download in sola misura: e' in listing_scraper.filter_poor_quality_candidates, chiamato dall'UNICO passo condiviso _categorize_and_rank_photos (quindi selezione standard e premium, percorso da URL e percorso Relinx). Giudica le prime QUALITY_JUDGE_PER_CATEGORY=4 candidate di ogni categoria; le foto giudicate cattive escono dal gruppo e subentra la candidata successiva. Attivo di default; PVS_QUALITY_ENFORCE=0 = solo misura, PVS_QUALITY_CHECK=0 = spento. check_selected_photo_quality e le due chiamate in api_server sono state tolte (una sola implementazione). (2) Se le foto buone non bastano, il gap della selezione porta la frase "N photo(s) of the listing were discarded for insufficient image quality (blurred, pixelated or with a watermark across the subject)" (standard e premium); il job fallisce con "Not enough usable photos for this listing: ..." come per le foto mancanti. (3) selection_report: quality_checked, quality_rejected (categoria, url, verdetto) e quality per ogni foto scelta. (4) Soglia dimensioni da 800 a 1000 px di lato lungo: sui 360 file di tutti i job le foto vere sono >= 1024 px (1024, 1195, 1200, 1350, 1440, 1575, 1600), la spazzatura molto sotto (486 px in 14 job, 4x2 px in bd3f0f77); nulla tra 486 e 1024. 1000 tiene ogni foto vera vista e il video e' largo 1920 px: una foto da 1000 viene ingrandita 1.9x.
+- Tests (output reale del server):
+  - test_photo_filters.py :: RESULT: ALL PASS (43/43) | FAILS=0
+  - test_scene_rework.py :: RESULT: ALL PASS (77/77) | FAILS=0
+  - test_relinx_loader.py :: 21/21 | FAILS=0
+  - test_package1.py :: RESULT: ALL PASS (26/26) | FAILS=0
+  - test_selection_report.py :: RESULT: ALL PASS (29/29) | FAILS=0
+  - test_standard_3b.py :: RESULT: ALL PASS (32/32) | FAILS=0
+  - test_url_draft_background.py :: RESULT: ALL PASS (32/32) | FAILS=0
+  - test_vision_classify.py :: RESULT: ALL PASS (36/36) | FAILS=0
+  - test_download_retry.py :: 5/5 | FAILS=0
+  - test_draft_check.py :: 17/17 | FAILS=0
+  - test_camera_plan.py :: 20/20 PASS | FAILS=0
+  - test_failed_clips.py :: RESULT: ALL PASS (20/20) | FAILS=0
+  - test_luma_wait.py :: RESULT: ALL PASS (19/19) | FAILS=0
+  - test_outdoor_rules.py :: RESULT: ALL PASS (14/14) | FAILS=0
+  - test_anchor_timeline.py :: RESULT: ALL PASS (102/102) | FAILS=0
+  - test_photo_ranking_prompt.py :: RESULT: ALL PASS (7/7) | FAILS=0
+  - test_scene_facts.py :: 19/19 | FAILS=0
+- Not verified: i verdetti di Claude vision su foto reali. Il filtro e' ATTIVO senza calibrazione, per scelta di Michele: rischio = una foto buona giudicata cattiva (meno candidate o job fallito per qualita'). Interruttore: PVS_QUALITY_ENFORCE=0 in .env e riavvio. Il partner riceve oggi solo lo stato "failed": il motivo non e' ancora esposto nell'API (campo da concordare).
+- Rollback: commit 5e0ce96 (prima di questo commit).

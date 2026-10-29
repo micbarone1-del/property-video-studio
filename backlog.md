@@ -891,3 +891,10 @@ Requirements, in his words/intent (confirm in plain language before any code; ea
 - Pannello QC: numerazione scene 0-based contro elenco 1-based.
 - Rifai: la rimozione watermark nel Rifai non riusa il file della prima generazione (nome per posizione, rischio scena spostata): puo' costare una seconda rimozione. Possibile ottimizzazione solo con un controllo certo che la foto sia la stessa.
 - Filtro foto di Relinx/GIAL: lo scarto delle copie con bande esiste solo nello strumento di prova (relinx_pilot_check); il percorso API reale riceve foto pulite (verificato su cc2aead8), nessuna regola equivalente li' per scelta.
+
+
+## BL — 2026-10-29 (pomeriggio) — voci aperte
+- Motivo del fallimento esposto al cliente/partner: GET /v1/videos/{id} e il webhook "failed" portano solo lo stato; serve un campo con codice e frase leggibile (es. foto insufficienti per qualita'). Cambio al contratto API (campo opzionale, compatibile): in attesa di OK di Michele (lingua, nome del campo, da dire a Relinx).
+- Calibrazione del giudice di qualita' sulle foto di tutti i job (Claude reale, pochi centesimi per circa un centinaio di foto uniche): vedere quali verdetti escono e confrontarli a occhio con le foto. In attesa di OK di spesa.
+- Foto cattiva scartata nella selezione = meno candidate; se il filtro dovesse scartare troppo, si riduce con PVS_QUALITY_ENFORCE=0 senza cambiare codice.
+- Prova senza upscale su un annuncio GIAL reale (1307, attico 110 mq, Albano): serve rendere configurabile il flag upscale_images alla creazione del job (oggi fisso a True per URL e partner). Preparare dopo questo deploy.

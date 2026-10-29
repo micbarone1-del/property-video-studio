@@ -592,7 +592,7 @@ PHOTO_QUALITY_PROMPT = (
 )
 PHOTO_QUALITY_WORDS = ("ok", "soft", "blocky", "watermark")
 PHOTO_QUALITY_POOR = ("soft", "blocky", "watermark")
-QUALITY_MIN_KEEP = 5      # enforcing never leaves fewer photos than this (a video needs its scenes)
+QUALITY_JUDGE_PER_CATEGORY = 4      # the best-ranked candidates of each category that get a verdict (the rest are never reached)
 
 
 def _native_crop_b64(content: bytes, side: int = VISION_MAX_SIDE) -> str:
@@ -626,60 +626,65 @@ def photo_quality_check_enabled() -> bool:
 
 
 def photo_quality_enforce_enabled() -> bool:
-    """Off by default: the judge is not calibrated yet (a photo that looks grainy to a person can still give a good clip), and
-    dropping a chosen photo leaves a scene short, because a replacement from the unselected candidates is not built.
-    Set PVS_QUALITY_ENFORCE=1 in .env and restart to drop the photos judged soft/blocky/watermark."""
-    return os.environ.get("PVS_QUALITY_ENFORCE", "0").strip().lower() in ("1", "true", "yes", "on")
+    """On by default (Michele 2026-10-29: the discard happens in the selection, so a blurred photo is never chosen). PVS_QUALITY_ENFORCE=0
+    keeps only the measurement (verdicts saved in the selection report, nothing removed)."""
+    return os.environ.get("PVS_QUALITY_ENFORCE", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
-def check_selected_photo_quality(selection: dict, assess=None, enforce=None) -> dict:
-    """ONE shared check for the URL path and the Relinx path, run on the photos that were downloaded and chosen. Tags every photo
-    with p["quality"] and returns a summary for the selection report. Never raises (a failed call is "unknown").
-    Measure-only unless enforcing: then a photo judged soft/blocky/watermark is removed from selection["selected"] and listed in
-    selection["quality_rejected"], but never below QUALITY_MIN_KEEP photos in total."""
+def filter_poor_quality_candidates(by_category: dict, assess=None, enforce=None) -> dict:
+    """The photo-quality filter of the SELECTION (one place, shared by the standard and the premium selection through
+    _categorize_and_rank_photos, so both the URL path and the Relinx path get it). Runs on the best-ranked candidates of each category
+    (QUALITY_JUDGE_PER_CATEGORY): downloads each, asks Claude vision for the verdict (whole photo + crop at real pixels), tags the
+    photo p["quality"], and, when enforcing, removes the soft / blocky / watermarked ones from the pool (p["quality_rejected"] = True),
+    so the selection simply takes the next candidate. When too few photos are left the selection reports a gap and the job fails with
+    a reason (see _quality_gap_note). Never raises; a failed call is "unknown" and keeps the photo."""
     if not photo_quality_check_enabled():
         return {"enabled": False}
     assess = assess or assess_photo_quality
     enforce = photo_quality_enforce_enabled() if enforce is None else bool(enforce)
     try:
-        items = [(cat, i, p) for cat, photos in selection["selected"].items() for i, p in enumerate(photos) if p.get("local_path")]
+        items = [(cat, p) for cat, plist in by_category.items() for p in plist[:QUALITY_JUDGE_PER_CATEGORY]]
 
         def one(item):
-            cat, i, p = item
+            cat, p = item
             try:
-                return assess(Path(p["local_path"]).read_bytes(), label=f"{cat}[{i}]")
+                fetched = fetch_photo_bytes(p.get("url"), p.get("original_url"), timeout=15)
+                if not fetched["ok"]:
+                    return {"verdict": "unknown", "call_ok": False}
+                return assess(fetched["content"], label=f"{cat}")
             except Exception as e:
-                log.warning(f"[Scraper] Photo quality failed for {cat}[{i}]: {e}")
+                log.warning(f"[Scraper] Photo quality failed for {cat}: {e}")
                 return {"verdict": "unknown", "call_ok": False}
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=CLASSIFY_WORKERS) as ex:
             results = list(ex.map(one, items))
-        poor = []
-        for (cat, i, p), r in zip(items, results):
+        poor = 0
+        for (cat, p), r in zip(items, results):
             p["quality"] = r["verdict"]
             if r["verdict"] in PHOTO_QUALITY_POOR:
-                poor.append((cat, i, p))
-        total = sum(len(v) for v in selection["selected"].values())
-        dropped, kept_for_count = [], []
+                poor += 1
+                p["quality_poor"] = True
+                if enforce:
+                    p["quality_rejected"] = True
         if enforce:
-            for cat, i, p in poor:
-                if total - len(dropped) > QUALITY_MIN_KEEP:
-                    dropped.append((cat, i, p))
-                else:
-                    kept_for_count.append((cat, i, p))
-            for cat in selection["selected"]:
-                selection["selected"][cat] = [q for q in selection["selected"][cat] if not any(q is d[2] for d in dropped)]
-            selection["quality_rejected"] = [{"category": c, "url": p.get("url"), "verdict": p["quality"]} for c, _, p in dropped]
-        summary = {"enabled": True, "enforced": enforce, "checked": len(items),
-                   "ok": sum(1 for r in results if r["verdict"] == "ok"),
-                   "unknown": sum(1 for r in results if r["verdict"] == "unknown"),
-                   "poor": [{"category": c, "url": p.get("url"), "verdict": p["quality"]} for c, _, p in poor],
-                   "dropped": len(dropped), "kept_for_count": len(kept_for_count)}
-        log.info(f"[Scraper] Photo quality: {summary}")
+            for cat in by_category:
+                by_category[cat] = [p for p in by_category[cat] if not p.get("quality_rejected")]
+        summary = {"enabled": True, "enforced": enforce, "checked": len(items), "poor": poor,
+                   "unknown": sum(1 for r in results if r["verdict"] == "unknown")}
+        log.info(f"[Scraper] Photo quality (selection): {summary}")
         return summary
     except Exception as e:
-        log.warning(f"[Scraper] Photo quality check failed as a whole: {e}")
+        log.warning(f"[Scraper] Photo quality filter failed as a whole: {e}")
         return {"enabled": True, "error": str(e)[:160]}
+
+
+def _quality_gap_note(photos: list) -> str:
+    """Sentence added to a "not enough photos" gap when photos were discarded for quality, so the operator and the customer get the reason."""
+    n = len({id(p) for p in photos if p.get("quality_rejected")})
+    if not n:
+        return ""
+    return (f" {n} photo(s) of the listing were discarded for insufficient image quality "
+            f"(blurred, pixelated or with a watermark across the subject).")
 
 
 # 2026-10-27: a photo the listing page labels "living" is sometimes the entrance hall, a corridor or a staircase (villa job
@@ -788,10 +793,12 @@ def resolve_uncategorized_photos(photos: list) -> list:
 
 DOWNLOAD_ATTEMPTS = 3
 
-# 2026-10-29: a photo whose long side is under this is not a usable start frame for the video model: job bd3f0f77 held three
-# 4x2 pixel files, and 14 jobs held a 486x273 thumbnail (the real photos of the other jobs are 1024 px or more). The check is
-# on the pixels of the downloaded file, not on the size the page declares.
-MIN_PHOTO_LONG_SIDE = 800
+# 2026-10-29: a photo whose long side is under this is not a usable start frame for the video model. The video is 1920 px wide, so a
+# photo of this size is enlarged by 1920 / MIN = 1.9x. Measured on the 360 photos of every job we have (block 212): the real photos of
+# the listings are 1024 px or more (1024, 1195, 1200, 1350, 1440, 1575, 1600), the rubbish is far below (a 486x273 thumbnail in 14 jobs,
+# 4x2 pixel files in bd3f0f77). Nothing was seen between 486 and 1024, so any value in that gap separates the two groups; 1000 keeps every
+# real photo seen so far. The check is on the pixels of the downloaded file, not on the size the page declares.
+MIN_PHOTO_LONG_SIDE = 1000
 
 
 def photo_usability(content: bytes) -> dict:
@@ -903,6 +910,7 @@ def build_selection_report(photos: list, selection: dict, scene_count_requested=
             "url_used": p.get("url_used"), "used_fallback": bool(p.get("used_fallback", False)),
             "resolution_upgraded": p.get("resolution_upgraded"),
             "rank_position": p.get("rank_position"), "rank_status": p.get("rank_status"),
+            "quality": p.get("quality"),
         } for p in plist]
 
     used = {("outdoor" if c in ("outdoor_early", "outdoor_late") else c)
@@ -931,6 +939,10 @@ def build_selection_report(photos: list, selection: dict, scene_count_requested=
         "fallback_used_count": sum(1 for lst in selected.values() for s in lst if s["used_fallback"]),
         "gaps": list(selection.get("gaps", [])),
         "download_failures": list(selection.get("download_failures", [])),
+        # 2026-10-29: photo-quality filter of the selection (Claude vision): how many got a verdict and which were discarded
+        "quality_checked": len({id(p) for p in photos if p.get("quality")}),
+        "quality_rejected": [{"category": p.get("category"), "url": p.get("url"), "verdict": p.get("quality")}
+                             for p in photos if p.get("quality_rejected")],
     }
     log.info(f"[Scraper] selection report: scenes_requested={scene_count_requested} "
              f"candidates={report['candidates_by_category']} used={report['categories_used']} "
@@ -2175,6 +2187,10 @@ def _categorize_and_rank_photos(photos: list, categories: list) -> dict:
     for cat in by_category:
         by_category[cat] = rank_photos_by_quality(cat, by_category[cat])
 
+    # 2026-10-29: the technical-quality filter (blurred / pixelated / watermark over the subject) acts HERE, on the ranked pool, so a
+    # bad photo is never selected and the next candidate takes its place
+    filter_poor_quality_candidates(by_category)
+
     return by_category
 
 
@@ -2335,7 +2351,7 @@ def select_photos_for_scene_count(photos: list, scene_count: int) -> dict:
     gaps = []
     if total_selected < scene_count:
         gaps.append(f"Only {total_selected} usable photo(s) found across all categories combined, "
-                    f"needed {scene_count} — this listing may need manual photo upload.")
+                    f"needed {scene_count} — this listing may need manual photo upload." + _quality_gap_note(photos))
 
     return {
         "selected": {cat: photos_list for cat, photos_list in selected.items() if photos_list},
@@ -2438,7 +2454,7 @@ def select_photos_for_scene_count_premium(photos: list, scene_count: int) -> dic
     gaps = []
     if total_selected < scene_count:
         gaps.append(f"Only {total_selected} usable premium photo(s) found across all categories combined, "
-                    f"needed {scene_count} -- this listing may not have enough photos for the premium template.")
+                    f"needed {scene_count} -- this listing may not have enough photos for the premium template." + _quality_gap_note(photos))
 
     return {
         "selected": {cat: v for cat, v in selected.items() if v},

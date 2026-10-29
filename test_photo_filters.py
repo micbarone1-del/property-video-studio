@@ -24,9 +24,9 @@ def jpeg(w=1200, h=675, colour=(120, 130, 140)):
 check("U1 a 4x2 file (job bd3f0f77) is not usable", not ls.photo_usability(jpeg(4, 2))["ok"])
 check("U2 a 486x273 thumbnail is not usable and the reason names the size", not ls.photo_usability(jpeg(486, 273))["ok"] and "486x273" in ls.photo_usability(jpeg(486, 273))["reason"])
 check("U3 1024x576 (the smallest real photo seen) is usable", ls.photo_usability(jpeg(1024, 576))["ok"])
-check("U4 a portrait photo is judged on its long side: 600x900 usable", ls.photo_usability(jpeg(600, 900))["ok"])
+check("U4 a portrait photo is judged on its long side: 700x1100 usable, 600x900 not", ls.photo_usability(jpeg(700, 1100))["ok"] and not ls.photo_usability(jpeg(600, 900))["ok"])
 check("U5 bytes that are not an image are not usable, no exception", not ls.photo_usability(b"<html>404</html>")["ok"])
-check("U6 the smallest accepted long side is the constant", ls.photo_usability(jpeg(ls.MIN_PHOTO_LONG_SIDE, 400))["ok"] and not ls.photo_usability(jpeg(ls.MIN_PHOTO_LONG_SIDE - 1, 400))["ok"])
+check("U6 the smallest accepted long side is the constant (1000: keeps 1024, the smallest real photo seen)", ls.photo_usability(jpeg(ls.MIN_PHOTO_LONG_SIDE, 400))["ok"] and not ls.photo_usability(jpeg(ls.MIN_PHOTO_LONG_SIDE - 1, 400))["ok"])
 
 FETCHES = {}
 CONTENT = {}
@@ -93,57 +93,84 @@ check("Q5 API error -> unknown, call_ok False, no exception", ls.assess_photo_qu
 ANSWER["raise"] = False
 check("Q6 the prompt asks for ONE of ok/soft/blocky/watermark", "ok, soft, blocky or watermark" in SENT_PROMPT[0])
 
-def selection_of(d, verdicts):
-    sel = {"selected": {}, "gaps": []}
-    for i, v in enumerate(verdicts):
-        cat = ["exterior", "living", "kitchen", "bedrooms", "bathrooms", "outdoor", "living"][i % 7]
-        f = Path(d) / f"p{i}.jpg"; f.write_bytes(jpeg())
-        sel["selected"].setdefault(cat, []).append({"url": f"u{i}", "local_path": str(f), "verdict": v})
-    return sel
-def assessor(content, label=""):
-    return {"verdict": CUR[0].pop(0), "call_ok": True}
-CUR = [[]]
+# ── the quality filter works in the SELECTION (2026-10-29) ───────────────────
+def pool(cats):
+    """by_category-like pool: {cat: [photo dicts in rank order]} from {cat: [names]}"""
+    return {c: [{"url": n, "category": c} for n in names] for c, names in cats.items()}
+VERDICT = {}
+def assess_named(content, label=""):
+    return {"verdict": VERDICT.get(content, "ok"), "call_ok": True}
+FETCHED = []
+def fetch_named(url, fallback_url=None, timeout=20, attempts=1):
+    FETCHED.append(url)
+    return {"ok": True, "content": url, "url_used": url, "used_fallback": False, "error": None}
+real_fetch = ls.fetch_photo_bytes
+ls.fetch_photo_bytes = fetch_named
 os.environ.pop("PVS_QUALITY_CHECK", None); os.environ.pop("PVS_QUALITY_ENFORCE", None)
-with tempfile.TemporaryDirectory() as d:
-    sel = selection_of(d, ["ok"] * 6)
-    verdicts = ["ok", "blocky", "ok", "watermark", "ok", "unknown"]
-    CUR[0] = list(verdicts)
-    # serial order of ex.map follows item order: items are built category by category, so map them back through the order
-    order = [(c, i) for c, ps in sel["selected"].items() for i, _ in enumerate(ps)]
-    by_item = {k: v for k, v in zip(order, verdicts)}
-    def assess_by_item(content, label=""):
-        cat, i = re.match(r"(\w+)\[(\d+)\]", label).groups()
-        return {"verdict": by_item[(cat, int(i))], "call_ok": True}
-    s = ls.check_selected_photo_quality(sel, assess=assess_by_item)
-    n_left = sum(len(v) for v in sel["selected"].values())
-    check("Q7 default is measure-only: every photo stays", n_left == 6 and not s["enforced"] and s["dropped"] == 0, s)
-    check("Q8 summary counts: 6 checked, 3 ok, 1 unknown, 2 poor with their verdicts",
-          s["checked"] == 6 and s["ok"] == 3 and s["unknown"] == 1 and sorted(x["verdict"] for x in s["poor"]) == ["blocky", "watermark"], s)
-    check("Q9 every photo is tagged with its verdict", all("quality" in p for ps in sel["selected"].values() for p in ps))
-with tempfile.TemporaryDirectory() as d:
-    sel = selection_of(d, ["ok"] * 6)
-    order = [(c, i) for c, ps in sel["selected"].items() for i, _ in enumerate(ps)]
-    by_item = {k: v for k, v in zip(order, ["ok", "blocky", "ok", "watermark", "ok", "ok"])}
-    s = ls.check_selected_photo_quality(sel, assess=assess_by_item, enforce=True)
-    n_left = sum(len(v) for v in sel["selected"].values())
-    check("Q10 enforcing: one poor photo is dropped, the second is kept because 5 is the minimum", n_left == 5 and s["dropped"] == 1 and s["kept_for_count"] == 1 and len(sel["quality_rejected"]) == 1, s)
-with tempfile.TemporaryDirectory() as d:
-    sel = selection_of(d, ["ok"] * 7)
-    order = [(c, i) for c, ps in sel["selected"].items() for i, _ in enumerate(ps)]
-    by_item = {k: v for k, v in zip(order, ["blocky", "ok", "ok", "ok", "ok", "ok", "ok"])}
-    s = ls.check_selected_photo_quality(sel, assess=assess_by_item, enforce=True)
-    check("Q11 with 7 photos a poor one is dropped and 6 remain", sum(len(v) for v in sel["selected"].values()) == 6 and s["dropped"] == 1, s)
-os.environ["PVS_QUALITY_CHECK"] = "0"
-check("Q12 PVS_QUALITY_CHECK=0 switches the check off, nothing is called", ls.check_selected_photo_quality({"selected": {}}, assess=lambda *a, **k: 1 / 0) == {"enabled": False})
-os.environ.pop("PVS_QUALITY_CHECK")
-with tempfile.TemporaryDirectory() as d:
-    sel = selection_of(d, ["ok"] * 3)
-    s = ls.check_selected_photo_quality(sel, assess=lambda c, label="": 1 / 0)
-    check("Q13 an assessor that crashes gives 'unknown' for every photo, never an exception", s["unknown"] == 3 and s["poor"] == [], s)
-check("Q14 enforcing is off unless PVS_QUALITY_ENFORCE is set", not ls.photo_quality_enforce_enabled())
-os.environ["PVS_QUALITY_ENFORCE"] = "1"
-check("Q15 PVS_QUALITY_ENFORCE=1 turns it on", ls.photo_quality_enforce_enabled())
+
+VERDICT.clear(); VERDICT.update({"liv1": "blocky", "kit2": "watermark"})
+bc = pool({"living": ["liv1", "liv2", "liv3"], "kitchen": ["kit1", "kit2"], "bedrooms": ["bed1"]})
+s_ = ls.filter_poor_quality_candidates(bc, assess=assess_named)
+check("Q7 enforcing is the default: the blocky top candidate is removed, the next one comes first", [p["url"] for p in bc["living"]] == ["liv2", "liv3"], bc["living"])
+check("Q8 a poor photo that was not first is removed too, the good ones stay in order", [p["url"] for p in bc["kitchen"]] == ["kit1"] and [p["url"] for p in bc["bedrooms"]] == ["bed1"])
+check("Q9 summary: 6 judged, 2 poor, enforced", s_["checked"] == 6 and s_["poor"] == 2 and s_["enforced"], s_)
+check("Q10 every judged photo is tagged with its verdict; removed ones carry quality_rejected",
+      all("quality" in p for pl in bc.values() for p in pl) and ls._quality_gap_note([{"quality_rejected": True}]).startswith(" 1 photo(s)"))
+
+VERDICT.clear(); VERDICT.update({"liv1": "soft"})
+bc = pool({"living": ["liv1", "liv2"]})
+ls.filter_poor_quality_candidates(bc, assess=assess_named, enforce=False)
+check("Q11 measure-only (enforce off): nothing removed, the verdict is saved and the photo marked poor", [p["url"] for p in bc["living"]] == ["liv1", "liv2"] and bc["living"][0].get("quality_poor") and not bc["living"][0].get("quality_rejected"))
+os.environ["PVS_QUALITY_ENFORCE"] = "0"
+bc = pool({"living": ["liv1", "liv2"]})
+ls.filter_poor_quality_candidates(bc, assess=assess_named)
+check("Q12 PVS_QUALITY_ENFORCE=0 gives the same measure-only behaviour", len(bc["living"]) == 2)
 os.environ.pop("PVS_QUALITY_ENFORCE")
+
+FETCHED.clear(); VERDICT.clear()
+bc = pool({"living": ["a%d" % i for i in range(10)]})
+ls.filter_poor_quality_candidates(bc, assess=assess_named)
+check("Q13 only the best-ranked candidates are judged (QUALITY_JUDGE_PER_CATEGORY), not all 10", len(FETCHED) == ls.QUALITY_JUDGE_PER_CATEGORY, FETCHED)
+os.environ["PVS_QUALITY_CHECK"] = "0"; FETCHED.clear()
+bc = pool({"living": ["liv1"]})
+check("Q14 PVS_QUALITY_CHECK=0 switches the filter off: no download, no call", ls.filter_poor_quality_candidates(bc, assess=lambda *a, **k: 1 / 0) == {"enabled": False} and not FETCHED)
+os.environ.pop("PVS_QUALITY_CHECK")
+bc = pool({"living": ["liv1", "liv2"]})
+s_ = ls.filter_poor_quality_candidates(bc, assess=lambda c, label="": 1 / 0)
+check("Q15 an assessor that crashes gives 'unknown': nothing removed, no exception", s_["unknown"] == 2 and len(bc["living"]) == 2, s_)
+ls.fetch_photo_bytes = lambda *a, **k: {"ok": False, "content": None, "url_used": None, "used_fallback": False, "error": "x"}
+bc = pool({"living": ["liv1"]})
+check("Q15b a photo that cannot be downloaded for the check is kept (unknown)", ls.filter_poor_quality_candidates(bc, assess=assess_named)["unknown"] == 1 and len(bc["living"]) == 1)
+ls.fetch_photo_bytes = fetch_named
+check("Q14b enforcing defaults to ON, off only with PVS_QUALITY_ENFORCE=0", ls.photo_quality_enforce_enabled() and not (os.environ.update(PVS_QUALITY_ENFORCE="0") or ls.photo_quality_enforce_enabled()))
+os.environ.pop("PVS_QUALITY_ENFORCE")
+
+# end to end through the real selection functions (ranking replaced by "keep the order")
+ls.rank_photos_by_quality = lambda category, candidates, max_to_compare=6: candidates
+def listing(names_by_cat):
+    return [{"url": n, "category": c, "label_it": ""} for c, ns in names_by_cat.items() for n in ns]
+cats6 = {"exterior": ["ext1"], "living": ["liv1", "liv2"], "kitchen": ["kit1"], "bedrooms": ["bed1"], "bathrooms": ["bat1"], "outdoor": ["out1"]}
+orig_assess = ls.assess_photo_quality
+ls.assess_photo_quality = assess_named
+VERDICT.clear(); VERDICT.update({"liv1": "blocky"})
+sel = ls.select_photos_for_scene_count(listing(cats6), 6)
+check("S1 the standard selection skips the blocky living photo and takes the next one: still 6 photos, no gap",
+      [p["url"] for p in sel["selected"]["living"]] == ["liv2"] and sel["total_selected"] == 6 and not sel["gaps"], sel)
+VERDICT.clear(); VERDICT.update({"liv1": "blocky", "kit1": "soft"})
+photos = listing({"exterior": ["ext1"], "living": ["liv1"], "kitchen": ["kit1"], "bedrooms": ["bed1"], "bathrooms": ["bat1"], "outdoor": ["out1"]})
+sel = ls.select_photos_for_scene_count(photos, 6)
+check("S2 not enough good photos: the gap names the quality reason (2 photos discarded)", sel["gaps"] and "2 photo(s) of the listing were discarded for insufficient image quality" in sel["gaps"][0], sel["gaps"])
+rep = ls.build_selection_report(photos, sel, 6)
+check("S3 the selection report lists the rejected photos with their verdicts and counts the judged ones",
+      sorted(x["verdict"] for x in rep["quality_rejected"]) == ["blocky", "soft"] and rep["quality_checked"] == 6, rep["quality_rejected"])
+VERDICT.clear()
+sel = ls.select_photos_for_scene_count_premium(listing({"exterior": ["e1"], "living": ["l1"]}), 11)
+check("S4 the premium selection goes through the same filter (its gap text exists and carries no quality note when nothing was discarded)", sel["gaps"] and "discarded" not in sel["gaps"][0], sel["gaps"])
+VERDICT.update({"e1": "watermark", "l1": "soft"})
+sel = ls.select_photos_for_scene_count_premium(listing({"exterior": ["e1"], "living": ["l1"]}), 11)
+check("S5 premium: the quality note is in the gap when photos were discarded", "discarded for insufficient image quality" in sel["gaps"][0], sel["gaps"])
+ls.assess_photo_quality = orig_assess
+ls.fetch_photo_bytes = real_fetch
 
 # the shared sender is still the only place that calls the API: the old one-photo function goes through it
 ANSWER.update(text="hall"); SENT.clear()
@@ -163,8 +190,9 @@ check("R4 api_server: exactly one call passes remove_watermark=False (the partne
 partner_pos = api.index("remove_watermark=False")
 check("R5 that call sits after the partner download and before the partner webhook failure text (inside the partner job preparation)",
       api.rfind("async def ", 0, partner_pos) != -1 and "partner" in api[api.rfind("async def ", 0, partner_pos):partner_pos].lower())
-check("R6 both workflows call the shared quality check once, right after the download",
-      api.count("scraper.check_selected_photo_quality") == 2 and api.count("selection_report[\"photo_quality\"]") == 2)
+check("R6 the quality filter lives in the selection only: no second implementation in api_server", "check_selected_photo_quality" not in api and "filter_poor_quality_candidates" not in api)
+src_ls = open("listing_scraper.py").read()
+check("R7 the filter is called from the ONE shared ranking step used by both selections", src_ls.count("filter_poor_quality_candidates(by_category)") == 1 and src_ls.count("_categorize_and_rank_photos(photos,") == 2)
 
 print()
 print(f"RESULT: {'ALL PASS' if not fails else 'FAILURES: ' + ', '.join(fails)} ({total - len(fails)}/{total})")

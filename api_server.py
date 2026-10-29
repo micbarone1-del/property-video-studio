@@ -1716,9 +1716,7 @@ async def _prepare_url_draft_work(job_id, url, property_name, agency_id, voice_i
     img_dir.mkdir(parents=True, exist_ok=True)
 
     selection = await asyncio.to_thread(scraper.download_selected_photos, selection, img_dir)
-    photo_quality = await asyncio.to_thread(scraper.check_selected_photo_quality, selection)      # 2026-10-29: measure (and optionally drop) soft / blocky / watermarked photos
     selection_report = scraper.build_selection_report(extraction["photos"], selection, narration["scene_count"], premium=premium)
-    selection_report["photo_quality"] = photo_quality
     if acceptance is not None:
         selection_report["acceptance"] = acceptance
     selection_report["classification"] = classification_summary
@@ -2163,9 +2161,7 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
         img_dir.mkdir(parents=True, exist_ok=True)
 
         selection = await asyncio.to_thread(scraper.download_selected_photos, selection, img_dir)
-        photo_quality = await asyncio.to_thread(scraper.check_selected_photo_quality, selection)      # 2026-10-29: same shared check as the URL path
         selection_report = scraper.build_selection_report(photos_for_selection, selection, narration["scene_count"])
-        selection_report["photo_quality"] = photo_quality
         selection_report["acceptance"] = acceptance
         selection_report["classification"] = classification_summary
         total_downloaded = sum(len(ps) for ps in selection["selected"].values())
