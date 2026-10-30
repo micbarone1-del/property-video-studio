@@ -61,7 +61,12 @@ def build_prompt(meters: float) -> str:
     )
 
 
-def find_photo(jobs_dir: Path, job_id: str, scene: int) -> Path:
+def find_photo(jobs_dir: Path, job_id: str, scene: int, override: str = "") -> Path:
+    if override:
+        p = Path(override)
+        if not p.is_file():
+            raise SystemExit(f"--photo not found: {p}")
+        return p
     job_dir = jobs_dir / job_id
     meta = json.load(open(job_dir / "job_meta.json"))
     sid = meta["scenes_config"][scene].get("scene_id")
@@ -108,6 +113,29 @@ def run_luma(model: str, source_url: str, prompt: str, record: dict) -> bytes:
     raise RuntimeError("Luma timeout after 300 s (generation may still be billed)")
 
 
+def luminance(img) -> float:
+    import numpy as np
+    a = np.asarray(img.convert("RGB"), dtype=np.float32)
+    return float((0.299 * a[..., 0] + 0.587 * a[..., 1] + 0.114 * a[..., 2]).mean())
+
+
+def match_colour(end_path: Path, ref_path: Path, out_path: Path):
+    """Global per-channel mean/std transfer of the end frame onto the start frame (gain clamped 0.7-1.4): removes a difference in
+    exposure / white balance that Luma would otherwise show as a visible shift between the two pictures. Free, local."""
+    import numpy as np
+    from PIL import Image
+    end = Image.open(end_path).convert("RGB")
+    e = np.asarray(end, dtype=np.float32)
+    r = np.asarray(Image.open(ref_path).convert("RGB").resize(end.size), dtype=np.float32)
+    out = np.empty_like(e)
+    for c in range(3):
+        me, se = e[..., c].mean(), max(e[..., c].std(), 1e-3)
+        mr, sr = r[..., c].mean(), r[..., c].std()
+        gain = min(1.4, max(0.7, sr / se))
+        out[..., c] = (e[..., c] - me) * gain + mr
+    Image.fromarray(np.clip(out, 0, 255).astype("uint8")).save(out_path, quality=92)
+
+
 def compare_sheet(photo: Path, results: dict, out: Path):
     from PIL import Image, ImageDraw
     tiles = [("ORIGINALE", Image.open(photo).convert("RGB"))]
@@ -136,6 +164,7 @@ def main():
     ap.add_argument("--meters", type=float, default=1.0)
     ap.add_argument("--gens", default="nb2,nbpro,uni1")
     ap.add_argument("--jobs-dir", default=JOBS_DEFAULT)
+    ap.add_argument("--photo", default="", help="use exactly this file as the source (the START FRAME actually given to Luma, e.g. enhanced/scene_001_enhanced_lit.jpg)")
     ap.add_argument("--go", action="store_true", help="really spend (default: plan only)")
     a = ap.parse_args()
 
@@ -144,7 +173,7 @@ def main():
     if bad or not gens or len(gens) > MAX_GENS:
         raise SystemExit(f"generators must be 1-{MAX_GENS} of {sorted(GENERATORS)}; got {a.gens}")
 
-    photo = find_photo(Path(a.jobs_dir), a.job_id, a.scene)
+    photo = find_photo(Path(a.jobs_dir), a.job_id, a.scene, a.photo)
     prompt = build_prompt(a.meters)
     print("photo :", photo)
     print("prompt:", prompt)
@@ -173,6 +202,17 @@ def main():
             Image.open(BytesIO(raw)).convert("RGB").save(out, quality=92)
             results[g] = out
             rec["file"] = out.name
+            from PIL import Image as _I
+            res_im = _I.open(out)
+            mfile = OUT_DIR / f"endf_{tag}_{g}_m.jpg"
+            match_colour(out, photo, mfile)
+            rec["matched_file"] = mfile.name
+            ph = _I.open(photo)
+            rec["size"] = list(res_im.size)
+            rec["luminance"] = {"photo": round(luminance(ph), 1), "result": round(luminance(res_im), 1),
+                                "matched": round(luminance(_I.open(mfile)), 1)}
+            print(f"   size {res_im.size[0]}x{res_im.size[1]} (photo {ph.size[0]}x{ph.size[1]}); mean luminance photo {rec['luminance']['photo']}"
+                  f" | result {rec['luminance']['result']} | colour-matched {rec['luminance']['matched']} -> {PUBLIC}{mfile.name}")
             rec["secs"] = round(time.time() - t0, 1)
             print(f"   ok in {rec['secs']} s -> {PUBLIC}{out.name}")
         except Exception as e:
