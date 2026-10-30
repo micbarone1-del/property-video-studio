@@ -507,3 +507,11 @@ test_photo_filters.py RESULT: ALL PASS (76/76)
 - Real evidence so far (n=1 per scene): clips with the director end frame: scene 1 steady motion (last/first second 1.07), scene 4 still accelerating (2.42); Michele's eye: videos fine, no ghost curtain or second tap reported. Not proven reliable.
 - Invariants touched: final state correct and visible; no double cost (each retry of a still is a paid call: cap 3 attempts).
 - Scores remain proposals until reviewed by the user; scoreboard totals NOT recomputed here.
+
+
+## 2026-10-30 (evening) — End-frame experiment: results and what they do and do not show (PROPOSALS, scores not reviewed)
+- Tests: T-H1 validation batch: NOT RUN. T-H4 bake-off of five image generators (30 single attempts, scenes 1 and 4 of job 91056c3e): RUN, uni-1 2/6, nb2 1/6, kontext 0/6, qwen 0/6, depth 0/6; thresholds are proposals. T-H5 full director loop, 6 rounds (nb2, uni-1, uni-1): scene 1 3/3, scene 4 2/3; n too small to claim a rate. T-H6 two Luma clips from loop frames: both judged worse by Michele (zig-zag; door and radiator deformed near the end), n=1 each, so Luma variance is not separated from frame quality. T-H7 incoherence metric (global alignment residual + optical flow) as a predictor: FAIL as a gate, does not separate the two good clips from the two bad ones.
+- Row Q13 (end frame invents objects / colour mismatch): evidence says the Claude check does not see deformation of edge objects (door, radiator); S/O/D not re-scored here. Q12 (ghost animation) remains open: no clip test of the curtain scene with the new frames was reported by Michele.
+- New proposed row Q16: end frame that passes every check still yields a clip with zig-zag path or deformed objects (S6 O4 D6 = 144, ACT, proposal). Control proposed: evaluate the PRODUCED CLIP (flow-based speed/path profile plus Claude on key frames), regenerate up to 3 times, then cautious movement and a report flag. Not built.
+- Invariants: no double cost (cap attempts and per-scene spend), operator informed once (flag in report).
+- Scores remain proposals until reviewed by the user; scoreboard totals NOT recomputed here.
