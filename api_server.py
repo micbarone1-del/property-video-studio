@@ -3204,7 +3204,7 @@ async def _send_new_partner_job_alert(job_id: str):
         import maintenance_scheduler
         subject = f"Nuovo job da {job.get('source', 'partner')}: {job.get('property_name', 'Property')}"
         body_html = (
-            f"<p>E arrivato un nuovo job da {job.get('source', 'partner')}.</p>"
+            f"<p>È arrivato un nuovo job da {job.get('source', 'partner')}.</p>"
             f"<p><b>Immobile:</b> {job.get('property_name', 'Property')}<br>"
             f"<b>External ref:</b> {job.get('external_ref', 'N/A')}<br>"
             f"<b>Job ID:</b> {job_id}</p>"
