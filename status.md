@@ -1213,3 +1213,10 @@ test_vision_classify.py RESULT: ALL PASS (36/36)
 
 ## 2026-10-29 (BV) - Pronuncia GIAL
 - Feedback Relinx: GIAL si legge come parola (gial), non come sigla. Aggiunta in pronunciation_fixes.json la voce GIAL -> gial (parola intera, maiuscole/minuscole distinte). Test con apply_pronunciation_fixes: vedi esecuzione del blocco 275. NON ancora verificato all'ascolto su un video reale.
+
+
+## 2026-10-30 (BW) - GIAL pronunciation live; next milestone scoped
+- Pronunciation: pronunciation_fixes.json has GIAL -> gial, commit 8faf277 on the server. Checked on the server (block 276): apply_pronunciation_fixes turns "GIAL IMMOBILIARE" into "gial IMMOBILIARE". NOT yet heard on a real video. The two shared videos (1337, 1290) still have the old voice; regenerating voice only has not been checked.
+- Michele's standing rule: GIAL is read as a word (gial) in everything produced for GIAL.
+- Real videos with upscale off (test instance, 2026-10-29): 1337 (job 6c79ce33) and 1290 (job 86ebb8e4), EUR 8.54 and 8.50 actual; Michele: "molto bene", narration phrases too generic, not specific to the flat (see backlog).
+- Next milestone requirements recorded in backlog.md (autonomous queue + live dashboard). Relinx asked for 12 listings via API (10 sale, 2 rent); 1312 (Castel Gandolfo) draft planned as an extra scraping check, not yet run.

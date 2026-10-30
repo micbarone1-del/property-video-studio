@@ -467,3 +467,21 @@ test_upscale_default.py RESULT: ALL PASS (15/15)
 test_selection_report.py RESULT: ALL PASS (29/29)
 test_vision_classify.py RESULT: ALL PASS (36/36)
 - Real-photo check after the fix: not run yet (rerun on 64 photos).
+
+
+## 2026-10-30 (BW) - Autonomous queue + live dashboard: proposed FMEA rows, tests and checks (scores are PROPOSALS, not reviewed by Michele; all tests NOT RUN)
+Proposed FMEA rows (ID, step, failure mode, S/O/D, RPN, level):
+- Q1 P6 queue manager loses or duplicates a job across a restart/crash: S9 O3 D4 = 108 ACT. Control: queue state persisted with the job, re-read at start; invariant "no job lost, no double cost".
+- Q2 P6 parallelism above what Luma/fal accept: failed clips, billed attempts: S7 O5 D5 = 175 ACT. Control: configurable ceiling, back-off on rate-limit answers, limits measured by test.
+- Q3 P6 approval level wrongly set (L2 by mistake) so spend starts unreviewed: S8 O3 D4 = 96. Control: default L0, level change logged and shown on the dashboard.
+- Q4 P6 spend threshold overshot because parallel jobs check the cap at the same time: S8 O4 D6 = 192 ACT. Control: reserve the estimated cost before starting a job; pause and ask for approval, never error.
+- Q5 P7 QC misses a hallucination in autonomous mode and the video is delivered: S9 O5 D8 = 360 ACT. Control: rework within limits, risk flag to customer, escalation to Michele; stays the top open risk (backlog item 11).
+- Q6 P7 automatic rework loops and spends repeatedly: S7 O4 D5 = 140 ACT. Control: max attempts and max cost per job, then escalate.
+- Q7 P11 dashboard shows a stale or wrong state, Michele misses an escalation: S8 O3 D6 = 144 ACT. Control: state taken from the single job record, "last update" shown, a heartbeat that raises its own alert.
+- Q8 P11 notification flood or one missed notification: S7 O4 D5 = 140 ACT. Control: one notification per event, grouped, acknowledgement kept.
+- Q9 all infrastructure degrades unnoticed (disk full, memory, service down, backup stale, certificate or provider balance expiring): S8 O4 D6 = 192 ACT. Control: scheduled checks below.
+- Q10 all provider or model changes behaviour silently (judge verdicts, narration, clip quality) or a model ID is retired: S7 O4 D7 = 196 ACT. Control: weekly judge calibration control test (about EUR 0.05), model availability probe.
+- Q11 all settings changed from the dashboard by someone without the right: S8 O3 D5 = 120 ACT. Control: stronger access key before go-live, changes logged.
+Proposed tests (Appendix T, section G/H), all NOT RUN: T-G6 queue order and no loss across a restart; T-G7 concurrency ceiling respected with fake providers; T-G8 threshold reached -> queue pauses, resumes after approval, partner sees no error; T-G9 approval levels L0/L1/L2 behave as defined; T-G10 dashboard shows every job state within a few seconds and each action button works; T-G11 rework limit and escalation; T-G12 infrastructure and model checks raise a notification when a check is forced to fail.
+Proposed control-plan additions (maintenance inside the automation): disk and memory, services alive, backup_jobs.sh freshness, certificate expiry, provider balances (Luma, fal, Anthropic, ElevenLabs), model availability probe, judge calibration control test, stuck-job watchdog.
+Invariants for every test: no job lost, no double cost, final state correct and visible, operator informed once.

@@ -948,3 +948,21 @@ Requirements, in his words/intent (confirm in plain language before any code; ea
 - Rerun the 64 test-instance photos with the fix; if false alarms are gone, switch enforcement on again and run 1307 end to end (upscale off).
 - Band detector (relinx_pilot_check._content_box): found bands on 25 of 25 photos of the 1307 page, Michele sees none on the site. Check per photo (size, content box).
 - Batch of GIAL listings with report and links to the videos; then e2e automation, parallel runs, live report (to be scoped).
+
+
+## 2026-10-30 (BW) - NEXT MILESTONE (Concurrency + Operator Dashboard): requirements refined by Michele
+This REFINES the existing "NEXT MILESTONE - Concurrency + Operator Dashboard" entry and its "Dashboard design principles"; it is not a second feature. One shared queue for all sources, no separate path for API jobs.
+Decided 2026-10-30:
+1. Goal: a system that manages the queue of API requests on its own. Michele watches ONE live screen.
+2. Parallel jobs: configurable ceiling (not a fixed number). Luma is the suspected bottleneck; the real fal/Luma/ElevenLabs concurrency limits are NOT yet measured. Start low, raise by test; on a provider rate-limit answer, back off and retry, never fail the job for that.
+3. Approval levels, chosen from the dashboard: L0 every job waits for Michele (as today); L1 jobs start by themselves unless flagged (QC risk, over threshold, unfurnished, few photos); L2 autonomous, only errors and escalations reach Michele. Start at L0 and loosen step by step. The approvals are temporary scaffolding to be removed as trust is earned.
+4. Spend limits: per job and per day, configurable from the dashboard (starting daily ceiling EUR 50). When a limit is reached the queue PAUSES and asks Michele to approve raising the threshold; it does not return an error to the partner and does not drop the job.
+5. QC and hallucination risk in autonomous mode: (a) automatic rework within limits (attempts and cost), (b) if the risk stays, flag the risk to the customer, (c) if rework does not work yet, escalate to Michele. Rework automation comes AFTER the QC has been validated on 4-5 more listings; those validations are part of the normal test runs (Relinx API listings), not separate runs.
+6. Live dashboard (single screen): queue and state of every job, items needing action (approvals, flags, errors) with click-through actions, cost situation (per job, per day, vs thresholds), infrastructure and model health, and the controls for approval level and thresholds. Notifications appear on this screen.
+7. Maintenance and checks that come out of the FMEA run inside the automation: infrastructure (disk, memory, services, backup freshness, certificate expiry), provider balances, model availability and behaviour (periodic judge calibration control test), stuck-job watchdog. Anything the automation cannot handle becomes a notification on the dashboard.
+8. Security note: the access key of the UI/app is 7 characters; settings changed from the dashboard (thresholds, approval level) need a stronger key before this goes live.
+Open: real provider concurrency limits; where the dashboard lives (inside the app behind the key vs separate page); how a risk flag to the customer is worded and delivered through the partner API; language of failure messages (unfurnished message is Italian, others English).
+## 2026-10-30 (BW) - Narration is generic (Michele, after watching 1337 and 1290)
+Phrases read as generic, not specific to the flat. Not yet analysed: need the saved narration text and the listing description of one job to see whether the facts are missing or ignored. Related: scene facts feature (colours only, no materials, no place names).
+## 2026-10-30 (BW) - Rental listings (affitto) never tested
+GIAL has 10 rentals (2 residential: 1251 Albano 170 mq, 1321 Marino 90 mq). The pipeline has not been tested on a rental: price per month, wording "in affitto", contract type field in the Relinx API (asked in the message to Relinx). Risk: a rental narrated as a sale.
