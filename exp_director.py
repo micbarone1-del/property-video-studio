@@ -89,10 +89,17 @@ def ask_claude(prompt: str, images: list, usage: dict) -> dict:
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
     content = [{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": _b64(i)}} for i in images]
     content.append({"type": "text", "text": prompt})
-    r = client.messages.create(model=MODEL, max_tokens=1500, messages=[{"role": "user", "content": content}])
-    usage["in"] = usage.get("in", 0) + r.usage.input_tokens
-    usage["out"] = usage.get("out", 0) + r.usage.output_tokens
-    return _json_of("".join(b.text for b in r.content if getattr(b, "text", "")))
+    last = ""
+    for _ in range(2):                    # one more try when the answer is cut or not valid JSON (seen on the first real run: scene 1 QC)
+        r = client.messages.create(model=MODEL, max_tokens=3000, messages=[{"role": "user", "content": content}])
+        usage["in"] = usage.get("in", 0) + r.usage.input_tokens
+        usage["out"] = usage.get("out", 0) + r.usage.output_tokens
+        text = "".join(b.text for b in r.content if getattr(b, "text", ""))
+        try:
+            return _json_of(text)
+        except Exception as e:
+            last = f"{e} | stop_reason={getattr(r, 'stop_reason', None)} | text={text[:600]}"
+    raise ValueError(last)
 
 
 def start_frame(jobs_dir: str, job: str, scene: int) -> Path:
@@ -111,10 +118,19 @@ def direct_one_scene(photo: Path, tag: str, ask=ask_claude, gen=None, out_dir: P
     public = public or ef.PUBLIC
     gen = gen or (lambda prompt: ef.run_fal(FAL_MODEL, photo, prompt))
     usage, log = {}, {"model": MODEL, "photo": str(photo), "attempts": []}
+    def unsafe_words(pl):
+        words = (pl.get("target") or "").lower().replace(",", " ").replace(".", " ").split()
+        return sorted({w for w in words if w.startswith(camera_plan.ANCHOR_UNSAFE_STEMS)})   # SAME list production uses for anchors
+
     plan = ask(DIRECTOR_PROMPT, [photo], usage)
     log["director"] = plan
-    tgt = (plan.get("target") or "").lower()
-    log["target_unsafe_word"] = any(w.startswith(camera_plan.ANCHOR_UNSAFE_STEMS) for w in tgt.replace(",", " ").split())
+    bad = unsafe_words(plan)
+    if bad:                               # a safety net in CODE, not only in the prompt (first real run: scene 4 target was a window WITH a curtain)
+        log["first_plan_rejected"] = {"target": plan.get("target"), "unsafe_words": bad}
+        plan = ask(DIRECTOR_PROMPT + f"\n\nYour previous target ({plan.get('target')!r}) was refused because it contains the forbidden word(s) {bad}. "
+                   "Choose a different target that is plain, solid and fixed, and answer again in the same JSON format.", [photo], usage)
+        log["director"] = plan
+    log["target_unsafe_word"] = bool(unsafe_words(plan))
     prompt = plan["end_frame_prompt"]
     results = {}
     for n in range(1, MAX_ATTEMPTS + 1):
@@ -129,8 +145,13 @@ def direct_one_scene(photo: Path, tag: str, ask=ask_claude, gen=None, out_dir: P
         results[f"tentativo {n}"] = m
         intent = (f"the camera ends at: {plan.get('end_position')}; target: {plan.get('target')} about {plan.get('target_scale')} times larger; "
                   f"what leaves the frame: {plan.get('leaves_the_frame')}")
-        qc = ask(QC_PROMPT.format(intent=intent, target=plan.get("target")), [photo, m], usage)
+        try:
+            qc = ask(QC_PROMPT.format(intent=intent, target=plan.get("target")), [photo, m], usage)
+        except Exception as e:             # the generated picture (already paid) must never be lost because the check failed
+            qc = {"verdict": "error", "reasons": [str(e)[:500]]}
         att["qc"] = qc
+        if qc.get("verdict") == "error":
+            break
         if str(qc.get("verdict", "")).lower() == "pass":
             break
         issues = "; ".join(list(qc.get("new_or_changed") or []) + list(qc.get("reasons") or []))
@@ -161,6 +182,8 @@ def main():
     tag = f"{a.job_id}_s{a.scene}"
     log = direct_one_scene(photo, tag)
     d = log["director"]
+    if log.get("first_plan_rejected"):
+        print("FIRST TARGET REFUSED BY THE CODE:", log["first_plan_rejected"])
     print(f"ROOM: {d.get('room')} ({d.get('depth')}) | TARGET: {d.get('target')} | scale x{d.get('target_scale')}"
           + ("  [WARNING: target word is on the unsafe list]" if log["target_unsafe_word"] else ""))
     print("END POSITION:", d.get("end_position"))
