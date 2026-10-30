@@ -1220,3 +1220,16 @@ test_vision_classify.py RESULT: ALL PASS (36/36)
 - Michele's standing rule: GIAL is read as a word (gial) in everything produced for GIAL.
 - Real videos with upscale off (test instance, 2026-10-29): 1337 (job 6c79ce33) and 1290 (job 86ebb8e4), EUR 8.54 and 8.50 actual; Michele: "molto bene", narration phrases too generic, not specific to the flat (see backlog).
 - Next milestone requirements recorded in backlog.md (autonomous queue + live dashboard). Relinx asked for 12 listings via API (10 sale, 2 rent); 1312 (Castel Gandolfo) draft planned as an extra scraping check, not yet run.
+
+
+## 2026-10-30 (BX) - Partner limit per agency is a setting; pilot tool uses one GIAL client (p18)
+- Found: the Relinx limit "2 videos per agency per rolling 24h" was the number 2 written in POST /v1/videos. Relinx sending 12 GIAL listings in a day would get 429 from the third on.
+- Change: partner_agency_limit_24h() reads PVS_PARTNER_AGENCY_LIMIT_24H (default 2, bad or < 1 value gives 2); the endpoint and its message use it. relinx_pilot_check.py now sends ONE agency_external_id (gial-test) instead of one per listing (the per-listing id existed only to get around the limit; the test instance had 14 duplicate GIAL clients).
+- Pilot decision (Michele 2026-10-30): the limit is lifted for the pilot and put back for launch; it becomes a dashboard parameter. The value in .env is set by the operator step after this commit, see the run log.
+- Tests: test_partner_rate_limit.py RESULT: ALL PASS (10/10)
+test_partner_failure.py RESULT: ALL PASS (20/20)
+test_upscale_default.py RESULT: ALL PASS (15/15)
+test_relinx_loader.py 
+test_photo_filters.py RESULT: ALL PASS (76/76)
+- Not verified: a real request above the limit on the test instance; the .env value is NOT counted as done until the block output shows it.
+- Rollback: commit 63d7832.

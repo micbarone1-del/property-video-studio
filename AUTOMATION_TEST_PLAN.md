@@ -485,3 +485,12 @@ Proposed FMEA rows (ID, step, failure mode, S/O/D, RPN, level):
 Proposed tests (Appendix T, section G/H), all NOT RUN: T-G6 queue order and no loss across a restart; T-G7 concurrency ceiling respected with fake providers; T-G8 threshold reached -> queue pauses, resumes after approval, partner sees no error; T-G9 approval levels L0/L1/L2 behave as defined; T-G10 dashboard shows every job state within a few seconds and each action button works; T-G11 rework limit and escalation; T-G12 infrastructure and model checks raise a notification when a check is forced to fail.
 Proposed control-plan additions (maintenance inside the automation): disk and memory, services alive, backup_jobs.sh freshness, certificate expiry, provider balances (Luma, fal, Anthropic, ElevenLabs), model availability probe, judge calibration control test, stuck-job watchdog.
 Invariants for every test: no job lost, no double cost, final state correct and visible, operator informed once.
+
+
+## 2026-10-30 (BX) - Partner limit as a setting (p18)
+- test_partner_rate_limit: default, valid and invalid values, endpoint uses the setting, one reader of the env value, pilot tool one agency. test_partner_rate_limit.py RESULT: ALL PASS (10/10)
+test_partner_failure.py RESULT: ALL PASS (20/20)
+test_upscale_default.py RESULT: ALL PASS (15/15)
+test_relinx_loader.py 
+test_photo_filters.py RESULT: ALL PASS (76/76)
+- FMEA note (proposal, not reviewed): a pilot with a lifted limit removes the protection against a partner loop; the per-job and daily spend limits of the queue project are the replacement control. Not built yet.

@@ -1,0 +1,3852 @@
+"""
+api_server.py v3
+─────────────────
+New in v3:
+  - POST /analyse-image endpoint for vision AI space detection
+  - Vision QC after each video clip (Florence-2 via fal.ai)
+  - TTS QC after each audio generation
+  - Job pauses at "awaiting_approval" if QC flags any scene
+  - POST /jobs/{id}/approve to approve flagged scenes and proceed to assembly
+  - Cost estimation returned with job creation
+  - Actual cost tracked after completion
+  - GET /diagnostics endpoint with disk, API health, job stats, auto-cleanup
+  - GET/POST /maintenance/* endpoints — scheduled health-check report + editable alert recipient list
+  - Security: 20MB file size limit, max 20 images, rate limit 5 jobs/hour/IP
+  - File type validation by magic bytes
+  - Job persistence to disk (survives server restart) — preserved from v2
+"""
+
+
+import os
+import uuid
+import json
+import shutil
+import asyncio
+import camera_plan
+import logging
+import time
+from pathlib import Path
+from datetime import datetime, timedelta
+from collections import defaultdict
+
+
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, BackgroundTasks, Request, Header, Depends
+from pydantic import BaseModel
+from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+
+
+load_dotenv()
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
+
+# 2026-10-09 (backlog 58a): fake-providers switch. OFF unless PVS_FAKE_PROVIDERS=1
+# at process start; then every paid/external provider is replaced at transport
+# level (see fake_providers.py). Only for a separate test instance (start_fake.sh).
+import fake_providers
+fake_providers.install_if_enabled()
+
+
+# ── Access key auth ────────────────────────────────────────────────────────────
+UI_ACCESS_KEY = os.getenv("UI_ACCESS_KEY", "").strip()
+
+
+def _check_access(request: Request) -> bool:
+    """Returns True if request is authorised. Always True if no key configured."""
+    if not UI_ACCESS_KEY:
+        return True  # no key set — open access (backward compat)
+    key = request.headers.get("X-Access-Key", "").strip()
+    return key == UI_ACCESS_KEY
+
+
+# ── Partner API auth (backlog item 48, 2026-09-29) ──────────────────────────
+# Distinct from UI_ACCESS_KEY above: that's a single shared admin key for
+# the web UI; this supports multiple partners (e.g. Relinx), each with
+# their own revocable key, hashed at rest -- see partner_api.py.
+import partner_api
+
+
+async def get_current_partner(authorization: str = Header(None)) -> dict:
+    """FastAPI dependency: validates the Authorization: Bearer <key> header
+    against partner_api's stored partner keys. Raises 401 if missing,
+    malformed, or invalid."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+    raw_key = authorization[len("Bearer "):].strip()
+    partner = partner_api.verify_partner_key(raw_key)
+    if not partner:
+        raise HTTPException(status_code=401, detail="Invalid or inactive API key")
+    return partner
+
+
+BASE_DIR = Path(__file__).parent
+# PVS_JOBS_DIR lets a test instance use its own jobs folder. Unset = unchanged
+# production behaviour. A fake-providers instance MUST NOT share the real jobs/.
+JOBS_DIR = Path(os.getenv("PVS_JOBS_DIR") or (BASE_DIR / "jobs"))
+if fake_providers.ENABLED and JOBS_DIR.resolve() == (BASE_DIR / "jobs").resolve():
+    raise RuntimeError("PVS_FAKE_PROVIDERS=1 requires PVS_JOBS_DIR pointing to a separate folder "
+                       "(refusing to run fake providers on the real jobs/ folder)")
+JOBS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+JOBS: dict = {}
+
+
+# ── Job locks — prevent concurrent modification of the same job ───────────────
+# Solves the "parallel processing corrupted things" issue: any operation that
+# modifies a job (redo scene, add scene, initial generation) must hold this
+# lock. A second request for the same job while locked gets a clear 409 error
+# instead of racing against the first and corrupting shared files.
+_JOB_LOCKS: dict = {}   # job_id -> {"locked": bool, "since": iso timestamp, "operation": str}
+
+
+def _acquire_job_lock(job_id: str, operation: str) -> bool:
+    """Returns True if lock acquired, False if job is already locked."""
+    existing = _JOB_LOCKS.get(job_id)
+    if existing and existing.get("locked"):
+        return False
+    _JOB_LOCKS[job_id] = {
+        "locked": True,
+        "since": datetime.utcnow().isoformat(),
+        "operation": operation,
+    }
+    return True
+
+
+def _release_job_lock(job_id: str):
+    if job_id in _JOB_LOCKS:
+        _JOB_LOCKS[job_id]["locked"] = False
+
+
+def _job_lock_status(job_id: str) -> dict:
+    return _JOB_LOCKS.get(job_id, {"locked": False})
+
+
+
+
+# ── Stable scene IDs ────────────────────────────────────────────────────────────
+# Scenes are identified by a permanent short ID, never by array position.
+# This means "redo this scene" always means the same scene regardless of how
+# many times the property has been edited, reordered, or had scenes added.
+def _new_scene_id() -> str:
+    return "sc_" + uuid.uuid4().hex[:8]
+
+
+def _ensure_scene_ids(scenes_config: list) -> list:
+    """Assigns a stable scene_id to any scene that doesn't have one yet.
+    Called on job creation and whenever scenes_config is saved, so old
+    jobs migrate forward automatically the next time they're touched."""
+    for scene in scenes_config:
+        if "scene_id" not in scene or not scene["scene_id"]:
+            scene["scene_id"] = _new_scene_id()
+    return scenes_config
+
+
+
+
+def _get_rolling_monthly_job_count() -> int:
+    """
+    Counts actual completed jobs (status=done) from the last 30 days,
+    based on JOBS in-memory data and job_meta.json files on disk. Used to
+    calculate a REAL infrastructure cost per video, rather than a static
+    guess — adapts automatically as production volume changes.
+    """
+    from datetime import datetime, timedelta
+    cutoff = datetime.utcnow() - timedelta(days=30)
+    count = 0
+    for job in JOBS.values():
+        if job.get("status") != "done":
+            continue
+        created_str = job.get("created_at", "")
+        try:
+            created = datetime.fromisoformat(created_str)
+            if created >= cutoff:
+                count += 1
+        except (ValueError, TypeError):
+            continue
+    return count
+
+
+
+
+def _overlay_narration_audio(video_path: str, narration_path: str, transition_style: str = "fade"):
+    """
+    Overlays the continuous narration track onto the assembled video, with
+    blank (black/white) padding at the start and end, and fades between the
+    padding and the real footage.
+
+    The padding absorbs any narration OVERFLOW: if the TTS runs longer than
+    the video, the extra time is covered by blank padding rather than
+    truncating the audio (which silently cut off the final sentences) or
+    freezing on a dead final frame. When there is no overflow, the padding
+    collapses to a minimal, nearly invisible amount.
+
+    Narration starts just after the opening fade and ends shortly before the
+    closing fade, so it sits snugly rather than floating in dead air.
+
+    Padding colour follows the job's transition_style (white if the style
+    mentions white, otherwise black).
+    """
+    from moviepy import VideoFileClip, AudioFileClip, ColorClip, CompositeAudioClip, concatenate_videoclips
+    from moviepy.video.fx import FadeIn, FadeOut
+    from narration import LEAD_SECS, TRAIL_SECS  # 2026-07-17: single source of
+    # truth shared with calculate_scene_durations()'s target_total math --
+    # was two independent hardcoded values (1.5s here vs 2.5s there) that
+    # could silently drift apart. See narration.py for detail.
+
+    FADE_SECS  = 0.5    # fade into / out of the blank padding
+
+    pad_colour = (255, 255, 255) if "white" in (transition_style or "").lower() else (0, 0, 0)
+
+    video = VideoFileClip(video_path)
+    narration = AudioFileClip(narration_path)
+    fps = video.fps or 24
+
+    # 2026-10-15: the lead/trail blank frames are concatenated AROUND the video,
+    # so only speech that runs past the END OF THE VIDEO needs extra trailing
+    # padding (it used to compare lead + speech + trail against the video
+    # length, counting the buffers a second time and adding ~2 s of dead air).
+    overflow = max(0.0, narration.duration - video.duration)
+
+    lead_pad  = LEAD_SECS
+    trail_pad = TRAIL_SECS + overflow   # trailing padding absorbs the overflow
+
+    lead_clip  = ColorClip(size=video.size, color=pad_colour, duration=lead_pad).with_fps(fps)
+    trail_clip = ColorClip(size=video.size, color=pad_colour, duration=trail_pad).with_fps(fps)
+
+    faded = video.with_effects([FadeIn(FADE_SECS), FadeOut(FADE_SECS)])
+    padded = concatenate_videoclips([lead_clip, faded, trail_clip])
+
+    narration = narration.with_start(lead_pad)
+
+    log.info(
+        f"[Narration] video={video.duration:.1f}s narration={narration.duration:.1f}s "
+        f"lead={lead_pad:.2f}s trail={trail_pad:.2f}s overflow_absorbed={overflow:.2f}s "
+        f"pad={'white' if pad_colour == (255,255,255) else 'black'} "
+        f"final={padded.duration:.1f}s"
+    )
+
+    # 2026-07-23: .with_audio() ignores an audio clip's own .start offset
+    # unless that clip is wrapped in a CompositeAudioClip -- confirmed via
+    # an isolated moviepy test (a shifted clip attached directly played
+    # from t=0, completely ignoring with_start()). This was a REAL bug:
+    # the lead/trail buffer above was computed correctly and logged
+    # correctly, but never actually took effect in the rendered file.
+    final = padded.with_audio(CompositeAudioClip([narration]))
+    tmp_output = video_path + ".narration_tmp.mp4"
+    final.write_videofile(
+        tmp_output,
+        codec="libx264",
+        audio_codec="aac",
+        bitrate="4000k",
+        audio_bitrate="128k",
+        preset="medium",
+        fps=video.fps or 24,
+        logger=None,
+    )
+    video.close()
+    narration.close()
+    final.close()
+    os.replace(tmp_output, video_path)
+
+
+
+
+from video_generation import DEFAULT_INTENSITY
+
+app = FastAPI(title="Real Estate Video Generator", version="3.0.0")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+# ── Generation pause / kill-switch ────────────────────────────────────────────
+# Persisted to disk so an accidental restart can't silently unpause and let
+# jobs sneak through before deliberately resumed. Visible in the UI as a
+# banner + toggle, not a hidden admin-only mechanism - the point is that
+# anyone using the app can SEE generation is paused, not be confused by
+# what would otherwise look like a broken submit button.
+GENERATION_PAUSE_FILE = BASE_DIR / "generation_pause.json"
+
+def _get_generation_pause_state() -> dict:
+    if GENERATION_PAUSE_FILE.exists():
+        try:
+            return json.loads(GENERATION_PAUSE_FILE.read_text())
+        except Exception:
+            pass
+    return {"paused": False, "message": "", "paused_at": None}
+
+def _set_generation_pause_state(paused: bool, message: str = "") -> dict:
+    state = {
+        "paused": paused,
+        "message": message,
+        "paused_at": datetime.utcnow().isoformat() if paused else None,
+    }
+    GENERATION_PAUSE_FILE.write_text(json.dumps(state, indent=2))
+    return state
+
+def _raise_if_generation_paused():
+    state = _get_generation_pause_state()
+    if state.get("paused"):
+        raise HTTPException(
+            status_code=423,
+            detail=f"Generazione video in pausa: {state.get('message') or 'manutenzione in corso'}. Riprova più tardi.",
+        )
+
+@app.get("/admin/generation-status")
+async def get_generation_status():
+    state = _get_generation_pause_state()
+    active_count = sum(1 for j in JOBS.values() if j.get("status") in ("running", "queued"))
+    return {**state, "active_jobs": active_count}
+
+@app.post("/admin/pause-generation")
+async def pause_generation(message: str = Form("Manutenzione in corso")):
+    state = _set_generation_pause_state(True, message)
+    log.info(f"[Admin] Generation PAUSED: {message}")
+    return state
+
+@app.post("/admin/resume-generation")
+async def resume_generation():
+    state = _set_generation_pause_state(False)
+    log.info("[Admin] Generation RESUMED")
+    return state
+
+
+# ── Rate limiting ──────────────────────────────────────────────────────────────
+# ── Cost reporting endpoints ──────────────────────────────────────────────────
+import cost_model
+
+def _jobs_with_ids():
+    out = []
+    for jid, j in JOBS.items():
+        d = dict(j); d['job_id'] = jid; out.append(d)
+    return out
+
+@app.get('/agencies')
+async def list_agencies_ep():
+    return {'agencies': cost_model.list_agencies()}
+
+@app.post('/agencies')
+async def create_agency_ep(name: str = Form(...), notes: str = Form('')):
+    return cost_model.create_agency(name, notes)
+
+@app.post('/agencies/{agency_id}')
+async def update_agency_ep(agency_id: str, name: str = Form(None), notes: str = Form(None)):
+    if not cost_model.get_agency(agency_id):
+        raise HTTPException(status_code=404, detail='Agency not found')
+    return cost_model.update_agency(agency_id, name=name, notes=notes)
+
+@app.get('/sales')
+async def list_sales_ep():
+    return {'sales': cost_model.list_sales(), 'agencies': cost_model.list_agencies()}
+
+@app.post('/sales')
+async def create_sale_ep(agency_id: str = Form(...), videos_sold: int = Form(...), price_eur: float = Form(...), description: str = Form('')):
+    return cost_model.create_sale(agency_id, videos_sold, price_eur, description)
+
+@app.delete('/sales/{sale_id}')
+async def delete_sale_ep(sale_id: str):
+    cost_model.delete_sale(sale_id)
+    return {'deleted': sale_id}
+
+@app.post('/sales/{sale_id}')
+async def update_sale_ep(sale_id: str, videos_sold: int = Form(None), price_eur: float = Form(None), description: str = Form(None)):
+    updated = cost_model.update_sale(sale_id, videos_sold=videos_sold, price_eur=price_eur, description=description)
+    if updated is None:
+        raise HTTPException(status_code=404, detail='Sale not found')
+    return updated
+
+@app.get('/reports/enterprise')
+async def report_enterprise_ep():
+    return cost_model.enterprise_report(_jobs_with_ids())
+
+
+@app.get('/investment')
+async def get_investment_ep():
+    return cost_model.get_investment()
+
+
+@app.post('/investment')
+async def add_investment_entry_ep(note: str = Form(...), amount_eur: float = Form(...)):
+    return cost_model.add_investment_entry(note, amount_eur)
+
+
+@app.delete('/investment/{index}')
+async def delete_investment_entry_ep(index: int):
+    return cost_model.delete_investment_entry(index)
+
+@app.get('/reports/agencies')
+async def report_agencies_ep():
+    return {'agencies': cost_model.agency_report(_jobs_with_ids())}
+
+@app.get('/reports/jobs')
+async def report_jobs_ep():
+    jobs = _jobs_with_ids()
+    fins = [cost_model.job_financials(j) for j in jobs]
+    by_id = {j['job_id']: j for j in jobs}
+    for f in fins:
+        j = by_id.get(f['job_id'], {})
+        f['property_name'] = j.get('property_name','')
+        f['status'] = j.get('status','')
+        f['created_at'] = j.get('created_at','')
+    fins.sort(key=lambda f: f.get('created_at',''), reverse=True)
+    return {'jobs': fins}
+
+@app.post('/jobs/{job_id}/commercial')
+async def set_job_commercial_ep(job_id: str, classification: str = Form(...), agency_id: str = Form(None), property_name: str = Form(None)):
+    """2026-07-22 (backlog item 39): also accepts an optional property_name
+    to assign/reassign this job's Property link post-creation -- "assign at
+    creation, still editable after" per explicit product decision.
+    Idempotent create-or-match, same as at job creation."""
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail='Job not found')
+    if classification not in cost_model.JOB_CLASSIFICATIONS:
+        raise HTTPException(status_code=400, detail='bad classification')
+    JOBS[job_id]['classification'] = classification
+    JOBS[job_id]['agency_id'] = agency_id or None
+    if property_name:
+        prop = cost_model.create_property(property_name, agency_id=agency_id or None)
+        JOBS[job_id]['property_id'] = prop['property_id']
+    _save_job(job_id)
+    return {'job_id': job_id, 'classification': classification, 'agency_id': agency_id, 'property_id': JOBS[job_id].get('property_id')}
+
+
+@app.get('/properties')
+async def list_properties_ep():
+    return {'properties': cost_model.list_properties()}
+
+
+@app.post('/properties')
+async def create_property_ep(name: str = Form(...), agency_id: str = Form(None)):
+    return cost_model.create_property(name, agency_id)
+
+
+@app.get('/reports/properties')
+async def report_properties_ep():
+    return {'properties': cost_model.property_report(_jobs_with_ids())}
+
+
+@app.post('/agencies/{agency_id}/logo')
+async def upload_agency_logo_ep(agency_id: str, logo: UploadFile = File(...)):
+    """2026-07-22 (backlog item 7): uploads a logo for client-video
+    overlay. Requires an alpha channel (transparent background) --
+    rejected with a clear error otherwise, since this composites as a
+    subtle bottom-right brand mark, not an opaque box over the video."""
+    agency = cost_model.get_agency(agency_id)
+    if not agency:
+        raise HTTPException(status_code=404, detail='Agency not found')
+    content = await logo.read()
+    if not _validate_image_bytes(content):
+        raise HTTPException(status_code=400, detail='Invalid image file')
+    from PIL import Image
+    import io
+    img = Image.open(io.BytesIO(content))
+    if img.mode not in ('RGBA', 'LA') and 'transparency' not in img.info:
+        raise HTTPException(status_code=400, detail='Logo must have an alpha channel (transparent background) -- upload a PNG with transparency')
+    logos_dir = BASE_DIR / 'clients' / agency_id
+    logos_dir.mkdir(parents=True, exist_ok=True)
+    logo_path = logos_dir / 'logo.png'
+    img.convert('RGBA').save(logo_path, format='PNG')
+    cost_model.set_agency_logo(agency_id, str(logo_path))
+    return {'agency_id': agency_id, 'logo_path': str(logo_path)}
+
+
+_RATE_LIMIT_WINDOW = 3600   # 1 hour in seconds
+_RATE_LIMIT_MAX    = 5      # max job submissions per IP per hour
+_rate_tracker: dict = defaultdict(list)
+
+
+def _check_rate_limit(ip: str) -> bool:
+    """Returns True if the IP is within the rate limit."""
+    now = time.time()
+    _rate_tracker[ip] = [t for t in _rate_tracker[ip] if now - t < _RATE_LIMIT_WINDOW]
+    if len(_rate_tracker[ip]) >= _RATE_LIMIT_MAX:
+        return False
+    _rate_tracker[ip].append(now)
+    return True
+
+
+# ── File type validation (magic bytes) ────────────────────────────────────────
+_IMAGE_SIGNATURES = {
+    b'\xff\xd8\xff': 'image/jpeg',
+    b'\x89PNG':      'image/png',
+    b'RIFF':         'image/webp',
+    b'GIF8':         'image/gif',
+}
+
+
+def _get_image_dimensions(content: bytes):
+    from PIL import Image
+    import io
+    img = Image.open(io.BytesIO(content))
+    return img.size
+
+
+def _decide_job_format_from_bytes(contents: list) -> str:
+    """
+    Majority vote across a job's photos: 'landscape' or 'portrait'
+    (2026-07-17, per explicit product decision). Exactly two canonical
+    output formats -- not one-per-photo-ratio -- so a mixed-orientation
+    property still gets one consistent video canvas. Ties, or any photo
+    that fails to read, default to landscape.
+    """
+    landscape_count = 0
+    portrait_count = 0
+    for c in contents:
+        try:
+            w, h = _get_image_dimensions(c)
+            if w >= h:
+                landscape_count += 1
+            else:
+                portrait_count += 1
+        except Exception:
+            landscape_count += 1
+    return "portrait" if portrait_count > landscape_count else "landscape"
+
+
+def _normalize_photo_to_format(image_bytes: bytes, target_format: str) -> bytes:
+    """
+    Crops a photo to match the job's chosen canonical output format --
+    "landscape" (16:9) or "portrait" (9:16) -- so every photo in a job
+    ends up exactly the same shape before generation, and video_assembly.py
+    can use one fixed canvas per job matching that format (2026-07-17,
+    per explicit product decision after a real client portrait-photo
+    distortion issue -- forcing every clip through a hardcoded 16:9
+    canvas was stretching portrait footage).
+
+    Crop direction depends on which way the source differs from target:
+      - Source is taller/narrower than target (needs height cropped,
+        e.g. a portrait photo going into a landscape job): TOP-BIASED
+        crop, not centered -- confirmed via a real side-by-side test
+        against an actual client photo that starting the crop window
+        ~15% down from the top keeps more of the informative ceiling/
+        window content real estate portrait shots are usually framed
+        for, cropping more from the floor instead.
+      - Source is wider than target (needs width cropped, e.g. a
+        landscape photo going into a portrait job): plain CENTER crop --
+        no equivalent left/right framing bias for typical room photos.
+    """
+    from PIL import Image
+    import io
+    img = Image.open(io.BytesIO(image_bytes))
+    w, h = img.size
+    target_ratio = (16 / 9) if target_format == "landscape" else (9 / 16)
+    current_ratio = w / h
+
+    if abs(current_ratio - target_ratio) / target_ratio < 0.02:
+        return image_bytes  # already an effective match, don't bother cropping
+
+    if current_ratio < target_ratio:
+        new_h = min(int(w / target_ratio), h)
+        top = int((h - new_h) * 0.26)  # 2026-07-17: proportional to actual crop amount, not a fixed % of original height
+        top = max(0, min(top, h - new_h))
+        cropped = img.crop((0, top, w, top + new_h))
+    else:
+        new_w = min(int(h * target_ratio), w)
+        left = (w - new_w) // 2
+        cropped = img.crop((left, 0, left + new_w, h))
+
+    buf = io.BytesIO()
+    cropped.save(buf, format='JPEG', quality=95)
+    return buf.getvalue()
+
+
+def _validate_image_bytes(data: bytes) -> bool:
+    for sig in _IMAGE_SIGNATURES:
+        if data[:len(sig)] == sig:
+            return True
+    return False
+
+
+# ── Job persistence ────────────────────────────────────────────────────────────
+def _save_job(job_id: str):
+    try:
+        job = JOBS.get(job_id)
+        if not job:
+            return
+        meta_path = JOBS_DIR / job_id / "job_meta.json"
+        meta_path.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write_json(meta_path, job)
+    except Exception as e:
+        log.warning(f"[Jobs] Could not save job meta for {job_id}: {e}")
+
+
+def _load_jobs_from_disk():
+    loaded = 0
+    for job_dir in JOBS_DIR.iterdir():
+        if not job_dir.is_dir():
+            continue
+        meta_path = job_dir / "job_meta.json"
+        if not meta_path.exists():
+            continue
+        try:
+            with open(meta_path) as f:
+                meta = json.load(f)
+            job_id = job_dir.name
+            if job_id not in JOBS:
+                JOBS[job_id] = meta
+                loaded += 1
+        except Exception as e:
+            log.warning(f"[Jobs] Could not reload {job_dir.name}: {e}")
+    if loaded:
+        log.info(f"[Jobs] Restored {loaded} jobs from disk.")
+
+
+_load_jobs_from_disk()
+from job_recovery import recover_orphans as _recover_orphans, atomic_write_json as _atomic_write_json
+import job_recovery as _jr   # 2026-10-23 (Patch L): PrepError / run_preparation for the background draft preparation
+import rework_policy as _rwp
+import scene_rework as _sr  # 2026-10-22: the ONE rework engine (backlog 75)
+from job_recovery import clip_is_valid as _reusable_clip, audio_is_valid as _reusable_audio, image_is_valid as _reusable_image
+
+# 2026-10-08 (task 4): a job left running/queued by a restart has no thread
+# that will ever finish it. Classified once at startup (job_recovery.py);
+# the operator is notified from the startup hook below.
+_RECOVERED_ORPHANS = []   # filled by the startup hook below, NOT at import time
+
+
+@app.on_event("startup")
+async def _notify_recovered_orphans():
+    _RECOVERED_ORPHANS[:] = _recover_orphans(JOBS, JOBS_DIR, _save_job)
+    if not _RECOVERED_ORPHANS:
+        return
+    log.warning(f"[Jobs] Recovered {len(_RECOVERED_ORPHANS)} orphaned job(s) after restart: "
+                + ", ".join(f"{r['job_id']}:{r['old']}->{r['new']}" for r in _RECOVERED_ORPHANS))
+    try:
+        for r in _RECOVERED_ORPHANS:
+            if r["new"] == "failed" and r["has_callback"]:
+                await _send_partner_webhook(r["job_id"], "failed")
+        items = "".join(
+            f"<li>{r['property_name'] or r['job_id']}: {r['old']} -> {r['new']} ({r['job_id']})</li>"
+            for r in _RECOVERED_ORPHANS)
+        await _notify_operator(
+            _RECOVERED_ORPHANS[0]["job_id"], "Restart recovery",
+            subject=f"Riavvio: {len(_RECOVERED_ORPHANS)} job interrotti",
+            body_html=f"<p>Il server e' stato riavviato con job in corso.</p><ul>{items}</ul>",
+            push_message=f"Riavvio: {len(_RECOVERED_ORPHANS)} job interrotti, controlla la library",
+            tags=["warning"],
+        )
+    except Exception as e:
+        log.warning(f"[Jobs] Startup recovery notification failed (non-fatal): {e}")
+
+
+
+def _pipeline_kwargs(job_id: str) -> dict:
+    """Single place that rebuilds run_pipeline()'s arguments from a saved job.
+    2026-10-08: was inlined in start_generation_for_draft(); the resume path
+    needs exactly the same arguments, so both now call this."""
+    job = JOBS[job_id]
+    job_dir = JOBS_DIR / job_id
+    scenes_config = job.get("scenes_config", [])
+    image_paths = []
+    for scene in scenes_config:
+        sid = scene.get("scene_id")
+        for ext in [".jpg", ".jpeg", ".png", ".webp"]:
+            candidate = job_dir / "images" / f"{sid}{ext}"
+            if candidate.exists():
+                image_paths.append(str(candidate))
+                break
+        else:
+            # Fallback to old index-based naming for the same scene
+            idx = scenes_config.index(scene)
+            for ext in [".jpg", ".jpeg", ".png", ".webp"]:
+                candidate = job_dir / "images" / f"scene_{idx:03d}{ext}"
+                if candidate.exists():
+                    image_paths.append(str(candidate))
+                    break
+    return dict(
+        job_id=job_id,
+        job_dir=job_dir,
+        image_paths=image_paths,
+        scenes_config=scenes_config,
+        property_name=job.get("property_name", "Property"),
+        voice_id=job.get("voice_id", ""),
+        do_lighting=job.get("enhance_images", True),
+        do_upscale=job.get("upscale_images", True),
+        transition_style=job.get("transition_style", "fade"),
+        enable_vision_qc=job.get("enable_vision_qc", True),
+        do_video_upscale=job.get("do_video_upscale", True),
+        model_tier=job.get("model_tier", "premium"),
+        lighting=job.get("lighting", "bright_natural"),
+        intensity=job.get("intensity", "natural_pace"),
+        output_format=job.get("output_format", "landscape"),
+    )
+
+
+@app.post("/jobs/{job_id}/resume-interrupted")
+async def resume_interrupted_job(job_id: str, background_tasks: BackgroundTasks):
+    """2026-10-08 (task 4, phase 2): restarts the pipeline of a job left
+    "interrupted" (server restart) or "stopped" (user stop), REUSING the
+    enhanced images, audio and clips already valid on disk, so only the
+    missing scenes are paid for again. Never automatic: spending money
+    again is always an explicit click."""
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    _raise_if_generation_paused()
+    job = JOBS[job_id]
+    if job.get("status") not in ("interrupted", "stopped"):
+        raise HTTPException(status_code=400,
+                            detail=f"Job is not interrupted or stopped (status: {job.get('status')})")
+    if not _acquire_job_lock(job_id, "resume generation"):
+        lock = _job_lock_status(job_id)
+        raise HTTPException(status_code=409, detail=f"Job is busy ({lock.get('operation')})")
+    try:
+        kwargs = _pipeline_kwargs(job_id)
+        if not kwargs["scenes_config"] or len(kwargs["image_paths"]) != len(kwargs["scenes_config"]):
+            raise HTTPException(status_code=400, detail="Foto mancanti: impossibile riprendere questo job")
+        job.pop("cancel_requested", None)   # /stop persisted it; it would stop the resumed run at scene 0
+        job["status"] = "queued"
+        job["message"] = "Ripresa generazione: riuso delle scene gia' pronte"
+        job["resumed_at"] = datetime.utcnow().isoformat()
+        _save_job(job_id)
+    finally:
+        _release_job_lock(job_id)
+    background_tasks.add_task(run_pipeline, resume=True, **kwargs)
+    return {"job_id": job_id, "status": "queued", "resume": True}
+
+
+# ── App ────────────────────────────────────────────────────────────────────────
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """Protect all non-static endpoints with access key when UI_ACCESS_KEY is set."""
+    path = request.url.path
+    # Always allow: root UI, health check, static assets, clip previews
+    # Clip previews need to be exempt because browsers can't send headers for <video src>
+    # 2026-09-30 (backlog item 48/Relinx): /v1/* has its own separate
+    # authentication (Bearer partner API key, see get_current_partner) --
+    # bypassing UI_ACCESS_KEY here does not disable auth for these routes,
+    # it just avoids a second, irrelevant check layered on top of the
+    # partner-key check that already protects them.
+    if (path in ("/", "", "/health")
+            or path.startswith("/static")
+            or path.startswith("/test-scratch/")
+            or path.startswith("/v1/")
+            or "/clip/" in path
+            or path.endswith("/download")
+            or path.endswith("/preview")
+            or "/image/" in path):
+        return await call_next(request)
+    if not _check_access(request):
+        return Response(
+            content='{"detail":"Unauthorized — invalid access key"}',
+            status_code=403,
+            media_type="application/json"
+        )
+    return await call_next(request)
+
+
+if (BASE_DIR / "ui.html").exists():
+    @app.get("/", response_class=FileResponse)
+    def serve_ui():
+        return FileResponse(BASE_DIR / "ui.html", headers={"Cache-Control": "no-cache"})
+
+
+
+
+# ── Utility endpoints ──────────────────────────────────────────────────────────
+
+
+@app.get("/tts/voices")
+def list_tts_voices():
+    """Voice/language catalog for the UI menus. Source of truth: voice_generation.TTS_LANGUAGES."""
+    import voice_generation as _vg
+    from cost_tracker import tts_cost_per_char
+    return {
+        "provider": _vg.TTS_PROVIDER,
+        "cost_per_char_eur": tts_cost_per_char(),
+        "default_language": _vg.DEFAULT_LANGUAGE,
+        "default_voice": _vg.DEFAULT_VOICE_ID,
+        "languages": _vg.TTS_LANGUAGES if _vg.TTS_PROVIDER == "google" else {},
+    }
+
+
+@app.get("/cost/infra")
+def infra_cost_per_job_endpoint():
+    """Infrastructure share of ONE video = monthly VPS cost / done jobs of the last 30 days. Same count and same function as the draft estimates; the page reads it from here."""
+    from cost_tracker import get_infra_cost_per_job
+    n = _get_rolling_monthly_job_count()
+    return {"infra_cost_per_job_eur": get_infra_cost_per_job(n), "monthly_jobs": n}
+
+
+@app.get("/test-scratch/{filename}")
+def serve_test_scratch(filename: str):
+    """Serves files ONLY from jobs/_test_scratch/ — a dedicated directory
+    for depth-rendering (or any other) test output that is NEVER touched
+    by production job assembly code. This exists specifically so testing
+    can never again contaminate a real client job's clips folder, which
+    happened once already and corrupted a delivered video.
+    """
+    # Reject any path traversal attempt
+    if "/" in filename or ".." in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    test_path = JOBS_DIR / "_test_scratch" / filename
+    if not test_path.exists():
+        raise HTTPException(status_code=404, detail="Test file not found")
+
+    # Detect real content type by extension — this endpoint originally only
+    # served test video clips (hardcoded video/mp4), which silently broke
+    # when used for test images (the browser gets real JPEG bytes but a
+    # video/mp4 header, so it renders a blank video player instead).
+    ext = Path(filename).suffix.lower()
+    media_types = {
+        ".mp4": "video/mp4", ".mov": "video/quicktime",
+        ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".png": "image/png", ".webp": "image/webp",
+        ".mp3": "audio/mpeg", ".wav": "audio/wav",
+    }
+    media_type = media_types.get(ext, "application/octet-stream")
+    return FileResponse(str(test_path), media_type=media_type)
+
+
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "time": datetime.utcnow().isoformat(), "fake_providers": fake_providers.ENABLED}
+
+
+
+
+@app.get("/credits")
+def get_credits():
+    from credit_monitor import get_all_credits
+    return get_all_credits()
+
+
+
+
+@app.get("/diagnostics")
+def diagnostics():
+    """System health check, disk space, API reachability, auto-cleanup of old jobs."""
+    import shutil as _shutil
+    import requests as _requests
+
+
+    # Disk space
+    disk   = _shutil.disk_usage(str(BASE_DIR))
+    disk_free_gb = round(disk.free / (1024**3), 1)
+
+
+    # Job stats
+    total_jobs     = len(JOBS)
+    done_jobs      = sum(1 for j in JOBS.values() if j.get("status") == "done")
+    failed_jobs    = sum(1 for j in JOBS.values() if j.get("status") == "failed")
+    running_jobs   = sum(1 for j in JOBS.values() if j.get("status") == "running")
+
+
+    # Auto-cleanup: remove ALL job folders (any status — done, failed, or
+    # stuck/abandoned mid-workflow) with no activity in the last 7 days.
+    # Cutoff is based on job_meta.json's own filesystem last-modified time,
+    # not the created_at field inside it — job_meta.json is rewritten by
+    # _save_job() on every meaningful state change (progress updates,
+    # narration steps, rework, etc.), so its mtime is an accurate "last
+    # touched" timestamp. This is safer than created_at for not deleting
+    # something that's old but was actually worked on recently.
+    cutoff     = datetime.utcnow() - timedelta(days=7)
+    cleaned    = 0
+    freed_mb   = 0
+    for job_dir in JOBS_DIR.iterdir():
+        if not job_dir.is_dir() or job_dir.name == "_test_scratch":
+            continue
+        meta = job_dir / "job_meta.json"
+        # Prefer job_meta.json's own mtime (rewritten by _save_job() on
+        # every real state change). If no job_meta.json exists at all —
+        # an orphaned directory from a job creation that crashed before
+        # its first save — fall back to the directory's own mtime. Either
+        # way, no metadata + old age means it can never load into JOBS or
+        # appear in the UI regardless, so there's no reason to keep it.
+        try:
+            if meta.exists():
+                last_activity = datetime.utcfromtimestamp(meta.stat().st_mtime)
+            else:
+                last_activity = datetime.utcfromtimestamp(job_dir.stat().st_mtime)
+            if last_activity < cutoff:
+                size_mb = sum(
+                    f.stat().st_size for f in job_dir.rglob("*") if f.is_file()
+                ) / (1024**2)
+                shutil.rmtree(str(job_dir), ignore_errors=True)
+                job_id = job_dir.name
+                JOBS.pop(job_id, None)
+                cleaned  += 1
+                freed_mb += size_mb
+            elif meta.exists():
+                # 2026-07-21 diagnostic (backlog item 32): a real incident
+                # (July 16 2026) found two jobs whose mtime-based
+                # last_activity looked suspiciously recent relative to
+                # their real age, delaying (not permanently blocking)
+                # cleanup. Root cause was never confirmed -- the original
+                # hypothesis (that _load_jobs_from_disk() resaves every
+                # job on startup) was checked directly and is FALSE, that
+                # function is read-only. Flags any job whose own
+                # created_at is meaningfully older than its file's mtime,
+                # so a recurrence leaves real evidence instead of having
+                # to be reconstructed after the fact.
+                try:
+                    with open(meta) as f:
+                        job_data = json.load(f)
+                    created_str = job_data.get("created_at", "")
+                    if created_str:
+                        created_at = datetime.fromisoformat(created_str)
+                        gap_days = (last_activity - created_at).total_seconds() / 86400
+                        age_days = (datetime.utcnow() - last_activity).total_seconds() / 86400
+                        if gap_days > 3 and age_days < 7:
+                            log.warning(
+                                f"[Cleanup] Job {job_dir.name}: created_at is {gap_days:.1f} days "
+                                f"before its file mtime, and mtime is only {age_days:.1f} days old -- "
+                                f"possible stale-mtime pattern (backlog item 32), watching for recurrence."
+                            )
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+
+    # API reachability
+    def _ping(url, headers=None, timeout=5):
+        try:
+            r = _requests.get(url, headers=headers, timeout=timeout)
+            return r.status_code < 500
+        except Exception:
+            return False
+
+
+    fal_key = os.getenv("FAL_KEY", "")
+    el_key  = os.getenv("ELEVENLABS_API_KEY", "")
+
+
+    fal_ok = _ping(
+        "https://api.fal.ai/billing/credits",
+        headers={"Authorization": f"Key {fal_key}"} if fal_key else None
+    )
+    el_ok = _ping(
+        "https://api.elevenlabs.io/v1/user/subscription",
+        headers={"xi-api-key": el_key} if el_key else None
+    )
+
+
+    return {
+        "server_time":      datetime.utcnow().isoformat(),
+        "disk_free_gb":     disk_free_gb,
+        "jobs_total":       total_jobs,
+        "jobs_done":        done_jobs,
+        "jobs_failed":      failed_jobs,
+        "jobs_running":     running_jobs,
+        "fal_reachable":    fal_ok,
+        "elevenlabs_reachable": el_ok,
+        "cleaned_jobs":     cleaned,
+        "freed_mb":         round(freed_mb, 1),
+    }
+
+
+
+
+# ── Maintenance scheduler endpoints ────────────────────────────────────────────
+# The actual checks run on a daily cron via maintenance_scheduler.py (standalone
+# script, not part of the request path). These endpoints just expose the latest
+# report and let the alert-recipient list be edited from the UI.
+
+
+@app.get("/maintenance/status")
+def get_maintenance_status():
+    """Returns the latest maintenance report for the UI panel."""
+    import maintenance_scheduler
+    if not maintenance_scheduler.STATUS_FILE.exists():
+        return {"timestamp": None, "checks": [], "cleanup": {}, "any_red": False,
+                "note": "No maintenance run has completed yet."}
+    return json.loads(maintenance_scheduler.STATUS_FILE.read_text())
+
+
+@app.get("/maintenance/alert-emails")
+def get_alert_emails():
+    import maintenance_scheduler
+    return {"emails": maintenance_scheduler.load_alert_emails()}
+
+
+@app.post("/maintenance/alert-emails")
+def set_alert_emails(payload: dict):
+    """Body: {"emails": ["a@x.com", "b@y.com"]}. Replaces the full list."""
+    import maintenance_scheduler
+    emails = payload.get("emails", [])
+    if not isinstance(emails, list) or not all(isinstance(e, str) for e in emails):
+        raise HTTPException(status_code=400, detail="emails must be a list of strings")
+    maintenance_scheduler.save_alert_emails(emails)
+    return {"emails": emails}
+
+
+@app.get("/maintenance/notification-topics")
+def get_notification_topics():
+    import maintenance_scheduler
+    return {"topics": maintenance_scheduler.load_ntfy_topics()}
+
+
+@app.post("/maintenance/notification-topics")
+def set_notification_topics(payload: dict):
+    import maintenance_scheduler
+    topics = payload.get("topics", [])
+    if not isinstance(topics, list) or not all(isinstance(t, str) for t in topics):
+        raise HTTPException(status_code=400, detail="topics must be a list of strings")
+    maintenance_scheduler.save_ntfy_topics(topics)
+    return {"topics": topics}
+
+
+
+
+# ── Vision analysis endpoint ───────────────────────────────────────────────────
+
+
+@app.post("/analyse-image")
+async def analyse_image(image: UploadFile = File(...)):
+    """
+    Analyses an uploaded image using Florence-2 via fal.ai.
+    Returns space type, depth, and recommended camera movement.
+    Called from the UI immediately after each photo is uploaded.
+    """
+    # Validate file size
+    MAX_SIZE = 20 * 1024 * 1024  # 20MB
+    content  = await image.read()
+    if len(content) > MAX_SIZE:
+        raise HTTPException(status_code=400, detail="Image too large (max 20MB)")
+
+
+    # Validate file type
+    if not _validate_image_bytes(content):
+        raise HTTPException(status_code=400, detail="Invalid image file")
+
+
+    # Save to temp file
+    tmp_path = str(JOBS_DIR / f"tmp_analyse_{uuid.uuid4().hex[:8]}.jpg")
+    try:
+        with open(tmp_path, "wb") as f:
+            f.write(content)
+
+
+        from vision_analysis import analyse_input
+        result = await asyncio.to_thread(analyse_input, tmp_path)
+        return result
+
+
+    finally:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+
+
+
+
+# ── Job submission ─────────────────────────────────────────────────────────────
+
+
+@app.post("/jobs/")
+async def create_job(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    images: list[UploadFile] = File(...),
+    config: str = Form(...),
+    property_name: str = Form("Property"),
+    voice_id: str = Form(""),
+    enhance_images: bool = Form(True),
+    upscale_images: bool = Form(True),
+    do_video_upscale: bool = Form(True),
+    transition_style: str = Form("fade"),
+    enable_vision_qc: bool = Form(True),
+    model_tier: str = Form("standard"),       # eco / standard / premium
+    lighting: str = Form("bright_natural"),   # property-level lighting
+    intensity: str = Form(DEFAULT_INTENSITY),    # property-level motion intensity
+    start_generation: bool = Form(True),      # False = draft mode, no video cost yet
+    output_format: str = Form(None),          # 2026-07-17: "landscape"/"portrait" override, or None to auto-detect
+    agency_id: str = Form(None),              # 2026-07-22: client this job belongs to (backlog item 39), optional
+):
+    # Rate limit check
+    client_ip = request.client.host if request.client else "unknown"
+    if not _check_rate_limit(client_ip):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many requests. Maximum 5 jobs per hour. Please wait before submitting again."
+        )
+
+    _raise_if_generation_paused()
+
+    # Max images check
+    if len(images) > 20:
+        raise HTTPException(status_code=400, detail="Maximum 20 images per job")
+
+
+    try:
+        scenes_config = json.loads(config)
+        if not isinstance(scenes_config, list):
+            raise ValueError("config must be a JSON array")
+        scenes_config = _ensure_scene_ids(scenes_config)  # assign permanent IDs
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid config JSON: {e}")
+
+
+    if len(images) != len(scenes_config):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Images ({len(images)}) must match scene configs ({len(scenes_config)})"
+        )
+
+
+    job_id  = str(uuid.uuid4())[:8]
+    job_dir = JOBS_DIR / job_id
+    img_dir = job_dir / "images"
+    img_dir.mkdir(parents=True)
+
+
+    # ── Pass 1: validate + read every photo, before deciding anything ────
+    validated = []
+    for i, upload in enumerate(images):
+        content = await upload.read()
+
+        if len(content) > 20 * 1024 * 1024:
+            shutil.rmtree(str(job_dir), ignore_errors=True)
+            raise HTTPException(status_code=400, detail=f"Image {i+1} exceeds 20MB limit")
+
+        if not _validate_image_bytes(content):
+            shutil.rmtree(str(job_dir), ignore_errors=True)
+            raise HTTPException(status_code=400, detail=f"Image {i+1} is not a valid image file")
+
+        ext = Path(upload.filename).suffix.lower() or ".jpg"
+        if upload.content_type == "image/jpeg": ext = ".jpg"
+        elif upload.content_type == "image/png":  ext = ".png"
+        elif upload.content_type == "image/webp": ext = ".webp"
+
+        validated.append((content, ext))
+
+    # ── Decide the job's canonical output format (2026-07-17): exactly
+    # two formats, landscape or portrait -- majority vote across the real
+    # photos, unless the caller explicitly overrode it. ──
+    if output_format in ("landscape", "portrait"):
+        job_format = output_format
+    else:
+        job_format = _decide_job_format_from_bytes([c for c, _ in validated])
+
+    # ── Pass 2: normalize every photo to match job_format, then save ─────
+    saved_images = []
+    for i, (content, ext) in enumerate(validated):
+        content = _normalize_photo_to_format(content, job_format)
+        dest = img_dir / f"scene_{i:03d}{ext}"
+        with open(dest, "wb") as f:
+            f.write(content)
+        saved_images.append(str(dest))
+
+
+    # Cost estimate — uses ACTUAL rolling 30-day job count for infra cost,
+    # not a static guess, so it adapts automatically as volume changes
+    from cost_tracker import estimate_job_cost, format_cost_display
+    rolling_jobs = _get_rolling_monthly_job_count()
+    cost_estimate = estimate_job_cost(
+        scenes_config,
+        do_upscale=upscale_images,
+        do_video_upscale=do_video_upscale,
+        do_vision_qc=enable_vision_qc,
+        model_tier=model_tier,
+        actual_monthly_jobs=rolling_jobs,
+    )
+
+
+    # 2026-07-22 (backlog item 39): link this job to a Property record --
+    # shared entity with cost reporting, single data model per the
+    # architecture-discipline principle (no separate "library-only"
+    # property concept). Reuses the SAME property_name value already
+    # captured above for display purposes, rather than adding a second,
+    # redundant form field. create_property() is idempotent per
+    # (name, agency_id), so repeated jobs for the same property+client
+    # correctly link to one shared record instead of duplicating it.
+    _prop = cost_model.create_property(property_name, agency_id=agency_id)
+
+    JOBS[job_id] = {
+        "status":           "draft" if not start_generation else "queued",
+        "progress":         0,
+        "message":          "Scene salvate — pronto per narrazione" if not start_generation else "Job queued",
+        "scenes":           [],
+        "scenes_config":    scenes_config,  # needed by narration endpoints even in draft mode
+        "output_path":      None,
+        "output_format":    job_format,
+        "created_at":       datetime.utcnow().isoformat(),
+        "property_name":    property_name,
+        "agency_id":        agency_id,
+        "property_id":      _prop["property_id"],
+        "total_scenes":     len(images),
+        "transition_style": transition_style,
+        "enable_vision_qc": enable_vision_qc,
+        "do_video_upscale": do_video_upscale,
+        "model_tier":       model_tier,
+        "lighting":         lighting,
+        "intensity":        intensity,
+        "voice_id":         voice_id,
+        "enhance_images":   enhance_images,
+        "upscale_images":   upscale_images,
+        "cost_estimate":    format_cost_display(cost_estimate),
+        "cost_actual":      None,
+        "reworks":          [],
+        "qc_results":       [],
+        "awaiting_scenes":  [],
+    }
+    _save_job(job_id)
+
+
+    if start_generation:
+        background_tasks.add_task(
+            run_pipeline,
+            job_id=job_id,
+            job_dir=job_dir,
+            image_paths=saved_images,
+            scenes_config=scenes_config,
+            property_name=property_name,
+            voice_id=voice_id,
+            do_lighting=enhance_images,
+            do_upscale=upscale_images,
+            transition_style=transition_style,
+            enable_vision_qc=enable_vision_qc,
+            do_video_upscale=do_video_upscale,
+            model_tier=model_tier,
+            lighting=lighting,
+            intensity=intensity,
+            output_format=job_format,  # 2026-07-27 URGENT FIX: run_pipeline() now needs this explicitly
+        )
+
+
+    return {
+        "job_id":       job_id,
+        "status":       JOBS[job_id]["status"],
+        "cost_estimate": format_cost_display(cost_estimate),
+    }
+
+
+
+
+@app.post("/jobs/{job_id}/start-generation")
+async def start_generation_for_draft(job_id: str, background_tasks: BackgroundTasks):
+    """
+    Triggers actual video generation for a job that was created in draft
+    mode (start_generation=False) — the second half of the narration-first
+    workflow: photos + scenes were saved with no cost, narration was
+    generated and durations confirmed, and NOW generation actually starts
+    with the correct, already-verified durations. No rework ever needed
+    purely for timing reasons.
+    """
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    _raise_if_generation_paused()
+    job = JOBS[job_id]
+    if job.get("status") != "draft":
+        raise HTTPException(status_code=400, detail=f"Job is not in draft state (status: {job.get('status')})")
+
+
+    if not _acquire_job_lock(job_id, "start generation"):
+        lock = _job_lock_status(job_id)
+        raise HTTPException(status_code=409, detail=f"Job is busy ({lock.get('operation')})")
+
+
+    job["status"]  = "queued"
+    job["message"] = "Generazione avviata"
+    _save_job(job_id)
+    _release_job_lock(job_id)  # run_pipeline manages its own lock internally via its update() calls
+
+    # 2026-10-08: arguments come from the single shared helper (also used by resume-interrupted)
+    background_tasks.add_task(run_pipeline, **_pipeline_kwargs(job_id))
+
+
+    return {"job_id": job_id, "status": "queued"}
+
+
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# NARRATION SYSTEM — single continuous voiceover, decoupled from video timing
+# ══════════════════════════════════════════════════════════════════════════════
+# Step A ("Genera voiceover") — cheap, TTS-only. Measures actual duration,
+# calculates required scene durations BEFORE any video generation.
+# Step B ("Genera video") — only runs once duration is confirmed correct.
+# This prevents ever paying for a wrongly-timed video clip.
+
+
+@app.post("/jobs/{job_id}/draft/resync")
+async def resync_draft(
+    job_id: str,
+    images: list[UploadFile] = File(...),
+    config: str = Form(...),
+):
+    """
+    Re-syncs an existing DRAFT job's scenes_config and images to match
+    whatever is currently in the browser -- needed because generateNarration()
+    only creates the draft job on the FIRST click; if the user adds/removes
+    scenes afterward and clicks "Genera voiceover" again, without this the
+    server-side scenes_config stays frozen at the original count while the
+    UI's live cost panel reflects the new count (2026-07-13 fix: this was the
+    exact cause of the cost panel showing 10 scenes while the narration
+    duration distribution still showed 5).
+
+    Only allowed while status == "draft" -- a job that has moved past draft
+    (generation started or completed) must never have its scenes_config
+    silently overwritten, since scenes/clips would then no longer line up
+    with scenes_config.
+    """
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+    if job.get("status") != "draft":
+        raise HTTPException(status_code=400, detail="Job is no longer in draft status -- cannot resync scenes")
+
+    if len(images) > 20:
+        raise HTTPException(status_code=400, detail="Maximum 20 images per job")
+
+    try:
+        scenes_config = json.loads(config)
+        if not isinstance(scenes_config, list):
+            raise ValueError("config must be a JSON array")
+        scenes_config = _ensure_scene_ids(scenes_config)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid config JSON: {e}")
+
+    if len(images) != len(scenes_config):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Images ({len(images)}) must match scene configs ({len(scenes_config)})"
+        )
+
+    job_dir = JOBS_DIR / job_id
+    img_dir = job_dir / "images"
+    # 2026-10-12 DATA-LOSS FIX: this used to wipe images/ BEFORE validating the
+    # new photos, so a single invalid photo ("Image 11 is not a valid image
+    # file") left the job with no photos at all. Now: validate everything
+    # first (Pass 1), write into a scratch dir (Pass 2), then swap; the
+    # previous photos are kept as images.prev.
+
+    # ── Pass 1: validate + read every photo ──────────────────────────────
+    validated = []
+    for i, upload in enumerate(images):
+        content = await upload.read()
+
+        if len(content) > 20 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail=f"Image {i+1} exceeds 20MB limit")
+
+        if not _validate_image_bytes(content):
+            raise HTTPException(status_code=400, detail=f"Image {i+1} is not a valid image file")
+
+        ext = Path(upload.filename).suffix.lower() or ".jpg"
+        if upload.content_type == "image/jpeg": ext = ".jpg"
+        elif upload.content_type == "image/png":  ext = ".png"
+        elif upload.content_type == "image/webp": ext = ".webp"
+
+        validated.append((content, ext))
+
+    # 2026-07-17: re-decide the job's format from the current full photo
+    # set -- this is still pre-generation, so re-voting is correct here
+    # (unlike add_scene/redo_scenes_batch, which inherit an already-locked
+    # format from a job that's already generated).
+    job_format = _decide_job_format_from_bytes([c for c, _ in validated])
+    job["output_format"] = job_format
+
+    # ── Pass 2: normalize + save into a scratch dir, then swap ───────────
+    from safe_fs import replace_dir_atomic
+    new_img_dir = job_dir / "images.new"
+    try:
+        if new_img_dir.exists():
+            shutil.rmtree(str(new_img_dir))  # leftover scratch of a failed earlier attempt, never the real photos
+        new_img_dir.mkdir(parents=True)
+        for i, (content, ext) in enumerate(validated):
+            content = _normalize_photo_to_format(content, job_format)
+            with open(new_img_dir / f"scene_{i:03d}{ext}", "wb") as f:
+                f.write(content)
+        replace_dir_atomic(new_img_dir, img_dir)
+    except Exception:
+        shutil.rmtree(str(new_img_dir), ignore_errors=True)
+        raise
+
+    from cost_tracker import estimate_job_cost, format_cost_display
+    rolling_jobs = _get_rolling_monthly_job_count()
+    cost_estimate = estimate_job_cost(
+        scenes_config,
+        do_upscale=job.get("upscale_images", True),
+        do_video_upscale=job.get("do_video_upscale", True),
+        do_vision_qc=job.get("enable_vision_qc", True),
+        model_tier=job.get("model_tier", "standard"),
+        actual_monthly_jobs=rolling_jobs,
+    )
+
+    job["scenes_config"] = scenes_config
+    job["total_scenes"]  = len(images)
+    job["cost_estimate"] = format_cost_display(cost_estimate)
+    job["message"] = "Scene aggiornate — pronto per narrazione"
+    _save_job(job_id)
+
+    return {"job_id": job_id, "scenes_config": scenes_config, "total_scenes": len(images)}
+
+
+
+
+@app.post("/jobs/{job_id}/narration")
+async def generate_narration(
+    job_id: str,
+    narration_text: str = Form(...),
+    voice_id: str = Form(""),
+    extra_secs_needed: float = Form(0),
+):
+    """
+    Step A: generates the narration audio ONLY (cheap — ElevenLabs cost
+    only, no Veo/Luma cost). Measures the actual duration and returns
+    the calculated scene duration distribution for the UI to display
+    BEFORE any video generation happens.
+    """
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+
+
+    if not _acquire_job_lock(job_id, "generate narration"):
+        lock = _job_lock_status(job_id)
+        raise HTTPException(status_code=409, detail=f"Job is busy ({lock.get('operation')})")
+
+
+    try:
+        job_dir = JOBS_DIR / job_id
+        narration_path = str(job_dir / "narration.mp3")
+
+
+        from narration import (generate_narration_audio, calculate_scene_durations, suggest_pause_padding,
+                               SENTENCE_PAUSE_MS, FIXED_SCENE_SECS_BY_TIER, evaluate_fixed_durations)
+
+        # Pause-padding persistence (2026-07-16 fix): "Aggiungi pause" used to
+        # just regenerate identical audio with the default pause, so the
+        # "too short" warning could never clear -- nothing connected the
+        # frontend's computed gap to the actual TTS call. Now a boosted
+        # pause value sticks on the job until the narration TEXT changes.
+        if job.get("narration_text") != narration_text:
+            job.pop("sentence_pause_ms", None)
+
+        base_pause_ms = job.get("sentence_pause_ms", SENTENCE_PAUSE_MS)
+        if extra_secs_needed and extra_secs_needed > 0:
+            sentence_pause_ms = suggest_pause_padding(
+                narration_text, extra_secs_needed, sentence_pause_ms=base_pause_ms
+            )
+        else:
+            sentence_pause_ms = base_pause_ms
+
+        # 2026-10-15 (Michele): tiers with ONE fixed scene length (Luma: 5 s, never 9 s)
+        # keep their durations and get the sentence/scene synchronisation instead of
+        # a duration redistribution. Other tiers keep the existing behaviour.
+        _tier = job.get("model_tier", "standard")
+        _fixed_secs = FIXED_SCENE_SECS_BY_TIER.get(_tier)
+        _scene_secs = [_fixed_secs] * len(job.get("scenes_config", [])) if _fixed_secs else None
+
+        result = await asyncio.to_thread(
+            generate_narration_audio, narration_text, narration_path,
+            voice_id or None, sentence_pause_ms, _scene_secs
+        )
+
+
+        if not result.get("ok"):
+            raise HTTPException(status_code=500, detail=result.get("error", "Narration generation failed"))
+
+
+        scenes_config = job.get("scenes_config", [])
+        n_scenes = len(scenes_config)
+        current_durations = [int(s.get("duration", 6)) for s in scenes_config] or [6] * n_scenes
+
+        # BUG FIXED: calculate_scene_durations() previously defaulted to a
+        # tier-blind union [4,5,6,8,9] of Veo+Luma valid values, so it could
+        # (and did) propose "4s" for a Luma job - invalid, Luma only accepts
+        # 5s/9s. Now mirrors the same tier logic already used for the UI
+        # sliders (getDurationRangeForTier in ui.html).
+        if _tier == "luma":
+            _valid_durations = [5]   # 2026-10-15: 9 s is not used (hallucination risk); not reached for Luma any more, see _fixed_secs above
+        elif _tier == "eco":
+            _valid_durations = [6, 8, 10, 12, 14, 16, 18, 20]
+        else:  # premium / premium_veo / standard (all Veo-backed)
+            _valid_durations = [4, 6, 8]
+
+        if _fixed_secs:
+            distribution = evaluate_fixed_durations(
+                result["duration_secs"], [_fixed_secs] * n_scenes, result["sync"]
+            )
+        else:
+            distribution = calculate_scene_durations(
+                narration_duration_secs=result["duration_secs"],
+                scene_count=n_scenes,
+                current_durations=current_durations,
+                valid_durations=_valid_durations,
+            )
+
+
+        job["narration_text"] = narration_text
+        job["narration_path"] = narration_path
+        job["narration_duration_secs"] = result["duration_secs"]
+        job["narration_sentence_timings"] = result.get("sentence_timings", [])
+        job["narration_sync"] = result.get("sync")   # 2026-10-15: per-sentence scene alignment (fixed-length tiers only)
+        job["timeline"] = None   # 2026-10-23 (Patch J): new audio -> any anchor-driven timeline calculated for the old audio is void
+        job["sentence_pause_ms"] = sentence_pause_ms
+
+        # 2026-07-24: real cost-tracking gap -- this endpoint makes a real,
+        # billable ElevenLabs TTS call every time it runs, but never
+        # recorded that cost anywhere. A rework that regenerated narration
+        # (a real, ongoing cost every time the user tweaks the text) showed
+        # no TTS cost at all in the job's cost_actual. Reuses the SAME
+        # rework-cost pattern (calculate_rework_cost + format_cost_display)
+        # already used for scene reworks and the audio-only-rework feature,
+        # rather than a separate, parallel cost calculation.
+        # 2026-10-22: the fold-into-cost_actual step now lives in scene_rework
+        # (one copy for scene reworks, audio-only reworks and this endpoint).
+        _sr.record_rework_cost(
+            job,
+            [{"duration": 0, "had_voiceover": True, "voiceover_chars": len(narration_text)}],
+            job.get("model_tier", "premium"),
+            redo_video=False,
+        )
+
+        _save_job(job_id)
+
+
+        return {
+            "job_id": job_id,
+            "narration_duration_secs": result["duration_secs"],
+            "sentence_count": result.get("sentence_count", 0),
+            **distribution,
+        }
+    finally:
+        _release_job_lock(job_id)
+
+
+
+
+@app.post("/jobs/{job_id}/narration/apply-durations")
+async def apply_narration_durations(job_id: str, new_durations: str = Form(...)):
+    """
+    Applies the calculated (or user-adjusted) scene durations to the job's
+    scenes_config BEFORE video generation — the final confirmation step
+    of the "calculate first, generate once" flow.
+    """
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+
+
+    try:
+        durations = json.loads(new_durations)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid durations: {e}")
+
+
+    scenes_config = job.get("scenes_config", [])
+    for i, d in enumerate(durations):
+        if i < len(scenes_config):
+            scenes_config[i]["duration"] = d
+    job["scenes_config"] = scenes_config
+    _save_job(job_id)
+
+
+    return {"job_id": job_id, "scenes_config": scenes_config}
+
+
+
+
+@app.post("/jobs/{job_id}/narration/reassemble")
+async def reassemble_with_narration(job_id: str, background_tasks: BackgroundTasks):
+    """
+    Cheap path for when narration text changed but scene durations did
+    NOT — no video regeneration needed, just re-run assembly with the
+    latest narration audio overlaid. Zero Veo/Luma cost, just re-encoding
+    the already-generated clips with new audio.
+    """
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+
+
+    if not job.get("narration_path"):
+        raise HTTPException(status_code=400, detail="No narration generated yet for this job")
+
+
+    if not _acquire_job_lock(job_id, "reassemble with narration"):
+        lock = _job_lock_status(job_id)
+        raise HTTPException(status_code=409, detail=f"Job is busy ({lock.get('operation')})")
+
+
+    job["status"] = "running"
+    job["message"] = "Riassemblaggio con nuova narrazione…"
+    _save_job(job_id)
+
+
+    background_tasks.add_task(run_reassemble_only, job_id)
+    return {"job_id": job_id, "status": "running"}
+
+
+
+
+# ── Automated URL-to-video workflow (Phase 1: human-in-the-loop) ──────────────
+# Runs the full scrape -> narration -> scene-count -> photo-selection chain
+# (listing_scraper.py) and creates a job in "draft" status with everything
+# pre-populated — narration text, scenes_config, downloaded+dewatermarked
+# images already in place in the job's own directory. Deliberately does NOT
+# trigger real video generation automatically — the agent reviews in the UI
+# and presses "Generate Video" manually via the EXISTING /start-generation
+# endpoint, same as any other draft job. Phase 2 (fully automatic, no
+# manual review step) is a later addition, not built yet.
+
+async def _apply_vision_analysis_to_scenes(scenes_config: list, scene_image_paths: list, log_prefix: str = "URL workflow") -> None:
+    """
+    Runs real per-photo vision analysis (analyse_input) to set each scene's
+    space_type/pov_movement from the actual photo, overriding the
+    category-based static defaults already on scenes_config. Mutates
+    scenes_config in place.
+
+    Extracted 2026-09-30 (backlog item 48/Relinx) from create_job_from_url(),
+    where this logic previously lived inline -- the Relinx adapter needs the
+    exact same analysis, and duplicating it would reintroduce the kind of
+    drift this project's architecture-discipline rule exists to prevent.
+    Behavior is unchanged from the original inline version; only the log
+    message's prefix is now a parameter instead of a hardcoded string.
+    """
+    from vision_analysis import analyse_input
+    _SPACE_TYPE_NORMALIZE = {
+        "large_interior": "large", "medium_interior": "medium", "small_interior": "small",
+        "ground_exterior": "outdoor",
+    }
+    for i, scene in enumerate(scenes_config):
+        dest_path = scene_image_paths[i]
+        if not dest_path or not dest_path.exists():
+            continue
+        try:
+            analysis = await asyncio.to_thread(analyse_input, str(dest_path))
+            raw_space = analysis.get("v7_space_type") or analysis.get("space_type")
+            if raw_space:
+                scene["space_type"] = _SPACE_TYPE_NORMALIZE.get(raw_space, raw_space)
+            raw_movement = analysis.get("suggested_movement") or analysis.get("pov_movement")
+            if raw_movement:
+                scene["pov_movement"] = raw_movement
+            if camera_plan.anchor_enabled():
+                # 2026-10-27: camera direction (camera_plan). Same analysis call, stored with the scene so a re-generation or a redo
+                # uses the SAME anchor. Nothing is written when the switch is off: job_meta stays exactly as before.
+                scene["anchor"] = analysis.get("anchor") or ""
+                scene["anchor_side"] = analysis.get("anchor_side") or ""
+                scene["depth"] = analysis.get("depth") or ""
+        except Exception as e:
+            log.warning(f"[{log_prefix}] Vision analysis failed for scene {i}, "
+                        f"keeping category-based default: {e}")
+
+
+# 2026-10-23 (Patch M): draft preparations in progress or failed. NOT jobs: nothing is written under jobs/ and nothing shows
+# in the library until the draft is complete (a listing that is unreadable, not accepted or fails leaves no job and no
+# folder). GET /jobs/{id} answers from here while the id is not a job yet. Lost at a restart (the page then says so).
+INTAKES: dict = {}
+
+
+async def _prepare_url_draft_work(job_id, url, property_name, agency_id, voice_id, model_tier, premium):
+    """Everything that follows the quick checks of POST /jobs/from-url: reading the listing, photo classification, the
+    acceptance rule, narration, voice, word timing, photo download, captions, vision analysis. 2026-10-23 (Patch L/M):
+    runs in the background (the browser used to wait minutes and give up); run_preparation() turns any failure into
+    status prep_failed on the INTAKES ticket. The job is created only at the very end."""
+    import listing_scraper as scraper
+    scraper.reset_claude_usage()   # reset token counter for THIS job
+
+    # every one of these does real, slow, blocking I/O (web fetches, Claude API calls with images, TTS, fal.ai):
+    # wrapped in asyncio.to_thread so the event loop (health check, other pages) stays free.
+    extraction = await asyncio.to_thread(scraper.extract_listing, url)
+    if not extraction["ok"]:
+        raise _jr.PrepError(f"Could not read listing: {extraction['error']}")
+    # 2026-10-12 (A+): interiors keep the page labels; unlabeled photos get vision; facade/balcony candidates are verified
+    # by vision (same shared function as the Relinx path).
+    await asyncio.to_thread(scraper.resolve_uncategorized_photos, extraction["photos"])
+    classification_summary = await asyncio.to_thread(scraper.refine_exterior_outdoor_with_vision, extraction["photos"])
+
+    # 2026-10-12 (3B): standard-video acceptance rule BEFORE narration/TTS is paid for. Premium is unchanged.
+    acceptance = None
+    if not premium:
+        acceptance = scraper.check_listing_acceptance(extraction["photos"])
+        if not acceptance["ok"]:
+            INTAKES[job_id]["code"] = acceptance.get("code")
+            INTAKES[job_id]["reason"] = acceptance
+            raise _jr.PrepError(acceptance["message"])
+
+    agency_name = None
+    if agency_id:
+        _agency = cost_model.get_agency(agency_id)
+        if _agency:
+            agency_name = _agency.get("name")
+    scene_category_order = scraper.derive_available_category_order(extraction["photos"])
+    property_name_final = property_name.strip() or extraction.get("address") or "Property"
+    INTAKES[job_id]["property_name"] = property_name_final
+
+    # 2026-10-22 (Patch B): the standard video is always 6 scenes, so its photos are selected FIRST and the narration
+    # is written per scene knowing which room each scene shows. The selection is reused below (no second selection).
+    pre_selection, scene_sequence = None, None
+    if not premium:
+        pre_selection = await asyncio.to_thread(
+            scraper.select_photos_for_scene_count, extraction["photos"], scraper.STANDARD_SCENES
+        )
+        scene_sequence = scraper.standard_scene_sequence(pre_selection)
+
+    narration = await asyncio.to_thread(
+        scraper.generate_narration_and_derive_scenes,
+        extraction["description"], extraction["address"], extraction["price"], voice_id or None,
+        premium, agency_name, scene_category_order, scene_sequence,
+    )
+    if not narration["ok"]:
+        raise _jr.PrepError(f"Narration generation failed: {narration['error']}")
+
+    # 2026-07-24 (backlog item 35): premium uses a dedicated selection
+    # function (wider scene-count target, expanded taxonomy including
+    # laundry/office/garage, outdoor split across an early + closing
+    # slot) -- kept separate rather than branching deeply inside the
+    # existing one, since the sequencing logic is genuinely different,
+    # not just a wider number range.
+    if premium:
+        selection = await asyncio.to_thread(
+            scraper.select_photos_for_scene_count_premium, extraction["photos"], narration["scene_count"]
+        )
+    elif pre_selection is not None and narration["scene_count"] == scraper.STANDARD_SCENES:
+        selection = pre_selection
+    else:
+        selection = await asyncio.to_thread(
+            scraper.select_photos_for_scene_count, extraction["photos"], narration["scene_count"]
+        )
+
+    job_dir = JOBS_DIR / job_id          # 2026-10-23 (Patch M): the folder is created here, only once the listing is accepted
+    img_dir = job_dir / "images"
+    img_dir.mkdir(parents=True, exist_ok=True)
+
+    selection = await asyncio.to_thread(scraper.download_selected_photos, selection, img_dir)
+    selection_report = scraper.build_selection_report(extraction["photos"], selection, narration["scene_count"], premium=premium)
+    if acceptance is not None:
+        selection_report["acceptance"] = acceptance
+    selection_report["classification"] = classification_summary
+    # BUG FIXED: this check previously only looked at selection["gaps"],
+    # computed BEFORE the download attempt. Confirmed real case: a
+    # listing's entire photo CDN batch returned 404 during download -
+    # the pre-download gaps check passed silently and the job was
+    # created reporting "success" with 0 actual scenes.
+    total_downloaded = sum(len(photos) for photos in selection["selected"].values())
+    if selection["gaps"] or total_downloaded == 0:
+        # 2026-10-23 (Patch L/M): the folder is NOT removed any more (nothing under jobs/ is deleted by code); the
+        # preparation ticket is marked prep_failed with the same message as before and no job is registered.
+        if selection["gaps"]:
+            gap_desc = "; ".join(selection["gaps"])
+        else:
+            n_failed = len(selection.get("download_failures", []))
+            gap_desc = f"All {n_failed} selected photo(s) failed to download - source images may be temporarily unavailable"
+        # 2026-07-24: explicit product decision -- if premium's full
+        # 3-tier fallback still can't fill the sequence, suggest the
+        # concrete alternatives (standard format, or manual upload)
+        # rather than a bare failure message.
+        suggestion = (" This listing may not have enough photos for the premium template -- "
+                      "try the standard ~30s format, or upload manually."
+                      if premium else " Try again in a moment, or upload manually.")
+        raise _jr.PrepError(f"Not enough usable photos for this listing: {gap_desc}.{suggestion}")
+
+    # 2026-07-24: premium's selected dict has outdoor_early/outdoor_late
+    # pseudo-category keys (see select_photos_for_scene_count_premium),
+    # not real categories -- map back to "outdoor" before requesting
+    # captions, which are keyed by real category name.
+    if premium:
+        selected_categories = list({
+            ("outdoor" if cat in ("outdoor_early", "outdoor_late") else cat)
+            for cat, photos in selection["selected"].items() if photos
+        })
+    else:
+        selected_categories = [cat for cat, photos in selection["selected"].items() if photos]
+    captions = await asyncio.to_thread(
+        scraper.generate_captions_for_categories, extraction["description"], selected_categories
+    )
+
+    # 2026-07-21 unification fix (architecture assessment item 6): this
+    # used to bake lead/trail silence directly into the audio via
+    # scraper.build_final_audio_track(), and assembly's
+    # _overlay_narration_audio() then added its OWN separate lead/trail
+    # blank-video padding on top -- confirmed real double-padding on
+    # every scraped job. Now stores the bare narration audio, exactly
+    # like manual jobs, so the one shared assembly-time function applies
+    # padding once, uniformly, for both workflows.
+    job_narration_path = str(job_dir / "narration.mp3")
+    shutil.copy2(narration["audio_path"], job_narration_path)
+
+    if premium:
+        scenes_config = scraper.build_premium_video_scenes_config(selection, captions,
+                                                                    clip_duration_secs=scraper.SCENE_CLIP_SECS)
+    else:
+        scenes_config = scraper.build_standard_video_scenes_config(selection, captions,
+                                                                     clip_duration_secs=scraper.SCENE_CLIP_SECS)
+    scenes_config = _ensure_scene_ids(scenes_config)
+
+    # Rename downloaded images to the scene_NNN.ext convention — this is
+    # what /jobs/{id}/image/{i} (used by the UI's editJob() to populate the
+    # editable form) actually expects, and what /start-generation's fallback
+    # lookup also supports. NOT scene_id-based naming, which editJob's
+    # image-loading loop has no way to resolve (it fetches by index, not ID).
+    scene_image_paths = []
+    for i, scene in enumerate(scenes_config):
+        src = scene.pop("local_image_path", None)
+        dest_path = None
+        if src and os.path.exists(src):
+            src_path = Path(src)
+            dest_path = img_dir / f"scene_{i:03d}{src_path.suffix}"
+            shutil.move(src, str(dest_path))
+        scene_image_paths.append(dest_path)
+
+    # 2026-07-21 fix: apply the same landscape/portrait format detection
+    # and normalization that manually-uploaded jobs get via create_job() --
+    # this was a known architecture gap (assessment item 3): scraped jobs
+    # never went through _normalize_photo_to_format() at all, meaning a
+    # portrait source photo here would still hit the exact distortion
+    # issue manual uploads had before that fix was built.
+    valid_img_paths = [p for p in scene_image_paths if p and p.exists()]
+    if valid_img_paths:
+        job_format = _decide_job_format_from_bytes([p.read_bytes() for p in valid_img_paths])
+        for p in valid_img_paths:
+            p.write_bytes(_normalize_photo_to_format(p.read_bytes(), job_format))
+    else:
+        job_format = "landscape"
+
+    # 2026-09-30: extracted into _apply_vision_analysis_to_scenes() (backlog
+    # item 48/Relinx) -- shared with the new partner adapter instead of
+    # duplicating this logic a second time. Behavior unchanged.
+    await _apply_vision_analysis_to_scenes(scenes_config, scene_image_paths, log_prefix="URL workflow")
+
+    claude_usage = scraper.get_claude_cost()
+    log.info(f"[URL workflow] Claude API: {claude_usage['calls']} calls, "
+             f"{claude_usage['input_tokens']} in / {claude_usage['output_tokens']} out tokens, "
+             f"EUR {claude_usage['cost_eur']}")
+
+    # 2026-07-22 (backlog item 39): same Property-linking treatment as
+    # create_job() -- single shared data model, reusing property_name_final
+    # (already computed above) rather than a separate field.
+    _prop = cost_model.create_property(property_name_final, agency_id=agency_id)
+
+    # Cost estimate — was missing entirely before this fix, which is why
+    # the UI's cost box disappeared for jobs created this way. Matches the
+    # same computation every manually-created job already gets.
+    from cost_tracker import estimate_job_cost, format_cost_display
+    rolling_jobs = _get_rolling_monthly_job_count()
+    cost_estimate = estimate_job_cost(
+        scenes_config, do_upscale=True, do_video_upscale=True, do_vision_qc=True,
+        model_tier=model_tier, actual_monthly_jobs=rolling_jobs,
+        claude_cost_eur=claude_usage.get("cost_eur", 0.0),
+        narration_chars=len(narration["narration_text"]),
+    )
+
+    JOBS[job_id] = {
+        "status": "draft",
+        "progress": 0,
+        "output_format": job_format,
+        "message": "Creato automaticamente da URL — rivedi e premi Genera Video",
+        "scenes": [],
+        "scenes_config": scenes_config,
+        "output_path": None,
+        "created_at": datetime.utcnow().isoformat(),
+        "property_name": property_name_final,
+        "agency_id": agency_id,
+        "is_premium": premium,   # 2026-07-24 (backlog item 35): premium ~1-min template flag, for classification/reporting
+        "property_id": _prop["property_id"],
+        "total_scenes": len(scenes_config),
+        "transition_style": "fade",
+        "enable_vision_qc": True,
+        "do_video_upscale": True,
+        "model_tier": model_tier,
+        "lighting": "bright_natural",
+        "intensity": DEFAULT_INTENSITY,
+        "voice_id": voice_id,
+        "enhance_images": True,
+        "upscale_images": True,
+        "cost_estimate": format_cost_display(cost_estimate),
+        "cost_actual": None,
+        "claude_usage": claude_usage,
+        "reworks": [],
+        "qc_results": [],
+        "awaiting_scenes": [],
+        "narration_text": narration["narration_text"],
+        "narration_path": job_narration_path,
+        "narration_duration_secs": narration["speech_duration_secs"],   # 2026-10-15: was the VIDEO length, mislabelled
+        "narration_sync": narration.get("sync"),
+        "narration_mode": narration.get("narration_mode"),   # 2026-10-22 (Patch B): per_scene | single_text
+        "narration_script_fallback": narration.get("script_fallback_reason"),
+        "timeline": narration.get("timeline"),   # 2026-10-23 (Patch J): anchor-driven timeline (None = classic 5 s clips)
+        "timeline_fallback": narration.get("timeline_fallback_reason"),
+        "source_url": url,
+        "source_price": extraction.get("price"),
+        "source_address": extraction.get("address"),
+        "source_description": extraction.get("description"),   # 2026-10-12: original listing text, kept for audits
+        "selection_report": selection_report,
+    }
+    _save_job(job_id)
+    INTAKES[job_id]["status"] = "draft"      # the ticket is done; GET /jobs/{id} now answers from JOBS
+
+
+@app.post("/jobs/from-url")
+async def create_job_from_url(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    property_name: str = Form(""),
+    voice_id: str = Form(""),
+    model_tier: str = Form("luma"),
+    url: str = Form(...),
+    agency_id: str = Form(None),   # 2026-07-22: client this job belongs to (backlog item 39), optional
+    premium: bool = Form(False),   # 2026-07-24: premium ~1-min template (backlog item 35), URL-scrape only, manual per-job toggle
+):
+    client_ip = request.client.host if request.client else "unknown"
+    if not _check_rate_limit(client_ip):
+        raise HTTPException(status_code=429,
+                             detail="Too many requests. Maximum 5 jobs per hour. Please wait before submitting again.")
+
+    _raise_if_generation_paused()
+
+    # 2026-10-23 (Patch M): the request only registers a preparation ticket and answers at once; reading the listing (about
+    # 3 minutes on a real listing: the browser gave up) and everything after it run in the background. No job, no folder
+    # and no library entry exist until the draft is complete; a rejected or failed listing leaves nothing behind.
+    job_id = str(uuid.uuid4())[:8]
+    INTAKES[job_id] = {
+        "status": "preparing",
+        "message": "Preparazione della bozza in corso (lettura annuncio, narrazione, voce, foto)...",
+        "property_name": property_name.strip(),
+        "source_url": url,
+        "created_at": datetime.utcnow().isoformat(),
+        "is_intake": True,
+    }
+    background_tasks.add_task(_prepare_url_draft, job_id, url, property_name, agency_id, voice_id, model_tier, premium)
+    return {"job_id": job_id, "status": "preparing"}
+
+
+async def _prepare_url_draft(job_id, url, property_name, agency_id, voice_id, model_tier, premium):
+    await _jr.run_preparation(
+        job_id, INTAKES, lambda _jid: None,     # tickets live in memory only: nothing to save
+        lambda: _prepare_url_draft_work(job_id, url, property_name, agency_id, voice_id, model_tier, premium),
+        log=log)
+
+
+# ── Job status & download ──────────────────────────────────────────────────────
+
+
+# -- Partner API: CRM integration (backlog item 48, Relinx) -----------------
+# Thin adapter over the SAME job-creation building blocks create_job_from_url()
+# already uses -- narration, photo selection, captions, scene building, vision
+# analysis -- rather than a new parallel pipeline (architecture-discipline
+# rule, item 38). Only the photo SOURCE differs: structured partner data
+# instead of scraping a listing page.
+#
+# External status vocabulary agreed with Relinx (2026-09-30): queued,
+# processing, in_review, completed, failed -- distinct from our internal
+# job statuses. Mapping used here and to be reused by the future
+# GET /v1/videos/{id} and webhook: internal "draft" and "awaiting_approval"
+# both map to external "in_review" (human review is happening either way,
+# Relinx doesn't need to know which phase); "queued"/"running" -> "processing";
+# "done" -> "completed"; "failed" -> "failed".
+
+class RelinxPhoto(BaseModel):
+    url: str
+    category: str = "uncategorized"
+    order: int = 0
+
+class RelinxVideoRequest(BaseModel):
+    external_ref: str
+    agency_name: str
+    agency_external_id: str = None
+    property_name: str = "Property"
+    description: str
+    features: list = []
+    photos: list[RelinxPhoto]
+    voice_id: str = ""
+    output_format: str = None
+    callback_url: str
+
+
+def _map_internal_status_to_partner_status(internal_status: str, released: bool = False) -> str:
+    """
+    Backlog item 48: maps our internal job status vocabulary onto the
+    5-state external vocabulary agreed with Relinx (queued/processing/
+    in_review/completed/failed). Both "draft" (pre-generation human
+    review) and "awaiting_approval" (post-generation QC review) surface
+    as "in_review" -- the partner doesn't need to know which phase.
+    """
+    mapping = {
+        "draft": "in_review",
+        "awaiting_approval": "in_review",
+        "queued": "processing",
+        "running": "processing",
+        "done": "completed",
+        "failed": "failed",
+    }
+    if internal_status == "done":
+        return "completed" if released else "in_review"
+    return mapping.get(internal_status, "processing")
+
+
+@app.post("/v1/videos")
+async def create_video_from_partner(
+    payload: RelinxVideoRequest,
+    background_tasks: BackgroundTasks,
+    partner: dict = Depends(get_current_partner),
+):
+    """
+    Receives a video request from a CRM partner (Relinx), builds a job
+    exactly like create_job_from_url() does for a scraped listing, and
+    stops in "draft" status for human review -- generation is NOT started
+    here. Same workflow as every other job: reviewed and started manually
+    via /jobs/{id}/start-generation. Never auto-releases.
+
+    2026-10-02 (backlog item 48, URGENT): the actual job-building work
+    (narration generation, photo resolution/download, caption writing,
+    vision analysis) used to run synchronously inside this request and
+    could take well over Relinx's client timeout for a real listing --
+    confirmed live during their first integration test: nginx logged
+    their requests closing with 499 (client gave up) while our own
+    pipeline kept running in the background and actually succeeded a few
+    seconds later (job cc2aead8 completed fine, alert email sent, nothing
+    lost). This endpoint now does only the fast, synchronous checks
+    (agency resolution, rate limit) and returns immediately with
+    status="queued"; the rest of the work happens in
+    _build_relinx_job_in_background(), exactly like every other job's
+    generation pipeline already runs as a background task elsewhere in
+    this file.
+    """
+    # 2026-10-02 (URGENT, found live): Relinx's client retried this
+    # request multiple times while our old synchronous endpoint was
+    # still timing out (see the async-background fix above) -- each
+    # retry created its own separate job for the identical external_ref,
+    # since nothing checked for an existing one first. Idempotency check:
+    # if a non-failed job already exists for this partner+external_ref,
+    # return it instead of creating a duplicate. A previously FAILED
+    # attempt is allowed to retry fresh (e.g. after a real photo-download
+    # failure gets fixed on Relinx's side).
+    existing_id, existing = next(
+        ((jid, j) for jid, j in JOBS.items()
+         if j.get("partner_id") == partner["partner_id"]
+         and j.get("external_ref") == payload.external_ref
+         and j.get("status") != "failed"),
+        (None, None),
+    )
+    if existing:
+        return {"id": existing_id, "status": _map_internal_status_to_partner_status(existing["status"], existing.get("released", False))}
+
+    # 2026-10-01 (backlog item 48): prefer the partner's own external
+    # agency id when given -- name-only matching risks merging two real,
+    # different agencies that happen to share a name. Falls back to
+    # name-only matching (today's behavior) if Relinx doesn't send one.
+    if payload.agency_external_id:
+        agency = cost_model.create_agency_for_partner(
+            payload.agency_name, partner["partner_id"], payload.agency_external_id
+        )
+    else:
+        agency = cost_model.create_agency(payload.agency_name)
+
+    # 2026-10-01 (backlog item 48): rate limit -- max 2 videos per agency
+    # per rolling 24h, agreed with Relinx. Counts only jobs with
+    # source=="relinx" for this agency -- manual/scraper jobs an operator
+    # might separately create for the same agency don't count against it.
+    now = datetime.utcnow()
+    cutoff = now - timedelta(hours=24)
+    recent_relinx_jobs = sorted(
+        (j for j in JOBS.values()
+         if j.get("agency_id") == agency["agency_id"]
+         and j.get("source") == "relinx"
+         and j.get("created_at")
+         and datetime.fromisoformat(j["created_at"]) > cutoff),
+        key=lambda j: j["created_at"],
+    )
+    if len(recent_relinx_jobs) >= 2:
+        oldest = datetime.fromisoformat(recent_relinx_jobs[0]["created_at"])
+        retry_after_secs = max(1, int((oldest + timedelta(hours=24) - now).total_seconds()))
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded: max 2 videos per agency per 24h (agency: {payload.agency_name})",
+            headers={"Retry-After": str(retry_after_secs)},
+        )
+
+    job_id = str(uuid.uuid4())[:8]
+    JOBS[job_id] = {
+        "status": "queued",
+        "progress": 0,
+        "message": f"Ricevuto da Relinx (external_ref={payload.external_ref}) -- elaborazione in corso",
+        "scenes": [],
+        "scenes_config": [],
+        "output_path": None,
+        "created_at": datetime.utcnow().isoformat(),
+        "property_name": payload.property_name,
+        "agency_id": agency["agency_id"],
+        "cost_actual": None,
+        "reworks": [],
+        "qc_results": [],
+        "awaiting_scenes": [],
+        "source": "relinx",
+        "partner_id": partner["partner_id"],
+        "external_ref": payload.external_ref,
+        "callback_url": payload.callback_url,
+    }
+    _save_job(job_id)
+
+    background_tasks.add_task(_build_relinx_job_in_background, job_id, payload, agency)
+
+    return {"id": job_id, "status": _map_internal_status_to_partner_status("queued")}
+
+
+async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoRequest, agency: dict):
+    """
+    Background counterpart of create_video_from_partner() (2026-10-02,
+    backlog item 48) -- does all the slow work (narration generation,
+    photo resolution/download, captions, vision QC) that used to block
+    the HTTP response. On any failure, marks the job 'failed' with a
+    clear message instead of raising, since there's no HTTP response
+    left to raise into.
+    """
+    import listing_scraper as scraper
+    try:
+        scraper.reset_claude_usage()
+        description_full = payload.description
+        if payload.features:
+            description_full += "\n\nCaratteristiche: " + ", ".join(payload.features)
+
+        photos_for_selection = []
+        for p in payload.photos:
+            cat = p.category if p.category in scraper.CATEGORIES else "uncategorized"
+            photos_for_selection.append({"url": p.url, "category": cat})
+        photos_for_selection = await asyncio.to_thread(scraper.resolve_uncategorized_photos, photos_for_selection)
+        classification_summary = await asyncio.to_thread(scraper.refine_exterior_outdoor_with_vision, photos_for_selection)
+
+        # 2026-10-12 (3B): standard-video acceptance rule BEFORE narration/TTS is paid for.
+        acceptance = scraper.check_listing_acceptance(photos_for_selection)
+        if not acceptance["ok"]:
+            JOBS[job_id].update({"status": "failed", "message": acceptance["message"],
+                                 "failure_code": acceptance["code"], "failure_reason": acceptance})
+            _save_job(job_id)
+            await _send_partner_webhook(job_id, "failed")
+            await _notify_operator(job_id, "Relinx job failed",
+                subject=f"Job Relinx rifiutato: {payload.property_name}",
+                body_html=f"<p><b>{payload.property_name}</b> - {acceptance['message']}</p>"
+                          f"<p>Job ID: {job_id}, external_ref: {payload.external_ref}</p>",
+                push_message=f"{payload.property_name} - rifiutato (foto insufficienti)", tags=["x"])
+            return
+
+        scene_category_order = scraper.derive_available_category_order(photos_for_selection)
+
+        # 2026-10-22 (Patch B): same as the URL workflow -- standard photos are selected first (6 scenes), the
+        # narration is written per scene for the rooms those scenes show, and the selection is reused below.
+        pre_selection = await asyncio.to_thread(
+            scraper.select_photos_for_scene_count, photos_for_selection, scraper.STANDARD_SCENES
+        )
+        scene_sequence = scraper.standard_scene_sequence(pre_selection)
+
+        narration = await asyncio.to_thread(
+            scraper.generate_narration_and_derive_scenes,
+            description_full, None, None, payload.voice_id or None, False,
+            agency.get("name"), scene_category_order, scene_sequence,
+        )
+        if not narration["ok"]:
+            JOBS[job_id].update({"status": "failed", "message": f"Narration generation failed: {narration['error']}"})
+            _save_job(job_id)
+            await _send_partner_webhook(job_id, "failed")
+            await _notify_operator(job_id, "Relinx job failed",
+                subject=f"Job Relinx fallito: {payload.property_name}",
+                body_html=f"<p><b>{payload.property_name}</b> - narrazione fallita: {narration['error']}</p>"
+                          f"<p>Job ID: {job_id}, external_ref: {payload.external_ref}</p>",
+                push_message=f"{payload.property_name} - fallito (narrazione)", tags=["x"])
+            return
+
+        if narration["scene_count"] == scraper.STANDARD_SCENES:
+            selection = pre_selection
+        else:
+            selection = scraper.select_photos_for_scene_count(photos_for_selection, narration["scene_count"])
+
+        job_dir = JOBS_DIR / job_id
+        img_dir = job_dir / "images"
+        img_dir.mkdir(parents=True, exist_ok=True)
+
+        selection = await asyncio.to_thread(scraper.download_selected_photos, selection, img_dir)
+        selection_report = scraper.build_selection_report(photos_for_selection, selection, narration["scene_count"])
+        selection_report["acceptance"] = acceptance
+        selection_report["classification"] = classification_summary
+        total_downloaded = sum(len(ps) for ps in selection["selected"].values())
+        if selection["gaps"] or total_downloaded == 0:
+            shutil.rmtree(str(job_dir), ignore_errors=True)
+            if selection["gaps"]:
+                gap_desc = "; ".join(selection["gaps"])
+            else:
+                n_failed = len(selection.get("download_failures", []))
+                gap_desc = f"All {n_failed} selected photo(s) failed to download"
+            JOBS[job_id].update({"status": "failed", "message": f"Not enough usable photos for this listing: {gap_desc}"})
+            _save_job(job_id)
+            await _send_partner_webhook(job_id, "failed")
+            await _notify_operator(job_id, "Relinx job failed",
+                subject=f"Job Relinx fallito: {payload.property_name}",
+                body_html=f"<p><b>{payload.property_name}</b> - foto insufficienti: {gap_desc}</p>"
+                          f"<p>Job ID: {job_id}, external_ref: {payload.external_ref}</p>",
+                push_message=f"{payload.property_name} - fallito (foto insufficienti)", tags=["x"])
+            return
+
+        selected_categories = [cat for cat, photos in selection["selected"].items() if photos]
+        captions = await asyncio.to_thread(
+            scraper.generate_captions_for_categories, description_full, selected_categories
+        )
+
+        job_narration_path = str(job_dir / "narration.mp3")
+        shutil.copy2(narration["audio_path"], job_narration_path)
+
+        scenes_config = scraper.build_standard_video_scenes_config(
+            selection, captions, clip_duration_secs=scraper.SCENE_CLIP_SECS
+        )
+        scenes_config = _ensure_scene_ids(scenes_config)
+
+        scene_image_paths = []
+        for i, scene in enumerate(scenes_config):
+            src = scene.pop("local_image_path", None)
+            dest_path = None
+            if src and os.path.exists(src):
+                src_path = Path(src)
+                dest_path = img_dir / f"scene_{i:03d}{src_path.suffix}"
+                shutil.move(src, str(dest_path))
+            scene_image_paths.append(dest_path)
+
+        valid_img_paths = [p for p in scene_image_paths if p and p.exists()]
+        if payload.output_format in ("landscape", "portrait"):
+            job_format = payload.output_format
+        elif valid_img_paths:
+            job_format = _decide_job_format_from_bytes([p.read_bytes() for p in valid_img_paths])
+            for p in valid_img_paths:
+                p.write_bytes(_normalize_photo_to_format(p.read_bytes(), job_format))
+        else:
+            job_format = "landscape"
+
+        await _apply_vision_analysis_to_scenes(scenes_config, scene_image_paths, log_prefix="Relinx")
+
+        claude_usage = scraper.get_claude_cost()
+        _prop = cost_model.create_property(payload.property_name, agency_id=agency["agency_id"])
+
+        from cost_tracker import estimate_job_cost, format_cost_display
+        rolling_jobs = _get_rolling_monthly_job_count()
+        cost_estimate = estimate_job_cost(
+            scenes_config, do_upscale=True, do_video_upscale=True, do_vision_qc=True,
+            model_tier="luma", actual_monthly_jobs=rolling_jobs,
+            claude_cost_eur=claude_usage.get("cost_eur", 0.0),
+            narration_chars=len(narration["narration_text"]),
+        )
+
+        JOBS[job_id].update({
+            "status": "draft",
+            "output_format": job_format,
+            "message": f"Ricevuto da Relinx (external_ref={payload.external_ref}) -- rivedi e premi Genera Video",
+            "scenes_config": scenes_config,
+            "property_id": _prop["property_id"],
+            "total_scenes": len(scenes_config),
+            "transition_style": "fade",
+            "enable_vision_qc": True,
+            "do_video_upscale": True,
+            "model_tier": "luma",
+            "lighting": "bright_natural",
+            "intensity": DEFAULT_INTENSITY,
+            "voice_id": payload.voice_id,
+            "enhance_images": True,
+            "upscale_images": True,
+            "cost_estimate": format_cost_display(cost_estimate),
+            "claude_usage": claude_usage,
+            "narration_text": narration["narration_text"],
+            "narration_path": job_narration_path,
+            "narration_duration_secs": narration["speech_duration_secs"],   # 2026-10-15: was the VIDEO length, mislabelled
+            "narration_sync": narration.get("sync"),
+            "narration_mode": narration.get("narration_mode"),   # 2026-10-22 (Patch B): per_scene | single_text
+            "narration_script_fallback": narration.get("script_fallback_reason"),
+            "timeline": narration.get("timeline"),   # 2026-10-23 (Patch J)
+            "timeline_fallback": narration.get("timeline_fallback_reason"),
+            "source_description": description_full,
+            "selection_report": selection_report,
+        })
+        _save_job(job_id)
+        await _send_new_partner_job_alert(job_id)
+    except Exception as e:
+        log.exception(f"[Relinx] Background job build failed for {job_id}")
+        if job_id in JOBS:
+            JOBS[job_id].update({"status": "failed", "message": f"Internal error building job: {e}"})
+            _save_job(job_id)
+            await _send_partner_webhook(job_id, "failed")
+            await _notify_operator(job_id, "Relinx job failed",
+                subject=f"Job Relinx fallito: {payload.property_name}",
+                body_html=f"<p><b>{payload.property_name}</b> - errore interno: {e}</p>"
+                          f"<p>Job ID: {job_id}, external_ref: {payload.external_ref}</p>",
+                push_message=f"{payload.property_name} - fallito (errore interno)", tags=["x"])
+
+
+def _resolve_real_relinx_job(job_id: str, job: dict):
+    """
+    2026-10-03 (confirmed live, real partner impact): if `job` is a
+    labeled duplicate from a retry-storm incident (source starts with
+    'relinx_duplicate_retry'), find and return the REAL job sharing the
+    same partner_id + external_ref instead. A partner whose client ended
+    up storing one of the duplicate ids (as Relinx's did -- they stored
+    8ccdd462, created during the 2026-10-02 timeout/retry storm, while
+    the real completed job is cc2aead8) would otherwise see a permanently
+    stuck "draft" job instead of the real, completed one. Returns
+    (resolved_job_id, resolved_job_dict); falls back to the original
+    (job_id, job) if no real counterpart is found.
+    """
+    source = job.get("source", "")
+    if not source.startswith("relinx_duplicate_retry"):
+        return job_id, job
+    partner_id = job.get("partner_id")
+    external_ref = job.get("external_ref")
+    for other_id, other_job in JOBS.items():
+        if (other_job.get("partner_id") == partner_id
+                and other_job.get("external_ref") == external_ref
+                and other_job.get("source") == "relinx"):
+            return other_id, other_job
+    return job_id, job
+
+
+@app.get("/v1/videos/{job_id}")
+async def get_video_status_for_partner(job_id: str, partner: dict = Depends(get_current_partner)):
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+    if job.get("partner_id") != partner["partner_id"]:
+        raise HTTPException(status_code=403, detail="This job does not belong to your account")
+    real_id, job = _resolve_real_relinx_job(job_id, job)
+    released = job.get("released", False)
+    result = {
+        "id": job_id,
+        "external_ref": job.get("external_ref"),
+        "status": _map_internal_status_to_partner_status(job.get("status"), released),
+    }
+    if job.get("status") == "done" and released:
+        result["video_url"] = f"https://api.propertyvideostudioai.com/v1/videos/{real_id}/download"
+    return result
+
+
+@app.get("/v1/videos")
+async def find_video_by_external_ref(external_ref: str, partner: dict = Depends(get_current_partner)):
+    matches = [(jid, job) for jid, job in JOBS.items()
+               if job.get("partner_id") == partner["partner_id"] and job.get("external_ref") == external_ref]
+    if not matches:
+        raise HTTPException(status_code=404, detail="No video found with that external_ref")
+    # 2026-10-03 (confirmed live, real partner impact): with multiple jobs
+    # sharing one external_ref (a retry-storm duplicate situation), always
+    # prefer the REAL job (source == "relinx") over any labeled
+    # duplicate-retry job -- dict iteration order is not guaranteed to
+    # put the real one first, confirmed live: Relinx's own external_ref
+    # lookup was returning a stuck "draft" duplicate instead of the real,
+    # completed job.
+    real = next((m for m in matches if m[1].get("source") == "relinx"), None)
+    jid, job = real if real else matches[0]
+    released = job.get("released", False)
+    result = {
+        "id": jid,
+        "external_ref": job.get("external_ref"),
+        "status": _map_internal_status_to_partner_status(job.get("status"), released),
+    }
+    if job.get("status") == "done" and released:
+        result["video_url"] = f"https://api.propertyvideostudioai.com/v1/videos/{jid}/download"
+    return result
+
+
+@app.get("/v1/videos/{job_id}/download")
+async def download_video_for_partner(job_id: str, partner: dict = Depends(get_current_partner)):
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+    if job.get("partner_id") != partner["partner_id"]:
+        raise HTTPException(status_code=403, detail="This job does not belong to your account")
+    _, job = _resolve_real_relinx_job(job_id, job)
+    if job.get("status") != "done":
+        raise HTTPException(status_code=400, detail=f"Video not ready (status: {job.get('status')})")
+    output_path = job.get("output_path")
+    if not output_path or not Path(output_path).exists():
+        raise HTTPException(status_code=500, detail="Output file missing")
+    filename = f"{job.get('property_name','property').replace(' ','_')}_video.mp4"
+    return FileResponse(output_path, media_type="video/mp4", filename=filename)
+
+
+@app.get("/jobs/")
+def list_jobs():
+    """Returns all jobs sorted by creation date, newest first."""
+    jobs = []
+    for job_id, job in JOBS.items():
+        # Skip rework child jobs — show only parent jobs and completed reworks
+        is_rework = "_rw" in job_id
+        jobs.append({
+            "job_id":       job_id,
+            "is_rework":    is_rework,
+            "parent_job_id": job.get("parent_job_id"),
+            "property_name": job.get("property_name", "Property"),
+            "agency_id":    job.get("agency_id"),
+            "property_id":  job.get("property_id"),
+            "status":       job.get("status", "unknown"),
+            "progress":     job.get("progress", 0),
+            "total_scenes": job.get("total_scenes", 0),
+            "model_tier":   job.get("model_tier", "premium"),
+            "created_at":   job.get("created_at", ""),
+            "cost_estimate": job.get("cost_estimate"),
+            "needs_operator": job.get("needs_operator"),   # 2026-10-09 stage 4b
+            "has_video":    bool(job.get("output_path") and Path(job["output_path"]).exists()),
+        })
+    jobs.sort(key=lambda j: j["created_at"], reverse=True)
+    return {"jobs": jobs, "total": len(jobs)}
+
+
+
+
+@app.get("/jobs/{job_id}")
+def get_job(job_id: str):
+    if job_id not in JOBS and job_id in INTAKES:       # 2026-10-23 (Patch M): draft still being prepared (or failed)
+        return dict(INTAKES[job_id])
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id].copy()
+    job.pop("output_path", None)
+    # 2026-10-15 (Patch A): which clips came from fal.ai instead of the direct Luma API,
+    # read from the per-clip sidecars; read-only, no job state is changed.
+    try:
+        import clip_provenance
+        job["fal_usage"] = clip_provenance.summarize(JOBS_DIR / job_id, job.get("scenes_config") or [])
+    except Exception as e:
+        log.warning(f"[Job {job_id}] fal_usage summary failed (non-fatal): {e}")
+        job["fal_usage"] = None
+    return job
+
+
+
+
+@app.get("/jobs/{job_id}/image/{scene_index}")
+def get_scene_image(job_id: str, scene_index: int):
+    """Serves the source image for a scene — used to rebuild scene cards
+    when loading a past job from the library. Must return the ORIGINAL
+    uploaded image, not the enhanced/upscaled version — the enhanced
+    version is 30-50MB after aura-sr upscaling and would exceed the
+    20MB upload limit when re-submitted as a fresh generation.
+    """
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job_dir = JOBS_DIR / job_id
+
+
+    # Original upload FIRST — enhanced version only as last-resort fallback
+    candidates = []
+    # 2026-10-09: current jobs store originals as images/<scene_id>.<ext>, not scene_NNN.<ext>
+    scenes_cfg = JOBS[job_id].get("scenes_config", [])
+    sid = scenes_cfg[scene_index].get("scene_id") if 0 <= scene_index < len(scenes_cfg) else None
+    if sid:
+        for ext in [".jpg", ".jpeg", ".png", ".webp"]:
+            candidates.append(job_dir / "images" / f"{sid}{ext}")
+    for ext in [".jpg", ".jpeg", ".png", ".webp"]:
+        candidates.append(job_dir / "images" / f"scene_{scene_index:03d}{ext}")
+    candidates.append(job_dir / "enhanced" / f"scene_{scene_index:03d}_enhanced.jpg")
+    candidates.append(job_dir / "enhanced" / f"scene_{scene_index:03d}_enhanced_lit.jpg")
+
+
+    for path in candidates:
+        if path.exists():
+            return FileResponse(
+                str(path),
+                media_type="image/jpeg",
+                headers={"Cache-Control": "no-store, no-cache, must-revalidate"}
+            )
+
+
+    raise HTTPException(status_code=404, detail="Image not found")
+
+
+
+
+def _resolve_clip_path(job_id: str, scene_index: int) -> Path:
+    """The ONE resolver of a scene's clip file (used by the clip and the clip-preview endpoints)."""
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    # 2026-10-15 (Patch A): after a rework the scene's clip lives under its NEW scene_id
+    # (sc_xxxx.mp4), not scene_NNN.mp4, so the preview kept showing the OLD clip. One shared
+    # resolver (same order as the reassemble step): scene_id file first, then legacy scene_NNN.
+    import clip_provenance
+    _cfg = JOBS[job_id].get("scenes_config") or []
+    _sid = (_cfg[scene_index].get("scene_id") if 0 <= scene_index < len(_cfg) else None)
+    clip_path = clip_provenance.clip_file_for_scene(JOBS_DIR / job_id, scene_index, _sid) \
+        or (JOBS_DIR / job_id / "clips" / f"scene_{scene_index:03d}.mp4")
+    if not clip_path.exists():
+        for job_dir in JOBS_DIR.glob(f"{job_id}*"):
+            candidate = job_dir / "clips" / f"scene_{scene_index:03d}.mp4"
+            if candidate.exists():
+                clip_path = candidate
+                break
+    if not clip_path.exists():
+        raise HTTPException(status_code=404, detail="Clip not found")
+    return clip_path
+
+
+def _warm_previews(job_id: str, include_final: bool = False) -> None:
+    """2026-10-27: starts building the light preview copies of this job's clips (and of the finished video) in the background, right
+    when they become available, so the preview/QC screens open at once. Fail-open: any problem is ignored."""
+    try:
+        import preview_proxy
+        job = JOBS.get(job_id) or {}
+        paths = []
+        for i in range(len(job.get("scenes_config") or [])):
+            try:
+                paths.append(_resolve_clip_path(job_id, i))
+            except Exception:
+                pass
+        if include_final and job.get("output_path"):
+            paths.append(Path(job["output_path"]))
+        preview_proxy.warm(paths, JOBS_DIR / job_id / "preview_cache")
+    except Exception as e:
+        log.warning(f"[Job {job_id}] preview warm-up not started: {e}")
+
+
+def _serve_mp4_file(file_path, request: Request, cache_control: str = "public, max-age=3600"):
+    """Serves an mp4 with HTTP Range support (browser can start playing at once). Used by the clip and the preview endpoints."""
+    import re
+    from fastapi.responses import StreamingResponse
+    file_path = str(file_path)
+    file_size = os.path.getsize(file_path)
+    range_header = request.headers.get("range")
+    if range_header:
+        match = re.match(r"bytes=(\d+)-(\d*)", range_header)
+        if match:
+            start = int(match.group(1))
+            end   = int(match.group(2)) if match.group(2) else file_size - 1
+            end   = min(end, file_size - 1)
+            chunk_size = end - start + 1
+
+            def iter_file(path, start, chunk):
+                with open(path, "rb") as f:
+                    f.seek(start)
+                    remaining = chunk
+                    while remaining > 0:
+                        data = f.read(min(65536, remaining))
+                        if not data:
+                            break
+                        remaining -= len(data)
+                        yield data
+
+            return StreamingResponse(
+                iter_file(file_path, start, chunk_size), status_code=206, media_type="video/mp4",
+                headers={"Content-Range": f"bytes {start}-{end}/{file_size}", "Accept-Ranges": "bytes",
+                         "Content-Length": str(chunk_size), "Cache-Control": cache_control})
+    return FileResponse(file_path, media_type="video/mp4",
+                        headers={"Cache-Control": cache_control, "Accept-Ranges": "bytes", "Content-Length": str(file_size)})
+
+
+@app.get("/jobs/{job_id}/clip/{scene_index}")
+async def get_clip(job_id: str, scene_index: int, request: Request):
+    """Serves a generated clip with range request support for fast browser preview (the original file)."""
+    return _serve_mp4_file(_resolve_clip_path(job_id, scene_index), request)
+
+
+@app.get("/jobs/{job_id}/clip/{scene_index}/preview")
+async def get_clip_preview(job_id: str, scene_index: int, request: Request):
+    """LIGHT viewing copy of a clip (built once, cached). Never used for download or assembly. Falls back to the original."""
+    import preview_proxy
+    clip_path = _resolve_clip_path(job_id, scene_index)
+    light = await asyncio.to_thread(preview_proxy.light_copy, clip_path, JOBS_DIR / job_id / "preview_cache")
+    return _serve_mp4_file(light, request)
+
+
+def _done_output_path(job_id: str) -> str:
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+    if job["status"] not in ["done"]:
+        raise HTTPException(status_code=400, detail=f"Job not ready (status: {job['status']})")
+    output_path = job.get("output_path")
+    if not output_path or not Path(output_path).exists():
+        raise HTTPException(status_code=500, detail="Output file missing")
+    return output_path
+
+
+@app.get("/jobs/{job_id}/preview")
+async def preview_job(job_id: str, request: Request):
+    """LIGHT viewing copy of the finished video. The full-quality file is ONLY /jobs/{id}/download (unchanged)."""
+    import preview_proxy
+    output_path = _done_output_path(job_id)
+    light = await asyncio.to_thread(preview_proxy.light_copy, output_path, JOBS_DIR / job_id / "preview_cache")
+    return _serve_mp4_file(light, request)
+
+
+@app.get("/jobs/{job_id}/video-info")
+async def video_info(job_id: str):
+    """What the person downloads: resolution and size of the ORIGINAL finished video, and of the light preview if it exists."""
+    import preview_proxy
+    output_path = _done_output_path(job_id)
+    out = {"original": await asyncio.to_thread(preview_proxy.info, output_path)}
+    cp = preview_proxy.cache_path(Path(output_path), JOBS_DIR / job_id / "preview_cache")
+    if cp.exists():
+        out["preview"] = await asyncio.to_thread(preview_proxy.info, cp)
+    return out
+
+
+@app.post("/jobs/{job_id}/stop")
+def stop_job(job_id: str):
+    """Marks a job as cancelled. The pipeline checks this flag between scenes
+    and stops before starting the next one — already-generated clips are kept.
+    Cannot interrupt a Veo API call already in progress for the current scene.
+    """
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    JOBS[job_id]["cancel_requested"] = True
+    _save_job(job_id)
+    return {
+        "job_id": job_id,
+        "message": "Cancellazione richiesta — si fermerà dopo la scena corrente."
+    }
+
+
+
+
+@app.get("/jobs/{job_id}/download")
+async def download_job(job_id: str, request: Request):
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+    if job["status"] not in ["done"]:
+        raise HTTPException(status_code=400, detail=f"Job not ready (status: {job['status']})")
+    output_path = job.get("output_path")
+    if not output_path or not Path(output_path).exists():
+        raise HTTPException(status_code=500, detail="Output file missing")
+    filename = f"{job.get('property_name','property').replace(' ','_')}_video.mp4"
+
+
+    file_size = Path(output_path).stat().st_size
+    range_header = request.headers.get("range")
+
+
+    if range_header:
+        import re as _re
+        from fastapi.responses import StreamingResponse
+        match = _re.match(r"bytes=(\d+)-(\d*)", range_header)
+        if match:
+            start = int(match.group(1))
+            end   = int(match.group(2)) if match.group(2) else file_size - 1
+            end   = min(end, file_size - 1)
+            chunk_size = end - start + 1
+
+
+            def _iter(path, s, c):
+                with open(path, "rb") as f:
+                    f.seek(s)
+                    remaining = c
+                    while remaining > 0:
+                        data = f.read(min(65536, remaining))
+                        if not data:
+                            break
+                        remaining -= len(data)
+                        yield data
+
+
+            return StreamingResponse(
+                _iter(output_path, start, chunk_size),
+                status_code=206,
+                media_type="video/mp4",
+                headers={
+                    "Content-Range":  f"bytes {start}-{end}/{file_size}",
+                    "Accept-Ranges":  "bytes",
+                    "Content-Length": str(chunk_size),
+                    "Content-Disposition": f'attachment; filename="{filename}"',
+                }
+            )
+
+
+    return FileResponse(
+        output_path,
+        media_type="video/mp4",
+        filename=filename,
+        headers={"Accept-Ranges": "bytes", "Content-Length": str(file_size)}
+    )
+
+
+
+
+# ── QC approval gate ───────────────────────────────────────────────────────────
+
+
+@app.post("/jobs/{job_id}/approve")
+async def approve_job(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    approval: str = Form(...),
+):
+    """
+    Called when user approves flagged scenes in the QC review panel.
+    approval is a JSON object:
+    {
+      "approved_scenes": [0, 2],    <- scene indices user approved
+      "redo_scenes":     [1],       <- scene indices user wants to redo
+    }
+    Only called when job status is "awaiting_approval".
+    """
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+    if job["status"] != "awaiting_approval":
+        raise HTTPException(status_code=400, detail="Job is not awaiting approval")
+
+
+    try:
+        data = json.loads(approval)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid approval JSON: {e}")
+
+
+    redo_scenes     = data.get("redo_scenes", [])
+    approved_scenes = data.get("approved_scenes", [])
+
+
+    # Update qc_verdict for manually approved scenes so the library
+    # preview reflects the accurate final status, not the stale AI verdict
+    if approved_scenes:
+        scenes = JOBS[job_id].get("scenes", [])
+        for s in scenes:
+            if s.get("index") in approved_scenes:
+                s["qc_verdict"] = "approved"  # was reject/flag, now human-approved
+        JOBS[job_id]["scenes"] = scenes
+
+
+    if redo_scenes:
+        # 2026-07-21 migration: this was the ONE remaining live call into
+        # the legacy run_rework() (sibling-directory model) -- and it's hit
+        # by ordinary, common usage (any first-time generation where QC
+        # flags a scene), meaning every such job was silently missing this
+        # session's cost tracking, locking, and single-directory-model
+        # guarantees, without anyone realizing it. Now uses the same batch
+        # redo mechanism as the manual "Rifai questa scena" button.
+        scenes_config_now = job.get("scenes_config", [])
+        redo_scene_ids = []
+        for idx in redo_scenes:
+            if 0 <= idx < len(scenes_config_now):
+                sid = scenes_config_now[idx].get("scene_id")
+                if sid:
+                    redo_scene_ids.append(sid)
+
+        await _rework_gate(job_id, redo_scene_ids)
+        if not _acquire_job_lock(job_id, f"QC redo {len(redo_scene_ids)} scene(s)"):
+            lock = _job_lock_status(job_id)
+            raise HTTPException(
+                status_code=409,
+                detail=f"Job is currently being modified ({lock.get('operation')}) — please wait and try again."
+            )
+
+        JOBS[job_id]["status"]  = "running"
+        JOBS[job_id]["message"] = f"Rework: rigenerazione di {len(redo_scene_ids)} scena/e in corso…"
+        background_tasks.add_task(run_redo_scenes_batch, job_id=job_id, scene_ids=redo_scene_ids)
+    else:
+        # All approved — proceed to assembly
+        # 2026-07-21 consolidation: was run_assembly(), now the single
+        # unified assembly implementation (see run_pipeline for detail).
+        JOBS[job_id]["status"]  = "running"
+        JOBS[job_id]["message"] = "Assembling final video…"
+        background_tasks.add_task(run_reassemble_only, job_id=job_id)
+
+
+    _save_job(job_id)
+    return {"job_id": job_id, "status": JOBS[job_id]["status"]}
+
+
+
+
+# ── Rework endpoint ────────────────────────────────────────────────────────────
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# NEW SOLID JOB MODEL — single directory per property, stable scene IDs, locking
+# ══════════════════════════════════════════════════════════════════════════════
+# This replaces the old sibling-directory rework model (kept below for any
+# in-flight old jobs). All NEW edits should use these endpoints.
+#
+# Key guarantees:
+#   - One job = one directory, forever. No more "_rw1234" siblings.
+#   - Scenes identified by permanent scene_id, never by array index.
+#   - Job lock prevents two operations touching the same job at once.
+#   - Every operation either fully succeeds (job_meta.json updated) or fully
+#     fails (job_meta.json untouched) — no partial/corrupted states.
+
+
+@app.get("/jobs/{job_id}/lock-status")
+def get_lock_status(job_id: str):
+    return _job_lock_status(job_id)
+
+
+
+
+# 2026-07-21: the dedicated /jobs/{id}/scenes/{scene_id}/redo endpoint was
+# removed here -- confirmed via direct grep zero remaining callers in
+# ui.html. Its underlying function run_redo_scene() stays (add_scene()
+# below still genuinely depends on it internally).
+@app.post("/jobs/{job_id}/scenes")
+async def add_scene(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    image: UploadFile = File(...),
+    scene_config: str = Form(...),   # JSON: {caption, voiceover, space_type, pov_movement, duration}
+):
+    """Adds one new scene to an existing job, in place. Saves the image
+    directly into this job's own images/ folder — no ambiguity about
+    where the source photo lives, ever.
+    """
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+
+
+    if not _acquire_job_lock(job_id, "add scene"):
+        lock = _job_lock_status(job_id)
+        raise HTTPException(
+            status_code=409,
+            detail=f"Job is currently being modified ({lock.get('operation')}) — please wait and try again."
+        )
+
+
+    try:
+        cfg = json.loads(scene_config)
+    except Exception as e:
+        _release_job_lock(job_id)
+        raise HTTPException(status_code=400, detail=f"Invalid scene_config: {e}")
+
+
+    content = await image.read()
+    if len(content) > 20 * 1024 * 1024:
+        _release_job_lock(job_id)
+        raise HTTPException(status_code=400, detail="Image exceeds 20MB limit")
+    if not _validate_image_bytes(content):
+        _release_job_lock(job_id)
+        raise HTTPException(status_code=400, detail="Invalid image file")
+
+    # 2026-07-17: normalize to the job's already-established output_format
+    # -- inherit, don't re-vote, since this job's canvas is already locked in
+    content = _normalize_photo_to_format(content, job.get("output_format", "landscape"))
+
+    scene_id = _new_scene_id()
+    new_scene = {
+        "scene_id":     scene_id,
+        "caption":      cfg.get("caption", ""),
+        "voiceover":    cfg.get("voiceover", ""),
+        "space_type":   cfg.get("space_type", "large"),
+        "pov_movement": cfg.get("pov_movement", "walk_in_explore"),
+        "duration":     cfg.get("duration", 8),
+    }
+
+
+    job_dir = JOBS_DIR / job_id
+    img_dir = job_dir / "images"
+    img_dir.mkdir(parents=True, exist_ok=True)
+
+
+    ext = ".jpg"
+    if image.content_type == "image/png":  ext = ".png"
+    elif image.content_type == "image/webp": ext = ".webp"
+    dest = img_dir / f"{scene_id}{ext}"
+    with open(dest, "wb") as f:
+        f.write(content)
+    log.info(f"[AddScene] Saved new scene image: {dest}")
+
+
+    scenes_config = job.get("scenes_config", [])
+    scenes_config.append(new_scene)
+    job["scenes_config"]  = scenes_config
+    job["total_scenes"]   = len(scenes_config)
+    job["status"] = "running"
+    job["message"] = "Generazione nuova scena in corso…"
+    _save_job(job_id)
+
+
+    background_tasks.add_task(run_redo_scene, job_id=job_id, scene_id=scene_id)
+    return {"job_id": job_id, "scene_id": scene_id, "status": "running"}
+
+
+
+
+@app.delete("/jobs/{job_id}/scenes/{scene_id}")
+async def delete_scene(job_id: str, background_tasks: BackgroundTasks):
+    """Removes a scene from the job and re-assembles, in place."""
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+
+
+    if not _acquire_job_lock(job_id, "delete scene"):
+        lock = _job_lock_status(job_id)
+        raise HTTPException(status_code=409, detail=f"Job is currently being modified ({lock.get('operation')})")
+
+
+    scenes_config = job.get("scenes_config", [])
+    scenes_config = [s for s in scenes_config if s.get("scene_id") != scene_id]
+    job["scenes_config"] = scenes_config
+    job["total_scenes"]  = len(scenes_config)
+    job["status"] = "running"
+    job["message"] = "Riassemblaggio dopo rimozione scena…"
+    _save_job(job_id)
+
+
+    background_tasks.add_task(run_reassemble_only, job_id=job_id)
+    return {"job_id": job_id, "status": "running"}
+
+
+
+
+async def _rework_gate(job_id: str, scene_ids: list, force: bool = False):
+    """2026-10-09 (stage 4): the ONE check every paid rework entry point calls
+    before taking the job lock. Limits live in rework_policy. If a limit is
+    hit: the job gets a needs_operator flag, the operator is notified ONCE,
+    and the request is refused with 429. force=True is the operator's
+    explicit decision: budget is reset (and recorded) and the rework goes on."""
+    job = JOBS[job_id]
+    if force:
+        _rwp.reset_budget(job, "forzato dall'operatore")
+        _save_job(job_id)
+        return
+    res = _rwp.evaluate(job, scene_ids)
+    if res["allowed"]:
+        return
+    reason = "; ".join(res["reasons"])
+    if _rwp.flag(job, reason, "rework_cap"):
+        _save_job(job_id)
+        try:
+            await _notify_operator(
+                job_id, "Rework cap",
+                subject=f"Rework bloccato: {job.get('property_name') or job_id}",
+                body_html=f"<p>Rework fermato dal tetto di sicurezza: {reason}.</p>"
+                          f"<p>Job {job_id}. Decide l'operatore: reset del budget o chiusura cosi' com'e'.</p>",
+                push_message=f"Rework bloccato ({reason}) - serve l'operatore",
+                tags=["warning"],
+            )
+        except Exception as e:
+            log.warning(f"[Job {job_id}] Rework-cap notification failed (non-fatal): {e}")
+    raise HTTPException(
+        status_code=429,
+        detail=f"Rework bloccato: {reason}. Serve una decisione dell'operatore "
+               f"(POST /jobs/{job_id}/rework-budget/reset oppure force_rework=1).")
+
+
+async def _rework_after(job_id: str, failed_ids: list):
+    """After a batch rework: scenes whose regeneration failed silently kept
+    their OLD clip. The job must not look like a clean success."""
+    job = JOBS.get(job_id)
+    if not job:
+        return
+    if not failed_ids:
+        if job.pop("rework_failed_scenes", None) is not None:
+            _save_job(job_id)
+        return
+    job["rework_failed_scenes"] = list(failed_ids)
+    reason = ("Rework incompleto: rigenerazione fallita per " + ", ".join(failed_ids)
+              + " (resta la versione precedente)")
+    if _rwp.flag(job, reason, "rework_failed"):
+        _save_job(job_id)
+        try:
+            await _notify_operator(
+                job_id, "Rework failed",
+                subject=f"Rework incompleto: {job.get('property_name') or job_id}",
+                body_html=f"<p>{reason}.</p><p>Job {job_id}.</p>",
+                push_message=reason, tags=["warning"],
+            )
+        except Exception as e:
+            log.warning(f"[Job {job_id}] Rework-failed notification failed (non-fatal): {e}")
+    else:
+        _save_job(job_id)
+
+
+@app.post("/jobs/{job_id}/rework-budget/reset")
+async def reset_rework_budget(job_id: str, note: str = Form("")):
+    """Operator action: fresh rework budget for this job and clears needs_operator."""
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    _rwp.reset_budget(JOBS[job_id], note)
+    _save_job(job_id)
+    return {"job_id": job_id, "rework_counts": {}, "rework_rounds": 0, "needs_operator": None}
+
+
+def _redo_deps(job_id: str):
+    """The real outside world for scene_rework.redo_scenes (tests inject fakes)."""
+    import types as _types
+    from voice_generation import generate_speech as _gen_speech
+
+    def progress(pct, message):
+        JOBS[job_id].update({"status": "running", "progress": pct, "message": message})
+        _save_job(job_id)
+        log.info(f"[Job {job_id}] {pct}% — {message}")
+
+    def audio_seconds(path):
+        try:
+            from pydub import AudioSegment
+            return len(AudioSegment.from_file(path)) / 1000.0
+        except Exception as e:
+            log.warning(f"[Job {job_id}] Could not measure audio {path}: {e}")
+            return None
+
+    def enhance(src, dst):
+        from image_enhance import enhance_image
+        return enhance_image(src, dst, True, True)
+
+    def generate_video(*args, **kwargs):
+        from video_generation import generate_video_single
+        return generate_video_single(*args, **kwargs)
+
+    return _types.SimpleNamespace(
+        generate_speech=_gen_speech, audio_seconds=audio_seconds, enhance=enhance,
+        generate_video=generate_video, to_thread=asyncio.to_thread,
+        save=lambda: _save_job(job_id), progress=progress, log=log,
+    )
+
+
+async def _run_redo(job_id: str, scene_ids: list, *, video: bool, strict: bool,
+                    policy: bool, label: str):
+    """2026-10-22 (backlog 75, architecture discipline): the ONE runner behind
+    every rework entry point. The per-scene work (voiceover, clip length,
+    photo, clip, scene status) is scene_rework.redo_scenes; this adds what only
+    the server can do: rework budget bookkeeping (policy), cost record, the
+    single reassembly, the failure notice and the job lock.
+      run_redo_scene       video=True  strict=True  policy=False  (a scene being ADDED)
+      run_redo_scenes_batch video=True  strict=False policy=True   (QC redo + "Rifai")
+      run_redo_audio_only  video=False strict=False policy=True   (voice only, no video cost)
+    """
+    try:
+        job = JOBS[job_id]
+        job_dir = JOBS_DIR / job_id
+        if policy:
+            if video:
+                _rwp.count(job, scene_ids)
+            _rwp.begin(job, scene_ids, "video" if video else "audio")
+            _save_job(job_id)
+
+        result = await _sr.redo_scenes(job, job_dir, scene_ids, _redo_deps(job_id),
+                                       video=video, strict=strict, label=label)
+        _sr.record_rework_cost(job, result["redone"], job.get("model_tier", "premium"), video, job_dir=job_dir)
+        _save_job(job_id)
+
+        await run_reassemble_only(job_id)
+        if policy:
+            _rwp.end(JOBS[job_id])
+            _save_job(job_id)
+            if video:
+                await _rework_after(job_id, result["failed"])
+
+    except Exception as e:
+        log.error(f"[Job {job_id}] redo (video={video}) failed: {e}", exc_info=True)
+        JOBS[job_id].update({"status": "failed", "message": f"Errore: {str(e)[:200]}"})
+        _save_job(job_id)
+    finally:
+        try:
+            if _rwp.end(JOBS.get(job_id)):
+                _save_job(job_id)
+        except Exception:
+            pass
+        _release_job_lock(job_id)
+
+
+async def run_redo_scene(job_id: str, scene_id: str):
+    """Regenerates ONE scene in place (used when a scene is added), then
+    reassembles the whole job. Thin wrapper: see _run_redo()."""
+    await _run_redo(job_id, [scene_id], video=True, strict=True, policy=False, label="Rework")
+
+
+
+
+async def _send_partner_webhook(job_id: str, event: str):
+    """
+    Backlog item 48 (Relinx): notifies a partner's callback_url when a job
+    reaches a state they care about. No-op for any job without a
+    callback_url -- every manual/URL-scraped job never has one, so this is
+    safe to call unconditionally from shared completion/failure paths.
+    Best-effort: never raises, a failed or slow webhook must never break
+    the assembly pipeline that calls this.
+
+    Signing is deliberately optional for now -- if WEBHOOK_SIGNING_SECRET
+    is not set in .env, sends unsigned (logs a warning) rather than
+    inventing a scheme Relinx hasn't confirmed how to verify yet.
+
+    video_url currently points at the existing /jobs/{id}/download
+    endpoint, which is protected by UI_ACCESS_KEY -- NOT actually
+    downloadable by an external partner yet. A dedicated, partner-key
+    authenticated download endpoint under /v1/ is still needed before
+    this is real for Relinx (see backlog item 48 "not yet built").
+    """
+    job = JOBS.get(job_id)
+    if not job or not job.get("callback_url"):
+        return
+    try:
+        import requests, hmac, hashlib, json as _json
+        payload = {
+            "id": job_id,
+            "external_ref": job.get("external_ref"),
+            "status": event,
+        }
+        if event == "completed":
+            payload["video_url"] = f"https://api.propertyvideostudioai.com/v1/videos/{job_id}/download"
+
+        body = _json.dumps(payload)
+        headers = {"Content-Type": "application/json"}
+        secret = os.getenv("WEBHOOK_SIGNING_SECRET", "")
+        if secret:
+            signature = hmac.new(secret.encode(), body.encode(), hashlib.sha256).hexdigest()
+            headers["X-Signature"] = signature
+        else:
+            log.warning(f"[Job {job_id}] WEBHOOK_SIGNING_SECRET not set -- sending unsigned webhook")
+
+        def _post():
+            return requests.post(job["callback_url"], data=body, headers=headers, timeout=10)
+
+        resp = await asyncio.to_thread(_post)
+        cb_url = job["callback_url"]
+        log.info(f"[Job {job_id}] Partner webhook ({event}) sent to {cb_url}: HTTP {resp.status_code}")
+    except Exception as e:
+        log.warning(f"[Job {job_id}] Partner webhook ({event}) failed (non-fatal): {e}")
+
+
+async def _notify_operator(job_id: str, event: str, subject: str, body_html: str,
+                            push_message: str, priority: str = "default", tags: list = None):
+    try:
+        import maintenance_scheduler
+        result = await asyncio.to_thread(
+            maintenance_scheduler.send_notification,
+            subject, body_html, push_message=push_message, priority=priority, tags=tags,
+        )
+        if result["email"] or result["push"]:
+            log.info(f"[Job {job_id}] {event} alert sent (email={result['email']}, push={result['push']})")
+        else:
+            log.warning(f"[Job {job_id}] {event} alert NOT sent on either channel")
+    except Exception as e:
+        log.warning(f"[Job {job_id}] {event} alert failed (non-fatal): {e}")
+
+
+async def _send_new_partner_job_alert(job_id: str):
+    """
+    Backlog item 48: alerts the operator by email when a new job arrives
+    from a CRM partner, so there's no need to poll the job list manually.
+    Reuses communication.py's generic send_custom_email() -- NOT
+    maintenance_scheduler.send_maintenance_alert(), whose cooldown logic
+    exists to suppress repeated maintenance errors, the wrong semantics
+    for "alert me on every new job". Reuses the SAME recipient list as
+    maintenance alerts (load_alert_emails()) rather than a separate
+    config mechanism. Best-effort: never raises, a failed alert email
+    must not break job creation.
+    """
+    job = JOBS.get(job_id)
+    if not job:
+        return
+    try:
+        import maintenance_scheduler
+        subject = f"Nuovo job da {job.get('source', 'partner')}: {job.get('property_name', 'Property')}"
+        body_html = (
+            f"<p>E arrivato un nuovo job da {job.get('source', 'partner')}.</p>"
+            f"<p><b>Immobile:</b> {job.get('property_name', 'Property')}<br>"
+            f"<b>External ref:</b> {job.get('external_ref', 'N/A')}<br>"
+            f"<b>Job ID:</b> {job_id}</p>"
+            f"<p>Apri l'app per rivedere scene e narrazione prima di generare il video.</p>"
+        )
+        push_message = f"{job.get('property_name', 'Property')} - in attesa di revisione"
+        result = await asyncio.to_thread(maintenance_scheduler.send_notification, subject, body_html,
+                                          push_message=push_message, tags=["inbox_tray"])
+        if result["email"] or result["push"]:
+            log.info(f"[Job {job_id}] New-job alert sent (email={result['email']}, push={result['push']})")
+        else:
+            log.warning(f"[Job {job_id}] New-job alert NOT sent on either channel")
+    except Exception as e:
+        log.warning(f"[Job {job_id}] New-job alert failed (non-fatal): {e}")
+
+
+async def run_reassemble_only(job_id: str):
+    """Reassembles the final video from whatever clips currently exist for
+    this job's scenes_config, in order. Does not regenerate anything —
+    pure assembly step, using each scene's stable scene_id to find its clip.
+    """
+    def update(status, progress, message):
+        JOBS[job_id].update({"status": status, "progress": progress, "message": message})
+        _save_job(job_id)
+        log.info(f"[Job {job_id}] {progress}% — {message}")
+
+
+    try:
+        job = JOBS[job_id]
+        job_dir = JOBS_DIR / job_id
+        scenes_config = job.get("scenes_config", [])
+
+
+        update("running", 85, "Riassemblaggio video finale…")
+
+
+        clip_paths  = []
+        audio_paths = []
+        for scene_idx, scene in enumerate(scenes_config):
+            sid = scene.get("scene_id")
+            clip_path  = job_dir / "clips" / f"{sid}.mp4"
+            audio_path = job_dir / "audio" / f"{sid}.mp3"
+
+
+            # FALLBACK: some jobs predate the scene_id architecture and
+            # only have legacy scene_NNN.mp4 / scene_NNN.mp3 files. If the
+            # scene_id-named file isn't found, fall back to the legacy
+            # index-based name — and self-heal by copying it to the new
+            # scene_id name, so this fallback is never needed again for
+            # this job on future reassembly calls.
+            if not clip_path.exists():
+                legacy_clip = job_dir / "clips" / f"scene_{scene_idx:03d}.mp4"
+                if legacy_clip.exists():
+                    shutil.copy2(str(legacy_clip), str(clip_path))
+                    log.info(f"[Job {job_id}] Migrated legacy clip scene_{scene_idx:03d}.mp4 → {sid}.mp4")
+
+
+            if not audio_path.exists():
+                legacy_audio = job_dir / "audio" / f"scene_{scene_idx:03d}.mp3"
+                if legacy_audio.exists():
+                    shutil.copy2(str(legacy_audio), str(audio_path))
+                    log.info(f"[Job {job_id}] Migrated legacy audio scene_{scene_idx:03d}.mp3 → {sid}.mp3")
+
+
+            if not clip_path.exists():
+                log.warning(f"[Job {job_id}] Missing clip for scene {sid} (index {scene_idx}) — skipping from assembly")
+                continue
+            clip_paths.append(str(clip_path))
+            audio_paths.append(str(audio_path) if audio_path.exists() else None)
+
+
+        if not clip_paths:
+            raise RuntimeError("Nessuna clip disponibile per l'assemblaggio")
+
+
+        # 2026-10-23 (Patch J, backlog 82): anchor-driven timeline. Only when the job carries one, every scene has its clip
+        # (a missing clip would shift the targets) and the scene count is the one the timeline was calculated for.
+        _targets = None
+        _tl = job.get("timeline")
+        if _tl and _tl.get("mode") == "anchored":
+            _t = _tl.get("targets") or []
+            if len(_t) == len(scenes_config) == len(clip_paths):
+                _targets = [float(x) for x in _t]
+                log.info(f"[Job {job_id}] Anchor-driven timeline: clip targets {_targets}")
+            else:
+                log.warning(f"[Job {job_id}] Anchor-driven timeline NOT applied: {len(_t)} targets, {len(scenes_config)} scenes, "
+                            f"{len(clip_paths)} clips -> normal assembly")
+
+        output_path = str(job_dir / f"{job.get('property_name','Property').replace(' ','_')}_final.mp4")
+        # 2026-07-22 (backlog item 7): resolve this job's client logo, if
+        # any, from the shared agency record -- reads job["agency_id"]
+        # (already set at creation, see backlog item 39), no separate
+        # per-job logo field needed.
+        _logo_path = None
+        _job_agency_id = job.get("agency_id")
+        if _job_agency_id:
+            _agency = cost_model.get_agency(_job_agency_id)
+            if _agency and _agency.get("logo_path") and os.path.exists(_agency["logo_path"]):
+                _logo_path = _agency["logo_path"]
+        from video_assembly import assemble_property_video
+        ok = await asyncio.to_thread(
+            assemble_property_video,
+            scenes_config=scenes_config,
+            video_clip_paths=clip_paths,
+            audio_paths=audio_paths,
+            image_paths=clip_paths,
+            output_path=output_path,
+            property_name=job.get("property_name", "Property"),
+            transition_style=job.get("transition_style", "fade"),
+            output_format=job.get("output_format", "landscape"),
+            logo_path=_logo_path,
+            show_captions=job.get("show_captions", False),  # 2026-10-08: default OFF
+            scene_target_secs=_targets,   # 2026-10-23 (Patch J): None for every job without an anchor-driven timeline
+        )
+        if not ok:
+            raise RuntimeError("Assemblaggio fallito")
+
+
+        # Apply narration audio if this job has a single continuous
+        # narration track — this is what makes "narration changed but
+        # video durations unchanged" work correctly: reassembly still
+        # runs and picks up the LATEST narration file every time.
+        narration_path = job.get("narration_path")
+        if narration_path and os.path.exists(narration_path):
+            update("running", 95, "Applying narration audio…")
+            await asyncio.to_thread(_overlay_narration_audio, output_path, narration_path, job.get("transition_style", "fade"))
+            log.info(f"[Job {job_id}] Narration audio applied: {narration_path}")
+
+
+        job["output_path"] = output_path
+        job["awaiting_scenes"] = []  # 2026-10-08: clear QC-wait data once the job is finished (was never cleared, left stale on done jobs)
+        update("done", 100, "Video pronto per il download")
+        _warm_previews(job_id, include_final=True)   # 2026-10-27: light copies ready before anybody opens them
+        # 2026-10-02: webhook "completed" spostato su /jobs/{id}/release
+
+
+    except Exception as e:
+        log.error(f"[Job {job_id}] reassembly failed: {e}", exc_info=True)
+        JOBS[job_id].update({"status": "failed", "message": f"Errore assemblaggio: {str(e)[:200]}"})
+        _save_job(job_id)
+        await _send_partner_webhook(job_id, "failed")
+    finally:
+        _release_job_lock(job_id)
+
+
+@app.post("/jobs/{job_id}/release")
+async def release_job(job_id: str):
+    """2026-10-02: operatore conferma che il video e pronto -- per ogni job;
+    per uno Relinx, questo e il momento in cui parte il webhook al partner."""
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+    if job["status"] != "done":
+        raise HTTPException(status_code=400, detail=f"Job not ready to release (status: {job['status']})")
+    if job.get("released"):
+        raise HTTPException(status_code=400, detail="Job already released")
+    job["released"] = True
+    _save_job(job_id)
+    if job.get("source") == "relinx":
+        await _send_partner_webhook(job_id, "completed")
+    return {"job_id": job_id, "released": True, "partner_notified": job.get("source") == "relinx"}
+
+
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Batch redo (NEW SOLID JOB MODEL) — multiple scenes, one locked operation,
+# one reassembly. Replaces the legacy /rework endpoint below for the main
+# "Genera video" button's rework path (2026-07-16 migration). Until 2026-10-22
+# this duplicated run_redo_scene's per-scene steps; all three redo runners now
+# share ONE engine (scene_rework.redo_scenes via _run_redo).
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@app.post("/jobs/{job_id}/scenes/redo-audio-only")
+async def redo_audio_only(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    scene_ids: str = Form(...),
+):
+    """2026-07-23: regenerates ONLY the TTS audio for the given scenes,
+    reusing their existing video clips untouched -- no Luma/Veo cost at
+    all, just the cheap ElevenLabs charge. Built for fixing or testing
+    audio timing (e.g. the lead/trail buffer) without paying to
+    regenerate video that was already fine."""
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+
+    if job.get("status") not in ("done", "failed", "awaiting_approval"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job must be completed before an audio-only rework (current status: {job.get('status')})"
+        )
+
+    try:
+        ids = json.loads(scene_ids)
+        if not isinstance(ids, list):
+            raise ValueError("scene_ids must be a JSON array")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid payload: {e}")
+
+    if not _acquire_job_lock(job_id, f"audio-only redo {len(ids)} scene(s)"):
+        lock = _job_lock_status(job_id)
+        raise HTTPException(
+            status_code=409,
+            detail=f"Job is currently being modified ({lock.get('operation')}) -- please wait and try again."
+        )
+
+    job["status"]  = "running"
+    job["message"] = f"Rework audio: rigenerazione di {len(ids)} scena/e in corso..."
+    _save_job(job_id)
+
+    background_tasks.add_task(run_redo_audio_only, job_id=job_id, scene_ids=ids)
+    return {"job_id": job_id, "status": "running", "scenes_to_redo": ids}
+
+
+@app.post("/jobs/{job_id}/scenes/redo-batch")
+async def redo_scenes_batch(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    scenes_config: str = Form(...),
+    redo_scene_ids: str = Form(...),
+    new_images: list[UploadFile] = File(default=[]),
+    new_image_indices: list[str] = Form(default=[]),
+    transition_style: str = Form(None),
+    force_rework: str = Form(None),
+):
+    """
+    Batches multiple scene redos into ONE locked operation with ONE final
+    reassembly, and persists the FULL current scene list (captions/voiceover
+    for every scene, not just the ones being redone) -- matching what the
+    legacy endpoint did, but in-place in this job's own directory with no
+    sibling job ever created.
+    """
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+
+    # SAFETY NET (2026-07-17 fix): the frontend has a known pre-existing gap
+    # where a freshly-created draft job's currentJobStatus can incorrectly
+    # read as not-draft, misrouting a narration-triggered duration change
+    # into a rework call for a job that was never actually generated. The
+    # legacy /rework endpoint always caught this with a clear error; this
+    # endpoint didn't, and would silently misprocess a draft job as if it
+    # were a rework. Restoring that same guard here.
+    if job.get("status") not in ("done", "failed", "awaiting_approval"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job must be completed before rework (current status: {job.get('status')})"
+        )
+
+    try:
+        new_scenes_config = json.loads(scenes_config)
+        redo_ids = json.loads(redo_scene_ids)
+        if not isinstance(new_scenes_config, list) or not isinstance(redo_ids, list):
+            raise ValueError("scenes_config and redo_scene_ids must be JSON arrays")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid payload: {e}")
+
+    if not _acquire_job_lock(job_id, f"batch redo {len(redo_ids)} scene(s)"):
+        lock = _job_lock_status(job_id)
+        raise HTTPException(
+            status_code=409,
+            detail=f"Job is currently being modified ({lock.get('operation')}) — please wait and try again."
+        )
+
+    try:
+        new_scenes_config = _ensure_scene_ids(new_scenes_config)
+
+        job_dir = JOBS_DIR / job_id
+        img_dir = job_dir / "images"
+        img_dir.mkdir(parents=True, exist_ok=True)
+
+        for upload, idx_str in zip(new_images, new_image_indices):
+            try:
+                idx = int(idx_str)
+                if idx >= len(new_scenes_config):
+                    continue
+                content = await upload.read()
+                if len(content) > 20 * 1024 * 1024:
+                    log.warning(f"[BatchRedo] New image at index {idx} exceeds 20MB, skipping")
+                    continue
+                if not _validate_image_bytes(content):
+                    log.warning(f"[BatchRedo] New image at index {idx} failed validation, skipping")
+                    continue
+                # 2026-07-17: normalize to the job's already-established
+                # output_format -- inherit, don't re-vote, since this job
+                # already has generated scenes locked to a specific canvas
+                content = _normalize_photo_to_format(content, job.get("output_format", "landscape"))
+                new_scene_id = new_scenes_config[idx]["scene_id"]
+                ext = Path(upload.filename).suffix.lower() or ".jpg"
+                if upload.content_type == "image/jpeg": ext = ".jpg"
+                elif upload.content_type == "image/png":  ext = ".png"
+                elif upload.content_type == "image/webp": ext = ".webp"
+                dest = img_dir / f"{new_scene_id}{ext}"
+                with open(dest, "wb") as f:
+                    f.write(content)
+                if new_scene_id not in redo_ids:
+                    redo_ids.append(new_scene_id)
+            except Exception as e:
+                log.error(f"[BatchRedo] Failed to save new image at index {idx_str}: {e}")
+
+        valid_ids = {s.get("scene_id") for s in new_scenes_config}
+        redo_ids = [rid for rid in redo_ids if rid in valid_ids]
+        await _rework_gate(job_id, redo_ids, force=str(force_rework or "").strip().lower() in ("1", "true", "yes"))
+
+        if transition_style:
+            job["transition_style"] = transition_style
+
+        job["scenes_config"] = new_scenes_config
+        job["total_scenes"]  = len(new_scenes_config)
+        job["status"]  = "running"
+        job["message"] = f"Rework: rigenerazione di {len(redo_ids)} scena/e in corso…"
+        _save_job(job_id)
+    except Exception:
+        _release_job_lock(job_id)
+        raise
+
+    background_tasks.add_task(run_redo_scenes_batch, job_id=job_id, scene_ids=redo_ids)
+    return {"job_id": job_id, "status": "running", "scenes_to_redo": redo_ids}
+
+
+async def run_redo_scenes_batch(job_id: str, scene_ids: list):
+    """Regenerates MULTIPLE scenes in one locked operation, then reassembles
+    once at the end. See redo_scenes_batch() above for context. Thin wrapper:
+    see _run_redo()."""
+    await _run_redo(job_id, scene_ids, video=True, strict=False, policy=True, label="Rework")
+
+
+async def run_redo_audio_only(job_id: str, scene_ids: list):
+    """2026-07-23: regenerates ONLY the TTS audio for the given scenes, reusing
+    their EXISTING video clips untouched -- no Luma/Veo cost, just the cheap
+    ElevenLabs charge. Thin wrapper: see _run_redo() (2026-10-22)."""
+    await _run_redo(job_id, scene_ids, video=False, strict=False, policy=True, label="Rework audio")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LEGACY sibling-directory rework model — kept only for any old in-flight jobs.
+# Do not build new features on this. Use the endpoints above instead.
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+# 2026-07-21: the legacy /jobs/{id}/rework endpoint (sibling-directory
+# model) was removed here, along with run_rework() (see the end of this
+# file) -- confirmed via direct grep zero remaining callers in ui.html.
+# Fully superseded by /jobs/{id}/scenes/redo-batch.
+# ── Pipeline runner ────────────────────────────────────────────────────────────
+
+
+def _record_actual_cost(job_id, scenes_config, models_used, audio_chars,
+                        do_upscale, enable_vision_qc, model_tier):
+    """Single place that computes and stores a job's actual generation cost
+    (2026-10-09). Called when the pipeline pauses at the QC gate AND when it
+    finishes without one -- before this, only the second path recorded it."""
+    claude_cost_eur = JOBS[job_id].get("claude_usage", {}).get("cost_eur", 0.0)
+    from cost_tracker import calculate_actual_cost, format_cost_display
+    import clip_provenance
+    # 2026-10-26: price each clip by the model that REALLY made it (sidecar), not by the tier name
+    used_models = [clip_provenance.used_model_of(clip_provenance.clip_file_for_scene(JOBS_DIR / job_id, i, (sc or {}).get("scene_id")))
+                   for i, sc in enumerate(scenes_config or [])]
+    actual = calculate_actual_cost(
+        scenes_config, models_used, audio_chars,
+        do_upscale=do_upscale, do_vision_qc=enable_vision_qc,
+        model_tier=model_tier, claude_cost_eur=claude_cost_eur,
+        used_models=used_models,
+    )
+    JOBS[job_id]["cost_actual_raw"] = actual
+    JOBS[job_id]["cost_actual"] = format_cost_display(actual, previous_reworks=JOBS[job_id].get("reworks", []))
+
+
+async def run_pipeline(
+    job_id:           str,
+    job_dir:          Path,
+    image_paths:      list,
+    scenes_config:    list,
+    property_name:    str,
+    voice_id:         str,
+    do_lighting:      bool,
+    do_upscale:       bool,
+    transition_style: str  = "fade",
+    enable_vision_qc: bool = True,
+    do_video_upscale: bool = True,
+    model_tier:       str  = "standard",
+    lighting:         str  = "bright_natural",
+    intensity:        str  = DEFAULT_INTENSITY,
+    output_format:    str  = "landscape",  # 2026-07-27 URGENT FIX: was incorrectly job.get(...) with no local job variable
+    resume:           bool = False,  # 2026-10-08: reuse valid images/audio/clips already on disk
+):
+    def update(status, progress, message):
+        JOBS[job_id].update({"status": status, "progress": progress, "message": message})
+        log.info(f"[Job {job_id}] {progress}% — {message}")
+
+
+    # Store scenes_config for approval step
+    JOBS[job_id]["scenes_config"] = scenes_config
+
+
+    try:
+        update("running", 2, "Starting pipeline…")
+
+
+        from credit_monitor import check_and_alert
+        credit_status = check_and_alert(job_id=job_id, property_name=property_name)
+        JOBS[job_id]["credits"] = credit_status
+
+
+        enhanced_dir    = job_dir / "enhanced"
+        audio_dir       = job_dir / "audio"
+        video_clips_dir = job_dir / "clips"
+        for d in [enhanced_dir, audio_dir, video_clips_dir]:
+            d.mkdir(exist_ok=True)
+
+
+        n              = len(image_paths)
+        enhanced_paths = []
+        audio_paths    = []
+        video_clip_paths = []
+        scene_statuses = []
+        qc_results     = []
+        models_used    = []
+        audio_chars    = []
+
+
+        # ── Stage 1: Watermark removal (explicit per-scene, AI-driven) ────
+        # Only runs for scenes where the user explicitly checked the
+        # "remove watermark" toggle — never automatic. If removal fails,
+        # we fall back to the original image and flag it as a QC issue
+        # rather than silently using a possibly-botched result.
+        from watermark_removal import remove_watermark
+        watermark_qc_issues = []
+        working_image_paths = list(image_paths)  # may get swapped per-scene below
+
+
+        for i, scene in enumerate(scenes_config):
+            if not scene.get("remove_watermark"):
+                continue
+            update("running", int(2 + (i/n)*3), f"Rimozione watermark scena {i}…")
+            wm_out = str(enhanced_dir / f"scene_{i:03d}_dewatermarked.jpg")
+            if resume and _reusable_image(wm_out):
+                wm_result = {"ok": True}
+            else:
+                wm_result = await asyncio.to_thread(remove_watermark, image_paths[i], wm_out)
+            if wm_result.get("ok"):
+                working_image_paths[i] = wm_out
+                log.info(f"[Job {job_id}] Watermark removed for scene {i}")
+            else:
+                watermark_qc_issues.append(i)
+                log.warning(f"[Job {job_id}] Watermark removal failed for scene {i} — "
+                            f"using original image, flagged for QC review")
+
+
+        # ── Stage 2: Image enhancement ────────────────────────────────────
+        from image_enhance import enhance_image
+        for i, img_path in enumerate(working_image_paths):
+            update("running", int(5 + (i/n)*15), f"Enhancing image {i} of {n-1} (scene_{i:03d})…")
+            out    = str(enhanced_dir / f"scene_{i:03d}_enhanced.jpg")
+            # 2026-10-09: with do_lighting the final file is "<out>_lit.jpg" (image_enhance.py),
+            # not <out> itself, so the reuse check must look for it too
+            _prev = [out.replace(".jpg", "_lit.jpg"), out] if do_lighting else [out]
+            _prev_ok = next((c for c in _prev if _reusable_image(c)), None) if resume else None
+            if _prev_ok:
+                result = _prev_ok
+            else:
+                result = await asyncio.to_thread(enhance_image, img_path, out, do_lighting, do_upscale)
+            enhanced_paths.append(result)
+
+
+        # Surface any watermark removal failures as QC issues now that
+        # enhancement is done and qc_results exists to append into
+        for i in watermark_qc_issues:
+            qc_results.append({
+                "scene": i, "type": "watermark",
+                "verdict": "flag",
+                "issues": ["Rimozione watermark non riuscita — immagine originale usata, watermark ancora presente"],
+            })
+
+
+        # ── Stage 3: TTS audio + TTS QC → sets actual clip duration ──────
+        from voice_generation import generate_speech as generate_voice
+        from vision_analysis  import analyse_tts
+
+
+        actual_durations = []   # per scene — set from audio or user slider
+        # 2026-07-27: real bug -- a TTS failure here (e.g. an invalid
+        # voice ID) previously fell through to the exact same audio_paths
+        # None as a scene with NO voiceover text at all, silently, with
+        # no log warning and no way for the UI to distinguish "nothing to
+        # say" from "tried to generate audio and it failed" -- both
+        # showed as "skipped". This list tracks the real failures so both
+        # get labeled correctly and surfaced.
+        tts_failed_scenes = []
+
+
+        for i, (scene, img) in enumerate(zip(scenes_config, enhanced_paths)):
+            voiceover     = scene.get("voiceover", "").strip()
+            audio_out     = str(audio_dir / f"scene_{i:03d}.mp3")
+            user_duration = int(scene.get("duration", 10))
+            update("running", int(20 + (i/n)*15), f"Generating audio {i} of {n-1} (scene_{i:03d})…")
+
+
+            if voiceover:
+                if resume and _reusable_audio(audio_out):
+                    ok = True
+                else:
+                    ok = await asyncio.to_thread(
+                        generate_voice, voiceover, audio_out,
+                        voice_id=voice_id or None
+                    )
+                if ok:
+                    # TTS QC — also measures actual duration
+                    tts_qc = await asyncio.to_thread(analyse_tts, audio_out, voiceover)
+                    log.info(f"[Job {job_id}] TTS QC scene {i}: {tts_qc['verdict']}")
+
+
+                    if tts_qc["verdict"] == "reject":
+                        log.warning(f"[Job {job_id}] TTS rejected scene {i}: {tts_qc['issues']}")
+                        audio_paths.append(None)
+                        actual_durations.append(user_duration)
+                    else:
+                        audio_paths.append(audio_out)
+                        # Set clip duration = actual audio duration + 2s buffer
+                        # Snap to nearest valid duration, minimum 6s
+                        audio_secs   = tts_qc.get("duration_seconds", 0)
+                        if audio_secs > 0:
+                            # 2026-10-22: the rule lives in scene_rework (one definition,
+                            # also used by every rework): +2 s, even, min 6, max 20.
+                            snapped  = _sr.clip_seconds_for_audio(audio_secs, user_duration)
+                            log.info(
+                                f"[Job {job_id}] Scene {i}: audio={audio_secs:.1f}s "
+                                f"→ clip duration={snapped}s"
+                            )
+                            actual_durations.append(snapped)
+                        else:
+                            actual_durations.append(user_duration)
+
+
+                    qc_results.append({"scene": i, "type": "tts", **tts_qc})
+                else:
+                    log.warning(f"[Job {job_id}] TTS generation FAILED for scene {i} "
+                                f"(voiceover: {voiceover[:60]!r}) -- audio will be missing for this scene")
+                    tts_failed_scenes.append(i)
+                    audio_paths.append(None)
+                    actual_durations.append(user_duration)
+                audio_chars.append({"chars": len(voiceover)})
+            else:
+                audio_paths.append(None)
+                audio_chars.append({"chars": 0})
+                actual_durations.append(user_duration)
+
+
+        # ── Stage 3: Video generation + Vision QC ─────────────────────────
+        from video_generation  import generate_video_single
+        from vision_analysis   import analyse_output
+
+
+        flagged_scenes  = []
+        rejected_scenes = []
+
+
+        for i, (scene, img) in enumerate(zip(scenes_config, enhanced_paths)):
+            # Check for cancellation request between scenes
+            if JOBS.get(job_id, {}).get("cancel_requested"):
+                log.info(f"[Job {job_id}] Cancellation requested — stopping before scene {i}")
+                update("stopped", int(35 + (i/n)*40),
+                       f"Fermato dall'utente — {i} di {n} scene completate. "
+                       f"Puoi riassemblare con le scene già pronte, o riavviare la generazione.")
+                return
+
+
+            clip_out     = str(video_clips_dir / f"scene_{i:03d}.mp4")
+            # Use actual audio duration if available, fall back to user setting
+            duration     = actual_durations[i] if i < len(actual_durations) else int(scene.get("duration", 10))
+            caption      = scene.get("caption", "")
+            space_type   = scene.get("space_type",   "large")
+            pov_movement = scene.get("pov_movement", "walk_in_explore")
+            update("running", int(35 + (i/n)*40), f"Generating video clip {i} of {n-1} (scene_{i:03d}, {duration}s)…")
+
+
+            if resume and _reusable_clip(clip_out):
+                ok = True
+                log.info(f"[Job {job_id}] Resume: reusing existing clip for scene {i}")
+            else:
+                ok = await asyncio.to_thread(
+                    generate_video_single,
+                    img, duration, clip_out,
+                    space_type=space_type,
+                    pov_movement=pov_movement,
+                    lighting=lighting,
+                    intensity=intensity,
+                    model_tier=model_tier,
+                    output_format=output_format,  # 2026-07-27 URGENT FIX: use the local parameter, not a nonexistent job dict
+                    do_video_upscale=do_video_upscale,
+                    **camera_plan.intent_kwargs(scene),   # 2026-10-27: {} unless PVS_ANCHOR=1 and the scene has a safe anchor
+                )
+
+
+            model = model_tier
+
+
+            models_used.append(model)
+            video_clip_paths.append(clip_out if ok else None)
+
+
+            # Vision QC
+            video_verdict = "pass"
+            if ok and enable_vision_qc and Path(clip_out).exists():
+                update("running", int(35 + (i/n)*40), f"QC check on clip {i} of {n-1} (scene_{i:03d})…")
+                original_img = image_paths[i]
+                vid_qc = await asyncio.to_thread(analyse_output, clip_out, original_img, space_type)
+                video_verdict = vid_qc["verdict"]
+                # Patch X (2026-10-25): the clip QC is billed by Claude: its REAL usage is added to the job's claude_usage (which
+                # _record_actual_cost / cost_model already read), never estimated and never left in the process-wide counter
+                import listing_scraper as _ls_qc
+                JOBS[job_id]["claude_usage"] = _ls_qc.merge_claude_usage(JOBS[job_id].get("claude_usage"), vid_qc.get("claude_usage"))
+                log.info(f"[Job {job_id}] Video QC scene {i}: {video_verdict}")
+                qc_results.append({"scene": i, "type": "video", **vid_qc})
+
+
+                if video_verdict == "reject":
+                    rejected_scenes.append(i)
+                elif video_verdict == "flag":
+                    flagged_scenes.append(i)
+            elif not ok:
+                video_verdict = "failed"
+
+
+            scene_statuses.append({
+                "index":           i,
+                "caption":         caption,
+                "space_type":      space_type,
+                "pov_movement":    pov_movement,
+                "duration_used":   duration,
+                "video":           "ok" if ok else "failed",
+                "audio":           "ok" if audio_paths[i] else ("failed" if i in tts_failed_scenes else "skipped"),
+                "qc_verdict":      video_verdict,
+            })
+
+
+        JOBS[job_id]["scenes"]     = scene_statuses
+        JOBS[job_id]["qc_results"] = qc_results
+        if tts_failed_scenes:
+            JOBS[job_id]["tts_failures"] = tts_failed_scenes
+        _save_job(job_id)
+
+
+        # ── QC gate: pause if any scenes rejected or flagged ──────────────
+        if rejected_scenes or flagged_scenes:
+            awaiting = {
+                "rejected": rejected_scenes,
+                "flagged":  flagged_scenes,
+            }
+            JOBS[job_id]["awaiting_scenes"]  = awaiting
+            JOBS[job_id]["video_clip_paths"] = video_clip_paths
+            JOBS[job_id]["audio_paths"]      = audio_paths
+            JOBS[job_id]["enhanced_paths"]   = enhanced_paths
+            update(
+                "awaiting_approval", 75,
+                f"QC review needed: {len(rejected_scenes)} rejected, "
+                f"{len(flagged_scenes)} flagged. Please review before assembly."
+            )
+            _save_job(job_id)
+            _warm_previews(job_id)   # 2026-10-27: the QC screen opens the clip previews: build them now, in the background
+            prop_name = JOBS[job_id].get("property_name", "Property")
+            await _notify_operator(
+                job_id, "QC flagged",
+                subject=f"QC da rivedere: {prop_name}",
+                body_html=(f"<p><b>{prop_name}</b> - QC ha fermato il job: "
+                           f"{len(rejected_scenes)} scene rifiutate, {len(flagged_scenes)} segnalate.</p>"
+                           f"<p>Job ID: {job_id}</p>"),
+                push_message=f"{prop_name} - QC: {len(rejected_scenes)} rifiutate, {len(flagged_scenes)} segnalate",
+                tags=["warning"],
+            )
+            # 2026-10-09: the money is already spent here (clips generated). Cost used to be
+            # recorded only on the no-QC-flag path, so every job that paused here and was then
+            # approved ended 'done' with NO cost recorded at all.
+            try:
+                _record_actual_cost(job_id, scenes_config, models_used, audio_chars,
+                                    do_upscale, enable_vision_qc, model_tier)
+                _save_job(job_id)
+            except Exception as e:
+                log.warning(f"[Job {job_id}] Could not record cost at the QC gate (non-fatal): {e}")
+            return   # pipeline pauses here — resumed by /approve endpoint
+
+
+        # ── Stage 4: Assembly ─────────────────────────────────────────────
+        JOBS[job_id]["video_clip_paths"] = video_clip_paths
+        JOBS[job_id]["audio_paths"]      = audio_paths
+        JOBS[job_id]["enhanced_paths"]   = enhanced_paths
+        # 2026-07-21 consolidation: run_assembly() and run_reassemble_only()
+        # were near-duplicate "assemble the final video" implementations --
+        # this one lacked the legacy-clip self-heal fallback the other had.
+        # Now uses the single, more robust implementation everywhere.
+        await run_reassemble_only(job_id)
+
+
+        # ── Actual cost ───────────────────────────────────────────────────
+        # 2026-07-21 fix (architecture assessment item 31): fold in real
+        # Claude API cost for scraped jobs (stored on the job dict at
+        # creation time by create_job_from_url) -- was captured but never
+        # actually counted in the displayed total. Absent/0 for manual
+        # jobs, which never call Claude at all.
+        _record_actual_cost(job_id, scenes_config, models_used, audio_chars,
+                            do_upscale, enable_vision_qc, model_tier)
+        _save_job(job_id)
+
+
+        check_and_alert(job_id=job_id, property_name=property_name)
+
+
+    except Exception as e:
+        log.error(f"[Job {job_id}] Pipeline failed: {e}", exc_info=True)
+        JOBS[job_id].update({"status": "failed", "message": f"Error: {str(e)}"})
+        _save_job(job_id)
+
+
+
+
+# ── Assembly: run_assembly() removed 2026-07-21 -- was a near-duplicate of
+# run_reassemble_only() (see that function, above run_pipeline), which is
+# now the single implementation used by run_pipeline, /approve, and every
+# redo/rework path. Removed rather than left unused, per an explicit
+# decision to keep the architecture simple -- no duplicate paths unless
+# strictly necessary, and this one wasn't. Rollback: git revert to commit
+# af826498c462729d0b5b1e31c8a3661ad5145b62 if this causes a real problem.
+
+
+# ── Rework runner: run_rework() removed 2026-07-21 -- along with the
+# /jobs/{id}/rework endpoint that called it (confirmed via direct grep:
+# zero references anywhere in ui.html). This was the legacy sibling-
+# directory rework model, fully superseded by run_redo_scenes_batch()
+# and the single-directory job model. Removed rather than left unused,
+# per the same architecture-discipline decision as run_assembly()'s
+# removal earlier the same day.

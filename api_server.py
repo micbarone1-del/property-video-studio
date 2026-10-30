@@ -2017,6 +2017,20 @@ def _partner_status_payload(public_id: str, job: dict, download_id: str) -> dict
     return result
 
 
+# 2026-10-30: the partner limit "videos per agency per rolling 24h" was the number 2 written in the endpoint. It is now ONE setting
+# (PVS_PARTNER_AGENCY_LIMIT_24H in .env, default 2 = the value agreed with Relinx). Raised for the GIAL pilot, to be put back at launch;
+# it is to become a dashboard parameter (backlog: autonomous queue + dashboard). A missing, non-numeric or < 1 value gives the default.
+PARTNER_AGENCY_LIMIT_24H_DEFAULT = 2
+
+
+def partner_agency_limit_24h() -> int:
+    try:
+        v = int(os.getenv("PVS_PARTNER_AGENCY_LIMIT_24H", "").strip())
+    except ValueError:
+        return PARTNER_AGENCY_LIMIT_24H_DEFAULT
+    return v if v >= 1 else PARTNER_AGENCY_LIMIT_24H_DEFAULT
+
+
 @app.post("/v1/videos")
 async def create_video_from_partner(
     payload: RelinxVideoRequest,
@@ -2090,12 +2104,13 @@ async def create_video_from_partner(
          and datetime.fromisoformat(j["created_at"]) > cutoff),
         key=lambda j: j["created_at"],
     )
-    if len(recent_relinx_jobs) >= 2:
+    _limit = partner_agency_limit_24h()
+    if len(recent_relinx_jobs) >= _limit:
         oldest = datetime.fromisoformat(recent_relinx_jobs[0]["created_at"])
         retry_after_secs = max(1, int((oldest + timedelta(hours=24) - now).total_seconds()))
         raise HTTPException(
             status_code=429,
-            detail=f"Rate limit exceeded: max 2 videos per agency per 24h (agency: {payload.agency_name})",
+            detail=f"Rate limit exceeded: max {_limit} videos per agency per 24h (agency: {payload.agency_name})",
             headers={"Retry-After": str(retry_after_secs)},
         )
 

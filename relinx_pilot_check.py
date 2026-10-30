@@ -182,7 +182,7 @@ def main(argv):
                     len(photos), len(imgs), len(binfo["banded"]), binfo["mode"],
                     " first %s" % (Image.open(d / "000.jpg").size,) if photos else ""), flush=True)
                 payload = {"external_ref": "T-%s-%s" % (L["id"], uuid.uuid4().hex[:6]), "agency_name": "GIAL IMMOBILIARE",
-                           "agency_external_id": "gial-test-" + L["id"], "property_name": L["name"], "description": L["description"],
+                           "agency_external_id": "gial-test", "property_name": L["name"], "description": L["description"],
                            "features": [], "photos": photos, "voice_id": "", "callback_url": local + "/hook"}
             r = requests.post(base + "/v1/videos", headers=auth, json=payload, timeout=60)
             if r.status_code != 200:

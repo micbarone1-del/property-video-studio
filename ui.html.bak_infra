@@ -1,0 +1,3587 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Property Video Studio</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --ink:    #1a1a1a;
+    --paper:  #f7f5f0;
+    --card:   #ffffff;
+    --rule:   #e2ddd6;
+    --accent: #c8a96e;
+    --green:  #3d5a47;
+    --muted:  #7a7469;
+    --danger: #c0392b;
+    --warn:   #e67e22;
+    --ok:     #2d6a4f;
+    --radius: 6px;
+    --serif:  'Georgia','Times New Roman',serif;
+    --sans:   'Inter','Helvetica Neue',Arial,sans-serif;
+  }
+  body { font-family: var(--sans); background: var(--paper); color: var(--ink); min-height:100vh; }
+
+
+  /* Header */
+  header { background:var(--green); color:#fff; padding:18px 40px; display:flex; align-items:center; gap:16px; border-bottom:3px solid var(--accent); }
+  header h1 { font-family:var(--serif); font-size:1.5rem; font-weight:normal; }
+  header .sub { font-size:.75rem; opacity:.6; letter-spacing:.1em; text-transform:uppercase; }
+  #credit-dot { width:9px; height:9px; border-radius:50%; background:var(--accent); margin-left:auto; cursor:pointer; flex-shrink:0; }
+  #credit-dot.low { background:#e74c3c; animation:pulse 1.5s infinite; }
+  /* System diagnostics button/modal removed — fully superseded by the Maintenance panel (job stats folded in there instead) */
+  @keyframes pulse { 0%,100%{opacity:1}50%{opacity:.35} }
+
+
+  /* Layout */
+  main { max-width:940px; margin:0 auto; padding:32px 24px 80px; }
+  section + section { margin-top:32px; }
+  .sec-label { font-size:.67rem; letter-spacing:.14em; text-transform:uppercase; color:var(--muted); margin-bottom:10px; display:flex; align-items:center; gap:10px; }
+  .sec-label::after { content:''; flex:1; height:1px; background:var(--rule); }
+  .card { background:var(--card); border:1px solid var(--rule); border-radius:var(--radius); padding:20px; }
+
+
+  /* Alerts */
+  .alert { padding:11px 14px; border-radius:var(--radius); font-size:.83rem; margin-top:10px; }
+  .alert-error  { background:#fdf0ef; border:1px solid #f5c6c2; color:var(--danger); }
+  .alert-warn   { background:#fef9ef; border:1px solid #f5dfa2; color:var(--warn); }
+  .alert-ok     { background:#edf7f1; border:1px solid #b7dfca; color:var(--ok); }
+  .empty-state  { text-align:center; padding:28px; color:var(--muted); font-size:.83rem; }
+
+
+  /* Login screen */
+  #login-screen { display:none; position:fixed; inset:0; background:var(--green); z-index:1000; align-items:center; justify-content:center; flex-direction:column; gap:24px; }
+  #login-screen.visible { display:flex; }
+  .login-box { background:#fff; border-radius:12px; padding:40px; width:360px; max-width:90vw; text-align:center; box-shadow:0 20px 60px rgba(0,0,0,.3); }
+  .login-logo { font-family:var(--serif); font-size:1.6rem; color:var(--green); margin-bottom:6px; }
+  .login-sub { font-size:.75rem; color:var(--muted); letter-spacing:.1em; text-transform:uppercase; margin-bottom:28px; }
+  .login-input { width:100%; padding:12px 14px; border:2px solid var(--rule); border-radius:var(--radius); font-size:1rem; font-family:var(--sans); text-align:center; letter-spacing:.15em; transition:border-color .2s; margin-bottom:14px; }
+  .login-input:focus { outline:none; border-color:var(--accent); }
+  .login-btn { width:100%; background:var(--green); color:#fff; border:none; border-radius:var(--radius); padding:13px; font-size:.95rem; font-family:var(--sans); cursor:pointer; font-weight:600; transition:background .15s; }
+  .login-btn:hover { background:#2e4535; }
+  .login-error { color:var(--danger); font-size:.82rem; margin-top:8px; min-height:20px; }
+
+
+
+
+  #credit-banner { display:none; margin-bottom:20px; border:1px solid #f5c6c2; border-radius:var(--radius); overflow:hidden; }
+  .cb-head { background:#c0392b; color:#fff; padding:8px 14px; font-size:.8rem; font-weight:600; }
+  .cb-body { background:#fdf0ef; padding:11px 14px; display:flex; flex-direction:column; gap:7px; }
+  .cb-row  { display:flex; align-items:center; justify-content:space-between; font-size:.82rem; }
+  .cb-low  { color:#c0392b; }
+  .cb-topup { font-size:.76rem; color:var(--green); border:1px solid var(--green); border-radius:3px; padding:2px 8px; text-decoration:none; }
+  .cb-time  { font-size:.7rem; color:var(--muted); margin-top:2px; }
+
+
+  /* Cost panel */
+  #cost-panel { display:none; background:#f0f4f2; border:1px solid #c8ddd2; border-radius:var(--radius); padding:14px 16px; margin-top:14px; }
+  .cost-title { font-size:.75rem; letter-spacing:.08em; text-transform:uppercase; color:var(--green); font-weight:600; margin-bottom:8px; }
+  .cost-row   { display:flex; justify-content:space-between; font-size:.8rem; color:var(--muted); padding:2px 0; }
+  .cost-total { display:flex; justify-content:space-between; font-size:.9rem; font-weight:600; color:var(--ink); border-top:1px solid #c8ddd2; margin-top:6px; padding-top:6px; }
+  .cost-type  { font-size:.68rem; color:var(--muted); font-weight:normal; }
+
+
+  /* Form */
+  label { display:block; font-size:.79rem; color:var(--muted); margin-bottom:4px; }
+  input[type=text], textarea, select { width:100%; padding:8px 11px; border:1px solid var(--rule); border-radius:var(--radius); font-family:var(--sans); font-size:.88rem; background:var(--paper); color:var(--ink); transition:border-color .15s; }
+  input:focus, textarea:focus, select:focus { outline:none; border-color:var(--accent); }
+  textarea { resize:vertical; min-height:62px; }
+  .row2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  @media(max-width:560px){ .row2 { grid-template-columns:1fr; } }
+  .toggle-row { display:flex; align-items:center; gap:10px; margin-top:12px; font-size:.83rem; flex-wrap:wrap; }
+  .toggle { position:relative; width:36px; height:20px; flex-shrink:0; }
+  .toggle input { opacity:0; width:0; height:0; }
+  .tog-sl { position:absolute; inset:0; background:var(--rule); border-radius:20px; cursor:pointer; transition:background .2s; }
+  .tog-sl::before { content:''; position:absolute; width:14px; height:14px; left:3px; top:3px; background:#fff; border-radius:50%; transition:transform .2s; }
+  .toggle input:checked + .tog-sl { background:var(--green); }
+  .toggle input:checked + .tog-sl::before { transform:translateX(16px); }
+
+
+  /* Drop zone */
+  #drop-zone { border:2px dashed var(--rule); border-radius:var(--radius); padding:32px 24px; text-align:center; cursor:pointer; transition:border-color .2s,background .2s; position:relative; }
+  #drop-zone.drag-over { border-color:var(--accent); background:#fdf8ef; }
+  #drop-zone input[type=file] { position:absolute; inset:0; opacity:0; cursor:pointer; }
+  #drop-zone .di { font-size:1.8rem; margin-bottom:6px; }
+  #drop-zone p { font-size:.83rem; color:var(--muted); }
+  #drop-zone strong { color:var(--green); }
+
+
+  /* Scene cards */
+  #scenes-container { display:flex; flex-direction:column; gap:14px; }
+  .scene-card { background:var(--card); border:1px solid var(--rule); border-radius:var(--radius); overflow:hidden; }
+  .scene-card.analysing { border-color:var(--accent); }
+  .scene-card.qc-fail   { border-color:var(--danger); }
+  .scene-card.qc-flag   { border-color:var(--warn); }
+  .scene-card.qc-pass   { border-color:var(--ok); }
+  .sc-head { display:flex; align-items:center; gap:12px; padding:10px 14px; background:#fafaf8; border-bottom:1px solid var(--rule); }
+  .sc-thumb { width:66px; height:44px; object-fit:cover; border-radius:3px; border:1px solid var(--rule); flex-shrink:0; }
+  .sc-num  { font-size:.67rem; letter-spacing:.1em; text-transform:uppercase; color:var(--muted); }
+  .sc-name { font-size:.8rem; }
+  .sc-ai-badge { font-size:.65rem; padding:2px 6px; border-radius:10px; margin-left:6px; background:#edf7f1; color:var(--ok); }
+  .sc-ai-badge.analysing { background:#fef9ef; color:var(--warn); }
+  .sc-remove { margin-left:auto; background:none; border:none; color:var(--muted); cursor:pointer; font-size:1rem; padding:4px 8px; }
+  .sc-remove:hover { color:var(--danger); }
+  .sc-fields { padding:14px; display:flex; flex-direction:column; gap:10px; }
+  .sc-row3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; }
+  @media(max-width:680px){ .sc-row3 { grid-template-columns:1fr; } }
+
+
+  /* Voiceover word count */
+  .vo-wrap { position:relative; }
+  .vo-counter { position:absolute; bottom:6px; right:8px; font-size:.7rem; color:var(--muted); pointer-events:none; }
+  .vo-counter.warn { color:var(--warn); font-weight:600; }
+  .vo-counter.over { color:var(--danger); font-weight:600; }
+  .vo-hint { font-size:.72rem; color:var(--muted); margin-top:3px; }
+  .vo-hint.over { color:var(--danger); }
+
+
+  /* Duration */
+  .dur-row { display:flex; align-items:center; gap:8px; font-size:.8rem; }
+  .dur-row input[type=range] { flex:1; accent-color:var(--green); }
+  .dur-val { min-width:26px; text-align:right; color:var(--green); font-weight:600; }
+
+
+  /* QC review panel */
+  #qc-section { display:none; }
+  .qc-card { border-radius:var(--radius); overflow:hidden; border:1px solid var(--warn); }
+  .qc-head { background:var(--warn); color:#fff; padding:10px 16px; font-size:.85rem; font-weight:600; }
+  .qc-body { background:#fef9ef; padding:14px; }
+  .qc-scene { display:flex; align-items:flex-start; gap:12px; padding:10px 0; border-bottom:1px solid #f5dfa2; }
+  .qc-scene:last-child { border-bottom:none; }
+  .qc-thumb { width:80px; height:54px; object-fit:cover; border-radius:3px; flex-shrink:0; }
+  .qc-info  { flex:1; }
+  .qc-title { font-weight:600; font-size:.84rem; }
+  .qc-verdict { font-size:.75rem; padding:2px 7px; border-radius:10px; margin-left:8px; }
+  .qc-verdict.reject { background:#fdf0ef; color:var(--danger); }
+  .qc-verdict.flag   { background:#fef9ef; color:var(--warn); }
+  .qc-issues { font-size:.78rem; color:var(--muted); margin-top:4px; }
+  .qc-actions { display:flex; gap:8px; margin-top:8px; }
+  .btn-approve { background:var(--ok); color:#fff; border:none; border-radius:var(--radius); padding:5px 14px; font-size:.78rem; cursor:pointer; }
+  .btn-redo    { background:none; border:1px solid var(--danger); color:var(--danger); border-radius:var(--radius); padding:5px 14px; font-size:.78rem; cursor:pointer; }
+  .btn-assemble { background:var(--green); color:#fff; border:none; border-radius:var(--radius); padding:11px 28px; font-size:.9rem; cursor:pointer; margin-top:14px; }
+  .btn-assemble:disabled { opacity:.5; cursor:not-allowed; }
+
+
+  /* Buttons */
+  .btn-primary { background:var(--green); color:#fff; border:none; border-radius:var(--radius); padding:12px 30px; font-size:.92rem; font-family:var(--sans); cursor:pointer; transition:background .15s,transform .1s; }
+  .btn-primary:hover:not(:disabled) { background:#2e4535; }
+  .btn-primary:disabled { opacity:.5; cursor:not-allowed; }
+
+
+  /* Progress */
+  #progress-section { display:none; }
+  .prog-wrap { height:8px; background:var(--rule); border-radius:8px; overflow:hidden; margin:12px 0 6px; }
+  .prog-fill { height:100%; background:linear-gradient(90deg,var(--green),var(--accent)); border-radius:8px; transition:width .4s ease; width:0%; }
+  .prog-msg  { font-size:.8rem; color:var(--muted); }
+  .prog-pct  { font-size:1.05rem; font-weight:600; color:var(--green); }
+  #scene-progress { margin-top:10px; display:flex; flex-direction:column; gap:4px; }
+  .sp-row  { display:flex; align-items:center; gap:8px; font-size:.76rem; color:var(--muted); }
+  .sp-dot  { width:7px; height:7px; border-radius:50%; background:var(--rule); flex-shrink:0; }
+  .sp-dot.running { background:var(--accent); animation:pulse 1s infinite; }
+  .sp-dot.ok      { background:var(--ok); }
+  .sp-dot.failed  { background:var(--danger); }
+  .sp-dot.flag    { background:var(--warn); }
+
+
+  /* Drag and drop scene reorder */
+  .scene-card { cursor:default; transition:opacity .2s, transform .15s; }
+  .scene-card.dragging { opacity:.4; transform:scale(.98); }
+  .scene-card.drag-over-top { border-top:3px solid var(--accent); }
+  .scene-card.drag-over-bottom { border-bottom:3px solid var(--accent); }
+  .sc-drag-handle { cursor:grab; padding:4px 8px; color:var(--muted); font-size:1rem; user-select:none; }
+  .sc-drag-handle:active { cursor:grabbing; }
+  .sc-drag-handle:hover { color:var(--accent); }
+
+
+  /* Add scene button */
+  .btn-add-scene { display:flex; align-items:center; gap:8px; background:none; border:2px dashed var(--rule); border-radius:var(--radius); padding:12px 20px; color:var(--muted); font-size:.83rem; cursor:pointer; width:100%; justify-content:center; margin-top:10px; transition:border-color .2s, color .2s; }
+  .btn-add-scene:hover { border-color:var(--accent); color:var(--accent); }
+
+
+  /* Video library */
+  .lib-toggle { background:none; border:1px solid var(--rule); border-radius:var(--radius); padding:7px 16px; font-size:.8rem; color:var(--muted); cursor:pointer; display:flex; align-items:center; gap:8px; width:100%; }
+  .lib-toggle:hover { border-color:var(--accent); color:var(--accent); }
+  #library-list { margin-top:12px; display:none; flex-direction:column; gap:8px; }
+  #library-list.open { display:flex; }
+  .lib-job { background:var(--card); border:1px solid var(--rule); border-radius:var(--radius); padding:12px 16px; display:flex; align-items:center; gap:14px; transition:border-color .15s; }
+  .lib-job.lib-done { border-left:3px solid var(--ok); }
+  .lib-job.lib-failed { border-left:3px solid var(--danger); opacity:.6; }
+  .lib-job.lib-running { border-left:3px solid var(--accent); }
+  .lib-job.lib-review { border-left:3px solid var(--warn); }
+  .lib-job.lib-queued { border-left:3px solid var(--rule); opacity:.7; }
+  .lib-info { flex:1; min-width:0; }
+  .lib-name { font-weight:600; font-size:.85rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .lib-meta { font-size:.73rem; color:var(--muted); margin-top:2px; }
+  .lib-actions { display:flex; gap:6px; flex-shrink:0; }
+  .lib-btn { font-size:.73rem; padding:4px 10px; border-radius:var(--radius); border:1px solid var(--rule); background:none; cursor:pointer; white-space:nowrap; }
+  .lib-btn:hover { border-color:var(--accent); color:var(--accent); }
+  .lib-btn.lib-primary { background:var(--green); color:#fff; border-color:var(--green); }
+  .lib-empty { text-align:center; padding:16px; color:var(--muted); font-size:.83rem; }
+
+
+  /* Result */
+  #result-section { display:none; }
+  #video-preview  { width:100%; border-radius:var(--radius); border:1px solid var(--rule); background:#000; }
+  .btn-download   { display:inline-flex; align-items:center; gap:8px; background:var(--accent); color:var(--ink); border:none; border-radius:var(--radius); padding:10px 24px; font-size:.88rem; cursor:pointer; font-weight:600; margin-top:12px; text-decoration:none; }
+
+
+
+  /* Maintenance modal */
+  #maint-modal { display:none; position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:100; align-items:center; justify-content:center; }
+  #maint-modal.open { display:flex; }
+  .maint-box { background:#fff; border-radius:var(--radius); padding:24px; width:480px; max-width:95vw; max-height:85vh; overflow-y:auto; }
+  .maint-title { font-size:1rem; font-weight:600; margin-bottom:14px; display:flex; justify-content:space-between; }
+  .maint-close { background:none; border:none; font-size:1.2rem; cursor:pointer; color:var(--muted); }
+  .maint-row   { display:flex; justify-content:space-between; font-size:.83rem; padding:5px 0; border-bottom:1px solid var(--rule); }
+  .maint-row:last-child { border-bottom:none; }
+  .maint-ok   { color:var(--ok); }
+  .maint-warn { color:var(--warn); }
+  .maint-red  { color:var(--danger); font-weight:600; }
+  .maint-loading { color:var(--muted); font-size:.83rem; padding:12px 0; text-align:center; }
+  .maint-banner  { display:none; padding:8px 12px; border-radius:var(--radius); font-size:.82rem; font-weight:600; margin-bottom:10px; border:1px solid; }
+  #maint-btn { background:none; border:1px solid rgba(255,255,255,.4); color:#fff; border-radius:var(--radius); padding:5px 12px; font-size:.75rem; cursor:pointer; margin-left:8px; position:relative; }
+  #maint-btn:hover { background:rgba(255,255,255,.1); }
+  #maint-btn.red::after { content:''; position:absolute; top:-3px; right:-3px; width:8px; height:8px; border-radius:50%; background:#e74c3c; }
+  .maint-emails-section { margin-top:14px; padding-top:12px; border-top:1px solid var(--rule); }
+  .maint-emails-label { font-size:.75rem; color:var(--muted); margin-bottom:6px; }
+  #maint-emails-input { width:100%; padding:7px 10px; border:1px solid var(--rule); border-radius:var(--radius); font-size:.83rem; font-family:var(--sans); margin-bottom:8px; }
+  .maint-save-btn { background:var(--green); color:#fff; border:none; border-radius:var(--radius); padding:7px 16px; font-size:.8rem; cursor:pointer; }
+  .maint-save-btn:hover { background:#2e4535; }
+  .maint-saved-msg { font-size:.75rem; color:var(--ok); margin-left:10px; }
+</style>
+</head>
+<body>
+
+
+<!-- Login screen -->
+<div id="login-screen" class="visible">
+  <div class="login-box">
+    <div class="login-logo">Property Video Studio</div>
+    <div class="login-sub">Real Estate · AI Video Generator</div>
+    <input type="password" class="login-input" id="login-key" placeholder="Chiave di accesso"
+      autocomplete="current-password"
+      onkeydown="if(event.key==='Enter')submitLogin()" />
+    <button class="login-btn" onclick="submitLogin()">Accedi</button>
+    <div class="login-error" id="login-error"></div>
+  </div>
+</div>
+
+
+<header>
+  <h1>Property Video Studio</h1>
+  <span class="sub">Real Estate · AI Video Generator</span>
+  <button id="maint-btn" onclick="openMaintenance()">🔧 Maintenance</button>
+  <button id="pause-gen-btn" onclick="toggleGenerationPause()" style="display:none">⏸ Pause generation</button>
+  <button id="cost-btn" onclick="openCostReport()">💰 Costi</button>
+  <span id="credit-dot" onclick="document.getElementById('credit-banner').scrollIntoView({behavior:'smooth'})" title="Credit status"></span>
+</header>
+
+
+<!-- Maintenance modal -->
+<div id="maint-modal">
+  <div class="maint-box">
+    <div class="maint-title">
+      System Maintenance
+      <button class="maint-close" onclick="closeMaintenance()">✕</button>
+    </div>
+    <div id="maint-banner" class="maint-banner">Loading status…</div>
+    <div id="maint-content"><div class="maint-loading">Loading…</div></div>
+    <div class="maint-emails-section">
+      <div class="maint-emails-label">Alert emails (comma-separated):</div>
+      <input id="maint-emails-input" type="text" placeholder="es. mario@esempio.com, luca@esempio.com" />
+      <button class="maint-save-btn" onclick="saveMaintenanceEmails()">Save</button>
+      <span id="maint-saved-msg" class="maint-saved-msg" style="display:none">Saved ✓</span>
+    </div>
+  </div>
+</div>
+
+
+<main>
+
+
+  <!-- Video library -->
+  <section id="library-section" style="margin-bottom:20px">
+    <button class="lib-toggle" onclick="toggleLibrary()">
+      <span>📂</span>
+      <span>Cronologia video</span>
+      <span id="lib-count" style="margin-left:auto;font-size:.7rem;background:var(--rule);padding:2px 7px;border-radius:10px"></span>
+    </button>
+    <div id="library-list"></div>
+    <div id="library-legend" style="display:none;font-size:.7rem;color:var(--muted);margin-top:8px;display:flex;gap:14px;flex-wrap:wrap">
+      <span>✓ <span style="color:var(--ok)">Completato</span></span>
+      <span>⏳ <span style="color:var(--accent)">In corso</span></span>
+      <span>⚠ <span style="color:var(--warn)">Revisione QC richiesta</span></span>
+      <span>✗ <span style="color:var(--danger)">Fallito</span></span>
+    </div>
+  </section>
+
+
+  <!-- Automated URL workflow (Phase 1: human-in-the-loop) -->
+  <section id="url-workflow-section" style="margin-bottom:20px">
+    <p class="sec-label">Automated workflow — start from a listing URL</p>
+    <div class="card">
+      <div class="row2">
+        <div>
+          <label>Listing URL</label>
+          <input type="text" id="url-workflow-input" placeholder="https://www.immobiliare.it/annunci/...">
+        </div>
+        <div>
+          <label>Property name (optional)</label>
+          <input type="text" id="url-workflow-property-name" placeholder="Lasciare vuoto per usare l'indirizzo dell'annuncio">
+        </div>
+      </div>
+      <div class="row2" style="margin-top:12px">
+        <div>
+          <label>Cliente <span style="color:var(--muted)">(opzionale, assegnabile anche dopo)</span></label>
+          <select id="url-workflow-agency-select" onchange="handleAgencySelectChange(this)">
+            <option value="">— Nessun cliente —</option>
+          </select>
+        </div>
+        <div>
+          <label>&nbsp;</label>
+          <div class="toggle-row" style="margin-top:8px">
+            <label class="toggle"><input type="checkbox" id="url-workflow-premium" /><span class="tog-sl"></span></label>
+            <span>Premium (video ~1 min) <span style="color:var(--muted);font-size:.75rem">(URL scrape, sequenza estesa)</span></span>
+          </div>
+        </div>
+      </div>
+      <div style="margin-top:12px;display:flex;align-items:center;gap:12px">
+        <button class="btn-primary" onclick="startFromUrl()" id="url-workflow-btn">🔗 Avvia da URL</button>
+        <span id="url-workflow-status" style="font-size:.8rem;color:var(--muted)"></span>
+      </div>
+      <div style="font-size:.72rem;color:var(--muted);margin-top:8px">
+        Estrae foto, genera narrazione e popola le scene automaticamente. Rivedi tutto qui sotto prima di premere "Genera Video" — questo passaggio NON avvia ancora la generazione reale.
+      </div>
+    </div>
+  </section>
+
+
+  <!-- Credit banner -->
+  <div id="generation-pause-banner" style="display:none;margin-bottom:16px;padding:12px 16px;border:1px solid #f5c6c2;border-radius:var(--radius);background:#fdf0ef;color:var(--danger);font-size:.85rem">
+    <strong>🔒 Nuove generazioni in pausa</strong> — <span id="generation-pause-message"></span>
+  </div>
+
+  <div id="cost-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1000;overflow:auto;padding:30px">
+    <div style="max-width:900px;margin:0 auto;background:var(--card);border-radius:var(--radius);padding:24px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
+        <h2 style="margin:0;font-size:1.1rem">💰 Report costi e profitto</h2>
+        <button onclick="document.getElementById('cost-modal').style.display='none'" style="background:none;border:none;font-size:1.3rem;cursor:pointer">✕</button>
+      </div>
+      <div id="cost-content">Caricamento…</div>
+    </div>
+  </div>
+
+  <div id="credit-banner">
+    <div class="cb-head">⚠ Low Credits — action needed</div>
+    <div class="cb-body" id="credit-body"></div>
+  </div>
+
+
+  <!-- ① Property details -->
+  <section>
+    <p class="sec-label">Property details</p>
+    <div class="card">
+      <div class="row2">
+        <div>
+          <label>Property name / reference</label>
+          <input type="text" id="prop-name" placeholder="e.g. Via Roma 14" autocomplete="off" />
+        </div>
+        <div>
+          <label>Narration voice</label>
+          <div style="display:flex;gap:6px">
+            <select id="tts-language" style="display:none" onchange="onTtsLanguageChange(this.value)" autocomplete="off"></select>
+            <select id="voice-id" autocomplete="off"><option value="">Voce predefinita</option></select>
+          </div>
+        </div>
+      </div>
+      <div class="row2" style="margin-top:14px">
+        <div>
+          <label>Cliente <span style="color:var(--muted)">(opzionale, assegnabile anche dopo)</span></label>
+          <select id="job-agency-select" onchange="handleAgencySelectChange(this)">
+            <option value="">— Nessun cliente —</option>
+          </select>
+          <input type="file" id="inline-logo-file-input" accept="image/png" style="display:none" onchange="handleInlineLogoSelected(this)" />
+        </div>
+      </div>
+      <div class="toggle-row" style="margin-top:14px">
+        <label class="toggle"><input type="checkbox" id="do-lighting" checked /><span class="tog-sl"></span></label>
+        <span>Lighting correction</span>
+        <span style="margin-left:16px"></span>
+        <label class="toggle"><input type="checkbox" id="do-upscale" checked /><span class="tog-sl"></span></label>
+        <span>AI image upscaling</span>
+        <span style="margin-left:16px"></span>
+        <label class="toggle"><input type="checkbox" id="do-video-upscale" /><span class="tog-sl"></span></label>
+        <span>Video upscale 1080p <span style="color:var(--muted);font-size:.75rem">(Eco tier only)</span></span>
+        <span style="margin-left:16px"></span>
+        <label class="toggle"><input type="checkbox" id="do-vision-qc" checked /><span class="tog-sl"></span></label>
+        <span>Auto QC</span>
+      </div>
+      <div class="row2" style="margin-top:14px">
+        <div>
+          <label>Video quality tier</label>
+          <select id="model-tier" onchange="onTierChange(this.value)" autocomplete="off">
+            <option value="eco">Eco — Lyra 2.0 + upscale (~€0.05/clip) · budget</option>
+            <option value="luma" selected>⭐ Luma Ray 3.2 (~€1.10/clip da 5s) · consigliato — 3D reale, no warping</option>
+            <option value="premium">Veo 3.1 Fast (~€0.74/8s clip)</option>
+            <option value="premium_veo">Veo 3.1 Standard (~€1.47/8s clip) · no circular wipe</option>
+          </select>
+        </div>
+        <div>
+          <label>Transition between clips</label>
+          <select id="transition-style" autocomplete="off">
+            <option value="fade">Fade to black</option>
+            <option value="fade_white">Fade to white</option>
+            <option value="slide_left">Slide left</option>
+            <option value="slide_right">Slide right</option>
+            <option value="cut">Hard cut</option>
+          </select>
+        </div>
+        <div>
+          <label>Output format</label>
+          <select id="output-format" autocomplete="off">
+            <option value="" selected>Auto (rileva da foto)</option>
+            <option value="landscape">Landscape (16:9)</option>
+            <option value="portrait">Portrait (9:16)</option>
+          </select>
+        </div>
+      </div>
+      <div class="row2" style="margin-top:12px">
+        <div>
+          <label>Lighting condition <span style="color:var(--muted);font-size:.75rem">(applies to full video)</span></label>
+          <select id="lighting" autocomplete="off">
+            <option value="bright_natural" selected>Bright natural daylight</option>
+            <option value="golden_hour">Golden hour — warm afternoon</option>
+            <option value="overcast_soft">Overcast — soft diffused light</option>
+            <option value="evening_interior">Evening — interior lighting</option>
+            <option value="mixed_day">Mixed — daylight + interior</option>
+          </select>
+        </div>
+        <div>
+          <label>Motion intensity <span style="color:var(--muted);font-size:.75rem">(applies to full video)</span></label>
+          <select id="intensity" autocomplete="off">
+            <option value="very_slow" selected>Very slow — appreciating every detail</option>
+            <option value="natural_pace">Natural pace — comfortable walk</option>
+            <option value="energetic">Energetic — confident and purposeful</option>
+          </select>
+        </div>
+      </div>
+
+
+      <!-- NEW: Single continuous narration (decoupled from video timing) -->
+      <div id="narration-section" style="margin-top:16px;padding-top:16px;border-top:1px solid var(--rule)">
+        <label>Narrazione unica <span style="color:var(--muted);font-size:.75rem">(sostituisce il voiceover per scena — copia/incolla il testo dall'annuncio)</span></label>
+        <textarea id="narration-text" rows="4" style="width:100%;font-family:inherit;padding:8px;border:1px solid var(--rule);border-radius:6px"
+          placeholder="Scrivi qui la narrazione completa della proprietà…"></textarea>
+        <div style="display:flex;gap:10px;align-items:center;margin-top:8px;flex-wrap:wrap">
+          <button class="btn-primary" style="font-size:.8rem;padding:8px 16px" onclick="generateNarration()">🎙 Genera voiceover</button>
+          <span id="narration-status" style="font-size:.82rem"></span>
+        </div>
+        <div id="narration-result" style="display:none;margin-top:10px;padding:10px;border-radius:6px"></div>
+      </div>
+
+
+      <!-- Cost estimate panel -->
+      <div id="cost-panel">
+        <div class="cost-title">Cost estimate <span class="cost-type" id="cost-type">(estimate)</span></div>
+        <div id="cost-lines"></div>
+        <div class="cost-total"><span>Total</span><span id="cost-total">—</span></div>
+      </div>
+    </div>
+  </section>
+
+
+  <!-- ② Upload -->
+  <section>
+    <p class="sec-label">Photos</p>
+    <div id="drop-zone">
+      <input type="file" id="file-input" accept="image/*" multiple />
+      <div class="di">🏠</div>
+      <p><strong>Drop photos here</strong> or click to browse</p>
+      <p style="margin-top:5px">JPEG · PNG · WebP · multiple files supported · max 20MB each</p>
+    </div>
+  </section>
+
+
+  <!-- ③ Scenes -->
+  <section>
+    <p class="sec-label">Scenes — one per photo</p>
+    <div id="editing-job-indicator" style="display:none;font-size:.78rem;color:var(--muted);margin-bottom:10px;padding:6px 12px;background:var(--paper);border-radius:6px;font-family:monospace"></div>
+    <div id="scenes-container">
+      <div class="empty-state">Upload photos above to configure scenes</div>
+    </div>
+    <input type="file" id="add-scene-input" accept="image/*" multiple style="display:none"
+      onchange="addMoreScenes(this)" />
+    <button class="btn-add-scene" id="add-scene-btn" style="display:none"
+      onclick="document.getElementById('add-scene-input').click()">
+      + Aggiungi scena
+    </button>
+  </section>
+
+
+  <!-- ④ Generate -->
+  <section>
+    <button class="btn-primary" id="generate-btn" disabled>Generate Video</button>
+    <button class="lib-btn" id="audio-only-rework-btn" style="margin-left:8px" onclick="submitAudioOnlyRework()" title="Rigenera solo il voiceover delle scene selezionate per il rework, riusando il video esistente -- nessun costo Luma/Veo">&#128264; Rigenera solo audio</button>
+    <div id="error-msg"></div>
+  </section>
+
+
+  <!-- 2026-10-15 (Patch A): red warning when clips were made on fal.ai instead of the direct Luma API -->
+  <div id="fal-warning" role="alert" style="display:none;font-size:.86rem;font-weight:600;color:#fff;background:var(--danger);margin:12px 0;padding:12px 14px;border-radius:var(--radius)"></div>
+
+  <!-- ⑤ Progress -->
+  <section id="progress-section">
+    <p class="sec-label">Progress</p>
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:baseline">
+        <span class="prog-msg" id="prog-msg">Starting…</span>
+        <span class="prog-pct" id="prog-pct">0%</span>
+      </div>
+      <div class="prog-wrap"><div class="prog-fill" id="prog-bar"></div></div>
+      <div id="scene-progress"></div>
+      <button id="stop-job-btn" onclick="stopCurrentJob()"
+        style="margin-top:12px;background:none;border:1px solid var(--danger);color:var(--danger);border-radius:var(--radius);padding:7px 16px;font-size:.78rem;cursor:pointer">
+        ⏹ Ferma questo job
+      </button>
+    </div>
+  </section>
+
+
+  <!-- ⑥ QC Review -->
+  <section id="qc-section">
+    <p class="sec-label">Quality control review</p>
+    <div class="qc-card">
+      <div class="qc-head">⚠ Review required before assembly — approve or redo each flagged scene</div>
+      <div class="qc-body" id="qc-body"></div>
+    </div>
+    <button class="btn-assemble" id="assemble-btn" disabled onclick="submitApproval()">
+      Assemble Video →
+    </button>
+  </section>
+
+
+  <!-- ⑦ Result -->
+  <section id="result-section">
+    <p class="sec-label">Your video is ready</p>
+    <div class="card">
+      <div id="job-id-display" style="font-size:.78rem;color:var(--muted);margin-bottom:10px;padding:8px 12px;background:var(--paper);border-radius:var(--radius);font-family:monospace"></div>
+      <div id="tts-failure-warning" style="display:none;font-size:.8rem;color:var(--danger);margin-bottom:10px;padding:8px 12px;background:var(--paper);border:1px solid var(--danger);border-radius:var(--radius)"></div>
+      <video id="video-preview" controls preload="metadata"></video>
+      <div id="video-preview-info" style="font-size:.72rem;color:var(--muted);margin:6px 0"></div>
+      <a class="btn-download" id="download-link" href="#">⬇ Download MP4</a>
+      <div id="actual-cost" style="margin-top:16px"></div>
+      <div style="margin-top:16px;display:flex;gap:10px;flex-wrap:wrap">
+        <button class="btn-primary" style="font-size:.8rem;padding:8px 16px;background:var(--muted)"
+          onclick="bulkRework()">↺ Rigenera tutte le scene</button>
+      </div>
+    </div>
+  </section>
+
+
+</main>
+
+
+<script>
+const API_BASE = '';
+
+
+// ── Video library ──────────────────────────────────────────────────────────────
+let libraryOpen = false;
+
+
+async function stopCurrentJob() {
+  const jobToStop = activeJobId || currentJobId;
+  if (!jobToStop) return;
+  if (!confirm(`Fermare il job ${jobToStop}? I clip già generati verranno mantenuti, quelli in corso verranno persi.`)) return;
+
+
+  try {
+    const res = await authFetch(`/jobs/${jobToStop}/stop`, { method: 'POST' });
+    const data = await res.json();
+    clearInterval(pollTimer);
+    showError(`Job ${jobToStop} fermato. ${data.message || ''}`);
+    progSec.style.display = 'none';
+    genBtn.disabled    = false;
+    genBtn.textContent = 'Genera video';
+  } catch(e) {
+    showError(`Errore nel fermare il job: ${e.message}`);
+  }
+}
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// NARRATION SYSTEM — single continuous voiceover, calculated BEFORE video
+// generation ever runs. Step A (cheap, TTS-only) always completes before
+// Step B (expensive, video generation) becomes meaningful.
+// ══════════════════════════════════════════════════════════════════════════════
+
+
+let narrationDistribution = null;  // holds the calculated result until confirmed
+let narrationExistsOnServer = false;  // server truth — persists across page loads/job reopens, unlike narrationDistribution which is session-local
+let durationChangedSceneIndices = new Set();  // scenes whose duration actually changed via narration redistribution
+// BUG FIXED: caption/space_type/pov_movement edits had NO equivalent tracking
+// at all - editing these directly (without a separate explicit "mark for
+// rework" action) produced zero signal, so pressing "Genera Video" saw no
+// pending changes, found narration existed, and silently did a cheap
+// reassembly instead - real edits were dropped without any indication.
+let contentChangedSceneIndices = new Set();  // scenes whose caption/space_type/pov_movement changed
+
+
+async function generateNarration(extraSecsNeeded = 0) {
+  const text = document.getElementById('narration-text').value.trim();
+  const statusEl = document.getElementById('narration-status');
+  const resultEl = document.getElementById('narration-result');
+
+
+  if (!text) {
+    statusEl.textContent = '⚠ Scrivi prima il testo della narrazione';
+    statusEl.style.color = 'var(--danger)';
+    return;
+  }
+  if (!files.length) {
+    statusEl.textContent = '⚠ Carica prima le foto delle scene';
+    statusEl.style.color = 'var(--danger)';
+    return;
+  }
+
+
+  // CORRECT FLOW: create the draft job on the first click; on any later
+  // click, RESYNC it instead of skipping the step entirely, so a scene
+  // added/removed after the draft was created is never silently ignored
+  // (2026-07-13 fix — this sync gap was why the cost panel and the
+  // narration duration distribution could disagree on scene count).
+  statusEl.textContent = '⏳ Preparazione scene (nessun costo)…';
+  statusEl.style.color = 'var(--muted)';
+  try {
+    console.log('[DEBUG generateNarration]', 'currentJobId=', currentJobId, 'currentJobStatus=', JSON.stringify(currentJobStatus));
+    const config = getScenesConfig();
+    const fd = new FormData();
+    files.forEach(f => fd.append('images', f));
+    fd.append('config', JSON.stringify(config));
+
+    if (!currentJobId) {
+      fd.append('property_name', document.getElementById('prop-name')?.value || 'Property');
+      fd.append('agency_id', document.getElementById('job-agency-select')?.value || '');
+      fd.append('model_tier', document.getElementById('model-tier').value);
+      fd.append('lighting', document.getElementById('lighting').value);
+      fd.append('intensity', document.getElementById('intensity').value);
+      fd.append('output_format', document.getElementById('output-format')?.value || '');
+      fd.append('start_generation', 'false');  // draft mode — no cost yet
+
+
+      const res = await authFetch(`${API_BASE}/jobs/`, { method: 'POST', body: fd });
+      if (!res.ok) {
+        let detail = `Errore ${res.status}`;
+        try { const e = await res.json(); detail = e.detail || detail; } catch(_) {}
+        throw new Error(detail);
+      }
+      const data = await res.json();
+      currentJobId = data.job_id;
+      currentJobStatus = 'draft';  // 2026-07-17 fix: was never set for a
+      // freshly-created job (only editJob() set it, for jobs loaded from
+      // the library) -- left null forever otherwise, which made
+      // `currentJobStatus !== 'draft'` incorrectly read true and misroute
+      // a brand-new job's narration-triggered duration change into a
+      // rework call instead of normal first-time generation.
+      completedScenes = [];  // no scenes generated yet — draft only
+      console.log(`Draft job created: ${currentJobId}`);
+    } else {
+      // 2026-10-03 fix: currentJobStatus is a browser-memory variable
+      // that can go stale -- confirmed live: it caused a real "Job is
+      // no longer in draft status" error when generating narration on
+      // an already-done job. Same fix pattern as the "Genera video"
+      // button's safety guard below: check the SERVER's current status
+      // fresh, never trust the in-memory flag alone.
+      let freshStatus = currentJobStatus;
+      try {
+        const jobRes = await authFetch(`${API_BASE}/jobs/${currentJobId}`);
+        if (jobRes.ok) {
+          const jobData = await jobRes.json();
+          renderFalWarning(jobData);
+          freshStatus = jobData.status;
+          currentJobStatus = freshStatus;
+        }
+      } catch(_) {}
+      if (freshStatus === 'draft') {
+        const res = await authFetch(`${API_BASE}/jobs/${currentJobId}/draft/resync`, { method: 'POST', body: fd });
+        if (!res.ok) {
+          let detail = `Errore ${res.status}`;
+          try { const e = await res.json(); detail = e.detail || detail; } catch(_) {}
+          throw new Error(detail);
+        }
+        console.log(`Draft job resynced: ${currentJobId}`);
+      }
+    }
+  } catch(e) {
+    statusEl.textContent = `✗ Errore preparazione scene: ${e.message}`;
+    statusEl.style.color = 'var(--danger)';
+    return;
+  }
+
+
+  statusEl.textContent = '⏳ Generazione voiceover in corso…';
+  statusEl.style.color = 'var(--muted)';
+  resultEl.style.display = 'none';
+
+
+  const fd = new FormData();
+  fd.append('narration_text', text);
+  fd.append('voice_id', document.getElementById('voice-id')?.value.trim() || '');
+  if (extraSecsNeeded > 0) fd.append('extra_secs_needed', String(extraSecsNeeded));
+
+
+  try {
+    const res = await authFetch(`${API_BASE}/jobs/${currentJobId}/narration`, { method: 'POST', body: fd });
+    if (!res.ok) {
+      let detail = `Errore ${res.status}`;
+      try { const e = await res.json(); detail = e.detail || detail; } catch(_) {}
+      throw new Error(detail);
+    }
+    const data = await res.json();
+    narrationDistribution = data;
+
+
+    statusEl.textContent = `✓ Voiceover generato — ${data.narration_duration_secs}s, ${data.sentence_count} frasi`;
+    statusEl.style.color = 'var(--ok)';
+
+
+    renderNarrationResult(data);
+  } catch(e) {
+    statusEl.textContent = `✗ ${e.message}`;
+    statusEl.style.color = 'var(--danger)';
+  }
+}
+
+
+function renderNarrationResult(data) {
+  const resultEl = document.getElementById('narration-result');
+  resultEl.style.display = 'block';
+
+
+  const isProblem = data.needs_extension || data.too_short || data.too_long;
+  resultEl.style.background = isProblem ? '#fdf0ef' : '#edf7f1';
+  resultEl.style.border = `1px solid ${isProblem ? '#f5c6c2' : '#b7dfca'}`;
+  resultEl.style.color = isProblem ? 'var(--danger)' : 'var(--ok)';
+
+
+  let html = `<div style="font-weight:600;margin-bottom:6px">${data.message}</div>`;
+  if (data.fixed_durations && data.sync) {
+    // 2026-10-15: fixed-length tiers (Luma 5 s): scenes unchanged, show where each sentence starts
+    const rows = data.sync.rows.map(r => {
+      
+      return `<div>Frase ${r.index + 1} → scena ${r.scene + 1}, inizia a +${r.offset_in_scene_secs}s${r.extra_pause_secs > 0.05 ? ` <b>(pausa +${r.extra_pause_secs}s)</b>` : ''}</div>`;
+    }).join('');
+    html += `<div style="font-size:.78rem;opacity:.85">Durate scene invariate (${data.new_scene_durations[0]}s ciascuna)</div>`;
+    html += `<div style="font-size:.74rem;opacity:.8;margin-top:6px;max-height:140px;overflow:auto">${rows}</div>`;
+    (data.sync.warnings || []).forEach(w => { html += `<div style="font-size:.78rem;margin-top:4px">⚠ ${w}</div>`; });
+  } else {
+    html += `<div style="font-size:.78rem;opacity:.85">Nuove durate scene proposte: ${data.new_scene_durations.join('s, ')}s</div>`;
+  }
+
+
+  if (data.too_short) {
+    html += `
+      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="lib-btn" onclick="showExpandTextHint()">✎ Serve più testo</button>
+        <button class="lib-btn" onclick="applyPausePadding()">⏸ Aggiungi pause</button>
+      </div>`;
+  }
+
+
+  html += `
+    <div style="margin-top:10px">
+      <button class="btn-primary" style="font-size:.8rem;padding:7px 16px" onclick="confirmNarrationDurations()">
+        ✓ Conferma durate e procedi
+      </button>
+    </div>`;
+
+
+  resultEl.innerHTML = html;
+}
+
+
+function showExpandTextHint() {
+  document.getElementById('narration-status').textContent =
+    '💡 Aggiungi altre 1-2 frasi al testo, poi premi di nuovo "Genera voiceover"';
+  document.getElementById('narration-status').style.color = 'var(--muted)';
+  document.getElementById('narration-text').focus();
+}
+
+
+async function applyPausePadding() {
+  if (!narrationDistribution) return;
+  const extraSecsNeeded = narrationDistribution.current_total_secs - narrationDistribution.narration_duration_secs;
+  document.getElementById('narration-status').textContent =
+    `⏳ Ricalcolo con pause estese (+${Math.round(extraSecsNeeded)}s distribuiti tra le frasi)…`;
+  // 2026-07-16 fix: this used to call generateNarration() with no pause
+  // info, regenerating identical audio and never actually clearing the
+  // "too short" warning. Now passes the real gap to fill so the backend
+  // can compute and apply the correct pause duration.
+  await generateNarration(Math.max(0, extraSecsNeeded));
+}
+
+
+async function confirmNarrationDurations() {
+  if (!narrationDistribution || !currentJobId) return;
+
+
+  const fd = new FormData();
+  fd.append('new_durations', JSON.stringify(narrationDistribution.new_scene_durations));
+
+
+  try {
+    const res = await authFetch(`${API_BASE}/jobs/${currentJobId}/narration/apply-durations`, {
+      method: 'POST', body: fd
+    });
+    if (!res.ok) throw new Error(`Errore ${res.status}`);
+
+
+    // Compare OLD vs NEW duration per scene — only mark as "needs rework"
+    // the scenes whose duration genuinely changed. If narration redistribution
+    // proposes the SAME durations already in place, nothing needs regenerating.
+    durationChangedSceneIndices.clear();
+    contentChangedSceneIndices.clear();
+    const cards = [...scenesCont.querySelectorAll('.scene-card')];
+    narrationDistribution.new_scene_durations.forEach((dur, i) => {
+      const card = cards[i];
+      if (!card) return;
+      const slider = card.querySelector('.sc-duration');
+      const durVal = card.querySelector('.dur-val');
+      const oldDur = slider ? parseInt(slider.value) : null;
+      if (oldDur !== null && oldDur !== dur) {
+        durationChangedSceneIndices.add(i);
+      }
+      if (slider) slider.value = dur;
+      if (durVal) durVal.textContent = dur + 's';
+    });
+
+
+    const nChanged = durationChangedSceneIndices.size;
+    document.getElementById('narration-status').textContent = nChanged > 0
+      ? `✓ Durate confermate — ${nChanged} scena/e da rigenerare (durata cambiata)`
+      : '✓ Durate confermate — nessuna scena richiede rigenerazione (durate invariate)';
+    document.getElementById('narration-status').style.color = 'var(--ok)';
+    document.getElementById('narration-result').style.display = 'none';
+    updateCostEstimate();
+  } catch(e) {
+    document.getElementById('narration-status').textContent = `✗ ${e.message}`;
+    document.getElementById('narration-status').style.color = 'var(--danger)';
+  }
+}
+
+
+async function toggleLibrary() {
+  libraryOpen = !libraryOpen;
+  const list = document.getElementById('library-list');
+  list.classList.toggle('open', libraryOpen);
+  document.getElementById('library-legend').style.display = libraryOpen ? 'flex' : 'none';
+  if (libraryOpen) await loadLibrary();
+}
+
+
+// 2026-07-22 rewrite (backlog item 39): replaces the old "group by
+// stripping _rw suffix" logic, which was built for the legacy sibling-
+// directory rework model and is now stale -- reworks happen in-place on
+// the same job, so there are no more sibling entries to group. Now
+// organizes by Client -> Property -> Job, reading agency_id/property_id
+// (added to GET /jobs/ for exactly this purpose) plus /agencies and
+// /properties for display names -- the SAME shared entities cost
+// reporting already uses, not a separate library-only concept. Legacy
+// jobs predating this feature (no property_id at all) land in a
+// "Senza proprieta" bucket rather than being hidden or erroring.
+// 2026-10-09 (stage 4b): "needs a human" = waiting for QC approval, interrupted by a
+// restart, or flagged needs_operator (rework cap / failed rework / interrupted rework).
+// ONE definition feeds the counter, the banner and the auto-open of client/property groups.
+function isPendingApproval(j) { return j.status === 'awaiting_approval' || j.status === 'interrupted' || !!j.needs_operator; }
+
+function setLibCount(jobs) {
+  const pending = jobs.filter(isPendingApproval).length;
+  document.getElementById('lib-count').textContent = pending ? `⚠ ${pending} / ${jobs.length}` : jobs.length;
+}
+
+async function loadLibrary() {
+  const list = document.getElementById('library-list');
+  list.innerHTML = '<div class="lib-empty">Caricamento…</div>';
+  try {
+    const [jobsRes, agRes, propRes] = await Promise.all([
+      authFetch('/jobs/'),
+      authFetch('/agencies'),
+      authFetch('/properties'),
+    ]);
+    const jobs       = (await jobsRes.json()).jobs || [];
+    const agencies    = (await agRes.json()).agencies || [];
+    const properties  = (await propRes.json()).properties || [];
+
+
+    setLibCount(jobs);
+
+
+    if (!jobs.length) {
+      list.innerHTML = '<div class="lib-empty">Nessun video generato ancora.</div>';
+      return;
+    }
+
+
+    const agencyById = {};
+    agencies.forEach(a => agencyById[a.agency_id] = a);
+    const propertyById = {};
+    properties.forEach(p => propertyById[p.property_id] = p);
+
+
+    const statusMap = {
+      done:               { icon: '✓', cls: 'lib-done',    label: 'Completato' },
+      failed:             { icon: '✗', cls: 'lib-failed',  label: 'Fallito' },
+      running:            { icon: '⏳', cls: 'lib-running', label: 'In corso' },
+      awaiting_approval:  { icon: '⚠', cls: 'lib-review',  label: 'Revisione QC' },
+      queued:             { icon: '○', cls: 'lib-queued',  label: 'In coda' },
+      draft:              { icon: '✎', cls: 'lib-queued',  label: 'Bozza' },
+      interrupted:        { icon: '⏸', cls: 'lib-review',  label: 'Interrotto' },
+      stopped:            { icon: '⏹', cls: 'lib-failed',  label: 'Fermato' },
+    };
+
+
+    // ── Group jobs by property_id ──
+    const jobsByProperty = {};
+    jobs.forEach(j => {
+      const pid = j.property_id || '__none__';
+      if (!jobsByProperty[pid]) jobsByProperty[pid] = [];
+      jobsByProperty[pid].push(j);
+    });
+
+
+    // ── Group properties by agency_id ──
+    const propGroupsByAgency = {};
+    Object.entries(jobsByProperty).forEach(([pid, pjobs]) => {
+      pjobs.sort((a,b) => (b.created_at || '').localeCompare(a.created_at || ''));
+      const prop = propertyById[pid];
+      const aid  = prop?.agency_id || '__none__';
+      if (!propGroupsByAgency[aid]) propGroupsByAgency[aid] = [];
+      propGroupsByAgency[aid].push({
+        propertyId: pid,
+        name: prop?.name || (pid === '__none__' ? 'Senza proprietà' : (pjobs[0].property_name || 'Proprietà')),
+        jobs: pjobs,
+        latest: pjobs[0],
+      });
+    });
+
+
+    Object.values(propGroupsByAgency).forEach(props => {
+      props.sort((a,b) => (b.latest.created_at || '').localeCompare(a.latest.created_at || ''));
+    });
+
+
+    const clientEntries = Object.entries(propGroupsByAgency).map(([aid, props]) => ({
+      agencyId: aid,
+      name: agencyById[aid] ? agencyById[aid].name : 'Nessun cliente',
+      props,
+      latestDate: props[0]?.latest.created_at || '',
+    }));
+    clientEntries.sort((a,b) => {
+      if (a.agencyId === '__none__') return 1;
+      if (b.agencyId === '__none__') return -1;
+      return (b.latestDate || '').localeCompare(a.latestDate || '');
+    });
+
+
+    function renderJobRow(j) {
+      const date   = j.created_at ? new Date(j.created_at).toLocaleDateString('it-IT', {day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}) : '';
+      const tier   = {eco:'Eco',luma:'Luma',premium:'Veo Fast',premium_veo:'Veo Std'}[j.model_tier] || j.model_tier;
+      const scenes = j.total_scenes ? `${j.total_scenes} scene` : '';
+      const st     = statusMap[j.status] || { icon: '?', cls: 'lib-queued', label: j.status };
+      const dlBtn  = j.has_video
+        ? `<a class="lib-btn lib-primary" href="/jobs/${j.job_id}/download" download>⬇</a>`
+        : '';
+      const loadBtn = `<button class="lib-btn" onclick="loadJobIntoUI('${j.job_id}')">Apri</button>`;
+      const resumeBtn = (j.status === 'interrupted' || j.status === 'stopped') ? `<button class="lib-btn lib-primary" onclick="resumeInterruptedJob('${j.job_id}')">Riprendi</button>` : '';
+      return `<div class="lib-job ${st.cls}" style="margin-left:16px">
+        <div class="lib-info">
+          <div class="lib-name">${st.icon} ${date}</div>
+          <div class="lib-meta">${tier} · ${scenes} · ${j.job_id}</div>
+        </div>
+        <div class="lib-actions">${dlBtn}${loadBtn}${resumeBtn}</div>
+      </div>`;
+    }
+
+
+    function renderProperty(prop, agSafeId) {
+      const propSafeId = `${agSafeId}-${prop.propertyId}`.replace(/[^a-zA-Z0-9_-]/g, '');
+      const jobRows = prop.jobs.map(renderJobRow).join('');
+      return `<div style="margin-left:14px;margin-top:6px">
+        <div class="lib-job" style="cursor:pointer;background:var(--bg)" onclick="toggleLibNode('prop-${propSafeId}')">
+          <div class="lib-info">
+            <div class="lib-name">🏠 ${prop.name}</div>
+            <div class="lib-meta">${prop.jobs.length} video</div>
+          </div>
+        </div>
+        <div id="prop-${propSafeId}" style="display:${prop.jobs.some(j => isPendingApproval(j)) ? 'flex' : 'none'};flex-direction:column;gap:4px;margin-top:4px">${jobRows}</div>
+      </div>`;
+    }
+
+
+    function renderClient(client) {
+      const agSafeId = client.agencyId.replace(/[^a-zA-Z0-9_-]/g, '');
+      const propRows = client.props.map(p => renderProperty(p, agSafeId)).join('');
+      const totalJobs = client.props.reduce((s,p) => s + p.jobs.length, 0);
+      return `<div style="margin-bottom:10px">
+        <div class="lib-job" style="cursor:pointer;font-weight:600" onclick="toggleLibNode('client-${agSafeId}')">
+          <div class="lib-info">
+            <div class="lib-name">👤 ${client.name}</div>
+            <div class="lib-meta">${client.props.length} proprietà · ${totalJobs} video</div>
+          </div>
+        </div>
+        <div id="client-${agSafeId}" style="display:${client.props.some(p => p.jobs.some(j => isPendingApproval(j))) ? 'flex' : 'none'};flex-direction:column;gap:2px">${propRows}</div>
+      </div>`;
+    }
+
+
+    const escH = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const flaggedHtml = jobs.filter(j => j.needs_operator).map(j => `<div class="lib-job lib-review"><div class="lib-info"><div class="lib-name">🛠 ${escH(j.property_name)}</div><div class="lib-meta">${escH(j.needs_operator.reason)}</div></div><button style="padding:6px 10px;border-radius:8px;border:1px solid var(--border,#999);background:transparent;color:inherit;cursor:pointer" onclick="resolveNeedsOperator('${escH(j.job_id)}')">Risolto</button></div>`).join('');
+    const pendingN = jobs.filter(j => isPendingApproval(j)).length;
+    const banner = pendingN ? `<div class="lib-job lib-review" style="font-weight:600"><div class="lib-info"><div class="lib-name">⚠ ${pendingN} job da rivedere</div><div class="lib-meta">Apri il job per approvare, rifare le scene o riprendere (interrotti / serve un tuo intervento)</div></div></div>` : '';
+    list.innerHTML = banner + flaggedHtml + clientEntries.map(renderClient).join('');
+  } catch(e) {
+    list.innerHTML = `<div class="lib-empty">Errore caricamento: ${e.message}</div>`;
+  }
+}
+
+
+async function resolveNeedsOperator(jobId) {
+  if (!confirm('Segnare come risolto? Azzera anche il budget di rework di questo job (il reset resta registrato).')) return;
+  try {
+    const fd = new FormData(); fd.append('note', 'risolto dalla libreria');
+    const r = await authFetch('/jobs/' + jobId + '/rework-budget/reset', { method: 'POST', body: fd });
+    if (!r.ok) { let d = ''; try { d = (await r.json()).detail || ''; } catch (e) {} throw new Error(d || ('HTTP ' + r.status)); }
+    loadLibrary();
+  } catch (e) { showError('Operazione non riuscita: ' + e.message); }
+}
+
+
+async function resumeInterruptedJob(jobId) {
+  if (!confirm('Riprendere questo job? Le scene gia pronte vengono riusate; quelle mancanti vengono generate e pagate di nuovo.')) return;
+  try {
+    const res = await authFetch(`/jobs/${jobId}/resume-interrupted`, { method: 'POST' });
+    if (!res.ok) {
+      let detail = '';
+      try { detail = (await res.json()).detail || ''; } catch (e) {}
+      showError(`Impossibile riprendere ${jobId}: ${detail || 'HTTP ' + res.status}`);
+      return;
+    }
+    if (typeof loadLibrary === 'function') loadLibrary();
+  } catch (e) {
+    showError(`Errore di rete durante la ripresa di ${jobId}: ${e.message}`);
+  }
+}
+
+
+function toggleLibNode(id) {
+  const el = document.getElementById(id);
+  if (el) el.style.display = el.style.display === 'none' ? 'flex' : 'none';
+}
+
+
+async function loadJobIntoUI(jobId) {
+  try {
+    const res = await authFetch(`/jobs/${jobId}`);
+    if (!res.ok) {
+      showError(`Errore caricamento job ${jobId}: HTTP ${res.status}`);
+      return;
+    }
+    const job = await res.json();
+    if (!job) {
+      showError(`Job ${jobId} non trovato`);
+      return;
+    }
+
+
+    const baseJobId = jobId.split('_rw')[0];
+
+
+    // Show read-only preview: final video + scene thumbnails with QC status
+    showJobPreview(jobId, baseJobId, job);
+
+
+  } catch(e) {
+    console.error('loadJobIntoUI error:', e);
+    showError(`Errore caricamento job ${jobId}: ${e.message}`);
+  }
+}
+
+
+function showJobPreview(jobId, baseJobId, job) {
+  libraryOpen = false;
+  document.getElementById('library-list').classList.remove('open');
+
+
+  const scenesConfig = job.scenes_config || [];
+  const sceneStatuses = job.scenes || [];
+
+
+  const thumbsHtml = scenesConfig.map((scene, i) => {
+    const status = sceneStatuses.find(s => s.index === i);
+    const qc = status?.qc_verdict || 'unknown';
+    const qcColor = qc === 'pass' ? 'var(--ok)' : qc === 'approved' ? 'var(--ok)' : qc === 'reject' ? 'var(--danger)' : qc === 'flag' ? 'var(--warn)' : 'var(--muted)';
+    const qcLabel = qc === 'pass' ? '✓ OK' : qc === 'approved' ? '✓ Approvata manualmente' : qc === 'reject' ? '✗ Scartata' : qc === 'flag' ? '⚠ Da rivedere' : '?';
+    return `
+      <div style="background:var(--card);border:1px solid var(--rule);border-radius:var(--radius);overflow:hidden">
+        <video src="/jobs/${baseJobId}/clip/${i}/preview" preload="metadata" controls style="width:100%;height:110px;object-fit:cover;background:#000"></video>
+        <div style="padding:8px 10px">
+          <div style="font-size:.76rem;font-weight:600">Scena ${i} <span style="color:var(--muted);font-weight:normal">(scene_${String(i).padStart(3,'0')})</span></div>
+          <div style="font-size:.7rem;color:${qcColor};margin-top:2px">${qcLabel}</div>
+          <div style="font-size:.68rem;color:var(--muted);margin-top:2px">${scene.caption || '(senza titolo)'}</div>
+        </div>
+      </div>`;
+  }).join('');
+
+
+  const previewHtml = `
+    <section id="job-preview-section">
+      <p class="sec-label">Anteprima — ${job.property_name || 'Property'} <span style="color:var(--muted);font-weight:normal">(${jobId})</span></p>
+      <div class="card">
+        <video id="preview-video" controls preload="metadata" style="width:100%;border-radius:var(--radius);background:#000"
+          src="/jobs/${jobId}/preview"></video>
+        <div id="preview-video-info" style="font-size:.72rem;color:var(--muted);margin-top:6px">Anteprima leggera — il download è il file originale a piena qualità.</div>
+        <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap">
+          <a class="btn-download" href="/jobs/${jobId}/download" download>⬇ Scarica MP4</a>
+          <button class="btn-primary" style="background:var(--green)" onclick="editJob('${jobId}','${baseJobId}')">✎ Usa come base per modifiche</button>
+          <button class="btn-primary" style="background:var(--muted)" onclick="closeJobPreview()">Chiudi anteprima</button>
+        </div>
+      </div>
+      <p class="sec-label" style="margin-top:20px">Scene (${scenesConfig.length})</p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px">
+        ${thumbsHtml}
+      </div>
+    </section>`;
+
+
+  let container = document.getElementById('job-preview-container');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'job-preview-container';
+    document.getElementById('library-section').insertAdjacentElement('afterend', container);
+  }
+  container.innerHTML = previewHtml;
+  showVideoInfo(jobId, "preview-video-info");
+  container.scrollIntoView({behavior:'smooth'});
+}
+
+
+function closeJobPreview() {
+  const container = document.getElementById('job-preview-container');
+  if (container) container.innerHTML = '';
+}
+
+
+// 2026-10-23 (Patch L): waits for a draft being prepared in the background. Transient network errors do not stop it
+// (the work continues on the server whatever the browser does); gives up showing a hint after 15 minutes.
+async function waitForDraft(jobId, statusEl) {
+  const started = Date.now();
+  while (true) {
+    await new Promise(r => setTimeout(r, 3000));
+    const secs = Math.round((Date.now() - started) / 1000);
+    if (secs > 900) {
+      return { ok: false, message: `la preparazione dura più di 15 minuti: controlla la Library (job ${jobId}) o riprova.` };
+    }
+    try {
+      const res = await authFetch(`/jobs/${jobId}`);
+      if (res.status === 404) return { ok: false, message: 'la preparazione è andata persa (riavvio del server?): ricrea la bozza dallo stesso annuncio.' };
+      if (!res.ok) { statusEl.textContent = `Preparazione in corso (${secs}s)...`; continue; }
+      const job = await res.json();
+      if (job.status === 'draft') return { ok: true, job };
+      if (job.status === 'prep_failed') return { ok: false, message: job.message || 'preparazione fallita' };
+      statusEl.textContent = `Preparazione della bozza in corso — narrazione, voce, foto (${secs}s)...`;
+    } catch (e) {
+      statusEl.textContent = `Preparazione in corso (${secs}s) — connessione instabile, continuo a controllare...`;
+    }
+  }
+}
+
+
+// ── Automated URL workflow (Phase 1: human-in-the-loop) ─────────────────────
+async function startFromUrl() {
+  const urlInput = document.getElementById('url-workflow-input');
+  const nameInput = document.getElementById('url-workflow-property-name');
+  const statusEl = document.getElementById('url-workflow-status');
+  const btn = document.getElementById('url-workflow-btn');
+  const url = urlInput.value.trim();
+  if (!url) {
+    statusEl.textContent = 'Inserisci un URL prima di continuare.';
+    statusEl.style.color = 'var(--danger)';
+    return;
+  }
+
+  btn.disabled = true;
+  statusEl.style.color = 'var(--muted)';
+  statusEl.textContent = 'Preparazione avviata: lettura annuncio, narrazione, voce, foto (alcuni minuti)...';
+
+  try {
+    const formData = new FormData();
+    formData.append('url', url);
+    if (nameInput.value.trim()) formData.append('property_name', nameInput.value.trim());
+    formData.append('agency_id', document.getElementById('url-workflow-agency-select')?.value || '');
+    formData.append('premium', document.getElementById('url-workflow-premium')?.checked ? 'true' : 'false');
+
+    const res = await authFetch(`${API_BASE}/jobs/from-url`, { method: 'POST', body: formData });
+    const data = await res.json();
+
+    if (!res.ok) {
+      statusEl.textContent = `Errore: ${data.detail || 'richiesta fallita'}`;
+      statusEl.style.color = 'var(--danger)';
+      btn.disabled = false;
+      return;
+    }
+
+    // 2026-10-23 (Patch L): the server answers at once with the job id and prepares the draft in the background
+    // (narration, voice, photos: minutes). Poll its status instead of keeping one long request open.
+    const prepared = await waitForDraft(data.job_id, statusEl);
+    if (!prepared.ok) {
+      statusEl.textContent = `Errore: ${prepared.message}`;
+      statusEl.style.color = 'var(--danger)';
+      btn.disabled = false;
+      return;
+    }
+    statusEl.textContent = `✓ Bozza pronta: ${prepared.job.total_scenes || ''} scene — caricamento nell'editor...`;
+    statusEl.style.color = 'var(--ok)';
+
+    // Reuse the EXISTING job-loading function — same editable form every
+    // manually-created job already uses, no separate rendering path.
+    await editJob(data.job_id, data.job_id);
+
+    urlInput.value = '';
+    nameInput.value = '';
+    document.getElementById('url-workflow-section').scrollIntoView({behavior: 'smooth'});
+
+  } catch(e) {
+    statusEl.textContent = `Errore: ${e.message}`;
+    statusEl.style.color = 'var(--danger)';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+
+let _editJobSeq = 0;  // 2026-10-12: only the latest editJob() call may write the shared state
+async function editJob(jobId, baseJobId) {
+  const mySeq = ++_editJobSeq;
+  // Explicit action: load this job's exact scene list into the editable form
+  try {
+    const res = await authFetch(`/jobs/${jobId}`);
+    const job = await res.json();
+    if (mySeq !== _editJobSeq) return;  // a newer editJob() started meanwhile
+    const scenesConfig = job.scenes_config || [];
+    // 2026-10-27: opening a job stops the status poll of the job that was open before. Without this, a job still
+    // generating in the background kept painting its QC panel (and built its clip links with THIS job's id) over the new one.
+    clearInterval(pollTimer); pollEpoch++;
+    hideJobOutputs();   // the previous job's result and QC panels must not stay on screen over this one
+
+
+    if (!scenesConfig.length) {
+      showError('Nessuna configurazione scene trovata per questo job');
+      return;
+    }
+
+
+    currentJobId = baseJobId;
+    currentJobStatus = job.status || null;
+    const loadedFiles = [];
+    const loadedUserData = {};
+    newlyAddedSceneIndices.clear();  // fresh job context — no new scenes yet
+    durationChangedSceneIndices.clear();
+    contentChangedSceneIndices.clear();
+    Object.keys(sceneAnalysis).forEach(k => delete sceneAnalysis[k]);
+
+
+    // Restore narration state from the SERVER (not a session-local flag) —
+    // this is what fixes "reopening a job doesn't recognise narration
+    // already exists". narrationExistsOnServer persists this truth
+    // regardless of page reloads or reopening from the library.
+    narrationExistsOnServer = !!job.narration_path;
+    narrationDistribution = null;  // reset calculated result, but flag above tracks real existence
+    const narrationTextEl = document.getElementById('narration-text');
+    if (narrationTextEl) narrationTextEl.value = job.narration_text || '';
+    const narrationStatusEl = document.getElementById('narration-status');
+    if (narrationStatusEl) {
+      // 2026-07-27: explicit, per user request -- narration always wins
+      // over per-scene voiceover (intentional design, confirmed), but
+      // the UI previously gave no indication of which mechanism (and
+      // which lead/trail buffer) is actually in effect for this job.
+      narrationStatusEl.textContent = narrationExistsOnServer
+        ? `✓ Narrazione continua ATTIVA (${job.narration_duration_secs || '?'}s, buffer 1.0s inizio/fine) — il voiceover per-scena viene ignorato. Modifica il testo e premi Genera voiceover per aggiornarla`
+        : `ℹ️ Modalità voiceover per-scena (buffer 0.5s inizio/fine per scena) — nessuna narrazione continua attiva`;
+      narrationStatusEl.style.color = 'var(--muted)';
+    }
+
+
+    // Show the job ID persistently above the scene cards while editing —
+    // not just buried in the library or final result page — so it's
+    // always clear which video you're currently working on.
+    const indicatorEl = document.getElementById('editing-job-indicator');
+    if (indicatorEl) {
+      indicatorEl.style.display = 'block';
+      indicatorEl.innerHTML = `📁 Stai modificando: <strong>${job.property_name || 'Property'}</strong> — ID: <code>${jobId}</code>`;
+    }
+
+
+    for (let i = 0; i < scenesConfig.length; i++) {
+      const scene = scenesConfig[i];
+      try {
+        const imgRes = await authFetch(`/jobs/${baseJobId}/image/${i}?_t=${Date.now()}`, { cache: 'no-store' });
+        if (imgRes.ok) {
+          const blob = await imgRes.blob();
+          loadedFiles.push(new File([blob], `scene_${i}.jpg`, { type: blob.type || 'image/jpeg' }));
+        } else {
+          loadedFiles.push(new File([], `scene_${i}.jpg`, { type: 'image/jpeg' }));
+        }
+      } catch(e) {
+        loadedFiles.push(new File([], `scene_${i}.jpg`, { type: 'image/jpeg' }));
+      }
+      loadedUserData[i] = {
+        caption:      scene.caption || '',
+        voiceover:    scene.voiceover || '',
+        duration:     String(scene.duration || 8),
+        space_type:   scene.space_type || 'large',
+        pov_movement: scene.pov_movement || 'walk_in_explore',
+        scene_id:     scene.scene_id || null,  // enables new solid redo path
+        // BUG FIXED: this load-time block never read remove_watermark from
+        // the loaded job's scenes_config, so the checkbox always rendered
+        // unchecked even when the backend (e.g. the URL scraper) had
+        // correctly set it to true - the value just never made it into the UI.
+        remove_watermark: scene.remove_watermark || false,
+      };
+    }
+
+
+    if (mySeq !== _editJobSeq) return;  // superseded while the images were loading
+    files = loadedFiles;
+    Object.keys(sceneUserData).forEach(k => delete sceneUserData[k]);
+    Object.assign(sceneUserData, loadedUserData);
+    completedScenes = job.scenes || [];
+    scenesCont.replaceChildren();  // 2026-10-12: svuota le schede del job precedente, altrimenti saveSceneData() le copia sopra ai valori appena caricati
+    renderScenes();
+    closeJobPreview();
+    document.getElementById('scenes-container').scrollIntoView({behavior:'smooth'});
+    updateCostEstimate();
+    const isFreshDraft = job.status === 'draft' && (!job.scenes || job.scenes.length === 0);
+    showError(isFreshDraft
+      ? `${scenesConfig.length} scene caricate — rivedi le scene e la narrazione, poi premi Genera Video quando sei pronto.`
+      : `${scenesConfig.length} scene caricate da ${jobId} — modifica, aggiungi scene o usa ↺ Rifai`);
+    // 2026-10-08 (backlog item 53): showQcReview() used to run ONLY from the live polling loop, so reopening a job still
+    // in awaiting_approval never brought the approve/redo panel back. Same single render function, now also called here;
+    // any other job hides a panel left over from a previously opened one.
+    if (job.status === 'awaiting_approval') {
+      showQcReview(job);
+    } else {
+      qcSec.style.display = 'none';
+    }
+    if (job.status === 'running' || job.status === 'queued') startPolling(jobId);   // 2026-10-27: follow the job now open, and only it
+  } catch(e) {
+    showError(`Errore: ${e.message}`);
+  }
+}
+
+
+// ── Generation pause / kill-switch ──────────────────────────────────────────
+async function checkGenerationPauseStatus() {
+  try {
+    const res = await authFetch('/admin/generation-status');
+    const data = await res.json();
+    const banner = document.getElementById('generation-pause-banner');
+    const msgEl  = document.getElementById('generation-pause-message');
+    const btn    = document.getElementById('pause-gen-btn');
+    if (data.paused) {
+      banner.style.display = 'block';
+      msgEl.textContent = `${data.message || 'manutenzione in corso'} (${data.active_jobs} job attivi)`;
+      if (btn) { btn.textContent = '▶ Resume generation'; btn.style.display = ''; }
+    } else {
+      banner.style.display = 'none';
+      if (btn) { btn.textContent = '⏸ Pause generation'; btn.style.display = ''; }
+    }
+    return data;
+  } catch(e) {
+    console.error('checkGenerationPauseStatus error:', e);
+  }
+}
+
+async function toggleGenerationPause() {
+  const status = await checkGenerationPauseStatus();
+  if (status && status.paused) {
+    await authFetch('/admin/resume-generation', { method: 'POST' });
+  } else {
+    const msg = prompt('Motivo della pausa (visibile agli utenti):', 'Manutenzione in corso');
+    if (msg === null) return;  // cancelled
+    const fd = new FormData();
+    fd.append('message', msg);
+    await authFetch('/admin/pause-generation', { method: 'POST', body: fd });
+  }
+  await checkGenerationPauseStatus();
+}
+
+checkGenerationPauseStatus();
+
+// 2026-10-08: voice menu + language architecture. Source of truth is voice_generation.TTS_LANGUAGES (via /tts/voices).
+// The language selector stays hidden until more than one language exists.
+let ttsCatalog = null;
+let ttsCostPerChar = null;   // EUR per character of the ACTIVE TTS provider, read from /tts/voices (no second copy of the rate here)
+function onTtsLanguageChange(code) {
+  const sel = document.getElementById('voice-id');
+  const lang = ttsCatalog && ttsCatalog.languages[code];
+  if (!sel || !lang) return;
+  sel.innerHTML = lang.voices.map(v => `<option value="${v.id}"${v.id === lang.default_voice ? ' selected' : ''}>${v.label}</option>`).join('');
+}
+async function loadTtsVoices() {
+  try {
+    const res = await authFetch('/tts/voices');
+    if (!res.ok) return;
+    ttsCatalog = await res.json();
+    ttsCostPerChar = ttsCatalog.cost_per_char_eur;
+    try { updateCostEstimate(); } catch (e) {}
+    const codes = Object.keys(ttsCatalog.languages || {});
+    if (!codes.length) return;
+    const langSel = document.getElementById('tts-language');
+    if (langSel) {
+      langSel.innerHTML = codes.map(c => `<option value="${c}">${ttsCatalog.languages[c].label}</option>`).join('');
+      langSel.value = ttsCatalog.default_language;
+      langSel.style.display = codes.length > 1 ? '' : 'none';
+    }
+    onTtsLanguageChange(ttsCatalog.default_language);
+  } catch (e) { console.error('loadTtsVoices error:', e); }
+}
+
+
+// ── Cost & profit reporting ────────────────────────────────────────────────
+// 2026-07-22 (backlog item 39): populates both job-creation Client
+// dropdowns (manual form + URL-scrape form) from the SAME /agencies
+// endpoint the cost modal already uses -- one fetch, one shared list,
+// no duplicate agency-fetching logic. Called once at load (no
+// DOMContentLoaded listener exists in this file -- the script already
+// runs inline after the DOM is parsed, matching the existing pattern).
+async function populateAgencyDropdowns() {
+  try {
+    const res = await authFetch(`${API_BASE}/agencies`);
+    const data = await res.json();
+    const agencies = data.agencies || [];
+    const opts = '<option value="">— Nessun cliente —</option>' +
+      agencies.map(a => `<option value="${a.agency_id}">${a.name}</option>`).join('') +
+      '<option value="__new_client__">+ Nuovo cliente...</option>';
+    const sel1 = document.getElementById('job-agency-select');
+    const sel2 = document.getElementById('url-workflow-agency-select');
+    if (sel1) sel1.innerHTML = opts;
+    if (sel2) sel2.innerHTML = opts;
+  } catch (e) {
+    console.warn('[Agencies] Could not load client list:', e.message);
+  }
+}
+
+
+// 2026-07-22: lets a new client be created directly from either
+// job-creation form's Client dropdown, without leaving the page to open
+// the cost modal -- selecting "+ Nuovo cliente..." prompts for a name,
+// creates it via the existing POST /agencies, re-selects it in whichever
+// dropdown triggered this, and optionally offers to upload a logo right
+// away via the existing POST /agencies/{id}/logo (same endpoints the
+// cost modal already uses, no duplicate logic).
+async function handleAgencySelectChange(selectEl) {
+  if (selectEl.value !== '__new_client__') return;
+  const name = prompt('Nome del nuovo cliente:');
+  if (name === null || name.trim() === '') {
+    selectEl.value = '';
+    return;
+  }
+  try {
+    const fd = new FormData();
+    fd.append('name', name.trim());
+    const res = await authFetch(`${API_BASE}/agencies`, { method: 'POST', body: fd });
+    const agency = await res.json();
+    await populateAgencyDropdowns();
+    selectEl.value = agency.agency_id;
+    const wantsLogo = confirm('Cliente creato. Vuoi caricare subito un logo (PNG con sfondo trasparente)?');
+    if (wantsLogo) {
+      window._pendingLogoAgencyId = agency.agency_id;
+      document.getElementById('inline-logo-file-input').click();
+    }
+  } catch (e) {
+    alert(`Errore creazione cliente: ${e.message}`);
+    selectEl.value = '';
+  }
+}
+
+async function handleInlineLogoSelected(fileInput) {
+  const file = fileInput.files[0];
+  const agencyId = window._pendingLogoAgencyId;
+  if (file === undefined || agencyId === undefined || agencyId === null) return;
+  const fd = new FormData();
+  fd.append('logo', file);
+  try {
+    const res = await authFetch(`${API_BASE}/agencies/${agencyId}/logo`, { method: 'POST', body: fd });
+    const data = await res.json();
+    if (res.ok === false) {
+      alert(`Errore: ${data.detail || 'upload logo fallito'}`);
+    } else {
+      alert('Logo caricato con successo.');
+    }
+  } catch (e) {
+    alert(`Errore: ${e.message}`);
+  }
+  fileInput.value = '';
+  window._pendingLogoAgencyId = null;
+}
+
+
+async function openCostReport() {
+  const modal = document.getElementById('cost-modal');
+  const el = document.getElementById('cost-content');
+  modal.style.display = 'block';
+  el.innerHTML = 'Caricamento…';
+  try {
+    const [entR, agR, jbR, slR, invR] = await Promise.all([
+      authFetch(`${API_BASE}/reports/enterprise`),
+      authFetch(`${API_BASE}/reports/agencies`),
+      authFetch(`${API_BASE}/reports/jobs`),
+      authFetch(`${API_BASE}/sales`),
+      authFetch(`${API_BASE}/investment`)
+    ]);
+    const ent = await entR.json();
+    const ag  = (await agR.json()).agencies || [];
+    const jb  = (await jbR.json()).jobs || [];
+    const sl  = await slR.json();
+    const inv = await invR.json();
+    renderCostReport(ent, ag, jb, sl, inv);
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--danger)">Errore: ${e.message}</div>`;
+  }
+}
+
+function eur(n) { return '€' + (n||0).toLocaleString('it-IT', {minimumFractionDigits:2, maximumFractionDigits:2}); }
+
+function renderCostReport(ent, agencies, jobs, salesData, investmentData) {
+  const el = document.getElementById('cost-content');
+  const inv = ent.total_investment_eur;
+  const rev = ent.gross_revenue_eur;
+  const pct = inv > 0 ? Math.min(100, (rev / inv) * 100) : 0;
+  const pkgs = (ent.break_even_remaining_eur / 450);
+
+  // Enterprise headline + progress bar to break-even
+  let html = `
+    <div style="background:var(--bg);border:1px solid var(--rule);border-radius:var(--radius);padding:18px;margin-bottom:20px">
+      <div style="font-size:.7rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:10px">Progetto — pareggio</div>
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px">
+        <div style="font-size:1.6rem;font-weight:700;color:${ent.net_position_eur >= 0 ? 'var(--ok)' : 'var(--danger)'}">${eur(ent.break_even_remaining_eur)}</div>
+        <div style="font-size:.8rem;color:var(--muted)">mancanti al pareggio</div>
+      </div>
+      <div style="height:14px;background:var(--rule);border-radius:7px;overflow:hidden;margin-bottom:6px">
+        <div style="height:100%;width:${pct}%;background:linear-gradient(90deg,var(--green),var(--ok));transition:width .4s"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:.75rem;color:var(--muted)">
+        <span>Ricavi ${eur(rev)}</span>
+        <span>${pct.toFixed(1)}%</span>
+        <span>Investimento ${eur(inv)}</span>
+      </div>
+      <div style="margin-top:10px;font-size:.8rem">= <strong>${pkgs.toFixed(1)}</strong> pacchetti da €450 (o ${Math.ceil(ent.break_even_remaining_eur/50)} video singoli)</div>
+    </div>`;
+
+  // Cost breakdown bars
+  const items = [
+    ['Investimento (fisso)', inv, '#b0413e'],
+    ['Costo produzione',     ent.production_cost_eur, '#d9a441'],
+    ['Commissione venditore', ent.seller_commission_eur, '#8e7cc3'],
+    ['Ricavi lordi',         rev, '#4a7c59'],
+  ];
+  const maxV = Math.max(...items.map(i => i[1]), 1);
+  html += `<div style="margin-bottom:20px">
+    <div style="font-size:.7rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:10px">Ripartizione</div>`;
+  items.forEach(([label, val, colour]) => {
+    const w = (val / maxV) * 100;
+    html += `<div style="margin-bottom:8px">
+      <div style="display:flex;justify-content:space-between;font-size:.78rem;margin-bottom:3px">
+        <span>${label}</span><span style="font-weight:600">${eur(val)}</span>
+      </div>
+      <div style="height:8px;background:var(--rule);border-radius:4px;overflow:hidden">
+        <div style="height:100%;width:${w}%;background:${colour}"></div>
+      </div>
+    </div>`;
+  });
+  html += `</div>`;
+
+  // Job mix
+  const mix = [['Commerciali', ent.jobs_commercial, 'var(--ok)'], ['Pilot', ent.jobs_pilot, 'var(--warn)'], ['R&D', ent.jobs_rnd, 'var(--muted)']];
+  html += `<div style="display:flex;gap:10px;margin-bottom:20px">`;
+  mix.forEach(([l, n, c]) => {
+    html += `<div style="flex:1;background:var(--bg);border:1px solid var(--rule);border-radius:var(--radius);padding:12px;text-align:center">
+      <div style="font-size:1.4rem;font-weight:700;color:${c}">${n}</div>
+      <div style="font-size:.72rem;color:var(--muted)">${l}</div>
+    </div>`;
+  });
+  html += `<div style="flex:1;background:var(--bg);border:1px solid var(--rule);border-radius:var(--radius);padding:12px;text-align:center">
+      <div style="font-size:1.4rem;font-weight:700">${ent.jobs_total}</div>
+      <div style="font-size:.72rem;color:var(--muted)">Totale</div>
+    </div></div>`;
+
+  // Agencies
+  // Investment ledger (2026-07-22): the "Investimento (fisso)" figure
+  // shown at the top comes from this ledger (cost_model.py's
+  // investment.json), which previously had no way to add an entry at
+  // all except a full-ledger XLS re-upload with no UI. Now a single new
+  // cost -- e.g. this very Claude Pro subscription, or any other
+  // one-off/recurring expense -- can be added directly here.
+  const invEntries = investmentData.entries || [];
+  html += `<div style="font-size:.7rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:8px">Investimento</div>`;
+  if (!invEntries.length) {
+    html += `<div style="font-size:.8rem;color:var(--muted);margin-bottom:14px">Nessuna voce ancora.</div>`;
+  } else {
+    html += `<table style="width:100%;font-size:.78rem;border-collapse:collapse;margin-bottom:14px">
+      <tr style="color:var(--muted);text-align:left"><th style="padding:5px 0">Voce</th><th>Importo</th><th></th></tr>`;
+    invEntries.forEach((e, idx) => {
+      html += `<tr style="border-top:1px solid var(--rule)">
+        <td style="padding:6px 0">${e.note || ''}</td><td>${eur(e.amount_eur)}</td>
+        <td style="text-align:right"><button class="lib-btn" onclick="removeInvestmentEntry(${idx})" style="padding:3px 8px;font-size:.72rem">&#128465;</button></td></tr>`;
+    });
+    html += `</table>`;
+  }
+  html += `<div style="background:var(--bg);border:1px solid var(--rule);border-radius:var(--radius);padding:14px;margin-bottom:20px">
+    <div style="display:flex;gap:8px">
+      <input id="new-investment-note" placeholder="es. Abbonamento Claude Pro (mensile)" style="flex:2;padding:7px;border:1px solid var(--rule);border-radius:6px;font-size:.8rem" />
+      <input id="new-investment-amount" type="number" step="0.01" placeholder="EUR" style="width:100px;padding:7px;border:1px solid var(--rule);border-radius:6px;font-size:.8rem" />
+      <button class="lib-btn" onclick="addInvestmentEntry()">+ Voce</button>
+    </div>
+  </div>`;
+
+  html += `<div style="font-size:.7rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:8px">Agenzie</div>`;
+  if (!agencies.length) {
+    html += `<div style="font-size:.8rem;color:var(--muted);margin-bottom:14px">Nessuna agenzia ancora.</div>`;
+  } else {
+    html += `<table style="width:100%;font-size:.78rem;border-collapse:collapse;margin-bottom:14px">
+      <tr style="color:var(--muted);text-align:left"><th style="padding:5px 0">Agenzia</th><th>Venduti</th><th>Consegnati</th><th>Ricavi</th><th>Costo</th><th>Margine</th><th></th></tr>`;
+    agencies.forEach(a => {
+      const safeName = a.name.replace(/'/g, "\\'");
+      html += `<tr style="border-top:1px solid var(--rule)">
+        <td style="padding:6px 0">${a.name}</td><td>${a.videos_sold}</td><td>${a.videos_delivered}</td>
+        <td>${eur(a.revenue_eur)}</td><td>${eur(a.production_cost_eur)}</td>
+        <td style="color:${a.margin_eur>=0?'var(--ok)':'var(--danger)'};font-weight:600">${eur(a.margin_eur)}</td>
+        <td><button class="lib-btn" onclick="editAgency('${a.agency_id}', '${safeName}')" style="padding:3px 8px;font-size:.72rem">&#9998;</button></td></tr>`;
+    });
+    html += `</table>`;
+  }
+
+  // Sales list (2026-07-22, backlog item 33) -- individual sale entries
+  // with edit/delete, so a mistake can be corrected without delete +
+  // recreate. Was previously only aggregated per-agency, with no way to
+  // see or touch an individual sale at all.
+  const salesList = salesData.sales || [];
+  html += `<div style="font-size:.7rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:8px">Vendite</div>`;
+  if (!salesList.length) {
+    html += `<div style="font-size:.8rem;color:var(--muted);margin-bottom:14px">Nessuna vendita ancora.</div>`;
+  } else {
+    html += `<table style="width:100%;font-size:.78rem;border-collapse:collapse;margin-bottom:14px">
+      <tr style="color:var(--muted);text-align:left"><th style="padding:5px 0">Agenzia</th><th>Video</th><th>Prezzo</th><th></th></tr>`;
+    salesList.forEach(s => {
+      const ag = agencies.find(a => a.agency_id === s.agency_id);
+      const agName = ag ? ag.name : s.agency_id;
+      html += `<tr style="border-top:1px solid var(--rule)">
+        <td style="padding:6px 0">${agName}</td><td>${s.videos_sold}</td><td>${eur(s.price_eur)}</td>
+        <td style="text-align:right;white-space:nowrap">
+          <button class="lib-btn" onclick="editSale('${s.sale_id}', ${s.videos_sold}, ${s.price_eur})" style="padding:3px 8px;font-size:.72rem">&#9998;</button>
+          <button class="lib-btn" onclick="removeSale('${s.sale_id}')" style="padding:3px 8px;font-size:.72rem">&#128465;</button>
+        </td></tr>`;
+    });
+    html += `</table>`;
+  }
+
+  // Add agency + sale forms
+  const agOpts = agencies.map(a => `<option value="${a.agency_id}">${a.name}</option>`).join('');
+  html += `<div style="background:var(--bg);border:1px solid var(--rule);border-radius:var(--radius);padding:14px;margin-bottom:20px">
+    <div style="display:flex;gap:8px;margin-bottom:10px">
+      <input id="new-agency-name" placeholder="Nome nuova agenzia" style="flex:1;padding:7px;border:1px solid var(--rule);border-radius:6px;font-size:.8rem" />
+      <button class="lib-btn" onclick="addAgency()">+ Agenzia</button>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <select id="sale-agency" style="flex:2;min-width:140px;padding:7px;border:1px solid var(--rule);border-radius:6px;font-size:.8rem">${agOpts}</select>
+      <input id="sale-videos" type="number" placeholder="N video" value="10" style="width:90px;padding:7px;border:1px solid var(--rule);border-radius:6px;font-size:.8rem" />
+      <input id="sale-price" type="number" step="0.01" placeholder="€" value="450" style="width:100px;padding:7px;border:1px solid var(--rule);border-radius:6px;font-size:.8rem" />
+      <button class="lib-btn" onclick="addSale()">+ Vendita</button>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;align-items:center">
+      <select id="logo-agency-select" style="flex:1;min-width:140px;padding:7px;border:1px solid var(--rule);border-radius:6px;font-size:.8rem">${agOpts}</select>
+      <input id="logo-file-input" type="file" accept="image/png" style="flex:1;min-width:140px;font-size:.75rem" />
+      <button class="lib-btn" onclick="uploadAgencyLogo()">📎 Logo cliente</button>
+    </div>
+  </div>`;
+
+  // Recent jobs
+  html += `<div style="font-size:.7rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:8px">Job recenti</div>
+    <table style="width:100%;font-size:.75rem;border-collapse:collapse">
+    <tr style="color:var(--muted);text-align:left"><th style="padding:5px 0">Proprietà</th><th>Tipo</th><th>Costo</th><th>Ricavo</th><th>Margine</th></tr>`;
+  jobs.slice(0, 12).forEach(j => {
+    const cls = {commercial:'Commerciale', pilot:'Pilot', rnd:'R&D'}[j.classification] || j.classification;
+    html += `<tr style="border-top:1px solid var(--rule)">
+      <td style="padding:6px 0;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${j.property_name || j.job_id}</td>
+      <td><select onchange="setJobClass('${j.job_id}', this.value)" style="font-size:.72rem;padding:2px;border:1px solid var(--rule);border-radius:4px">
+        <option value="rnd" ${j.classification==='rnd'?'selected':''}>R&D</option>
+        <option value="pilot" ${j.classification==='pilot'?'selected':''}>Pilot</option>
+        <option value="commercial" ${j.classification==='commercial'?'selected':''}>Commerciale</option>
+      </select></td><td>${eur(j.cost_eur)}</td><td>${eur(j.revenue_eur)}</td>
+      <td style="color:${j.margin_eur>=0?'var(--ok)':'var(--danger)'}">${eur(j.margin_eur)}</td></tr>`;
+  });
+  html += `</table>`;
+
+  el.innerHTML = html;
+}
+
+async function setJobClass(jobId, classification) {
+  const fd = new FormData();
+  fd.append('classification', classification);
+  const sel = document.getElementById('sale-agency');
+  if (classification === 'commercial' && sel && sel.value) fd.append('agency_id', sel.value);
+  await authFetch(`${API_BASE}/jobs/${jobId}/commercial`, {method:'POST', body:fd});
+  openCostReport();
+}
+
+async function addAgency() {
+  const name = document.getElementById('new-agency-name').value.trim();
+  if (!name) return;
+  if (!confirm(`Aggiungere il cliente "${name}"?`)) return;
+  const fd = new FormData(); fd.append('name', name);
+  await authFetch(`${API_BASE}/agencies`, {method:'POST', body:fd});
+  openCostReport();
+}
+
+async function addSale() {
+  const agencySelect = document.getElementById('sale-agency');
+  const agencyName = agencySelect.options[agencySelect.selectedIndex] ? agencySelect.options[agencySelect.selectedIndex].text : '';
+  const videos = document.getElementById('sale-videos').value;
+  const price = document.getElementById('sale-price').value;
+  if (!confirm(`Registrare la vendita di ${videos} video a "${agencyName}" per €${price}?`)) return;
+  const fd = new FormData();
+  fd.append('agency_id', agencySelect.value);
+  fd.append('videos_sold', videos);
+  fd.append('price_eur', price);
+  await authFetch(`${API_BASE}/sales`, {method:'POST', body:fd});
+  openCostReport();
+}
+
+// 2026-07-22 (backlog item 33): edit an existing agency's name via a
+// simple prompt (pre-filled with the current name), matching the same
+// lightweight pattern used for inline client creation -- no separate
+// edit-form UI needed.
+async function editAgency(agencyId, currentName) {
+  const newName = prompt('Nuovo nome agenzia:', currentName);
+  if (newName === null) return;
+  const trimmed = newName.trim();
+  if (trimmed === '' || trimmed === currentName) return;
+  if (!confirm(`Rinominare "${currentName}" in "${trimmed}"?`)) return;
+  const fd = new FormData();
+  fd.append('name', trimmed);
+  await authFetch(`${API_BASE}/agencies/${agencyId}`, {method:'POST', body:fd});
+  openCostReport();
+}
+
+// 2026-07-22 (backlog item 33): edit or remove an existing sale entry.
+async function editSale(saleId, currentVideos, currentPrice) {
+  const newVideosStr = prompt('Numero video venduti:', currentVideos);
+  if (newVideosStr === null) return;
+  const newPriceStr = prompt('Prezzo totale (EUR):', currentPrice);
+  if (newPriceStr === null) return;
+  if (!confirm('Confermare la modifica di questa vendita?')) return;
+  const fd = new FormData();
+  fd.append('videos_sold', newVideosStr);
+  fd.append('price_eur', newPriceStr);
+  await authFetch(`${API_BASE}/sales/${saleId}`, {method:'POST', body:fd});
+  openCostReport();
+}
+
+async function removeSale(saleId) {
+  if (!confirm('Eliminare questa vendita? Non puo essere annullato.')) return;
+  await authFetch(`${API_BASE}/sales/${saleId}`, {method:'DELETE'});
+  openCostReport();
+}
+
+// 2026-07-22: add or remove a single investment-ledger entry (e.g. the
+// Claude Pro subscription, or any other one-off/recurring cost) without
+// needing a full XLS re-upload of the whole ledger.
+async function addInvestmentEntry() {
+  const note = document.getElementById('new-investment-note').value.trim();
+  const amount = document.getElementById('new-investment-amount').value;
+  if (!note || !amount) return;
+  if (!confirm(`Aggiungere "${note}" per €${amount}?`)) return;
+  const fd = new FormData();
+  fd.append('note', note);
+  fd.append('amount_eur', amount);
+  await authFetch(`${API_BASE}/investment`, {method:'POST', body:fd});
+  openCostReport();
+}
+
+async function removeInvestmentEntry(index) {
+  if (!confirm('Eliminare questa voce di investimento?')) return;
+  await authFetch(`${API_BASE}/investment/${index}`, {method:'DELETE'});
+  openCostReport();
+}
+
+// 2026-07-22 (backlog item 7): uploads a client logo for video overlay.
+// Requires a PNG with an alpha channel -- the backend validates this and
+// returns a clear error otherwise, surfaced directly to the user.
+async function uploadAgencyLogo() {
+  const agencyId = document.getElementById('logo-agency-select')?.value;
+  const fileInput = document.getElementById('logo-file-input');
+  const file = fileInput?.files[0];
+  if (agencyId === undefined || agencyId === '' || !file) {
+    alert('Seleziona un agenzia e un file PNG con sfondo trasparente.');
+    return;
+  }
+  const fd = new FormData();
+  fd.append('logo', file);
+  try {
+    const res = await authFetch(`${API_BASE}/agencies/${agencyId}/logo`, { method: 'POST', body: fd });
+    const data = await res.json();
+    if (res.ok === false) {
+      alert(`Errore: ${data.detail || 'upload fallito'}`);
+      return;
+    }
+    alert('Logo caricato con successo.');
+    fileInput.value = '';
+  } catch(e) {
+    alert(`Errore: ${e.message}`);
+  }
+}
+
+// Auto-refresh library count on load
+authFetch('/jobs/').then(r => r.json()).then(d => {
+  setLibCount(d.jobs || []);
+}).catch(() => {});
+
+
+// ── Login ──────────────────────────────────────────────────────────────────────
+const SESSION_KEY = 'pvs_access';
+
+
+async function checkLogin() {
+  const stored = localStorage.getItem(SESSION_KEY);
+  if (stored) {
+    try {
+      const res = await fetch(`${API_BASE}/health`, {
+        headers: { 'X-Access-Key': stored }
+      });
+      if (res.ok) { showApp(); return; }
+    } catch {}
+  }
+  document.getElementById('login-screen').classList.add('visible');
+}
+
+
+async function submitLogin() {
+  const key = document.getElementById('login-key').value.trim();
+  const err = document.getElementById('login-error');
+  if (!key) { err.textContent = 'Inserisci la chiave di accesso'; return; }
+  try {
+    const res = await fetch(`${API_BASE}/health`, {
+      headers: { 'X-Access-Key': key }
+    });
+    if (res.status === 403) {
+      err.textContent = 'Chiave non valida';
+      document.getElementById('login-key').value = '';
+      return;
+    }
+    if (!res.ok) { err.textContent = 'Errore di connessione. Riprova.'; return; }
+    localStorage.setItem(SESSION_KEY, key);
+    showApp();
+  } catch(e) {
+    err.textContent = 'Impossibile raggiungere il server.';
+  }
+}
+
+
+function showApp() {
+  document.getElementById('login-screen').classList.remove('visible');
+  populateAgencyDropdowns();
+  loadTtsVoices();  // 2026-10-08: needs SESSION_KEY (a const declared further down), so it can only run after login
+}
+
+
+checkLogin();
+
+
+// ── Auth fetch helper — adds access key to all requests ───────────────────────
+function authHeaders(extra = {}) {
+  const key = localStorage.getItem(SESSION_KEY) || '';
+  return key ? { 'X-Access-Key': key, ...extra } : extra;
+}
+
+// What the download gives (original resolution/size) next to the light preview, so nobody wonders if the shared file is the sharp one.
+async function showVideoInfo(jobId, elId) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  try {
+    const r = await fetch(`${API_BASE}/jobs/${jobId}/video-info`, { headers: authHeaders() });
+    if (!r.ok) return;
+    const d = await r.json();
+    const o = d.original || {};
+    if (o.width && o.height) {
+      el.textContent = `Anteprima leggera. Il pulsante Scarica dà il file ORIGINALE: ${o.width}×${o.height}, ${o.size_mb} MB.`;
+    }
+  } catch (e) { /* the label is optional */ }
+}
+
+
+async function authFetch(url, options = {}) {
+  options.headers = { ...authHeaders(), ...(options.headers || {}) };
+  const res = await fetch(url, options);
+  if (res.status === 403) {
+    localStorage.removeItem(SESSION_KEY);
+    document.getElementById('login-screen').classList.add('visible');
+    throw new Error('Sessione scaduta. Accedi di nuovo.');
+  }
+  return res;
+}
+let files        = [];
+let pollTimer    = null;
+let currentJobId  = null;   // always the ORIGINAL job ID for rework purposes
+let currentJobStatus = null;  // 'draft' means never generated yet - charge for ALL scenes, not just rework-marked ones
+let activeJobId   = null;   // the currently polling job (may be a rework)
+let sceneAnalysis = {};
+let qcDecisions  = {};
+let sceneUserData = {};
+let completedScenes = [];
+let newlyAddedSceneIndices = new Set(); // explicit tracking — never infer "new" from array length
+let reworkOpen = {};
+
+
+// ── DOM refs ───────────────────────────────────────────────────────────────────
+const dropZone   = document.getElementById('drop-zone');
+const fileInput  = document.getElementById('file-input');
+const scenesCont = document.getElementById('scenes-container');
+const genBtn     = document.getElementById('generate-btn');
+const errorMsg   = document.getElementById('error-msg');
+const progSec    = document.getElementById('progress-section');
+const qcSec      = document.getElementById('qc-section');
+const resultSec  = document.getElementById('result-section');
+// 2026-10-27: ONE place that clears everything a previous job left on screen (result + QC panel). Starting, opening or
+// redoing a job used to hide only some of them (the draft start path forgot the QC panel, editJob forgot the result).
+function hideJobOutputs() { resultSec.style.display = 'none'; qcSec.style.display = 'none'; }
+
+
+// ── File handling ─────────────────────────────────────────────────────────────
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('drag-over'); addFiles([...e.dataTransfer.files]); });
+fileInput.addEventListener('change', () => { addFiles([...fileInput.files]); fileInput.value = ''; });
+
+
+function addFiles(newFiles) {
+  const imgs = newFiles.filter(f => f.type.startsWith('image/'));
+  const start = files.length;
+  files = [...files, ...imgs];
+  renderScenes();
+  // Trigger vision analysis for each new file
+  imgs.forEach((_, idx) => analyseImage(start + idx));
+  updateCostEstimate();
+}
+
+
+// ── Drag and drop scene reorder ────────────────────────────────────────────────
+let dragSrcIndex = null;
+
+
+function onDragStart(event, index) {
+  dragSrcIndex = index;
+  event.dataTransfer.effectAllowed = 'move';
+  setTimeout(() => {
+    const card = scenesCont.querySelector(`[data-index="${index}"]`);
+    if (card) card.classList.add('dragging');
+  }, 0);
+}
+
+
+function onDragEnd(event) {
+  document.querySelectorAll('.scene-card').forEach(c => {
+    c.classList.remove('dragging','drag-over-top','drag-over-bottom');
+  });
+  dragSrcIndex = null;
+}
+
+
+function onDragOver(event, index) {
+  event.preventDefault();
+  event.dataTransfer.dropEffect = 'move';
+  const card = scenesCont.querySelector(`[data-index="${index}"]`);
+  if (!card || index === dragSrcIndex) return;
+  document.querySelectorAll('.scene-card').forEach(c =>
+    c.classList.remove('drag-over-top','drag-over-bottom')
+  );
+  const rect = card.getBoundingClientRect();
+  const mid  = rect.top + rect.height / 2;
+  card.classList.add(event.clientY < mid ? 'drag-over-top' : 'drag-over-bottom');
+}
+
+
+function onDragLeave(event) {
+  event.currentTarget?.classList?.remove('drag-over-top','drag-over-bottom');
+}
+
+
+function onDrop(event, targetIndex) {
+  event.preventDefault();
+  if (dragSrcIndex === null || dragSrcIndex === targetIndex) return;
+
+
+  const card = scenesCont.querySelector(`[data-index="${targetIndex}"]`);
+  const rect  = card?.getBoundingClientRect();
+  const mid   = rect ? rect.top + rect.height / 2 : 0;
+  const insertBefore = event.clientY < mid;
+
+
+  // Save current state before reorder
+  saveSceneData();
+
+
+  // Reorder files array
+  const movedFile    = files.splice(dragSrcIndex, 1)[0];
+  const movedAnalysis = sceneAnalysis[dragSrcIndex];
+  const movedData    = sceneUserData[dragSrcIndex];
+
+
+  // Adjust target index after splice
+  let ti = targetIndex > dragSrcIndex ? targetIndex - 1 : targetIndex;
+  if (!insertBefore) ti += 1;
+
+
+  files.splice(ti, 0, movedFile);
+
+
+  // Rebuild sceneAnalysis and sceneUserData with new indices
+  const newAnalysis  = {};
+  const newUserData  = {};
+  files.forEach((_, newIdx) => {
+    const oldIdx = newIdx === ti ? dragSrcIndex
+      : newIdx < ti ? (newIdx < dragSrcIndex ? newIdx : newIdx + 1)
+      : (newIdx <= dragSrcIndex ? newIdx - 1 : newIdx);
+    if (sceneAnalysis[oldIdx])  newAnalysis[newIdx]  = sceneAnalysis[oldIdx];
+    if (sceneUserData[oldIdx])  newUserData[newIdx]  = sceneUserData[oldIdx];
+  });
+  // Place moved item
+  newAnalysis[ti]  = movedAnalysis;
+  newUserData[ti]  = movedData;
+
+
+  Object.keys(sceneAnalysis).forEach(k => delete sceneAnalysis[k]);
+  Object.keys(sceneUserData).forEach(k => delete sceneUserData[k]);
+  Object.assign(sceneAnalysis, newAnalysis);
+  Object.assign(sceneUserData, newUserData);
+
+
+  renderScenes();
+  updateCostEstimate();
+}
+
+
+// ── Add new scenes after upload ────────────────────────────────────────────────
+function addMoreScenes(input) {
+  const newFiles = [...input.files].filter(f => f.type.startsWith('image/'));
+  if (!newFiles.length) return;
+  const start = files.length;
+  files = [...files, ...newFiles];
+  // Explicitly mark these indices as genuinely new — do NOT infer from length elsewhere
+  newFiles.forEach((_, idx) => newlyAddedSceneIndices.add(start + idx));
+  renderScenes();
+  newFiles.forEach((_, idx) => analyseImage(start + idx));
+  updateCostEstimate();
+  input.value = '';
+}
+
+
+function removeScene(i) {
+  files.splice(i, 1);
+  // BUG FIXED: previously only deleted index i's data without shifting
+  // subsequent scenes' data down, so scene i+1's caption/settings stayed
+  // "stuck" under label i+1 even after its photo moved to slot i. Now
+  // properly reindexes every index-keyed structure after a removal.
+  const reindex = (obj) => {
+    const rebuilt = {};
+    Object.keys(obj).map(Number).sort((a, b) => a - b).forEach(idx => {
+      if (idx < i) rebuilt[idx] = obj[idx];
+      else if (idx > i) rebuilt[idx - 1] = obj[idx];
+      // idx === i is dropped - that scene was just removed
+    });
+    Object.keys(obj).forEach(k => delete obj[k]);
+    Object.assign(obj, rebuilt);
+  };
+  reindex(sceneUserData);
+  reindex(sceneAnalysis);
+  const reindexSet = (s) => {
+    const shifted = new Set();
+    s.forEach(idx => {
+      if (idx < i) shifted.add(idx);
+      else if (idx > i) shifted.add(idx - 1);
+    });
+    s.clear();
+    shifted.forEach(idx => s.add(idx));
+  };
+  if (typeof newlyAddedSceneIndices !== 'undefined') reindexSet(newlyAddedSceneIndices);
+  if (typeof durationChangedSceneIndices !== 'undefined') reindexSet(durationChangedSceneIndices);
+  renderScenes();
+  updateCostEstimate();
+}
+
+
+// ── Vision analysis on upload ─────────────────────────────────────────────────
+async function analyseImage(index) {
+  const file = files[index];
+  if (!file) return;
+
+
+  // Mark as analysing
+  sceneAnalysis[index] = { analysing: true };
+  updateSceneBadge(index, 'analysing', '🔍 Analysing…');
+
+
+  const fd = new FormData();
+  fd.append('image', file);
+
+
+  try {
+    const res = await authFetch(`${API_BASE}/analyse-image`, { method: 'POST', body: fd });
+    if (!res.ok) throw new Error('Analysis failed');
+    const data = await res.json();
+    sceneAnalysis[index] = data;
+
+
+    // Auto-fill space type and POV movement in scene card
+    const card = scenesCont.querySelector(`[data-index="${index}"]`);
+    if (card) {
+      const spaceSel = card.querySelector('.sc-space-type');
+      const moveSel  = card.querySelector('.sc-pov-movement');
+      if (spaceSel && data.v7_space_type)    spaceSel.value = data.v7_space_type;
+      if (moveSel  && data.suggested_movement) moveSel.value = data.suggested_movement;
+    }
+
+
+    const label = spaceLabel(data.v7_space_type || data.space_type) + (data.confidence < 0.7 ? ' ?' : '');
+    updateSceneBadge(index, 'ok', `🏠 ${label}`);
+
+
+  } catch(e) {
+    sceneAnalysis[index] = { error: true };
+    updateSceneBadge(index, '', '');
+  }
+}
+
+
+function spaceLabel(type) {
+  const map = {
+    large: 'Grande interno', large_interior: 'Grande interno',
+    medium: 'Interno medio', medium_interior: 'Interno medio',
+    bedroom: 'Camera da letto',
+    small: 'Piccolo interno', small_interior: 'Piccolo interno',
+    corridor: 'Corridoio',
+    outdoor: 'Esterno', ground_exterior: 'Esterno',
+    elevated: 'Balcone/Terrazza',
+  };
+  return map[type] || type;
+}
+
+
+function updateSceneBadge(index, cls, text) {
+  const card = scenesCont.querySelector(`[data-index="${index}"]`);
+  if (!card) return;
+  const badge = card.querySelector('.sc-ai-badge');
+  if (!badge) return;
+  badge.textContent = text;
+  badge.className = 'sc-ai-badge' + (cls ? ' ' + cls : '');
+  badge.style.display = text ? '' : 'none';
+}
+
+
+// ── v7 Structured dropdown options ────────────────────────────────────────────
+const SPACE_OPTS = {
+  large:    'Grande interno — soggiorno, open plan',
+  medium:   'Interno medio — cucina, sala da pranzo',
+  bedroom:  'Camera da letto',
+  small:    'Piccolo interno — bagno, ripostiglio',
+  corridor: 'Corridoio / disimpegno / ingresso',
+  outdoor:  'Esterno — giardino, piscina, facciata',
+  elevated: 'Balcone / terrazza / loggia',
+};
+
+
+const MOVEMENT_OPTS = {
+  walk_in_explore:    '⭐ Entra ed esplora — sguardo naturale (consigliato)',
+  walk_in_gentle:     'Entra dolcemente — tracking laterale',
+  walk_in_turn_left:  'Entra e gira a sinistra',
+  walk_in_turn_right: 'Entra e gira a destra',
+  walk_through:       'Attraversa il corridoio — avanza dritto',
+  // 2026-07-27: stand_look_around removed -- confirmed broken in any
+  // orientation, now unconditionally remapped server-side to
+  // walk_in_explore, making it a redundant duplicate option here.
+  subtle_rotate:      'Rotazione sottile — max 15° (piccoli ambienti)',
+  approach_reveal:    'Avvicinati dolcemente — per piccoli ambienti',
+  walk_toward:        'Avvicinati alla proprietà — per esterni',
+  approach_facade:    '⭐ Avvicinamento alla facciata — dritto e lento, non mostra mai più della foto (facciata)',
+  outward_view:       '⭐ Sguardo verso l\'esterno — lento, senza inventare nulla (giardino, balcone, terrazza, piscina)',
+  reveal_pullback:    'Allontanamento con profondità — indietro, può inventare ciò che non è nella foto (sconsigliato)',
+  step_out_onto:      'Esci verso — per balconi e terrazze (max 30°)',
+};
+
+
+// Space type → default POV movement mapping. MIRROR of camera_plan.SPACE_DEFAULT_MOVEMENT (python): test_camera_plan.py fails if they differ.
+const SPACE_DEFAULT_MOVEMENT_MAP = {
+  large:    'walk_in_explore',
+  medium:   'walk_in_explore',
+  bedroom:  'walk_in_gentle',
+  small:    'subtle_rotate',
+  corridor: 'walk_through',
+  outdoor:  'approach_facade',
+  elevated: 'outward_view',
+};
+
+
+function onSpaceTypeChange(index, value) {
+  // Auto-update POV movement when user manually changes space type
+  const card = scenesCont.querySelector(`[data-index="${index}"]`);
+  if (!card) return;
+  const moveSel = card.querySelector('.sc-pov-movement');
+  if (moveSel) {
+    moveSel.value = SPACE_DEFAULT_MOVEMENT_MAP[value] || 'walk_in_explore';
+  }
+  contentChangedSceneIndices.add(index);
+  updateCostEstimate();
+}
+
+
+// Show/hide video upscale toggle based on tier
+// BUG FIX: sliders previously never adapted to model tier at all - hardcoded
+// min=4 max=20 step=2 regardless of tier, meaning Luma (valid only 5s/9s)
+// kept receiving invalid durations like 4s, 8s, etc. This caused repeated
+// "Input should be '5s' or '9s'" rejections from fal.ai.
+function getDurationRangeForTier(tier) {
+  if (tier === 'luma') return {min: 5, max: 5, step: 1, def: 5, minLabel: '5s', maxLabel: '5s'}; // 2026-10-15: Luma is used at 5 s only (9 s clips risk hallucinations); same value as FIXED_SCENE_SECS_BY_TIER in narration.py
+  if (tier === 'eco')  return {min: 6, max: 20, step: 2, def: 8, minLabel: '6s', maxLabel: '20s'};
+  return {min: 4, max: 8, step: 2, def: 6, minLabel: '4s', maxLabel: '8s'}; // premium/premium_veo/standard (Veo-backed)
+}
+
+function onTierChange(tier) {
+  const upscaleRow = document.getElementById('video-upscale-row');
+  if (upscaleRow) upscaleRow.style.display = tier === 'eco' ? '' : 'none';
+
+  const range = getDurationRangeForTier(tier);
+  [...scenesCont.querySelectorAll('.sc-duration')].forEach(slider => {
+    slider.min = range.min;
+    slider.max = range.max;
+    slider.step = range.step;
+    const current = parseInt(slider.value, 10) || range.def;
+    const snapped = Math.max(range.min, Math.min(range.max,
+      Math.round((current - range.min) / range.step) * range.step + range.min));
+    slider.value = snapped;
+    const card = slider.closest('.scene-card');
+    const durVal = card ? card.querySelector('.dur-val') : null;
+    if (durVal) durVal.textContent = snapped + 's';
+    const row = slider.closest('.dur-row');
+    if (row) {
+      const spans = row.querySelectorAll('span');
+      if (spans[0]) spans[0].textContent = range.minLabel;
+      if (spans[1]) spans[1].textContent = range.maxLabel;
+    }
+  });
+
+  saveSceneData();
+  updateCostEstimate();
+}
+
+
+// ── Save/restore scene user data across renders ────────────────────────────────
+function saveSceneData() {
+  [...scenesCont.querySelectorAll('.scene-card')].forEach(card => {
+    const i = parseInt(card.dataset.index);
+    sceneUserData[i] = {
+      caption:      card.querySelector('.sc-caption')?.value || '',
+      voiceover:    card.querySelector('.sc-voiceover')?.value || '',
+      duration:     card.querySelector('.sc-duration')?.value || '5',
+      space_type:   card.querySelector('.sc-space-type')?.value || 'large',
+      pov_movement: card.querySelector('.sc-pov-movement')?.value || 'walk_in_explore',
+      remove_watermark: card.querySelector('.sc-remove-watermark')?.checked || false,
+      rework_open:  document.getElementById(`rw-panel-${i}`)?.classList.contains('open') || false,
+    };
+  });
+}
+
+
+function renderScenes() {
+  saveSceneData();
+  const _durRange = getDurationRangeForTier(document.getElementById('model-tier')?.value || 'luma');
+  genBtn.disabled = files.length === 0;
+  // Show/hide add scene button
+  const addBtn = document.getElementById('add-scene-btn');
+  if (addBtn) addBtn.style.display = files.length > 0 ? 'flex' : 'none';
+
+
+  if (!files.length) {
+    scenesCont.innerHTML = '<div class="empty-state">Upload photos above to configure scenes</div>';
+    return;
+  }
+  scenesCont.innerHTML = '';
+  files.forEach((file, i) => {
+    const url      = URL.createObjectURL(file);
+    const ai       = sceneAnalysis[i];
+    const saved    = sceneUserData[i] || {};
+    const scStatus = completedScenes.find(s => s.index === i);
+
+
+    const badge = ai && !ai.analysing && !ai.error
+      ? `<span class="sc-ai-badge">🏠 ${spaceLabel(ai.v7_space_type || ai.space_type)}</span>`
+      : ai && ai.analysing
+        ? `<span class="sc-ai-badge analysing">🔍 Analisi…</span>`
+        : `<span class="sc-ai-badge" style="display:none"></span>`;
+
+
+    // Status badge after job completion
+    const statusBadge = scStatus
+      ? scStatus.video === 'ok'
+        ? `<span class="sc-ai-badge ok" style="background:#edf7f1;color:var(--ok)">✓ completato</span>`
+        : `<span class="sc-ai-badge" style="background:#fdf0ef;color:var(--danger)">✗ fallito</span>`
+      : '';
+
+
+    const spaceOpts = Object.entries(SPACE_OPTS)
+      .map(([v,l]) => `<option value="${v}"${v===(saved.space_type||'large')?'selected':''}>${l}</option>`).join('');
+    const moveOpts = Object.entries(MOVEMENT_OPTS)
+      .map(([v,l]) => `<option value="${v}"${v===(saved.pov_movement||'walk_in_explore')?'selected':''}>${l}</option>`).join('');
+    const spaceSelect = `<select class="sc-space-type" onchange="onSpaceTypeChange(${i}, this.value)">${spaceOpts}</select>`;
+
+
+    // Rework panel — shown if job completed
+    const reworkPanel = scStatus ? `
+      <div class="rework-panel${saved.rework_open ? ' open' : ''}" id="rw-panel-${i}">
+        <div style="font-size:.78rem;color:var(--muted);padding:8px 0 4px">
+          Questa scena verrà rigenerata: prima il voiceover, poi il video alla durata corretta.
+        </div>
+      </div>` : '';
+
+
+    const sceneIdForThis = saved.scene_id || null;
+    // 2026-07-21 fix: both branches used to differ -- modern scenes (with
+    // scene_id) called redoSceneNew() directly, which submits IMMEDIATELY
+    // and locks the job right away; legacy scenes opened a staging panel
+    // instead, letting you select several scenes before submitting them
+    // all together via "Genera video". This meant redoing more than one
+    // scene only worked on legacy jobs -- on a modern job, redoing the
+    // first scene immediately locked the job before a second or third
+    // scene could be selected. Both branches now open the same staging
+    // panel; redoSceneNew() and the singular /scenes/{id}/redo endpoint
+    // are no longer called from here (left in the codebase, just unused
+    // from this button) -- everything now goes through the batch endpoint.
+    const reworkBtn = scStatus
+      ? `<button class="btn-rework-toggle" onclick="openReworkPanel(${i}, this)" id="rw-btn-${i}">↺ Rifai questa scena</button>`
+      : '';
+
+
+    const card = document.createElement('div');
+    card.className = `scene-card${scStatus ? (scStatus.video==='ok' ? ' qc-pass' : ' qc-fail') : ''}`;
+    card.dataset.index = i;
+    card.dataset.sceneId = sceneIdForThis || '';
+    card.setAttribute('ondragover', `onDragOver(event,${i})`);
+    card.setAttribute('ondrop', `onDrop(event,${i})`);
+    card.setAttribute('ondragleave', 'onDragLeave(event)');
+    card.innerHTML = `
+      <div class="sc-head">
+        <span class="sc-drag-handle" draggable="true"
+          ondragstart="onDragStart(event,${i})"
+          ondragend="onDragEnd(event)"
+          title="Trascina per riordinare">⠿</span>
+        <img class="sc-thumb" src="${url}" />
+        <div>
+          <div class="sc-num">Scena ${i} <span style="opacity:.6">(scene_${String(i).padStart(3,'0')})</span></div>
+          <div class="sc-name">${file.name} ${badge} ${statusBadge}</div>
+        </div>
+        ${reworkBtn}
+        <button class="sc-remove" onclick="removeScene(${i})">✕</button>
+      </div>
+      <div class="sc-fields">
+        <div>
+          <label>Didascalia</label>
+          <input type="text" class="sc-caption" value="${saved.caption||''}"
+            placeholder="es: Soggiorno, Camera da letto, Balcone…"
+            oninput="contentChangedSceneIndices.add(${i})" />
+        </div>
+        <div>
+          <label>Testo voiceover <span style="color:var(--muted)">(opzionale)</span></label>
+          <div class="vo-wrap">
+            <textarea class="sc-voiceover" placeholder="es: Benvenuti in questo splendido appartamento…"
+              oninput="onVoiceoverChange(${i}, this)">${saved.voiceover||''}</textarea>
+            <span class="vo-counter" id="vo-counter-${i}"></span>
+          </div>
+          <div class="vo-hint" id="vo-hint-${i}"></div>
+        </div>
+        <div class="sc-row3">
+          <div>
+            <label>Tipo di spazio</label>
+            ${spaceSelect}
+          </div>
+          <div>
+            <label>Movimento POV</label>
+            <select class="sc-pov-movement" onchange="contentChangedSceneIndices.add(${i})">${moveOpts}</select>
+          </div>
+          <div>
+            <label>Durata clip</label>
+            <div class="dur-row">
+              <span style="font-size:.75rem;color:var(--muted)">${_durRange.minLabel}</span>
+              <input type="range" class="sc-duration" min="${_durRange.min}" max="${_durRange.max}" step="${_durRange.step}"
+                value="${saved.duration||_durRange.def}"
+                oninput="onDurationChange(this)" />
+              <span style="font-size:.75rem;color:var(--muted)">${_durRange.maxLabel}</span>
+              <span class="dur-val">${saved.duration||_durRange.def}s</span>
+            </div>
+          </div>
+        </div>
+        <div style="margin-top:8px">
+          <label style="display:flex;align-items:center;gap:6px;font-size:.8rem;cursor:pointer">
+            <input type="checkbox" class="sc-remove-watermark" ${saved.remove_watermark ? 'checked' : ''} />
+            Rimuovi watermark/logo da questa foto
+          </label>
+        </div>
+      </div>
+      ${reworkPanel}`;
+    scenesCont.appendChild(card);
+
+
+    // Restore AI suggestions only if no saved user data
+    if (ai && !saved.space_type) {
+      if (ai.v7_space_type) card.querySelector('.sc-space-type').value = ai.v7_space_type;
+      if (ai.suggested_movement) card.querySelector('.sc-pov-movement').value = ai.suggested_movement;
+    }
+  });
+}
+
+
+function onCaptionChange(index, value) {
+  updateCostEstimate();
+}
+
+
+function bulkRework() {
+  if (!completedScenes.length) {
+    showError('Nessuna scena completata. Genera prima un video.');
+    return;
+  }
+  completedScenes.forEach(s => {
+    const i = s.index;
+    sceneUserData[i] = sceneUserData[i] || {};
+    sceneUserData[i].rework_open = true;
+    const panel = document.getElementById(`rw-panel-${i}`);
+    if (panel) panel.classList.add('open');
+    const btn = document.getElementById(`rw-btn-${i}`);
+    if (btn) {
+      btn.textContent       = '✓ Aperto — premi Genera video';
+      btn.style.color       = 'var(--ok)';
+      btn.style.borderColor = 'var(--ok)';
+    }
+  });
+  scenesCont.scrollIntoView({ behavior: 'smooth' });
+  showError(`↑ ${completedScenes.length} scena/e aperte — premi Genera video per rigenerare`);
+}
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// NEW SOLID REWORK MODEL — scene_id based, single job directory, no siblings
+// ══════════════════════════════════════════════════════════════════════════════
+
+
+async function redoSceneNew(cardIndex, sceneId) {
+  const card = scenesCont.querySelector(`[data-index="${cardIndex}"]`);
+  if (!card) return;
+
+
+  const btn = document.getElementById(`rw-btn-${cardIndex}`);
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Invio…'; }
+
+
+  const sceneUpdate = {
+    caption:      card.querySelector('.sc-caption')?.value.trim() || '',
+    voiceover:    card.querySelector('.sc-voiceover')?.value.trim() || '',
+    space_type:   card.querySelector('.sc-space-type')?.value || 'large',
+    pov_movement: card.querySelector('.sc-pov-movement')?.value || 'walk_in_explore',
+  };
+
+
+  const fd = new FormData();
+  fd.append('scene_update', JSON.stringify(sceneUpdate));
+  // Send the CURRENT transition selection so it applies to this rework -
+  // previously the transition was frozen at job creation and the dropdown
+  // had no effect on an existing job.
+  const transEl = document.getElementById('transition-style');
+  if (transEl) fd.append('transition_style', transEl.value);
+
+
+  try {
+    const res = await authFetch(`${API_BASE}/jobs/${currentJobId}/scenes/${sceneId}/redo`, {
+      method: 'POST', body: fd
+    });
+    if (res.status === 409) {
+      const e = await res.json();
+      showError(`⚠ ${e.detail}`);
+      if (btn) { btn.disabled = false; btn.textContent = '↺ Rifai questa scena'; }
+      return;
+    }
+    if (!res.ok) {
+      let detail = `Server error ${res.status}`;
+      try { const e = await res.json(); detail = e.detail || detail; } catch(_) {}
+      throw new Error(detail);
+    }
+    activeJobId = currentJobId;  // same job, no sibling — poll the same ID
+    progSec.style.display   = 'block';
+    resultSec.style.display = 'none';
+    updateProgress(5, 'Rework: rigenerazione scena in corso…');
+    startPolling(currentJobId);
+  } catch(e) {
+    showError(e.message);
+    if (btn) { btn.disabled = false; btn.textContent = '↺ Rifai questa scena'; }
+  }
+}
+
+
+async function addSceneNewSolid(file, sceneConfig) {
+  if (!currentJobId) {
+    showError('Nessun job caricato — apri prima un video dalla libreria');
+    return;
+  }
+  const fd = new FormData();
+  fd.append('image', file);
+  fd.append('scene_config', JSON.stringify(sceneConfig));
+
+
+  updateProgress(5, 'Caricamento nuova scena…');
+  progSec.style.display = 'block';
+
+
+  try {
+    const res = await authFetch(`${API_BASE}/jobs/${currentJobId}/scenes`, { method: 'POST', body: fd });
+    if (res.status === 409) {
+      const e = await res.json();
+      showError(`⚠ ${e.detail}`);
+      return;
+    }
+    if (!res.ok) {
+      let detail = `Server error ${res.status}`;
+      try { const e = await res.json(); detail = e.detail || detail; } catch(_) {}
+      throw new Error(detail);
+    }
+    activeJobId = currentJobId;
+    startPolling(currentJobId);
+  } catch(e) {
+    showError(e.message);
+  }
+}
+
+
+function openReworkPanel(i, btn) {
+  saveSceneData();
+  sceneUserData[i] = sceneUserData[i] || {};
+  sceneUserData[i].rework_open = true;
+  const panel = document.getElementById(`rw-panel-${i}`);
+  if (panel) {
+    panel.classList.add('open');
+    panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+  if (btn) {
+    btn.textContent    = '✓ Aperto — premi Genera video';
+    btn.style.color    = 'var(--ok)';
+    btn.style.borderColor = 'var(--ok)';
+  }
+  updateCostEstimate();
+}
+
+
+function toggleRework(i) {
+  saveSceneData();
+  sceneUserData[i] = sceneUserData[i] || {};
+  sceneUserData[i].rework_open = !sceneUserData[i].rework_open;
+  const panel = document.getElementById(`rw-panel-${i}`);
+  if (panel) panel.classList.toggle('open');
+  updateCostEstimate();
+}
+
+
+function onDurationChange(input) {
+  input.closest('.sc-fields').querySelector('.dur-val').textContent = input.value + 's';
+  updateCostEstimate();
+  checkNarrationDurationMatch();
+}
+
+
+function checkNarrationDurationMatch() {
+  // Live feedback whenever scene durations change AFTER narration was
+  // already generated once — recalculates the comparison locally without
+  // needing another server call, since we already know the narration
+  // duration from the last "Genera voiceover" click.
+  if (!narrationDistribution) return;  // narration never generated yet — nothing to compare
+
+
+  const sliders = [...scenesCont.querySelectorAll('.sc-duration')];
+  const currentTotal = sliders.reduce((sum, s) => sum + parseInt(s.value || 0), 0);
+  const narrationSecs = narrationDistribution.narration_duration_secs;
+  const targetTotal = narrationSecs; // 2026-10-15: matches narration.py calculate_scene_durations() -- lead/trail blank frames are added around the scenes, not counted inside them
+
+
+  const statusEl = document.getElementById('narration-status');
+  const tooShort = (currentTotal - narrationSecs) > 4.0; // TOO_SHORT_THRESHOLD_SECS in narration.py (2026-10-15: no padding term any more)
+  // 2026-10-15: fixed-length tiers report how much overrun the trailing buffer absorbs (server value, narration.py MAX_OVERFLOW_SECS); 0 for the others
+  const allowedOverflow = narrationDistribution.max_overflow_secs || 0;
+  const needsExtension = (targetTotal - currentTotal) > allowedOverflow;
+
+
+  if (needsExtension) {
+    statusEl.textContent = allowedOverflow > 0
+      ? `⚠ La narrazione (${narrationSecs}s) supera le scene (${currentTotal}s) di più di ${allowedOverflow}s — accorcia il testo`
+      : `⚠ Le scene attuali (${currentTotal}s) sono più corte della narrazione (${narrationSecs}s) — il video verrà esteso`;
+    statusEl.style.color = 'var(--danger)';
+  } else if (tooShort) {
+    statusEl.textContent = `⚠ Le scene attuali (${currentTotal}s) superano la narrazione di troppo — ${Math.round(currentTotal - narrationSecs)}s di silenzio previsti`;
+    statusEl.style.color = 'var(--danger)';
+  } else {
+    statusEl.textContent = `✓ Durate scene (${currentTotal}s) compatibili con la narrazione (${narrationSecs}s)`;
+    statusEl.style.color = 'var(--ok)';
+  }
+}
+
+
+// ── Voiceover word count + auto-duration ──────────────────────────────────────
+const CHARS_PER_SEC   = 16;
+const TTS_BUFFER_SECS = 2;
+const MAX_DURATION    = 20;
+const MIN_DURATION    = 4;
+const VALID_DURATIONS = [4, 6, 8, 10, 12, 14, 16, 18, 20];
+
+
+function snapDuration(secs) {
+  for (const v of VALID_DURATIONS) if (v >= secs) return v;
+  return MAX_DURATION;
+}
+
+
+function onVoiceoverChange(index, textarea) {
+  const chars    = textarea.value.trim().length;
+  const estSecs     = Math.ceil(chars / CHARS_PER_SEC);
+  const bufferedSecs = estSecs + TTS_BUFFER_SECS;
+  const counter  = document.getElementById(`vo-counter-${index}`);
+  const hint     = document.getElementById(`vo-hint-${index}`);
+  const card     = scenesCont.querySelector(`[data-index="${index}"]`);
+  const slider   = card ? card.querySelector('.sc-duration') : null;
+  const durVal   = card ? card.querySelector('.dur-val') : null;
+
+
+  if (!counter) return;
+
+
+  if (chars === 0) {
+    counter.textContent = '';
+    hint.textContent    = '';
+    counter.className   = 'vo-counter';
+    return;
+  }
+
+
+  counter.textContent = `~${estSecs}s (+2s buffer)`;
+
+
+  if (bufferedSecs > MAX_DURATION) {
+    counter.className = 'vo-counter over';
+    hint.textContent  = `⚠ Testo troppo lungo per una scena. Considera di dividerlo in due scene.`;
+    hint.className    = 'vo-hint over';
+  } else {
+    counter.className = bufferedSecs > 16 ? 'vo-counter warn' : 'vo-counter';
+    hint.textContent  = '';
+    hint.className    = 'vo-hint';
+    if (slider && durVal) {
+      const snapped    = snapDuration(bufferedSecs);
+      slider.value     = snapped;
+      durVal.textContent = snapped + 's';
+    }
+  }
+
+
+  updateCostEstimate();
+}
+
+
+// ── Build config from scene cards ─────────────────────────────────────────────
+function getScenesConfig() {
+  return [...scenesCont.querySelectorAll('.scene-card')].map(card => ({
+    caption:      card.querySelector('.sc-caption').value.trim(),
+    voiceover:    card.querySelector('.sc-voiceover').value.trim(),
+    duration:     parseInt(card.querySelector('.sc-duration').value, 10),
+    space_type:   card.querySelector('.sc-space-type').value,
+    pov_movement: card.querySelector('.sc-pov-movement').value,
+    remove_watermark: card.querySelector('.sc-remove-watermark')?.checked || false,
+    scene_id:     card.dataset.sceneId || null,
+  }));
+}
+
+
+// ── Live cost estimate ─────────────────────────────────────────────────────────
+async function updateCostEstimate() {
+  if (files.length === 0) {
+    document.getElementById('cost-panel').style.display = 'none';
+    return;
+  }
+  const config = getScenesConfig();
+
+
+  // Determine which scenes will ACTUALLY be generated this time —
+  // if editing an existing job, only rework-marked scenes cost anything;
+  // a fresh upload costs for all scenes. This was previously always
+  // costing for ALL scenes even during a rework of just 1-2 of them.
+  let scenesToCharge = config;
+  let isRework = false;
+  if (currentJobId && currentJobStatus !== 'draft') {
+    // BUG FIXED: this branch previously ran for ANY loaded job (including
+    // a fresh draft that has never been generated), incorrectly charging
+    // nothing since a draft has no scenes "marked for rework" yet - there's
+    // nothing to mark, everything just needs generating for the first time.
+    // Now only applies to genuinely COMPLETED jobs being reworked.
+    const reworkIndices = new Set();
+    [...scenesCont.querySelectorAll('.rework-panel.open')].forEach(panel => {
+      const i = parseInt(panel.id.replace('rw-panel-',''));
+      if (!isNaN(i)) reworkIndices.add(i);
+    });
+    newlyAddedSceneIndices.forEach(i => reworkIndices.add(i));
+    durationChangedSceneIndices.forEach(i => reworkIndices.add(i));
+    contentChangedSceneIndices.forEach(i => { if (i < files.length) reworkIndices.add(i); });
+    if (reworkIndices.size > 0) {
+      isRework = true;
+      scenesToCharge = config.filter((_, i) => reworkIndices.has(i));
+    } else {
+      // Existing COMPLETED job, nothing marked for rework — no video cost at all
+      scenesToCharge = [];
+      isRework = true;
+    }
+  }
+  // else: no job loaded yet, OR a fresh draft (currentJobStatus === 'draft')
+  // - charge for ALL scenes, same as a brand new manual upload, since
+  // nothing has ever been generated for this job yet.
+
+
+
+  // Client-side cost estimate (mirrors cost_tracker.py logic)
+  const tier         = document.getElementById('model-tier').value;
+  const upscale      = document.getElementById('do-upscale').checked;
+  const videoUpscale = document.getElementById('do-video-upscale').checked && tier === 'eco';
+  const visionQc     = document.getElementById('do-vision-qc').checked;
+
+
+  // Real per-second rates (2026-07-21 fix: mirrors cost_tracker.py's
+  // VIDEO_COST_PER_SEC_EUR exactly -- this was a flat per-clip rate that
+  // ignored both actual scene duration and Luma's real resolution-based
+  // cost multiplier (fal.ai charges 4x its base rate for 1080p, which we
+  // always request). Same class of bug as the narration-buffer constant
+  // duplication found earlier this session -- a third, disconnected copy
+  // of pricing logic living only in the frontend, never touched when the
+  // backend was fixed.
+  const ECO_CLIP_COST          = 0.05;  // eco tier keeps its own separate flat approximation
+  const VIDEO_COST_PER_SEC_EUR = { luma: 0.2208, premium: 0.092, premium_veo: 0.184 };
+  const UPSCALE      = 0.030;
+  const VIDEO_UP_PER_SEC = 0.02;
+  // voiceover rate: from the server (/tts/voices, cost_tracker.tts_cost_per_char), see ttsCostPerChar
+  const CLIP_QC_EST  = 0.0093;  // = cost_tracker.CLIP_QC_EST_EUR_PER_CLIP (the clip QC is Claude vision since 2026-10-25, one call per clip)
+  const INFRA        = 34.79 / 20;  // updated annual Hostinger cost — server recalculates actual rolling value
+
+
+  const n         = scenesToCharge.length;
+  const videoCost = scenesToCharge.reduce((s,sc) => {
+    if (tier === 'eco') return s + ECO_CLIP_COST;
+    const rate = VIDEO_COST_PER_SEC_EUR[tier] || VIDEO_COST_PER_SEC_EUR.premium;
+    // 2026-10-27: Luma is always ONE 5 s clip per scene (same table as the duration slider, narration.py and cost_tracker.LUMA_CLIP_SECS),
+    // never the narration length of the scene (that showed EUR 11.04 for a job of EUR 6.62)
+    const secs = (tier === 'luma') ? getDurationRangeForTier('luma').def : (sc.duration || 8);
+    return s + (secs * rate);
+  }, 0);
+  const upCost    = upscale ? n * UPSCALE : 0;
+  const vidUpCost = videoUpscale
+    ? scenesToCharge.reduce((s,sc) => s + (sc.duration * VIDEO_UP_PER_SEC), 0) : 0;
+  // BUG FIXED: continuous-narration jobs (scraped jobs, narration-first
+  // flow) keep the narration text in a separate track, not per-scene
+  // voiceover fields - per-scene chars alone was always 0 for these,
+  // silently excluding TTS cost entirely. Now also counts the current
+  // narration textarea's content, since that's the actual source of
+  // truth for what will be synthesized.
+  const perSceneChars  = scenesToCharge.reduce((s,sc) => s + sc.voiceover.length, 0);
+  const narrationChars = document.getElementById('narration-text')?.value.length || 0;
+  const chars     = perSceneChars + narrationChars;
+  const ttsCost   = chars * (ttsCostPerChar || 0);
+  const visCost   = visionQc ? n * CLIP_QC_EST : 0;
+  // Infra cost only applies to a fresh full job — a rework of 1-2 scenes
+  // doesn't incur a fresh infrastructure share
+  const infraCost = isRework ? 0 : INFRA;
+  const total     = videoCost + upCost + vidUpCost + ttsCost + visCost + infraCost
+
+
+  const tierLabel = { eco: 'Lyra 2.0 + Topaz', luma: 'Luma Ray 3.2', premium: 'Veo 3.1 Fast', premium_veo: 'Veo 3.1 Standard' };
+  const panel = document.getElementById('cost-panel');
+  const lines = document.getElementById('cost-lines');
+  panel.style.display = 'block';
+  document.getElementById('cost-type').textContent = isRework ? `(rework — ${n} scena/e)` : '(stima)';
+  document.getElementById('cost-total').textContent = `€${total.toFixed(2)}`;
+
+
+  let html = '';
+  if (isRework && n === 0) {
+    html = `<div class="cost-row"><span>Nessuna scena da rigenerare</span><span>€0.00</span></div>`;
+  } else {
+    html += `<div class="cost-row"><span>${isRework ? 'Rework' : 'Generazione'} video (${n} clip — ${tierLabel[tier]})</span><span>€${videoCost.toFixed(3)}</span></div>`;
+    if (upCost > 0) html += `<div class="cost-row"><span>Upscaling immagini AI (${n})</span><span>€${upCost.toFixed(3)}</span></div>`;
+    if (vidUpCost > 0) html += `<div class="cost-row"><span>Topaz video upscale 1080p</span><span>€${vidUpCost.toFixed(3)}</span></div>`;
+    if (ttsCost > 0) html += `<div class="cost-row"><span>Voiceover (${chars.toLocaleString()} caratteri)</span><span>€${ttsCost.toFixed(4)}</span></div>`;
+    if (visCost > 0) html += `<div class="cost-row"><span>Controllo qualità Claude (${n} clip)</span><span>€${visCost.toFixed(4)}</span></div>`;
+    if (infraCost > 0) html += `<div class="cost-row"><span>Quota infrastruttura</span><span>€${infraCost.toFixed(2)}</span></div>`;
+  }
+  lines.innerHTML = html;
+}
+
+
+// ── Submit job ─────────────────────────────────────────────────────────────────
+genBtn.addEventListener('click', async () => {
+  errorMsg.innerHTML = '';
+  if (!files.length) return;
+
+
+  // Check if any rework panels are open — if so, route to rework endpoint
+  const reworkScenes = [];
+  [...scenesCont.querySelectorAll('.rework-panel.open')].forEach(panel => {
+    const i = parseInt(panel.id.replace('rw-panel-',''));
+    if (!isNaN(i)) reworkScenes.push(i);
+  });
+
+
+  // Auto-include genuinely new scenes (explicitly tracked via newlyAddedSceneIndices)
+  // — never inferred from completedScenes.length, which can be stale/incorrect
+  if (currentJobId) {
+    newlyAddedSceneIndices.forEach(i => {
+      if (i < files.length && !reworkScenes.includes(i)) reworkScenes.push(i);
+    });
+    // Auto-include scenes whose duration changed due to narration redistribution
+    durationChangedSceneIndices.forEach(i => {
+      if (i < files.length && !reworkScenes.includes(i)) reworkScenes.push(i);
+    });
+  }
+
+
+  // BUG FIXED: previously routed to rework whenever ANY scene had a
+  // changed duration, even on a fresh draft job that's never been
+  // generated - durationChangedSceneIndices gets populated by the old
+  // narration system's confirmNarrationDurations() regardless of job
+  // status. Now only routes to rework for genuinely completed jobs.
+  if (reworkScenes.length > 0 && currentJobId && currentJobStatus !== 'draft') {
+    // Reset rework_open for all submitted scenes before routing
+    reworkScenes.forEach(i => {
+      if (sceneUserData[i]) sceneUserData[i].rework_open = false;
+    });
+    await submitRework(reworkScenes);
+    return;
+  }
+
+
+  // SAFETY GUARD: if an existing job is loaded, check its actual server
+  // status first. A DRAFT job (created via narration-first flow, no
+  // video generated yet) needs /start-generation, not reassembly —
+  // there's nothing to reassemble yet. This is checked BEFORE the
+  // narration-reassembly check below, since a draft job may also have
+  // narration_path set (narration can be generated before video).
+  if (currentJobId) {
+    let jobStatus = null;
+    try {
+      const jobRes = await authFetch(`${API_BASE}/jobs/${currentJobId}`);
+      if (jobRes.ok) {
+        const jobData = await jobRes.json();
+        renderFalWarning(jobData);
+        jobStatus = jobData.status;
+      }
+    } catch(_) {}
+
+
+    if (jobStatus === 'draft') {
+      genBtn.disabled    = true;
+      genBtn.textContent = 'Avvio generazione…';
+      progSec.style.display   = 'block';
+      hideJobOutputs();
+      updateProgress(0, 'Avvio generazione video…');
+      try {
+        const res = await authFetch(`${API_BASE}/jobs/${currentJobId}/start-generation`, { method: 'POST' });
+        if (!res.ok) {
+          let detail = `Errore ${res.status}`;
+          try { const e = await res.json(); detail = e.detail || detail; } catch(_) {}
+          throw new Error(detail);
+        }
+        activeJobId = currentJobId;
+        startPolling(currentJobId);
+      } catch(e) {
+        showError(e.message);
+        genBtn.disabled    = false;
+        genBtn.textContent = 'Genera video';
+      }
+      return;
+    }
+  }
+
+
+  // SAFETY GUARD: if an existing (non-draft) job is loaded and nothing
+  // needs video regeneration, check the SERVER's record of whether this
+  // job has narration (not a browser-memory variable, which is unreliable
+  // after page reload / re-opening the job in a new session). If narration
+  // exists, always offer the cheap reassembly-only pass.
+  if (currentJobId) {
+    let jobHasNarration = false;
+    try {
+      const jobRes = await authFetch(`${API_BASE}/jobs/${currentJobId}`);
+      if (jobRes.ok) {
+        const jobData = await jobRes.json();
+        renderFalWarning(jobData);
+        jobHasNarration = !!jobData.narration_path;
+      }
+    } catch(_) {}
+
+
+    if (jobHasNarration) {
+      genBtn.disabled    = true;
+      genBtn.textContent = 'Riassemblaggio…';
+      progSec.style.display = 'block';
+      updateProgress(5, 'Applicazione nuova narrazione al video…');
+      try {
+        const res = await authFetch(`${API_BASE}/jobs/${currentJobId}/narration/reassemble`, { method: 'POST' });
+        if (!res.ok) {
+          let detail = `Errore ${res.status}`;
+          try { const e = await res.json(); detail = e.detail || detail; } catch(_) {}
+          throw new Error(detail);
+        }
+        activeJobId = currentJobId;
+        startPolling(currentJobId);
+      } catch(e) {
+        showError(e.message);
+        genBtn.disabled    = false;
+        genBtn.textContent = 'Genera video';
+      }
+      return;
+    }
+    showError('Nessuna modifica da generare — le scene sono già aggiornate. Se vuoi rigenerare qualcosa, usa "↺ Rifai questa scena" sulla scena specifica, oppure genera prima il voiceover se hai modificato la narrazione.');
+    return;
+  }
+
+
+  // Full new job — reset all rework state
+  Object.keys(sceneUserData).forEach(i => {
+    if (sceneUserData[i]) sceneUserData[i].rework_open = false;
+  });
+  completedScenes = [];
+  genBtn.disabled    = true;
+  genBtn.textContent = 'Invio in corso…';
+  hideJobOutputs();
+  progSec.style.display    = 'block';
+  updateProgress(0, 'Caricamento foto…');
+
+
+  const config = getScenesConfig();
+  const fd     = new FormData();
+  files.forEach(f => fd.append('images', f));
+  fd.append('config',           JSON.stringify(config));
+  fd.append('property_name',    document.getElementById('prop-name').value || 'Property');
+  fd.append('agency_id',        document.getElementById('job-agency-select')?.value || '');
+  fd.append('voice_id',         document.getElementById('voice-id').value.trim());
+  fd.append('enhance_images',    document.getElementById('do-lighting').checked);
+  fd.append('upscale_images',    document.getElementById('do-upscale').checked);
+  fd.append('do_video_upscale',  document.getElementById('do-video-upscale').checked);
+  fd.append('transition_style',  document.getElementById('transition-style').value);
+  fd.append('enable_vision_qc',  document.getElementById('do-vision-qc').checked);
+  fd.append('model_tier',        document.getElementById('model-tier').value);
+  fd.append('lighting',          document.getElementById('lighting').value);
+  fd.append('intensity',         document.getElementById('intensity').value);
+  fd.append('output_format',     document.getElementById('output-format')?.value || '');
+
+
+  try {
+    const res = await authFetch(`${API_BASE}/jobs/`, { method: 'POST', body: fd });
+    if (!res.ok) {
+      let detail = `Server error ${res.status}`;
+      try { const e = await res.json(); detail = e.detail || detail; } catch(_) {}
+      throw new Error(detail);
+    }
+    const data = await res.json();
+    currentJobId = data.job_id;   // original job — used for all reworks
+    activeJobId  = data.job_id;
+    genBtn.textContent = 'In elaborazione…';
+    if (data.cost_estimate) showCostPanel(data.cost_estimate, 'stima');
+    startPolling(data.job_id);
+  } catch(e) {
+    showError(e.message);
+    genBtn.disabled    = false;
+    genBtn.textContent = 'Genera video';
+  }
+});
+
+
+// ── Rework submission ──────────────────────────────────────────────────────────
+async function submitRework(reworkScenes) {
+  genBtn.disabled    = true;
+  genBtn.textContent = 'Invio rework…';
+  progSec.style.display   = 'block';
+  hideJobOutputs();
+  updateProgress(0, `Rework ${reworkScenes.length} scena/e selezionata/e…`);
+
+
+  const updatedScenes = getScenesConfig();
+
+  // 2026-07-16 migration: was POSTing to the legacy /rework endpoint
+  // (sibling-directory model). Now maps flagged indices to their stable
+  // scene_id and calls the current single-directory batch endpoint --
+  // no sibling job is ever created, and every scene's caption/voiceover
+  // is persisted, not just the ones being redone.
+  const redoSceneIds = [];
+  reworkScenes.forEach(idx => {
+    const sid = updatedScenes[idx]?.scene_id;
+    if (sid) redoSceneIds.push(sid);
+  });
+
+  console.log(`Rework: job ${currentJobId}, scenes ${reworkScenes}, scene_ids ${redoSceneIds}`);
+
+
+  const fd = new FormData();
+  fd.append('scenes_config', JSON.stringify(updatedScenes));
+  fd.append('redo_scene_ids', JSON.stringify(redoSceneIds));
+  const transEl2 = document.getElementById('transition-style');
+  if (transEl2) fd.append('transition_style', transEl2.value);
+
+
+  // CRITICAL: genuinely new scenes have their photo only in browser memory —
+  // it was never uploaded to the server. Attach those files now.
+  // Uses explicit newlyAddedSceneIndices tracking, not length inference.
+  reworkScenes.forEach(idx => {
+    if (newlyAddedSceneIndices.has(idx) && files[idx] && files[idx].size > 0) {
+      fd.append('new_images', files[idx], `scene_${idx}.jpg`);
+      fd.append('new_image_indices', String(idx));
+    }
+  });
+
+
+  const targetJobId = currentJobId;
+
+
+  try {
+    const res = await authFetch(`${API_BASE}/jobs/${targetJobId}/scenes/redo-batch`, { method:'POST', body:fd });
+    if (!res.ok) {
+      let detail = `Server error ${res.status}`;
+      try { const e = await res.json(); detail = e.detail || detail; } catch(_) {}
+      throw new Error(detail);
+    }
+    const { job_id } = await res.json();
+    activeJobId = job_id;  // same job_id now -- no more sibling jobs, ever
+    // Clear new-scene tracking for submitted indices — they're processed now
+    reworkScenes.forEach(idx => newlyAddedSceneIndices.delete(idx));
+    genBtn.textContent = 'Rework in corso…';
+
+
+    // Close all rework panels after submission
+    reworkScenes.forEach(idx => {
+      if (sceneUserData[idx]) sceneUserData[idx].rework_open = false;
+    });
+
+
+    startPolling(job_id);
+  } catch(e) {
+    showError(e.message);
+    genBtn.disabled    = false;
+    genBtn.textContent = 'Genera video';
+  }
+}
+
+
+// 2026-07-23: regenerates ONLY the TTS audio for scenes currently marked
+// for rework, reusing their existing video clips untouched -- no
+// Luma/Veo cost, just the cheap ElevenLabs charge. For fixing or testing
+// audio timing (e.g. the per-scene lead/trail buffer) without paying to
+// regenerate video that was already fine. Mirrors submitRework()'s scene
+// collection logic exactly, just posts to the audio-only endpoint.
+async function submitAudioOnlyRework() {
+  const reworkScenes = [];
+  [...scenesCont.querySelectorAll('.rework-panel.open')].forEach(panel => {
+    const i = parseInt(panel.id.replace('rw-panel-',''));
+    if (!isNaN(i)) reworkScenes.push(i);
+  });
+  if (reworkScenes.length === 0) {
+    alert('Seleziona almeno una scena da rigenerare (apri il pannello rework di una scena) prima di usare questo pulsante.');
+    return;
+  }
+  if (!currentJobId || currentJobStatus === 'draft') {
+    alert('Questa funzione richiede un job gia generato.');
+    return;
+  }
+  const updatedScenes = getScenesConfig();
+  const redoSceneIds = [];
+  reworkScenes.forEach(idx => {
+    const sid = updatedScenes[idx]?.scene_id;
+    if (sid) redoSceneIds.push(sid);
+  });
+  if (!confirm(`Rigenerare solo l'audio per ${redoSceneIds.length} scena/e? Il video esistente non verra toccato.`)) return;
+
+  const btn = document.getElementById('audio-only-rework-btn');
+  btn.disabled = true;
+  btn.textContent = 'Invio...';
+  progSec.style.display   = 'block';
+  hideJobOutputs();
+  updateProgress(0, `Rework audio: ${redoSceneIds.length} scena/e selezionata/e...`);
+
+  const fd = new FormData();
+  fd.append('scene_ids', JSON.stringify(redoSceneIds));
+  const targetJobId = currentJobId;
+  try {
+    const res = await authFetch(`${API_BASE}/jobs/${targetJobId}/scenes/redo-audio-only`, { method:'POST', body:fd });
+    if (!res.ok) {
+      let detail = `Server error ${res.status}`;
+      try { const e = await res.json(); detail = e.detail || detail; } catch(_) {}
+      throw new Error(detail);
+    }
+    const { job_id } = await res.json();
+    activeJobId = job_id;
+    reworkScenes.forEach(idx => {
+      if (sceneUserData[idx]) sceneUserData[idx].rework_open = false;
+    });
+    btn.textContent = 'Rework audio in corso...';
+    startPolling(job_id);
+  } catch(e) {
+    showError(e.message);
+    btn.disabled = false;
+    btn.textContent = 'Rigenera solo audio';
+  }
+}
+
+function log(msg) { console.log(`[PVS] ${msg}`); }
+
+
+// ── Polling ────────────────────────────────────────────────────────────────────
+let pollEpoch = 0;  // 2026-07-21 fix: guards against a stale poll cycle
+// (e.g. from an earlier narration/reassembly action) resolving AFTER a
+// newer action has already started -- without this, an old in-flight
+// request can still call showResult() and silently wipe out scenes the
+// user had since marked for redo (showResult() resets all rework_open
+// flags), even though clearInterval() was already called for the old
+// timer -- clearInterval only stops FUTURE ticks, not an already-in-
+// flight async callback that's mid-execution when superseded. Confirmed
+// real-world case: marking 3 scenes for a batch redo, waiting a few
+// minutes, then clicking "Genera video" silently produced a plain
+// narration reassembly instead -- no batch redo call was ever made,
+// because the rework markings had been wiped by a stale poll in between.
+function startPolling(jobId) {
+  clearInterval(pollTimer);
+  const myEpoch = ++pollEpoch;
+  pollTimer = setInterval(async () => {
+    if (myEpoch !== pollEpoch) { clearInterval(pollTimer); return; }
+    try {
+      const res = await authFetch(`${API_BASE}/jobs/${jobId}`);
+      if (myEpoch !== pollEpoch) return;  // superseded while the request was in flight
+      if (!res.ok) return;
+      const job = await res.json();
+      if (myEpoch !== pollEpoch) return;  // superseded while parsing the response
+
+
+      updateProgress(job.progress, job.message);
+      renderFalWarning(job);
+      if (job.scenes && job.scenes.length) renderSceneProgress(job.scenes);
+
+
+      if (job.status === 'done') {
+        clearInterval(pollTimer);
+        showResult(jobId, job.property_name || 'Property', job.scenes || [], job.scenes_config ? job.scenes_config.length : null, job.tts_failures || []);
+        notifyJobComplete(job.property_name || 'Property', true);
+        genBtn.disabled    = false;
+        genBtn.textContent = 'Genera video';
+      } else if (job.status === 'awaiting_approval') {
+        clearInterval(pollTimer);
+        showQcReview(job);
+        notifyJobComplete(job.property_name || 'Property — revisione QC richiesta', true);
+        genBtn.disabled    = false;
+        genBtn.textContent = 'Genera video';
+      } else if (job.status === 'failed') {
+        clearInterval(pollTimer);
+        showError(job.message || 'Pipeline fallita. Controlla i log del server.');
+        notifyJobComplete(job.property_name || 'Property', false);
+        genBtn.disabled    = false;
+        genBtn.textContent = 'Genera video';
+      }
+    } catch {}
+  }, 3000);
+}
+
+
+// ── QC review panel ────────────────────────────────────────────────────────────
+function showQcReview(job) {
+  qcSec.style.display = 'block';
+  qcSec.scrollIntoView({ behavior: 'smooth' });
+  qcDecisions = {};
+
+
+  const body    = document.getElementById('qc-body');
+  const awaiting = job.awaiting_scenes || {};
+  const rejected = awaiting.rejected || [];
+  const flagged  = awaiting.flagged  || [];
+  const allFlagged = [...new Set([...rejected, ...flagged])];
+
+
+  if (allFlagged.length === 0) {
+    body.innerHTML = '<p style="color:var(--ok);padding:10px">Tutte le scene hanno passato il QC.</p>';
+    document.getElementById('assemble-btn').disabled = false;
+    return;
+  }
+
+
+  body.innerHTML = allFlagged.map(idx => {
+    const scene   = (job.scenes || []).find(s => s.index === idx) || {};
+    const verdict = rejected.includes(idx) ? 'reject' : 'flag';
+    const issues  = (job.qc_results || [])
+      .filter(q => q.scene === idx && q.type === 'video')
+      .flatMap(q => q.issues || []).join('; ') || 'Verificare manualmente';
+    const thumb   = files[idx] ? `<img class="qc-thumb" src="${URL.createObjectURL(files[idx])}" />` : '';
+
+
+    // Video preview — link to the generated clip
+    const clipUrl  = `${API_BASE}/jobs/${currentJobId}/clip/${idx}/preview`;
+    const videoPreview = `
+      <details style="margin-top:8px">
+        <summary style="font-size:.76rem;color:var(--green);cursor:pointer">▶ Anteprima clip generata</summary>
+        <video src="${clipUrl}" preload="metadata" controls style="width:100%;max-width:320px;margin-top:6px;border-radius:4px;border:1px solid var(--rule)"></video>
+      </details>`;
+
+
+    return `<div class="qc-scene" id="qc-scene-${idx}">
+      ${thumb}
+      <div class="qc-info">
+        <div class="qc-title">
+          Scena ${idx} (scene_${String(idx).padStart(3,'0')}) — ${scene.caption || '(senza didascalia)'}
+          <span class="qc-verdict ${verdict}">${verdict === 'reject' ? '✗ Rifiutata' : '⚠ Segnalata'}</span>
+        </div>
+        <div class="qc-issues">${issues}</div>
+        ${videoPreview}
+        <div class="qc-actions">
+          <button class="btn-approve" onclick="setQcDecision(${idx},'approve')">✓ Approva comunque</button>
+          <button class="btn-redo" onclick="setQcDecision(${idx},'redo')">↺ Rifai</button>
+        </div>
+        <div id="qc-decision-${idx}" style="font-size:.74rem;color:var(--muted);margin-top:4px"></div>
+      </div>
+    </div>`;
+  }).join('');
+
+
+  // Auto-mark rejected as needing redo
+  rejected.forEach(idx => setQcDecision(idx, 'redo'));
+  updateAssembleBtn(allFlagged);
+}
+
+
+function setQcDecision(idx, decision) {
+  qcDecisions[idx] = decision;
+  const el = document.getElementById(`qc-decision-${idx}`);
+  if (el) el.textContent = decision === 'approve' ? '✓ Approvata' : '↺ Sarà rifatta';
+  const card = document.getElementById(`qc-scene-${idx}`);
+  if (card) card.style.opacity = decision ? '0.7' : '1';
+
+
+  const awaiting = Object.keys(qcDecisions).length;
+  const allFlagged = [...document.querySelectorAll('[id^="qc-scene-"]')]
+    .map(el => parseInt(el.id.replace('qc-scene-', '')));
+  updateAssembleBtn(allFlagged);
+}
+
+
+function updateAssembleBtn(allFlagged) {
+  const allDecided = allFlagged.every(idx => qcDecisions[idx]);
+  document.getElementById('assemble-btn').disabled = !allDecided;
+}
+
+
+async function submitApproval() {
+  const approvedScenes = Object.entries(qcDecisions)
+    .filter(([,d]) => d === 'approve').map(([i]) => parseInt(i));
+  const redoScenes = Object.entries(qcDecisions)
+    .filter(([,d]) => d === 'redo').map(([i]) => parseInt(i));
+
+
+  const fd = new FormData();
+  fd.append('approval', JSON.stringify({
+    approved_scenes: approvedScenes,
+    redo_scenes:     redoScenes,
+  }));
+
+
+  try {
+    const res = await authFetch(`${API_BASE}/jobs/${currentJobId}/approve`, { method: 'POST', body: fd });
+    if (!res.ok) {
+      let detail = `Server error ${res.status}`;
+      try { const e = await res.json(); detail = e.detail || detail; } catch(_) {}
+      throw new Error(detail);
+    }
+    qcSec.style.display   = 'none';
+    progSec.style.display = 'block';
+    updateProgress(82, 'Assemblaggio video finale…');
+    startPolling(currentJobId);
+  } catch(e) {
+    showError(e.message);
+  }
+}
+
+
+// ── UI helpers ─────────────────────────────────────────────────────────────────
+// 2026-10-15 (Patch A): red warning when any clip of the job was made on fal.ai instead of the
+// direct Luma API (job.fal_usage comes from GET /jobs/{id}). Plain text only, never HTML.
+function renderFalWarning(job) {
+  const el = document.getElementById('fal-warning');
+  if (!el) return;
+  const u = job && job.fal_usage;
+  if (!u || !u.fal_clips) { el.style.display = 'none'; el.textContent = ''; return; }
+  const scenes  = u.clips.map(c => c.index + 1).join(', ');
+  const models  = [...new Set(u.clips.map(c => c.model))].join(', ');
+  const reasons = [...new Set(u.clips.map(c => c.reason).filter(Boolean))].join('; ');
+  let t = `⚠ ATTENZIONE FAL: ${u.fal_clips} clip generat${u.fal_clips === 1 ? 'o' : 'i'} su fal.ai invece che su Luma diretto (scena/e ${scenes}; modello: ${models}).`;
+  if (reasons) t += ` Motivo: ${reasons}.`;
+  if (u.est_usd_on_fal) {
+    t += ` Costo stimato su fal: ~$${u.est_usd_on_fal.toFixed(2)}`;
+    t += u.est_usd_if_direct ? ` invece di ~$${u.est_usd_if_direct.toFixed(2)} con Luma diretto.` : '.';
+  }
+  if (u.level === 'high') t += ' Veo/LTX: qualità e costo diversi da Luma, controlla il video.';
+  el.textContent = t;
+  el.style.display = 'block';
+}
+
+function updateProgress(pct, msg) {
+  document.getElementById('prog-bar').style.width = pct + '%';
+  document.getElementById('prog-pct').textContent  = pct + '%';
+  document.getElementById('prog-msg').textContent  = msg;
+}
+
+
+function renderSceneProgress(scenes) {
+  const el = document.getElementById('scene-progress');
+  el.innerHTML = scenes.map(s => {
+    const dot = s.qc_verdict === 'reject' ? 'failed'
+              : s.qc_verdict === 'flag'   ? 'flag'
+              : s.video === 'ok'           ? 'ok'
+              : s.video === 'failed'       ? 'failed' : 'running';
+    return `<div class="sp-row">
+      <span class="sp-dot ${dot}"></span>
+      Scena ${s.index+1}: video ${s.video} · audio ${s.audio}
+      ${s.qc_verdict && s.qc_verdict !== 'pass' ? `· QC: ${s.qc_verdict}` : ''}
+      ${s.caption ? '— ' + s.caption : ''}
+    </div>`;
+  }).join('');
+}
+
+
+function showResult(jobId, propName, scenes, realSceneCount, ttsFailures) {
+  // 2026-07-23: real bug -- the displayed scene count previously came
+  // from the scenes STATUS array (per-scene video/audio/qc tracking,
+  // appended-to over time and never trimmed when scenes are removed),
+  // not from scenes_config (the actual, authoritative current scene
+  // list). A job whose scene count changed over its lifetime (e.g.
+  // trimmed down to 1 scene) could show a stale, wrong count here --
+  // confirmed real case: a 1-scene job displaying '2 scenes' because its
+  // status array still carried an orphaned legacy entry alongside the
+  // current one. Now uses the real, current count when available,
+  // falling back to the old (imperfect) logic only if it truly isn't.
+  // CRITICAL: Reset ALL rework panel open states before re-rendering.
+  // Without this, stale rework_open=true causes next "Genera video" to redo everything.
+  Object.keys(sceneUserData).forEach(i => {
+    if (sceneUserData[i]) sceneUserData[i].rework_open = false;
+  });
+  if (scenes && scenes.length) {
+    completedScenes = scenes;
+    renderScenes();
+  }
+  const dlUrl = `${API_BASE}/jobs/${jobId}/download`;
+  document.getElementById('video-preview').src    = `${API_BASE}/jobs/${jobId}/preview`;   // light viewing copy; the download below stays the original
+  document.getElementById('download-link').href   = dlUrl;
+  showVideoInfo(jobId, 'video-preview-info');
+  document.getElementById('download-link').download = `${propName.replace(/\s+/g,'_')}_${jobId}.mp4`;
+  document.getElementById('actual-cost').innerHTML = '';
+  const scenesCount = realSceneCount != null ? realSceneCount : (scenes && scenes.length ? scenes.length : (completedScenes.length || '?'));
+  document.getElementById('job-id-display').innerHTML =
+    `📁 <strong>${propName}</strong> — ID: <code>${jobId}</code> — ${scenesCount} scene`;
+  // 2026-07-27: real reliability gap -- a failed voiceover generation
+  // (e.g. an invalid voice ID rejected by ElevenLabs) previously
+  // produced a video with no audio for that scene, with zero visible
+  // indication anywhere in the UI. Now surfaced directly.
+  const ttsWarningEl = document.getElementById('tts-failure-warning');
+  if (ttsWarningEl) {
+    if (ttsFailures && ttsFailures.length) {
+      const sceneList = ttsFailures.map(i => i + 1).join(', ');
+      ttsWarningEl.textContent = `⚠ Generazione voiceover fallita per la/le scena/e ${sceneList} — controlla il voice ID o riprova. Video generato senza audio per quella/e scena/e.`;
+      ttsWarningEl.style.display = 'block';
+    } else {
+      ttsWarningEl.style.display = 'none';
+    }
+  }
+  resultSec.style.display = 'block';
+  resultSec.scrollIntoView({ behavior: 'smooth' });
+}
+
+
+function showCostPanel(costData, type) {
+  const panel = document.getElementById('cost-panel');
+  const lines = document.getElementById('cost-lines');
+  if (!panel || !costData) return;
+  panel.style.display = 'block';
+  // Always show as estimate — we don't pull actual billing from APIs
+  document.getElementById('cost-type').textContent = '(stima)';
+  document.getElementById('cost-total').textContent = costData.total || '—';
+  lines.innerHTML = (costData.lines || [])
+    .map(l => `<div class="cost-row"><span>${l.label}</span><span>${l.value}</span></div>`)
+    .join('');
+}
+
+
+function showError(msg) {
+  errorMsg.innerHTML = `<div class="alert alert-error">⚠ ${msg}</div>`;
+}
+
+
+// ── Browser notifications ─────────────────────────────────────────────────────
+function requestNotificationPermission() {
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
+}
+
+
+function notifyJobComplete(propName, success) {
+  if ('Notification' in window && Notification.permission === 'granted') {
+    new Notification(
+      success ? `✓ Video pronto — ${propName}` : `✗ Errore — ${propName}`,
+      {
+        body: success
+          ? 'Il tuo video è pronto per il download.'
+          : 'Si è verificato un errore. Controlla il pannello di stato.',
+        icon: '/favicon.ico',
+      }
+    );
+  }
+}
+
+
+// Request permission on page load
+requestNotificationPermission();
+async function checkCredits() {
+  try {
+    const res  = await authFetch(`${API_BASE}/credits`);
+    if (!res.ok) return;
+    const data = await res.json();
+    const dot    = document.getElementById('credit-dot');
+    const banner = document.getElementById('credit-banner');
+    const body   = document.getElementById('credit-body');
+    if (!data.any_low) { dot.classList.remove('low'); banner.style.display='none'; return; }
+    dot.classList.add('low');
+    let rows = '';
+    if (!data.fal.ok && data.fal.balance != null)
+      rows += `<div class="cb-row"><span><strong>fal.ai</strong></span><span class="cb-low">€${data.fal.balance.toFixed(2)} rimasti</span><a class="cb-topup" href="https://fal.ai/dashboard" target="_blank">Ricarica →</a></div>`;
+    if (!data.elevenlabs.ok && data.elevenlabs.characters_remaining != null)
+      rows += `<div class="cb-row"><span><strong>ElevenLabs</strong></span><span class="cb-low">${data.elevenlabs.characters_remaining.toLocaleString()} caratteri rimasti</span><a class="cb-topup" href="https://elevenlabs.io/app/subscription" target="_blank">Ricarica →</a></div>`;
+    rows += `<div class="cb-time">Verificato: ${data.checked_at} · <a href="#" onclick="checkCredits();return false">Aggiorna</a></div>`;
+    body.innerHTML   = rows;
+    banner.style.display = 'block';
+  } catch {}
+}
+checkCredits();
+setInterval(checkCredits, 10 * 60 * 1000);
+
+
+// ── Maintenance panel ──────────────────────────────────────────────────────────
+async function openMaintenance() {
+  document.getElementById('maint-modal').classList.add('open');
+  document.getElementById('maint-content').innerHTML = '<div class="maint-loading">Loading…</div>';
+  document.getElementById('maint-banner').style.display = 'none';
+  try {
+    const res  = await authFetch(`${API_BASE}/maintenance/status`);
+    const data = await res.json();
+    if (!data.timestamp) {
+      document.getElementById('maint-content').innerHTML = `<div class="maint-loading">${data.note || 'No maintenance run yet.'}</div>`;
+    } else {
+      const ragIcon = { ok: '🟢', warn: '🟡', red: '🔴' };
+      const statusClass = { ok: 'maint-ok', warn: 'maint-warn', red: 'maint-red' };
+      const checksHtml = (data.checks || []).map(c => `
+        <div class="maint-row" style="flex-direction:column;align-items:flex-start;gap:2px">
+          <div style="display:flex;justify-content:space-between;width:100%">
+            <span>${ragIcon[c.status]||'⚪'} <strong>${c.title || c.name}</strong></span>
+          </div>
+          <div class="${statusClass[c.status]||''}" style="font-size:.82rem">${c.summary || c.detail}</div>
+          ${c.summary ? `<div style="font-size:.68rem;color:var(--muted)">${c.detail}</div>` : ''}
+        </div>`
+      ).join('');
+      const cleanup = data.cleanup || {};
+      const js = data.job_stats || {};
+      const jobStatsHtml = (js.total != null) ? `
+        <div style="font-size:.75rem;color:var(--muted);margin-top:10px;padding-top:10px;border-top:1px solid var(--rule)">
+          📊 ${js.total} job(s) total — ${js.done||0} completed, ${js.failed||0} failed, ${js.running||0} in progress
+        </div>` : '';
+      document.getElementById('maint-content').innerHTML = `
+        <div style="font-size:.72rem;color:var(--muted);margin-bottom:10px">Last checked: ${new Date(data.timestamp).toLocaleString()}</div>
+        ${checksHtml}
+        <div style="font-size:.75rem;color:var(--muted);margin-top:8px">🧹 Last cleanup: ${cleanup.items_removed||0} old test file(s) removed, ${cleanup.reclaimed_mb||0} MB freed</div>
+        ${jobStatsHtml}
+      `;
+      const banner = document.getElementById('maint-banner');
+      const overall = data.overall || {};
+      if (overall.status === 'red') {
+        banner.style.display = 'block';
+        banner.style.background = '#fdf0ef'; banner.style.borderColor = '#f5c6c2'; banner.style.color = 'var(--danger)';
+        banner.innerHTML = `🔴 ${overall.summary || 'Action needed.'}`;
+      } else if (overall.status === 'warn') {
+        banner.style.display = 'block';
+        banner.style.background = '#fef9ef'; banner.style.borderColor = '#f5dfa2'; banner.style.color = 'var(--warn)';
+        banner.innerHTML = `🟡 ${overall.summary || 'Worth a look.'}`;
+      } else {
+        banner.style.display = 'block';
+        banner.style.background = '#edf7f1'; banner.style.borderColor = '#b7dfca'; banner.style.color = 'var(--ok)';
+        banner.innerHTML = `🟢 ${overall.summary || 'All systems normal.'}`;
+      }
+    }
+  } catch(e) {
+    document.getElementById('maint-content').innerHTML = `<div class="maint-loading" style="color:var(--danger)">Errore: ${e.message}</div>`;
+  }
+  loadMaintenanceEmails();
+}
+function closeMaintenance() {
+  document.getElementById('maint-modal').classList.remove('open');
+}
+document.getElementById('maint-modal').addEventListener('click', e => {
+  if (e.target === document.getElementById('maint-modal')) closeMaintenance();
+});
+async function loadMaintenanceEmails() {
+  try {
+    const res  = await authFetch(`${API_BASE}/maintenance/alert-emails`);
+    const data = await res.json();
+    document.getElementById('maint-emails-input').value = (data.emails || []).join(', ');
+  } catch(e) {}
+}
+async function saveMaintenanceEmails() {
+  const raw    = document.getElementById('maint-emails-input').value;
+  const emails = raw.split(',').map(e => e.trim()).filter(e => e);
+  try {
+    await authFetch(`${API_BASE}/maintenance/alert-emails`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ emails }),
+    });
+    const msg = document.getElementById('maint-saved-msg');
+    msg.style.display = 'inline';
+    setTimeout(() => msg.style.display = 'none', 2000);
+  } catch(e) {
+    alert('Errore nel salvataggio: ' + e.message);
+  }
+}
+// Also flag the header button red if a maintenance check is currently red
+async function checkMaintenanceFlag() {
+  try {
+    const res  = await authFetch(`${API_BASE}/maintenance/status`);
+    const data = await res.json();
+    document.getElementById('maint-btn').classList.toggle('red', !!data.any_red);
+  } catch(e) {}
+}
+checkMaintenanceFlag();
+setInterval(checkMaintenanceFlag, 10 * 60 * 1000);
+
+
+// ── Cost estimate on toggle changes ───────────────────────────────────────────
+['do-upscale','do-vision-qc','do-video-upscale','model-tier','lighting','intensity'].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener('change', updateCostEstimate);
+});
+</script>
+</body>
+</html>

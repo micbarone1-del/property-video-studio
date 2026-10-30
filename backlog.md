@@ -966,3 +966,10 @@ Open: real provider concurrency limits; where the dashboard lives (inside the ap
 Phrases read as generic, not specific to the flat. Not yet analysed: need the saved narration text and the listing description of one job to see whether the facts are missing or ignored. Related: scene facts feature (colours only, no materials, no place names).
 ## 2026-10-30 (BW) - Rental listings (affitto) never tested
 GIAL has 10 rentals (2 residential: 1251 Albano 170 mq, 1321 Marino 90 mq). The pipeline has not been tested on a rental: price per month, wording "in affitto", contract type field in the Relinx API (asked in the message to Relinx). Risk: a rental narrated as a sale.
+
+
+## 2026-10-30 (BX) - Parameters for the dashboard (NEXT MILESTONE)
+- Partner limit per agency per 24h (PVS_PARTNER_AGENCY_LIMIT_24H now; 2 at launch, higher for the pilot): to be editable from the dashboard.
+- Notifications: the mobile push already exists (ntfy via maintenance_scheduler.send_notification, same call as the email). The dashboard must reuse that single path, no second notification system.
+- The test instance (port 8002) listens on 127.0.0.1 only (start_test.sh), so its screen cannot be opened from outside by design. Michele wants to see test jobs: solve inside the dashboard (a test-instance view) instead of opening the port.
+- New-job email: mark jobs from the test instance or with a T- external_ref as [TEST].
