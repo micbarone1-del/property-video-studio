@@ -499,3 +499,11 @@ test_photo_filters.py RESULT: ALL PASS (76/76)
 ## 2026-10-30 (BY) - Video library tests
 - test_video_library: finds only finished jobs with a file, groups by agency name, dry run writes nothing, copy is byte-identical, jobs/ untouched, second run copies nothing and keeps the review, publish gives a random-name https link, no delete or move call. test_video_library.py RESULT: ALL PASS (13/13)
 - Not run on real data yet.
+
+
+## 2026-10-30 — Luma end-frame ("director") experiment: risk rows and tests (PROPOSALS, scores not reviewed)
+- Proposed FMEA rows: Q12 Luma invents or animates elements absent from the photo when only a start frame is given (ghost curtain scene 1, second tap scene 4 of job 91056c3e): S8 O5 D5 RPN 200 ACT; control: end frame + geometry gate + clip QC (NOT in production). Q13 end frame invents content or differs in colour/light from the start frame: S8 O4 D4 RPN 128 ACT; control: generate from the real start frame, global colour match, Claude QC + geometric check. Q14 end frame too similar (static clip) or sideways (slide): S5 O5 D4 RPN 100 ACT; control: geometry gate (thresholds proposed). Q15 dependency on image-generation providers (fal queue, model availability) and per-image cost: S5 O3 D3 RPN 45.
+- Tests: T-H1 validation batch (6 scenes of listing 1312 + a second listing, criteria fixed beforehand): NOT RUN. T-H2 director flow with simulated model answers (sandbox only: scale too low, sideways drift, pass): PASS in sandbox, NOT run on the server. T-H3 geometry measurement on synthetic zoom/shift images (sandbox): PASS; on real pairs: 6 measured, indicator only (global similarity model, inlier share 37-60%).
+- Real evidence so far (n=1 per scene): clips with the director end frame: scene 1 steady motion (last/first second 1.07), scene 4 still accelerating (2.42); Michele's eye: videos fine, no ghost curtain or second tap reported. Not proven reliable.
+- Invariants touched: final state correct and visible; no double cost (each retry of a still is a paid call: cap 3 attempts).
+- Scores remain proposals until reviewed by the user; scoreboard totals NOT recomputed here.
