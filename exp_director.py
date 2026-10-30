@@ -30,10 +30,16 @@ load_dotenv()
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import exp_endframe as ef                      # one implementation of the generation / colour match / comparison sheet
+import exp_geometry as geo                     # one implementation of the geometric measurement (free, local)
 
 MODEL = os.environ.get("PVS_DIRECTOR_MODEL", "claude-sonnet-5-5")   # same model production uses for the clip QC
 PRICE_IN, PRICE_OUT = 2.00, 10.00                                    # per million tokens (same table as listing_scraper), only for the printed estimate
-MAX_ATTEMPTS = 2
+MAX_ATTEMPTS = 3
+# Geometric gate on the END frame (PROPOSED values, from the first measurements of 2026-10-30; to be tuned on the validation batch)
+MIN_SCALE = 1.2        # smaller = the viewer sees no advance (the 1 m / 0.5 m end frames measured 1.006 / 1.048)
+MAX_FOE = 0.2          # expansion point further from the centre than this (fraction of the picture size) = looks like a sideways slide
+MAX_ROT = 2.5          # degrees: the camera must not turn
+MIN_INSIDE = 0.97      # share of the end view that is already inside the start view
 FAL_MODEL = "fal-ai/nano-banana-2/edit"
 
 DIRECTOR_PROMPT = """You are the director of a short real-estate video. A single photo of a room is the FIRST frame of a 5 second clip in which the camera moves slowly FORWARD. You decide where the camera ends, and you write the instruction for an image model that will draw the LAST frame (the same room seen from the new position).
@@ -42,7 +48,7 @@ Look at the photo and judge the depth and character of the room (small, medium o
 
 Rules for the end position:
 - The camera moves only straight forward along the direction it already looks. Same height, same direction, same lens: no turning, no tilt, no sideways move, no zoom of the picture.
-- Choose ONE target: a FIXED, FAR feature near the middle of the photo that is worth showing (a far wall feature, an architectural detail, a view, a piece of furniture at the far end). Never a door of any kind, a curtain, a mirror or reflective surface, a screen, a person, a plant, water, or a utilitarian fixture (sink, toilet, bath, radiator, stove).
+- Choose ONE target: a FIXED, FAR feature in the MIDDLE THIRD of the photo (horizontally and vertically: the camera does not turn, so a target far to one side would make the move look like a sideways slide) that is worth showing (a far wall feature, an architectural detail, a view, a piece of furniture at the far end). Never a door of any kind, a curtain, a mirror or reflective surface, a screen, a person, a plant, water, or a utilitarian fixture (sink, toilet, bath, radiator, stove).
 - The move must be clearly VISIBLE (a viewer must see the room come closer) but the end frame must stay INSIDE what the photo already shows: moving forward only lets things at the edges leave the frame, nothing new may enter it. Never choose a position so close that the view would have to be invented.
 - Say how much larger the target appears in the end frame compared with the photo (linear size, a number). Take it from the room: a small or shallow room allows a modest change (about 1.2 to 1.35), a medium room about 1.35 to 1.55, a deep room about 1.5 to 1.8. Where the camera ends is expressed with landmarks of the photo (for example "about halfway between the sofa and the far window"), never with a number of metres.
 - Everything else stays exactly as in the photo: same objects, same colours, same positions, same state of doors and windows, same light and white balance.
@@ -50,7 +56,7 @@ Rules for the end position:
 Write the image-model instruction ("end_frame_prompt") in plain positive sentences (say what the picture shows, not what to avoid). It must state: it is the same room photographed with the same camera, lens, height, exposure and white balance; the camera has moved straight forward to <where, with landmarks>; the target now appears about <scale> times larger and stays near the centre; objects near the left, right, top and bottom edges of the original have moved out of the frame; everything visible is exactly as in the original; the picture is completely still.
 
 Answer with JSON only, no other text:
-{"room": "...", "depth": "shallow|medium|deep", "target": "...", "target_scale": 1.4, "end_position": "where the camera ends, with landmarks", "leaves_the_frame": "what leaves the frame at the edges", "reasoning": "two sentences", "end_frame_prompt": "..."}"""
+{"room": "...", "depth": "shallow|medium|deep", "target": "name of the target ONLY, at most 6 words, no landmarks", "target_where": "where it is in the photo, with landmarks", "target_scale": 1.4, "end_position": "where the camera ends, with landmarks", "leaves_the_frame": "what leaves the frame at the edges", "reasoning": "two sentences", "end_frame_prompt": "..."}"""
 
 QC_PROMPT = """Image 1 is the START photo of a real-estate clip. Image 2 is a generated END frame: the same room after the camera moved straight forward. The intention was: {intent}
 
@@ -111,6 +117,25 @@ def start_frame(jobs_dir: str, job: str, scene: int) -> Path:
     return Path(img)
 
 
+def gate_problems(g: dict, plan: dict) -> list:
+    """Objective problems of an end frame, as correction sentences for the image model. A frame that cannot be measured is NOT blocked here
+    (the Claude check still judges it, and the log says 'not measurable')."""
+    if not g.get("ok"):
+        return []
+    out = []
+    if g["scale"] < MIN_SCALE:
+        want = max(float(plan.get("target_scale") or 1.3), 1.3)
+        out.append(f"The previous end frame was enlarged only about {g['scale']} times, which a viewer would not notice: move the camera clearly further forward so that the target appears about {want:g} times larger.")
+    fx, fy = g.get("foe_x"), g.get("foe_y")
+    if fx is None or max(abs(fx), abs(fy)) > MAX_FOE:
+        out.append("The previous end frame drifted sideways or vertically: move the camera straight along the original viewing axis, with no sideways or vertical shift, so that everything in the picture grows outward from the centre of the picture.")
+    if abs(g["rotation_deg"]) > MAX_ROT:
+        out.append("The previous end frame was rotated: keep the horizon level and the camera pointing in exactly the same direction.")
+    if g["inside"] < MIN_INSIDE:
+        out.append("The previous end frame showed parts of the room that were not visible in the original: only the edges may leave the frame, nothing new may enter it.")
+    return out
+
+
 def direct_one_scene(photo: Path, tag: str, ask=ask_claude, gen=None, out_dir: Path = None, public: str = None) -> dict:
     from PIL import Image
     import camera_plan
@@ -143,6 +168,15 @@ def direct_one_scene(photo: Path, tag: str, ask=ask_claude, gen=None, out_dir: P
         ef.match_colour(out, photo, m)
         att.update({"file": out.name, "matched_file": m.name})
         results[f"tentativo {n}"] = m
+        g = geo.analyse(photo, m, out_dir / f"endd_{tag}_a{n}_geom.jpg")
+        att["geometry"] = g
+        att["geometry_file"] = f"endd_{tag}_a{n}_geom.jpg"
+        problems = gate_problems(g, plan)
+        att["gate_problems"] = problems
+        if problems and n < MAX_ATTEMPTS:      # a failed geometry costs no Claude QC: regenerate the (cheap) still with a precise correction
+            att["qc"] = {"verdict": "skipped (geometry gate)"}
+            prompt = plan["end_frame_prompt"] + " Correction from the previous attempt: " + " ".join(problems) + " Keep everything exactly as in the original photo."
+            continue
         intent = (f"the camera ends at: {plan.get('end_position')}; target: {plan.get('target')} about {plan.get('target_scale')} times larger; "
                   f"what leaves the frame: {plan.get('leaves_the_frame')}")
         try:
@@ -152,10 +186,12 @@ def direct_one_scene(photo: Path, tag: str, ask=ask_claude, gen=None, out_dir: P
         att["qc"] = qc
         if qc.get("verdict") == "error":
             break
-        if str(qc.get("verdict", "")).lower() == "pass":
+        if str(qc.get("verdict", "")).lower() == "pass" and not problems:
+            att["pass"] = True
             break
-        issues = "; ".join(list(qc.get("new_or_changed") or []) + list(qc.get("reasons") or []))
-        prompt = plan["end_frame_prompt"] + " Correction from the previous attempt: " + issues[:400] + " Keep everything exactly as in the original photo."
+        issues = "; ".join(list(qc.get("new_or_changed") or []) + list(qc.get("reasons") or []) + problems)
+        prompt = plan["end_frame_prompt"] + " Correction from the previous attempt: " + issues[:500] + " Keep everything exactly as in the original photo."
+    log["final"] = {"pass": any(a.get("pass") for a in log["attempts"]), "attempts": len(log["attempts"])}
     log["usage"] = usage
     log["claude_cost_estimate"] = round((usage.get("in", 0) * PRICE_IN + usage.get("out", 0) * PRICE_OUT) / 1e6, 4)
     sheet = out_dir / f"endd_{tag}_confronto.jpg"
@@ -184,7 +220,7 @@ def main():
     d = log["director"]
     if log.get("first_plan_rejected"):
         print("FIRST TARGET REFUSED BY THE CODE:", log["first_plan_rejected"])
-    print(f"ROOM: {d.get('room')} ({d.get('depth')}) | TARGET: {d.get('target')} | scale x{d.get('target_scale')}"
+    print(f"ROOM: {d.get('room')} ({d.get('depth')}) | TARGET: {d.get('target')} ({d.get('target_where')}) | scale x{d.get('target_scale')}"
           + ("  [WARNING: target word is on the unsafe list]" if log["target_unsafe_word"] else ""))
     print("END POSITION:", d.get("end_position"))
     print("LEAVES THE FRAME:", d.get("leaves_the_frame"))
@@ -192,10 +228,14 @@ def main():
     print("PROMPT:", log["attempts"][0]["prompt"])
     for att in log["attempts"]:
         q = att["qc"]
+        gm = att.get("geometry") or {}
+        print(f"ATTEMPT {att['n']} GEOMETRY: scale {gm.get('scale')} | rotation {gm.get('rotation_deg')} | expansion point ({gm.get('foe_x')}, {gm.get('foe_y')}) | inside {gm.get('inside')} | "
+              f"problems: {att.get('gate_problems') or 'none'} | outline {ef.PUBLIC + att.get('geometry_file', '')}")
         print(f"ATTEMPT {att['n']}: verdict {q.get('verdict')} | scale estimate {q.get('target_scale_estimate')} | new/changed: {q.get('new_or_changed')} | "
               f"same room {q.get('same_room')} light {q.get('light_consistent')} forward {q.get('camera_moved_forward')}")
         print("   reasons:", q.get("reasons"))
         print("   image:", ef.PUBLIC + att["matched_file"])
+    print("FINAL:", "PASS" if log["final"]["pass"] else "FAIL", f"after {log['final']['attempts']} attempt(s)")
     print("CONFRONTO:", ef.PUBLIC + log["sheet"])
     print(f"Claude tokens in/out {log['usage'].get('in')}/{log['usage'].get('out')} (~USD {log['claude_cost_estimate']})")
 
