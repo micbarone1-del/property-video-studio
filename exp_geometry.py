@@ -28,6 +28,28 @@ PUBLIC = "https://api.propertyvideostudioai.com/test-scratch/"
 WORK_W = 800
 
 
+def _nonrigid(a, b, M) -> dict:
+    """How much of the END frame does NOT follow the single global move (2026-10-30, added after two end frames that passed the gate gave clips with a
+    zig-zag path and a deformed door / radiator). Start is warped onto the end frame with the fitted similarity, then dense optical flow measures what is
+    still moving: pixels (at 800 px width) that move differently from the global model = objects that changed or a non-rigid view change.
+    A room has depth, so a part of this residual is normal parallax: compare frames, do not read it as an absolute verdict."""
+    try:
+        H, W = b.shape[:2]
+        ga = cv2.cvtColor(a, cv2.COLOR_BGR2GRAY)
+        gb = cv2.cvtColor(b, cv2.COLOR_BGR2GRAY)
+        wa = cv2.warpAffine(ga, M, (W, H))
+        valid = cv2.warpAffine(np.full_like(ga, 255), M, (W, H)) > 250
+        valid = cv2.erode(valid.astype(np.uint8), np.ones((15, 15), np.uint8)).astype(bool)
+        if valid.mean() < 0.2:
+            return {"resid_diff": None, "resid_flow_med": None, "resid_flow_p90": None}
+        d = np.abs(cv2.GaussianBlur(wa, (5, 5), 0).astype(np.float32) - cv2.GaussianBlur(gb, (5, 5), 0).astype(np.float32))[valid]
+        flow = cv2.calcOpticalFlowFarneback(wa, gb, None, 0.5, 4, 25, 3, 5, 1.1, 0)
+        mag = np.sqrt(flow[..., 0] ** 2 + flow[..., 1] ** 2)[valid]
+        return {"resid_diff": round(float(d.mean()), 1), "resid_flow_med": round(float(np.median(mag)), 2), "resid_flow_p90": round(float(np.percentile(mag, 90)), 2)}
+    except Exception as e:
+        return {"resid_error": str(e)[:80]}
+
+
 def analyse(start_path, end_path, overlay_path=None) -> dict:
     a = cv2.imread(str(start_path))
     b = cv2.imread(str(end_path))
@@ -66,7 +88,8 @@ def analyse(start_path, end_path, overlay_path=None) -> dict:
     back = (np.linalg.inv(A) @ (pts - t).T).T
     inside = float(np.mean((back[:, 0] >= 0) & (back[:, 0] <= W - 1) & (back[:, 1] >= 0) & (back[:, 1] <= H - 1)))
     res = {"ok": True, "matches": len(good), "inliers": int(inl.sum()), "scale": round(s, 3), "rotation_deg": round(rot, 2),
-           "foe_x": foe[0], "foe_y": foe[1], "inside": round(inside, 3)}
+           "foe_x": foe[0], "foe_y": foe[1], "inside": round(inside, 3), "inlier_ratio": round(float(inl.sum()) / len(good), 3)}
+    res.update(_nonrigid(a, b, M))
     if overlay_path:
         corners = np.array([[0, 0], [W, 0], [W, H], [0, H]], dtype=np.float32)
         poly = (np.linalg.inv(A) @ (corners - t).T).T
