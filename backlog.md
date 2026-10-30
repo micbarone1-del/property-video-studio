@@ -973,3 +973,9 @@ GIAL has 10 rentals (2 residential: 1251 Albano 170 mq, 1321 Marino 90 mq). The 
 - Notifications: the mobile push already exists (ntfy via maintenance_scheduler.send_notification, same call as the email). The dashboard must reuse that single path, no second notification system.
 - The test instance (port 8002) listens on 127.0.0.1 only (start_test.sh), so its screen cannot be opened from outside by design. Michele wants to see test jobs: solve inside the dashboard (a test-instance view) instead of opening the port.
 - New-job email: mark jobs from the test instance or with a T- external_ref as [TEST].
+
+
+## 2026-10-30 (BY) - Video library: open points
+- Reuse rules still to decide with Michele: which videos may be handed over to the agency (voice before the GIAL pronunciation fix, test with page copies of photos), expiry of listings that are sold, labelling.
+- Add the library folder to the nightly backup; show the library in the dashboard (agency view, review buttons, publish link).
+- Classification is by agency name; sale/rent and zone are not fields yet.

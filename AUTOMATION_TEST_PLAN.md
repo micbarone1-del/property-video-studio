@@ -494,3 +494,8 @@ test_upscale_default.py RESULT: ALL PASS (15/15)
 test_relinx_loader.py 
 test_photo_filters.py RESULT: ALL PASS (76/76)
 - FMEA note (proposal, not reviewed): a pilot with a lifted limit removes the protection against a partner loop; the per-job and daily spend limits of the queue project are the replacement control. Not built yet.
+
+
+## 2026-10-30 (BY) - Video library tests
+- test_video_library: finds only finished jobs with a file, groups by agency name, dry run writes nothing, copy is byte-identical, jobs/ untouched, second run copies nothing and keeps the review, publish gives a random-name https link, no delete or move call. test_video_library.py RESULT: ALL PASS (13/13)
+- Not run on real data yet.

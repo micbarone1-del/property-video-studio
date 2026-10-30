@@ -1233,3 +1233,12 @@ test_relinx_loader.py
 test_photo_filters.py RESULT: ALL PASS (76/76)
 - Not verified: a real request above the limit on the test instance; the .env value is NOT counted as done until the block output shows it.
 - Rollback: commit 63d7832.
+
+
+## 2026-10-30 (BY) - Video library by agency (video_library.py)
+- Requested by Michele: videos produced in the test area must be classifiable by agency and reusable later (e.g. for GIAL).
+- Built: video_library.py reads the finished jobs of the production and the test instance (read-only) and COPIES each video to /var/www/pvs_library/<agency>/<job>_<property>.mp4 (outside the repo and outside jobs/), one card per video, a master index.json + index.html with agency, listing id, property, instance, date, real cost, upscale flag and Michele's review (reusable yes/no, note). Agencies are grouped by NAME (the test instance had 14 GIAL client records, one per listing). Re-runs copy nothing twice and keep the review. --publish adds ONE file to the test-scratch folder under a random name and prints the https link. No delete or move call exists in the tool.
+- This is a first step of backlog item 39 (client/property/job library), not the whole item. It is a standalone script, not part of the job pipeline, so no job state or cost logic changed.
+- Tests: test_video_library.py RESULT: ALL PASS (13/13)
+- Not verified: a real copy on the server (output of the run is the evidence); the library is not part of the nightly backup yet (backup_jobs.sh covers jobs/ only).
+- Rollback: commit 82ee3b7.
