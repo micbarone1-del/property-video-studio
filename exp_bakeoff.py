@@ -36,10 +36,10 @@ import exp_endframe as ef
 import exp_director as dr
 import exp_geometry as geo
 
-MODELS = ("nb2", "qwen", "kontext", "uni1", "depth")
+MODELS = ("nb2", "qwen", "kontext", "uni1", "depth", "nextscene")
 QWEN_ZOOMS = (6.0, 7.0, 8.0)
 DEPTH_DZ = (1.2, 1.7, 2.2)
-EST = {"nb2": "USD 0.08 / image", "qwen": "about USD 0.04 / image (the LoRA endpoint price is not listed: check the invoice)",
+EST = {"nextscene": "Qwen Image Edit Plus + Next Scene LoRA on fal (price not listed; Qwen-class models are about USD 0.02-0.04 / image: check the invoice)", "nb2": "USD 0.08 / image", "qwen": "about USD 0.04 / image (the LoRA endpoint price is not listed: check the invoice)",
        "kontext": "USD 0.08 / image", "uni1": "15 credits / image (about EUR 0.04 if 400 credits = EUR 1.1)", "depth": "about EUR 0.001 / scene (depth map)"}
 
 
@@ -85,7 +85,21 @@ def gen_depth(ctx, run):
     return cv2.imencode(".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, 95])[1].tobytes(), f"dz {dz:g}"
 
 
-GENERATORS = {"nb2": gen_nb2, "qwen": gen_qwen, "kontext": gen_kontext, "uni1": gen_uni1, "depth": gen_depth}
+def gen_nextscene(ctx, run):
+    """Qwen 'Next Scene' LoRA: made for 'the camera moves forward' continuations (film frames), strength 0.7-0.8 as its page recommends.
+    The prompt keeps its 'Next Scene:' opening and asks for a SHORT push-in that reveals nothing new (the model's default prompt asks to reveal more of the scene)."""
+    plan = ctx["plan"]
+    prompt = ("Next Scene: The camera pushes slowly and straight forward a short distance along the direction it was already looking, at the same height, "
+              f"until {plan.get('target')} appears about {float(plan.get('target_scale') or 1.3):g} times larger and stays near the centre. "
+              "Objects at the edges of the original photo move out of the frame, nothing new comes into view, and nothing is added. "
+              "Everything visible is exactly as in the original photo: same room, objects, colours, light and white balance. The room is completely still.")
+    raw = _fal_run("fal-ai/qwen-image-edit-plus-lora-gallery/next-scene", {
+        "image_urls": [ctx["fal_url"]], "prompt": prompt, "lora_scale": 0.75, "image_size": "landscape_16_9",
+        "output_format": "jpeg", "num_images": 1, "seed": 2000 + run})
+    return raw, ""
+
+
+GENERATORS = {"nextscene": gen_nextscene, "nb2": gen_nb2, "qwen": gen_qwen, "kontext": gen_kontext, "uni1": gen_uni1, "depth": gen_depth}
 
 
 def load_plan(job: str, scene: int) -> dict:
@@ -129,7 +143,7 @@ def run_scene(jobs_dir: str, job: str, scene: int, models: list, runs: int, usag
     src_copy = ef.OUT_DIR / f"endf_src_{tag}{photo.suffix.lower()}"
     shutil.copyfile(photo, src_copy)
     ctx = {"photo": photo, "plan": plan, "prompt": prompt, "source_url": ef.PUBLIC + src_copy.name}
-    if any(m in models for m in ("qwen", "kontext")):
+    if any(m in models for m in ("qwen", "kontext", "nextscene")):
         import fal_client
         ctx["fal_url"] = fal_client.upload_file(str(photo))
     if "depth" in models:
