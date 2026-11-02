@@ -541,3 +541,8 @@ test_photo_filters.py RESULT: ALL PASS (76/76)
 - T-H11 positive rules + Claude description of the expected last view, Luma ray-3.2 1080p, production clip QC as judge, n=2 per scene, job 91056c3e: scene 4 pass, pass (baseline flag: second tap); scene 1 flag, reject (baseline reject: ghost curtain). Human check of the 4 clips by Michele: NOT YET RECORDED. T-H12 same plus a positive straight movement token on scene 1: NOT RUN.
 - Row Q12 (ghost animation / invented elements) stays open (S8 O5 D5 = 200, ACT, proposal): the bathroom improved in 2/2, the living room did not (0/2 pass), and the judge is the imperfect production QC; no rate can be claimed from n=2.
 - Scores remain proposals until reviewed by the user; scoreboard totals NOT recomputed here.
+
+
+## 2026-11-02 (14:36) — p25 deployed; live-test incident
+- T-DV and T-RET suites PASS on the server (12/12, 24/24). Still NOT run: a real clip with the new prompt; a real cleanup above the 80% mark; the keep button in the library (UI wiring checked by source only).
+- Incident IN-1: test_batch_redo.py (live integration test against production) was run by mistake in a verification block: 3 real Luma clips, about EUR 3.3 (estimate), job a49a2b7d left in awaiting_approval. Control added: live tests only with the operator's explicit OK (proposal; scores not reviewed).
