@@ -1,0 +1,239 @@
+diff --git a/gial_consolidate.py b/gial_consolidate.py
+index 03fa909..bb6d76f 100644
+--- a/gial_consolidate.py
++++ b/gial_consolidate.py
+@@ -82,7 +82,7 @@ def busy(*jobs_dirs):
+     return found
+ 
+ 
+-def run(prod_jobs, test_jobs, prod_agencies, test_agencies, scope, apply, create_property, keep_test=True, out=print):
++def run(prod_jobs, test_jobs, prod_agencies, test_agencies, scope, apply, create_property, keep_test=True, out=print, only=None):
+     prod_g = prod_gial_agency(prod_agencies)
+     if not prod_g:
+         out("ERRORE: nessuna agenzia GIAL nella produzione"); return 2
+@@ -92,7 +92,9 @@ def run(prod_jobs, test_jobs, prod_agencies, test_agencies, scope, apply, create
+     in_prod = scan(prod_jobs, prod_ids | test_ids)
+     in_test = scan(test_jobs, test_ids | prod_ids)
+     prod_names = {n for n, _ in in_prod}
+-    todo_copy = [(n, m) for n, m in in_test if n not in prod_names and in_scope(m, scope)]
++    todo_copy = [(n, m) for n, m in in_test if n not in prod_names and in_scope(m, scope) and (only is None or n in only)]
++    if only is not None:      # 2026-11-02: --only copies exactly the named test jobs and touches nothing else in production
++        in_prod = [(n, m) for n, m in in_prod if n in only]
+     todo_update = [(n, m) for n, m in in_prod if m.get("agency_id") != prod_g["agency_id"] or not m.get("keep")]
+     out(f"Ambito '{scope}': copio in produzione {len(todo_copy)} job dal test; aggiorno agenzia/keep di {len(todo_update)} job gia' in produzione; "
+         f"marco keep su {len([1 for n, m in in_test if not m.get('keep')]) if keep_test else 0} originali del test")
+@@ -143,6 +145,7 @@ def main():
+     ap = argparse.ArgumentParser()
+     ap.add_argument("--scope", choices=list(SCOPES))
+     ap.add_argument("--apply", action="store_true")
++    ap.add_argument("--only", default="", help="comma list of test job ids: copy ONLY these (with --scope all)")
+     ap.add_argument("--prod-jobs", default="/var/www/property-video-studio/jobs")
+     ap.add_argument("--test-jobs", default="/var/www/pvs_test_jobs")
+     ap.add_argument("--test-data", default="/var/www/pvs_test_state/data")
+@@ -156,10 +159,12 @@ def main():
+         pf = cost_model.PROPERTIES_FILE
+         if pf.exists() and not Path(str(pf) + ".bak_p28").exists():
+             shutil.copy2(pf, str(pf) + ".bak_p28")
++    only = {x.strip() for x in a.only.split(',') if x.strip()} or None
+     rc = 0
+     for sc in ([a.scope] if a.scope else list(SCOPES)):
+         print(f"\n===== AMBITO {sc} =====")
+-        rc = run(Path(a.prod_jobs), Path(a.test_jobs), prod_agencies, test_agencies, sc, a.apply, cost_model.create_property)
++        rc = run(Path(a.prod_jobs), Path(a.test_jobs), prod_agencies, test_agencies, sc, a.apply, cost_model.create_property,
++                 keep_test=not only, only=only)
+     return rc
+ 
+ 
+diff --git a/gial_start.py b/gial_start.py
+new file mode 100644
+index 0000000..4183b3b
+--- /dev/null
++++ b/gial_start.py
+@@ -0,0 +1,82 @@
++"""gial_start.py -- starts the generation of GIAL draft jobs ONE AFTER THE OTHER on the production app and waits for each to park (2026-11-02, Michele:
++"falli tutti e 3 i video se il set up ha successo. Io approvo solo i rework").
++
++  python3 gial_start.py JOB1,JOB2,JOB3        (production, venv active, from /var/www/property-video-studio; run it inside `screen` so it survives the terminal)
++
++For every job: it must be in status 'draft' (otherwise it is skipped, never started twice); POST /jobs/<id>/start-generation with the app's own access key (read
++from .env, never printed); then it polls the job every 60 s until the job leaves queued/running. 'done' and 'awaiting_approval' (the QC gate: only Michele approves
++reworks) both let the NEXT job start. 'failed' / 'stopped' / any other state STOPS the whole batch: no further money is spent until a person looks.
++It never deletes or edits anything: it only calls the same endpoint the app's button calls.
++"""
++import os
++import sys
++import time
++
++import requests
++from dotenv import load_dotenv
++
++BASE = os.environ.get("PVS_BASE", "http://127.0.0.1:8000")
++POLL_SECS = 60
++MAX_WAIT_SECS = 3 * 3600
++PARKED_OK = ("done", "awaiting_approval")
++BUSY = ("queued", "running")
++
++
++def session():
++    load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
++    s = requests.Session()
++    key = os.getenv("UI_ACCESS_KEY", "").strip()
++    if key:
++        s.headers["X-Access-Key"] = key
++    return s
++
++
++def run(job_ids, s=None, sleep=time.sleep, out=print, poll=POLL_SECS, max_wait=MAX_WAIT_SECS):
++    """Returns a dict job_id -> final status ('skipped:<status>' for jobs that were not drafts, 'not started' after a stop)."""
++    s = s or session()
++    result = {}
++    stop = False
++    for jid in job_ids:
++        if stop:
++            result[jid] = "not started"
++            continue
++        r = s.get(f"{BASE}/jobs/{jid}", timeout=30)
++        if r.status_code != 200:
++            out(f"{jid}: cannot read the job ({r.status_code}): batch stopped")
++            result[jid] = f"unreadable:{r.status_code}"; stop = True; continue
++        st = r.json().get("status")
++        if st != "draft":
++            out(f"{jid}: status is '{st}', not 'draft': skipped (never started twice)")
++            result[jid] = f"skipped:{st}"; continue
++        r = s.post(f"{BASE}/jobs/{jid}/start-generation", timeout=60)
++        if r.status_code != 200:
++            out(f"{jid}: start refused ({r.status_code}) {r.text[:200]}: batch stopped")
++            result[jid] = f"refused:{r.status_code}"; stop = True; continue
++        out(f"{jid}: generation started")
++        waited = 0
++        while True:
++            sleep(poll); waited += poll
++            try:
++                j = s.get(f"{BASE}/jobs/{jid}", timeout=30).json()
++            except Exception as e:
++                out(f"{jid}: status read failed ({e}), will retry"); j = {"status": "running"}
++            st = j.get("status")
++            out(f"{jid}: {st} {j.get('progress')}% {str(j.get('message') or '')[:90]}")
++            if st not in BUSY:
++                break
++            if waited >= max_wait:
++                out(f"{jid}: still {st} after {max_wait // 60} min: batch stopped for a person to look")
++                st = f"timeout:{st}"; break
++        result[jid] = st
++        if st not in PARKED_OK:
++            out(f"{jid}: ended as '{st}': batch stopped, no more spending")
++            stop = True
++    out("RESULT:", result)
++    return result
++
++
++if __name__ == "__main__":
++    ids = [x.strip() for x in (sys.argv[1] if len(sys.argv) > 1 else "").split(",") if x.strip()]
++    if not ids:
++        raise SystemExit(__doc__)
++    run(ids)
+diff --git a/photo_quality_probe.py b/photo_quality_probe.py
+new file mode 100644
+index 0000000..5b2e69b
+--- /dev/null
++++ b/photo_quality_probe.py
+@@ -0,0 +1,36 @@
++"""photo_quality_probe.py URL -- READ-ONLY diagnosis of why a relinx.it listing loses photos to the quality filter (2026-11-02, GIAL 1273/1279: 9 photos
++"discarded for insufficient image quality"). Same steps as relinx_pilot_check (page -> photos -> white-band rule -> JPEG 95), then the production judge
++(listing_scraper.assess_photo_quality) on each kept photo. Prints one line per photo: size on the page, size after the band rule, verdict, each judge, blockiness.
++Writes nothing in any job. Cost: a few cents of Claude per photo (max 14 photos). Usage (venv): python3 photo_quality_probe.py URL
++"""
++import io
++import sys
++
++import requests
++from PIL import Image
++
++import relinx_pilot_check as rp
++import listing_scraper as ls
++
++MAX_PHOTOS = 14
++
++
++def main(url):
++    page = requests.get(url, headers=rp.UA, timeout=40).text
++    L = rp.parse_listing(page, url)
++    print(f"listing {L['id']}: {len(L['photos'])} photos on the page, probing the first {MAX_PHOTOS}")
++    imgs = [Image.open(io.BytesIO(requests.get("https://relinx.it" + rel, headers=rp.UA, timeout=60).content)).convert("RGB") for rel in L["photos"][:MAX_PHOTOS]]
++    kept, info = rp.choose_clean_photos(imgs, ls.MIN_USABLE_PHOTOS)
++    print(f"band rule: {info['mode']}; banded: {len(info['banded'])} of {len(imgs)}")
++    poor = 0
++    for pos, im in kept:
++        buf = io.BytesIO()
++        im.save(buf, format="JPEG", quality=95)
++        r = ls.assess_photo_quality(buf.getvalue(), f"probe {L['id']} #{pos}")
++        poor += r["verdict"] in ls.PHOTO_QUALITY_POOR
++        print(f"  #{pos:02d} page {imgs[pos].size} -> kept {im.size} | verdict {r['verdict']} | judges {r.get('by_model')} | blockiness {r.get('blockiness')}")
++    print(f"POOR: {poor} of {len(kept)}")
++
++
++if __name__ == "__main__":
++    main(sys.argv[1])
+diff --git a/test_gial_consolidate.py b/test_gial_consolidate.py
+index 9a0994e..c0f7eec 100644
+--- a/test_gial_consolidate.py
++++ b/test_gial_consolidate.py
+@@ -46,6 +46,13 @@ check("G10 a failed test job and another agency's job were not copied", not (P /
+ snap = {p: p.read_bytes() for p in P.rglob("*") if p.is_file()}
+ rc2 = gc.run(P, T, prod_ag, test_ag, "useful", True, cm.create_property, out=lambda *a: None)
+ check("G11 running it again changes nothing (idempotent)", rc2 == 0 and snap == {p: p.read_bytes() for p in P.rglob("*") if p.is_file()} and len(cm.list_properties()) == 4)
++# G13 --only: exactly the named test jobs are copied; other test drafts stay out of production and untouched
++P2, T2 = tmp / "prodjobs2", tmp / "testjobs2"; P2.mkdir(); T2.mkdir()
++mk(P2, "pjX", "ag_other", "done"); mk(T2, "tjA", "ag_t0", "draft", "Ricevuto da Relinx (external_ref=T-1310-aa)"); mk(T2, "tjB", "ag_t1", "draft", "Ricevuto da Relinx (external_ref=T-1272-bb)")
++rc3 = gc.run(P2, T2, prod_ag, test_ag, "all", True, cm.create_property, keep_test=False, out=lambda *a: None, only={"tjA"})
++check("G13 --only copies the named job (production agency, keep) and nothing else; other drafts and other production jobs untouched",
++      rc3 == 0 and json.loads((P2 / "tjA" / "job_meta.json").read_text())["keep"] is True and not (P2 / "tjB").exists()
++      and "keep" not in json.loads((T2 / "tjB" / "job_meta.json").read_text()) and json.loads((P2 / "pjX" / "job_meta.json").read_text())["agency_id"] == "ag_other")
+ src = open("gial_consolidate.py").read()
+ check("G12 the script contains no delete call at all", not any(w in src for w in ("rmtree", ".unlink", "os.remove", "os.rmdir", "rm -")))
+ print("ALL PASS" if not fails else f"{fails} FAIL"); sys.exit(1 if fails else 0)
+diff --git a/test_gial_start.py b/test_gial_start.py
+new file mode 100644
+index 0000000..ee9bdfd
+--- /dev/null
++++ b/test_gial_start.py
+@@ -0,0 +1,39 @@
++"""gial_start.py (2026-11-02): one job at a time, drafts only, stops on failure. Fake HTTP, no sleeping. Run: python3 test_gial_start.py"""
++import os, sys
++sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
++import gial_start as gs
++fails = 0
++def check(n, c, info=""):
++    global fails
++    print(("PASS " if c else "FAIL ") + n + ("" if c else f" -- {info}")); fails += 0 if c else 1
++class R:
++    def __init__(s, code, js=None): s.status_code, s._j, s.text = code, js or {}, str(js)
++    def json(s): return s._j
++class Fake:
++    def __init__(s, plan): s.plan, s.posts, s.state = plan, [], {}     # plan: id -> list of statuses after start
++    def get(s, url, timeout=0):
++        jid = url.rsplit("/", 1)[1]
++        if jid not in s.plan: return R(404)
++        if jid not in s.state: return R(200, {"status": "draft"} if s.plan[jid] != "notdraft" else {"status": "done"})
++        seq = s.state[jid]; st = seq.pop(0) if len(seq) > 1 else seq[0]
++        return R(200, {"status": st, "progress": 50, "message": "m"})
++    def post(s, url, timeout=0):
++        jid = url.split("/jobs/")[1].split("/")[0]; s.posts.append(jid); s.state[jid] = list(s.plan[jid]); return R(200, {"status": "queued"})
++f = Fake({"a": ["running", "awaiting_approval"], "b": ["queued", "running", "done"], "c": ["running", "done"]})
++res = gs.run(["a", "b", "c"], s=f, sleep=lambda x: None, out=lambda *a: None)
++check("S1 jobs start one after the other, each only after the previous parked (awaiting_approval and done both release the next)", f.posts == ["a", "b", "c"] and res == {"a": "awaiting_approval", "b": "done", "c": "done"}, (f.posts, res))
++f = Fake({"a": ["running", "failed"], "b": ["done"]})
++res = gs.run(["a", "b"], s=f, sleep=lambda x: None, out=lambda *a: None)
++check("S2 a failed job stops the batch: the next one is never started", f.posts == ["a"] and res["b"] == "not started" and res["a"] == "failed", (f.posts, res))
++f = Fake({"a": "notdraft", "b": ["done"]})
++res = gs.run(["a", "b"], s=f, sleep=lambda x: None, out=lambda *a: None)
++check("S3 a job that is not a draft is skipped (never started twice) and the batch goes on", f.posts == ["b"] and res["a"] == "skipped:done", (f.posts, res))
++f = Fake({"a": ["running"], "b": ["done"]})
++res = gs.run(["a", "b"], s=f, sleep=lambda x: None, out=lambda *a: None, poll=60, max_wait=180)
++check("S4 a job that never leaves 'running' stops the batch after the maximum wait", res["a"] == "timeout:running" and res["b"] == "not started", res)
++f = Fake({"a": ["done"]})
++res = gs.run(["zzz", "a"], s=f, sleep=lambda x: None, out=lambda *a: None)
++check("S5 an unknown job id stops the batch before spending anything", f.posts == [] and res["a"] == "not started", (f.posts, res))
++src = open("gial_start.py").read()
++check("S6 the access key is never printed and the script has no delete call", "print(key" not in src and "out(key" not in src and not any(w in src for w in ("rmtree", "unlink", "os.remove", ".delete(")))
++print("ALL PASS" if not fails else f"{fails} FAIL"); sys.exit(1 if fails else 0)
