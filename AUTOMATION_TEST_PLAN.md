@@ -522,3 +522,9 @@ test_photo_filters.py RESULT: ALL PASS (76/76)
 - Row Q16 (a clip with a defect passes every automatic check): the first evaluator run would have passed 3 of 4 known-defective clips on content: ACT stays open, proposal S6 O4 D7 = 168. Control proposed: clip evaluation + regeneration cap + cautious movement + report flag; not built. Q12-Q15 unchanged (end frame parked, flag off).
 - Invariants: no double cost (cap attempts and spend per scene before enabling regeneration), operator informed once (report flag).
 - Scores remain proposals until reviewed by the user; scoreboard totals NOT recomputed here.
+
+
+## 2026-11-02 (evening) — Clip evaluator, 12 frames: ground truth vs Michele's eye (PROPOSALS, scores not reviewed)
+- T-H9b RUN (12 key frames + object inventory, 6 clips): correct 2, missed 2 (second tap; door/radiator deformation), false alarm 1 (object hidden behind a chair by parallax), not verified 1. Precision/recall cannot be claimed on n=6. T-H10 evaluator in shadow mode on real jobs: NOT RUN (not built).
+- Row Q16 stays open (proposal S6 O4 D7 = 168, ACT): a defective clip can still pass the content check; the physical rule on edges is untested on the server. New proposed row Q17: false alarm from occlusion (S3 O5 D3 = 45): triggers an unnecessary regeneration (cost) if the evaluator is given authority. Control: shadow mode first, measure, then act.
+- Scores remain proposals until reviewed by the user; scoreboard totals NOT recomputed here.
