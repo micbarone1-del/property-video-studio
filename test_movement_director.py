@@ -143,5 +143,25 @@ src = Path("scene_rework.py").read_text()
 check("MD50 rework passes qc_feedback to generate_video", "qc_feedback=_director_feedback(job, scene_idx, scene_id)" in src)
 vsrc = Path("video_generation.py").read_text()
 check("MD51 ONE place calls the director (generate_video_single); no other module does", vsrc.count("movement_director.plan(") == 1 and sum(Path(f).read_text().count("movement_director.plan(") for f in ("api_server.py", "scene_rework.py", "listing_scraper.py")) == 0)
+
+# I. target frame (2026-11-02): the description is written for the move, centred on the director's target
+p, _ = md.validate(dict(FWD, target_x=0.6, target_y=0.45), DEEP)
+check("MD52 the plan keeps the target's place in the photo", p["center"] == (0.6, 0.45), p.get("center"))
+p, _ = md.validate(dict(FWD, target_x=0.95, target_y="x"), DEEP)
+check("MD53 an extreme or unreadable target position is kept near the middle", p["center"] == (0.65, 0.5), p.get("center"))
+q = []
+va._claude_vision_call = lambda imgs, prompt, mt, model=None, usage_out=None: (q.append(prompt) or json.dumps({"last_view": "The shot ends on a view of the room showing a window."}))
+plan_f = {"move": "forward", "sentence": "slow straight forward camera push-in toward the far window", "target": "the far window", "center": (0.6, 0.5), "scale": 1.25}
+dv.describe(big, "walk_in_explore", "large", tmp / "c4.mp4", scale=1.25, plan=plan_f)
+check("MD54 with a plan the question to Claude carries the move and the target, and the 60-word limit", "far window" in q[-1] and "push-in" in q[-1] and "at most 60 words" in q[-1], q[-1][-400:])
+dv.describe(big, "walk_in_explore", "large", tmp / "c5.mp4", scale=1.25)
+check("MD55 without a plan the question is the tested one (no addendum)", "The camera move for this shot" not in q[-1])
+dv.describe(big, "walk_in_explore", "large", tmp / "c6.mp4", scale=1.25, plan=dict(plan_f, move="static"))
+check("MD56 a static plan gets no move addendum", "The camera move for this shot" not in q[-1])
+check("MD57 the centre is stored in the note next to the clip", json.loads(dv.sidecar_path(tmp / "c4.mp4").read_text())["center"] == [0.6, 0.5])
+lv = "The shot ends on a view of the room showing a grey sofa on the left, a round table in the centre, two closed windows on the right and a lamp in the background."
+full = vg.assemble_pov_prompt("large", "walk_in_explore", "bright_natural", "natural_pace", "luma", "landscape", "none", "", "center", "deep", lv, p["sentence"])
+old = vg.assemble_pov_prompt("large", "walk_in_explore", "bright_natural", "natural_pace", "luma", "landscape")
+check("MD58 the final Luma prompt is not heavier than today's (words)", len(full.split()) <= len(old.split()) + 30, (len(full.split()), len(old.split())))
 print(f"\n{'ALL PASS' if not fails else str(fails) + ' FAIL'}")
 sys.exit(1 if fails else 0)

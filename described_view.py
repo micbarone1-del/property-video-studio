@@ -34,6 +34,11 @@ Write the description of image 2 for a video prompt, as 2 plain sentences of at 
 Name every fixed element you can clearly see in image 2 (furniture, fixtures, openings, wall features) with its count, its position (left, centre, right; foreground, background) and its state (door closed, window with a curtain or without one, tap count and place...). Describe only what is really visible in image 2: if you are not sure that something is there, leave it out. Positive statements only: say what IS there, never what is absent or must not appear.
 Answer with JSON only: {"last_view": "..."}"""
 
+# 2026-11-02: appended when the movement director has a plan: the description is written FOR the move (target, direction), to keep Luma on the path
+# and give it nothing to invent. Word limit 60 (the whole Luma prompt must not grow: it is about 200 words with the old rules and with these).
+PLAN_ADDENDUM = """
+The camera move for this shot: {move_text}. Image 2 is the view where this move ends, centred on {target}. Write the description so that it also tells the direction of the move: say what lies on the path between the camera and {target}, what stays at the left and right edges, and what {target} looks like (state, count). Use at most 60 words in total and the 5 to 7 most prominent fixed elements. Mention an element only if you clearly see it in image 2."""
+
 # a straight forward move ends on the central 1/1.3 of the photo; a gentle rotation or lateral move ends on almost the whole photo (PROPOSAL, tested on interiors)
 FORWARD_MOVEMENTS = ("walk_in_explore", "walk_toward", "walk_through", "approach_facade")
 SCALE_FORWARD = 1.3
@@ -81,7 +86,7 @@ def _write(clip_path, data: dict):
         log.warning(f"[DescribedView] could not write the note next to {clip_path}: {e}")
 
 
-def describe(photo_path, movement: str, space_type: str, clip_path, scale: float = None) -> str:
+def describe(photo_path, movement: str, space_type: str, clip_path, scale: float = None, plan: dict = None) -> str:
     """Claude's description of the expected last view ('' on any failure -> the caller keeps the old rules). Writes <clip>.view.json."""
     try:
         from PIL import Image
@@ -90,13 +95,19 @@ def describe(photo_path, movement: str, space_type: str, clip_path, scale: float
         im = Image.open(photo_path).convert("RGB")
         w, h = im.size
         cw, ch = round(w / scale), round(h / scale)
-        x0, y0 = (w - cw) // 2, (h - ch) // 2
+        cx, cy = (plan or {}).get("center") or (0.5, 0.5)       # the movement director's target: the shot ends centred on it, inside the photo
+        x0 = min(max(0, round(cx * w - cw / 2)), w - cw)
+        y0 = min(max(0, round(cy * h - ch / 2)), h - ch)
+        question = _scene_words(DESCRIBE_PROMPT, space_type)
+        if plan and plan.get("move") in ("forward", "lateral_left", "lateral_right", "rotate_left", "rotate_right"):
+            question = question.replace("Answer with JSON only", _scene_words(PLAN_ADDENDUM, space_type).format(
+                move_text=str(plan.get("sentence", ""))[:220], target=plan.get("target") or "the centre of the frame") + "\nAnswer with JSON only", 1)
         fd, tmp = tempfile.mkstemp(suffix=".jpg")
         os.close(fd)
         usage = {}
         try:
             im.crop((x0, y0, x0 + cw, y0 + ch)).save(tmp, quality=92)
-            raw = va._claude_vision_call([str(photo_path), tmp], _scene_words(DESCRIBE_PROMPT, space_type), 400,
+            raw = va._claude_vision_call([str(photo_path), tmp], question, 400,
                                          model=va.CLIP_QC_MODEL, usage_out=usage)
         finally:
             try:
@@ -109,7 +120,7 @@ def describe(photo_path, movement: str, space_type: str, clip_path, scale: float
             log.warning(f"[DescribedView] no usable description (len={len(text)}): old rules for this clip")
             _write(clip_path, {"used": False, "reason": "no usable description", "usage": usage, "counted": False})
             return ""
-        _write(clip_path, {"used": True, "last_view": text, "scale": scale, "movement": movement, "usage": usage, "counted": False})
+        _write(clip_path, {"used": True, "last_view": text, "scale": scale, "center": [cx, cy], "movement": movement, "usage": usage, "counted": False})
         log.info(f"[DescribedView] {movement} (crop 1/{scale:g}): {text}")
         return text
     except Exception as e:

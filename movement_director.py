@@ -63,6 +63,7 @@ JSON keys:
  "view": "interior" | "ground" | "aerial"   (ground = outdoors at ground level)
  "move": one of forward, lateral_left, lateral_right, rotate_left, rotate_right, static
  "target": a short English noun phrase for the far fixed thing the camera heads toward (forward) or keeps in the centre, or "centre of the frame"
+ "target_x", "target_y": where the target sits in the photo, as fractions from 0 to 1 (x from the left edge, y from the top edge); the shot ends centred on it
  "travel": "short" | "medium" | "long"   (forward: how far the camera glides; sideways moves ignore this)
  "risk": "low" | "medium" | "high"   (your honest chance that the model invents something with the move you chose)
  "sentence": the camera instruction for the video prompt, English, one sentence of at most 60 words, present tense. Forward: say "slow straight forward camera push-in toward <target>",
@@ -192,11 +193,24 @@ def validate(raw: dict, hints: dict):
         sentence = vg._LUMA_MOVEMENT_TOKENS["subtle_rotate"]
     elif TAIL not in sentence and "constant" not in low:
         sentence = sentence.rstrip(".") + ", " + TAIL
-    plan = {"move": move, "sentence": sentence, "scale": scale, "risk": risk, "target": target, "travel": travel, "aerial": aerial,
+    plan = {"move": move, "sentence": sentence, "center": _center(raw) if move == "forward" else (0.5, 0.5), "scale": scale, "risk": risk, "target": target, "travel": travel, "aerial": aerial,
             "source": "claude", "reason": str(raw.get("reason", ""))[:300]}
     if downgraded:
         plan["adjusted"] = downgraded
     return plan, []
+
+
+def _center(raw: dict):
+    """(x, y) the shot ends centred on: the target's place in the photo, kept near the middle (a far target is near it anyway; the crop
+    stays inside the photo). Missing or unusable numbers -> the exact centre."""
+    out = []
+    for k in ("target_x", "target_y"):
+        try:
+            v = float(raw.get(k))
+        except (TypeError, ValueError):
+            v = 0.5
+        out.append(round(min(max(v, 0.35), 0.65), 3))
+    return tuple(out)
 
 
 def _facts(hints: dict) -> str:

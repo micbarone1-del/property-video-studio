@@ -1041,7 +1041,7 @@ def generate_video_single(
                 }, output_path, qc_feedback)
             if described_view.enabled():
                 last_view = described_view.describe(image_path, _remap_movement(pov_movement, output_format), space_type, output_path,
-                                                    scale=plan["scale"] if plan else None)
+                                                    scale=plan["scale"] if plan else None, plan=plan)
         final_prompt = assemble_pov_prompt(
             space_type, pov_movement, lighting, intensity, model_tier, output_format, reflective_surface,
             anchor, anchor_side, depth, last_view, plan["sentence"] if plan else "",
