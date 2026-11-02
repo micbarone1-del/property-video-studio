@@ -211,15 +211,21 @@ def parse_anchor_answer(txt):
 
 
 def intent_kwargs(scene) -> dict:
-    """The camera-direction arguments of generate_video_single for ONE scene dict: {} when the switch is off or the scene has no usable
-    anchor (so a call with ** is then exactly the call as it was). The ONE place both the main pipeline and the scene rework read it."""
-    if not anchor_enabled() or not isinstance(scene, dict):
-        return {}
-    anchor = clean_anchor(scene.get("anchor"))
-    if not anchor or clean_side(scene.get("anchor_side")) != "center":      # an anchor near an edge makes the camera TURN toward it (job 26d7a774)
+    """The camera-direction arguments of generate_video_single for ONE scene dict: {} when the switches are off or the scene has nothing to
+    pass (so a call with ** is then exactly the call as it was). The ONE place both the main pipeline and the scene rework read it.
+    2026-11-02: with the movement director on, the scene's depth is passed even without a usable anchor (the director's travel limit)."""
+    if not isinstance(scene, dict):
         return {}
     depth = str(scene.get("depth") or "").strip().lower()
-    return {"anchor": anchor, "anchor_side": clean_side(scene.get("anchor_side")), "depth": depth if depth in DEPTHS else ""}
+    depth = depth if depth in DEPTHS else ""
+    out = {}
+    if anchor_enabled():
+        anchor = clean_anchor(scene.get("anchor"))
+        if anchor and clean_side(scene.get("anchor_side")) == "center":      # an anchor near an edge makes the camera TURN toward it (job 26d7a774)
+            out = {"anchor": anchor, "anchor_side": clean_side(scene.get("anchor_side")), "depth": depth}
+    if not out and depth and _os.environ.get("PVS_DIRECTOR", "0").strip().lower() in ("1", "true", "yes", "on"):
+        out = {"depth": depth}
+    return out
 
 
 def anchor_motion_for(movement, anchor, side="center", depth=None) -> str:

@@ -93,7 +93,7 @@ check("DV19 old-rules generation replaces the previous note (no stale descriptio
 
 # --- D. wiring: one call site, Luma only, both generation paths add the cost -------------------------------------------------------------
 vsrc = open("video_generation.py").read(); asrc = open("api_server.py").read()
-check("DV20 one description call site, Luma only, behind the switch", vsrc.count("described_view.describe(") == 1 and 'if model_tier == "luma":\n            import described_view\n            if described_view.enabled():' in vsrc)
+check("DV20 one description call site, Luma only, behind the switch", vsrc.count("described_view.describe(") == 1 and 'if model_tier == "luma":\n            import described_view\n            import movement_director' in vsrc and "            if described_view.enabled():\n                last_view = described_view.describe(" in vsrc)   # 2026-11-02: the movement director sits between the import and the description
 check("DV21 the pipeline AND the rework runner both add the described-view cost to the job", asrc.count("merge_usage_into_job") == 2)
 check("DV22 the movement remap exists once and assemble_pov_prompt uses it", vsrc.count("def _remap_movement") == 1 and "pov_movement = _remap_movement(pov_movement, output_format)" in vsrc and vsrc.count("stand_look_around remap") == 1)
 check("DV23 the positive text is defined once (exp_prompt imports it)", sum(open(f).read().count("this is a frozen photograph of an empty, still room") for f in ("described_view.py", "exp_prompt.py", "video_generation.py", "exp_luma.py")) == 1)

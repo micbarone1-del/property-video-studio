@@ -440,6 +440,7 @@ def assemble_pov_prompt(
     anchor_side:  str = "center",
     depth:        str = "",
     last_view:    str = "",           # 2026-11-02: described_view: Claude's description of the expected last frame; when given the POSITIVE rules replace _LUMA_RULES (Luma only)
+    motion_override: str = "",        # 2026-11-02: movement_director: Claude's own movement sentence; replaces the movement token (Luma only)
 ) -> str:
     """
     Assembles a model-specific prompt from structured token dictionaries.
@@ -486,7 +487,9 @@ def assemble_pov_prompt(
             rules = described_view.rules_for(last_view, space_type)
         # 2026-10-27: camera direction toward an anchor (camera_plan). Only the straight forward movements, only when the analysis named a
         # safe anchor, and never together with the mirror / glass rule (its "never move toward glass" would contradict a glass-door anchor).
-        if anchor and pov_movement in camera_plan.PRODUCTION_ANCHOR_MOVEMENTS and reflective_surface not in ("small", "large"):
+        if motion_override:
+            motion = motion_override      # the director already aimed the move (target, travel limit); the anchor table must not replace it
+        elif anchor and pov_movement in camera_plan.PRODUCTION_ANCHOR_MOVEMENTS and reflective_surface not in ("small", "large"):
             motion = camera_plan.anchor_motion_for(pov_movement, anchor, anchor_side, depth)
             rules  = rules + ", " + camera_plan.ANCHOR_STRICT
             log.info(f"[VideoGen] camera direction: {pov_movement} toward {anchor!r} (side={anchor_side}, depth={depth or '?'})")
@@ -977,6 +980,7 @@ def generate_video_single(
     anchor:         str  = "",             # 2026-10-27: camera_plan.intent_kwargs(scene): the safe thing to push in toward (only with PVS_ANCHOR=1)
     anchor_side:    str  = "center",
     depth:          str  = "",
+    qc_feedback:    str  = "",             # 2026-11-02: rework only: what the clip QC found on the previous attempt (movement_director)
     end_frame:      bool = None,           # 2026-10-27: Luma DIRECT only: first+last frame = two equal crops of the photo. None -> env PVS_END_FRAME (default off)
 ) -> bool:
     """
@@ -1025,13 +1029,22 @@ def generate_video_single(
         # 2026-11-02: positive Luma rules + Claude's description of the expected last frame (described_view), the standard for Luma clips;
         # PVS_POSITIVE_PROMPT=0 or any failure of the description keeps the old rules. ONE call site: first generation AND rework come through here.
         last_view = ""
+        plan = None
         if model_tier == "luma":
             import described_view
+            import movement_director
+            # 2026-11-02: Claude decides the movement from the photo (movement_director); None (switch off / no answer) keeps the movement table
+            if movement_director.enabled():
+                plan = movement_director.plan(image_path, {
+                    "space_type": space_type, "depth": depth, "anchor": anchor, "anchor_side": anchor_side,
+                    "reflective_surface": reflective_surface, "output_format": output_format,
+                }, output_path, qc_feedback)
             if described_view.enabled():
-                last_view = described_view.describe(image_path, _remap_movement(pov_movement, output_format), space_type, output_path)
+                last_view = described_view.describe(image_path, _remap_movement(pov_movement, output_format), space_type, output_path,
+                                                    scale=plan["scale"] if plan else None)
         final_prompt = assemble_pov_prompt(
             space_type, pov_movement, lighting, intensity, model_tier, output_format, reflective_surface,
-            anchor, anchor_side, depth, last_view,
+            anchor, anchor_side, depth, last_view, plan["sentence"] if plan else "",
         )
         if model_tier == "luma":
             described_view.note_prompt(output_path, final_prompt, bool(last_view))

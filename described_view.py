@@ -81,12 +81,12 @@ def _write(clip_path, data: dict):
         log.warning(f"[DescribedView] could not write the note next to {clip_path}: {e}")
 
 
-def describe(photo_path, movement: str, space_type: str, clip_path) -> str:
+def describe(photo_path, movement: str, space_type: str, clip_path, scale: float = None) -> str:
     """Claude's description of the expected last view ('' on any failure -> the caller keeps the old rules). Writes <clip>.view.json."""
     try:
         from PIL import Image
         import vision_analysis as va
-        scale = crop_scale(movement)
+        scale = scale if scale and scale >= 1.0 else crop_scale(movement)     # the movement director gives the real travel; otherwise the tested defaults
         im = Image.open(photo_path).convert("RGB")
         w, h = im.size
         cw, ch = round(w / scale), round(h / scale)

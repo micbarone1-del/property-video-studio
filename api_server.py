@@ -1633,7 +1633,7 @@ async def _apply_vision_analysis_to_scenes(scenes_config: list, scene_image_path
             raw_movement = analysis.get("suggested_movement") or analysis.get("pov_movement")
             if raw_movement:
                 scene["pov_movement"] = raw_movement
-            if camera_plan.anchor_enabled():
+            if camera_plan.anchor_enabled() or os.environ.get("PVS_DIRECTOR", "0").strip().lower() in ("1", "true", "yes", "on"):
                 # 2026-10-27: camera direction (camera_plan). Same analysis call, stored with the scene so a re-generation or a redo
                 # uses the SAME anchor. Nothing is written when the switch is off: job_meta stays exactly as before.
                 scene["anchor"] = analysis.get("anchor") or ""
@@ -3083,6 +3083,8 @@ def _redo_deps(job_id: str):
             _out = args[2] if len(args) > 2 else kwargs.get("output_path")
             if _out:
                 _dv.merge_usage_into_job(JOBS.get(job_id), _out)
+                import movement_director as _md
+                _md.merge_into_job(JOBS.get(job_id), _out, Path(_out).stem)
         except Exception as _e:
             log.warning(f"[Job {job_id}] could not add the described-view cost: {_e}")
         return ok
@@ -3866,8 +3868,10 @@ async def run_pipeline(
             try:   # 2026-11-02: REAL Claude cost of the described last view (described_view) into the job, as the clip QC's (Patch X)
                 import described_view as _dv
                 _dv.merge_usage_into_job(JOBS[job_id], clip_out)
+                import movement_director as _md
+                _md.merge_into_job(JOBS[job_id], clip_out, scene.get("scene_id") or f"scene_{i:03d}")
             except Exception as _e:
-                log.warning(f"[Job {job_id}] could not add the described-view cost: {_e}")
+                log.warning(f"[Job {job_id}] could not add the described-view / director cost: {_e}")
 
             model = model_tier
 

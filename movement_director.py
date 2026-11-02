@@ -1,0 +1,315 @@
+"""Movement director (2026-11-02, Michele: "i movimenti devono essere guidati da Claude in base a profondita e anchor, non predefiniti").
+
+Before: the camera movement of a Luma clip came from a fixed table (camera_plan / video_generation._LUMA_MOVEMENT_TOKENS) chosen by room type only.
+Now: Claude looks at the photo and DECIDES the move (forward, short sideways glide, small rotation, or almost static), how far it may travel,
+and writes the movement sentence. Code never invents a movement: it only (1) validates Claude's answer against the lessons learned and
+(2) refuses what the environment does not allow (a sideways move in a shallow/small room, in portrait, with a bulky foreground object or a mirror).
+Those two are SAFETY GATES, not a preset: inside them the agent takes the risk (Michele: "dobbiamo dare il rischio all'agente").
+
+  PVS_DIRECTOR=1  -> on (default OFF until the paid experiment is approved). Anything else -> the old table, exactly as before.
+Failure policy: no key / no answer at all -> plan() returns None and the caller keeps the old movement table for that clip.
+An answer that fails validation -> a SAFE plan (proven straight push-in toward the centre, or almost static in a shallow room), recorded as such.
+Aerial / drone photos: the plan is almost static and carries aerial=True (a drone view may show a local landmark, not the property): the
+photo selection decides whether to use it at all (open item), the camera never flies toward anything.
+
+History (Michele wants to examine Claude's reasoning): every call appends one entry to <clip>.plan.json (input hints, QC feedback of the
+previous attempt, raw answer, validation problems, final plan, real usage). merge_into_job copies the entries into job["director_history"]
+and the Claude cost into job["claude_usage"], once each. One implementation: first generation and rework both reach plan() through
+video_generation.generate_video_single.
+"""
+import json
+import logging
+import os
+import re
+import tempfile
+import time
+from pathlib import Path
+
+log = logging.getLogger(__name__)
+
+SIDECAR_SUFFIX = ".plan.json"
+MOVES = ("forward", "lateral_left", "lateral_right", "rotate_left", "rotate_right", "static")
+SIDEWAYS = ("lateral_left", "lateral_right", "rotate_left", "rotate_right")
+TRAVEL_SCALE = {"short": 1.12, "medium": 1.25, "long": 1.4}      # crop scale of the expected last view (described_view); same numbers the tests used
+DEPTH_MAX_TRAVEL = {"shallow": "short", "medium": "medium", "deep": "long"}
+SIDEWAYS_SCALE = 1.1
+STATIC_SCALE = 1.05
+MAX_WORDS = 75
+MAX_ROTATION_DEG = 12
+BANNED = ("orbit", "360", "reveal", "rise", "rising", "descend", "crane", "tilt", "zoom", "fast", "quick", "whip", "backward", "reverse",
+          "pull back", "pull-back", "turn around", "spin", "mirror", "reflection", "door", "curtain", "behind the", "around the")
+TAIL = "smooth continuous motion at a constant slow speed, no stepping or bobbing, realistic physics"
+_TRAVEL_ORDER = ("short", "medium", "long")
+
+PROMPT = """You are the camera director of a real-estate video made from ONE still photo. An image-to-video model (Luma) will animate the photo with the camera move you write.
+Decide the safest move that still looks good, and write it. Reply with ONLY a JSON object.
+
+What the model can and cannot do (lessons learned on real clips):
+- A slow, straight, constant-speed move FORWARD never shows anything new: everything that appears was already in the photo. This is the safe default.
+- A sideways glide or a rotation brings NEW content in from the edges of the frame, and the model then invents it (a shelving unit that did not exist). Choose
+  one ONLY if the room is deep enough and open enough that the new content at the edges is clearly just more of the same wall or floor, and nothing bulky or
+  unusual sits near the edges. When in doubt choose forward or static. Never combine moves.
+- The camera keeps the same height and the same direction for the whole shot. It never rises, drops, orbits, pulls back or zooms.
+- Stop well before any furniture, wall or object: shallow rooms (wall or furniture close to the camera) get a very short move or none.
+- Aim at something FAR, fixed and worth looking at near the centre of the frame (far wall, window with a view, far end of the space, bed, sofa area). Never aim at
+  a door, mirror or other reflective surface, curtain, plant, water, screen, person, animal or a utilitarian fixture (sink, toilet, bath, radiator, stove).
+- Photo seen from the AIR (drone, map, satellite): move "static", whatever it shows.
+- Facade photos: a very slow short advance toward the building at the same height, stopping well before any gate or wall.
+- Write in positive terms (what the camera DOES). No negations, no list of things that must not happen.
+
+Facts from the photo analysis (may be wrong, trust your own eyes): {facts}
+{feedback}
+JSON keys:
+ "view": "interior" | "ground" | "aerial"   (ground = outdoors at ground level)
+ "move": one of forward, lateral_left, lateral_right, rotate_left, rotate_right, static
+ "target": a short English noun phrase for the far fixed thing the camera heads toward (forward) or keeps in the centre, or "centre of the frame"
+ "travel": "short" | "medium" | "long"   (forward: how far the camera glides; sideways moves ignore this)
+ "risk": "low" | "medium" | "high"   (your honest chance that the model invents something with the move you chose)
+ "sentence": the camera instruction for the video prompt, English, one sentence of at most 60 words, present tense. Forward: say "slow straight forward camera push-in toward <target>",
+   that the camera keeps the same height and direction and stops well before it. Sideways glide: less than half a metre. Rotation: say "at most N degrees" with N <= 12.
+   Static: "almost static shot with imperceptibly subtle depth parallax".
+ "bulky_near_camera": true | false   (a large plant, curtain, furniture or other bulky object stands close to the camera near an edge or low in the frame)
+ "mirror_visible": true | false   (a mirror, mirrored wardrobe or large glass surface is in the photo, anywhere)
+ "reason": at most 40 words: why this move for this room (depth, what is at the edges, what could go wrong)."""
+
+
+# ── switch ────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+def enabled() -> bool:
+    return os.getenv("PVS_DIRECTOR", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+# ── pure helpers (tested without Claude) ────────────────────────────────────────────────────────────────────────────────────
+def _clip_scale(travel: str) -> float:
+    return TRAVEL_SCALE.get(travel, TRAVEL_SCALE["short"])
+
+
+def _cap_travel(travel: str, hints: dict) -> str:
+    """Travel can never exceed what the room depth allows; outdoor / elevated scenes and bulky foreground objects are held to 'short'
+    (job 4c34217d: the facade advance ran past a gate that was very close to the wall)."""
+    t = travel if travel in _TRAVEL_ORDER else "short"
+    cap = DEPTH_MAX_TRAVEL.get(str(hints.get("depth") or "").lower(), "medium")
+    if hints.get("space_type") in ("outdoor", "elevated", "small", "corridor") or hints.get("foreground_risk"):
+        cap = "short"
+    return t if _TRAVEL_ORDER.index(t) <= _TRAVEL_ORDER.index(cap) else cap
+
+
+def sideways_allowed(hints: dict) -> str:
+    """'' when a sideways move / rotation is allowed here, else the reason why not (the environment gate, not a preset)."""
+    if hints.get("output_format") == "portrait":
+        return "portrait frame (too narrow: new content enters at once)"
+    if str(hints.get("depth") or "").lower() not in ("medium", "deep"):
+        return "room not deep enough"
+    if hints.get("space_type") in ("small", "corridor", "outdoor", "elevated"):
+        return f"{hints.get('space_type')} space"
+    if hints.get("foreground_risk"):
+        return "bulky object near the camera"
+    if hints.get("reflective_surface") in ("small", "large"):
+        return "mirror or large glass in view"
+    return ""
+
+
+def safe_plan(hints: dict, why: str, aerial: bool = False) -> dict:
+    """The plan used when Claude's answer is unusable: the proven straight push-in toward the centre (camera_plan.CENTRE_MOTION), or an almost
+    static shot where the room is shallow / small / aerial. Never anything the lessons learned flag."""
+    import camera_plan
+    still = aerial or str(hints.get("depth") or "").lower() == "shallow" or hints.get("space_type") in ("small", "corridor")
+    if still:
+        import video_generation as vg
+        return {"move": "static", "sentence": vg._LUMA_MOVEMENT_TOKENS["subtle_rotate"], "scale": STATIC_SCALE, "risk": "low",
+                "target": "", "travel": "short", "aerial": aerial, "source": "fallback", "reason": f"safe plan: {why}"}
+    return {"move": "forward", "sentence": camera_plan.CENTRE_MOTION, "scale": _clip_scale("short"), "risk": "low",
+            "target": camera_plan.CENTRE_ANCHOR, "travel": "short", "aerial": aerial, "source": "fallback", "reason": f"safe plan: {why}"}
+
+
+def validate(raw: dict, hints: dict):
+    """(plan or None, problems). Plan = Claude's decision after the environment gates; None = unusable (caller uses safe_plan)."""
+    import camera_plan
+    problems = []
+    if not isinstance(raw, dict):
+        return None, ["answer is not a JSON object"]
+    hints = dict(hints)     # Claude's own sight adds to what the analysis stored: a mirror or bulky object it sees closes the gates too
+    if str(raw.get("bulky_near_camera")).strip().lower() in ("true", "yes", "1"):
+        hints["foreground_risk"] = True
+    if str(raw.get("mirror_visible")).strip().lower() in ("true", "yes", "1") and hints.get("reflective_surface") not in ("small", "large"):
+        hints["reflective_surface"] = "large"
+    move = str(raw.get("move", "")).strip().lower()
+    view = str(raw.get("view", "")).strip().lower()
+    risk = str(raw.get("risk", "")).strip().lower()
+    sentence = " ".join(str(raw.get("sentence", "")).split())
+    target = str(raw.get("target", "")).strip()
+    if move not in MOVES:
+        problems.append(f"unknown move {move!r}")
+    if risk not in ("low", "medium", "high"):
+        problems.append(f"unknown risk {risk!r}")
+    if not sentence:
+        problems.append("empty sentence")
+    elif len(sentence.split()) > MAX_WORDS:
+        problems.append(f"sentence too long ({len(sentence.split())} words)")
+    low = sentence.lower()
+    for w in BANNED:
+        if re.search(r"\b" + re.escape(w), low):
+            problems.append(f"banned word {w!r} in the sentence")
+    if problems:
+        return None, problems
+    aerial = view == "aerial"
+    downgraded = ""
+    if aerial and move != "static":
+        move, downgraded = "static", "aerial view: static"
+    if move in SIDEWAYS:
+        why = sideways_allowed(hints)
+        if not why and risk != "low":
+            why = f"Claude's own risk is {risk}"
+        if not why and move.startswith("rotate"):
+            degs = [int(x) for x in re.findall(r"(\d+)\s*degrees?", low)]
+            if not degs or max(degs) > MAX_ROTATION_DEG:
+                return None, [f"rotation without a clear limit of at most {MAX_ROTATION_DEG} degrees"]
+        if not why:
+            side = "left" if move.endswith("left") else "right"
+            if side not in low:
+                return None, [f"sentence does not say {side}"]
+        if why:
+            downgraded = f"{move} not allowed ({why})"
+            # a sideways request that the environment refuses becomes the SAFE plan, not Claude's sentence for another move
+            sp = safe_plan(hints, downgraded, aerial)
+            sp["claude_target"], sp["claude_risk"], sp["adjusted"] = target, risk, downgraded
+            return sp, []
+    if move == "forward":
+        if not re.search(r"forward|push-in|advance|dolly", low):
+            return None, ["forward move whose sentence does not say forward"]
+        tgt_ok = camera_plan.clean_anchor(target) if target and target.lower() != camera_plan.CENTRE_ANCHOR else camera_plan.CENTRE_ANCHOR
+        if not tgt_ok:
+            return None, [f"unsafe or empty target {target!r}"]
+        target = tgt_ok
+        if hints.get("reflective_surface") in ("small", "large") and re.search(r"glass|window", target.lower()):
+            return None, ["target is glass while a mirror or large glass is in view"]
+    if move == "static" and not aerial and not re.search(r"static|still", low):
+        return None, ["static move whose sentence does not say static"]
+    travel = _cap_travel(str(raw.get("travel", "short")).strip().lower(), hints)
+    scale = _clip_scale(travel) if move == "forward" else (SIDEWAYS_SCALE if move in SIDEWAYS else STATIC_SCALE)
+    if move == "static":
+        # a static plan is not Claude's free text for another move: the proven almost-static token
+        import video_generation as vg
+        sentence = vg._LUMA_MOVEMENT_TOKENS["subtle_rotate"]
+    elif TAIL not in sentence and "constant" not in low:
+        sentence = sentence.rstrip(".") + ", " + TAIL
+    plan = {"move": move, "sentence": sentence, "scale": scale, "risk": risk, "target": target, "travel": travel, "aerial": aerial,
+            "source": "claude", "reason": str(raw.get("reason", ""))[:300]}
+    if downgraded:
+        plan["adjusted"] = downgraded
+    return plan, []
+
+
+def _facts(hints: dict) -> str:
+    keys = ("room", "space_type", "size", "depth", "anchor", "anchor_side", "anchor_height", "foreground_risk", "reflective_surface", "output_format")
+    return "; ".join(f"{k}={hints[k]}" for k in keys if hints.get(k) not in (None, "", "none"))
+
+
+def qc_feedback_for(job: dict, scene_idx, scene_id=None) -> str:
+    """Text for a REWORK: the issues the clip QC found on the previous attempt of this scene (plan() adds the move that attempt used),
+    so Claude changes the approach (rework used to reuse the very same prompt and give the same result)."""
+    parts = []
+    try:
+        for q in reversed((job or {}).get("qc_results") or []):
+            if q.get("type") == "video" and q.get("scene") == scene_idx and q.get("issues"):
+                parts.append("clip QC issues: " + "; ".join(str(x) for x in q["issues"])[:400])
+                break
+    except Exception:
+        pass
+    try:    # the first generation wrote its plan under another clip file name (scene_NNN.mp4): the job history links it by scene id
+        for e in reversed((job or {}).get("director_history") or []):
+            if scene_id and e.get("scene_id") == scene_id and e.get("plan"):
+                pl = e["plan"]
+                parts.append(f"previous attempt used move={pl.get('move')}: {str(pl.get('sentence', ''))[:200]}")
+                break
+    except Exception:
+        pass
+    return " | ".join(parts)
+
+
+# ── sidecar history ───────────────────────────────────────────────────────────────────────────────────────────────────────
+def sidecar_path(clip_path) -> Path:
+    return Path(str(clip_path) + SIDECAR_SUFFIX)
+
+
+def read_history(clip_path) -> dict:
+    try:
+        return json.loads(sidecar_path(clip_path).read_text(encoding="utf-8"))
+    except Exception:
+        return {"entries": []}
+
+
+def _append(clip_path, entry: dict):
+    try:
+        d = read_history(clip_path)
+        d.setdefault("entries", []).append(entry)
+        sidecar_path(clip_path).write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        log.warning(f"[Director] could not write the history next to {clip_path}: {e}")
+
+
+def last_plan(clip_path):
+    for e in reversed(read_history(clip_path).get("entries", [])):
+        if e.get("plan"):
+            return e["plan"]
+    return None
+
+
+# ── Claude call ───────────────────────────────────────────────────────────────────────────────────────────────────────────
+def _claude(photo_path, prompt, usage):
+    import vision_analysis as va
+    return va._claude_vision_call([str(photo_path)], prompt, 600, model=va.CLIP_QC_MODEL, usage_out=usage)
+
+
+def plan(photo_path, hints: dict, clip_path, qc_feedback: str = ""):
+    """The plan for ONE clip, or None when Claude could not be reached at all (the caller then keeps the old movement table).
+    hints: room, space_type, size, depth, anchor, anchor_side, anchor_height, foreground_risk, reflective_surface, output_format."""
+    try:
+        prev = last_plan(clip_path)
+        if prev and "previous attempt" not in qc_feedback:
+            qc_feedback = (qc_feedback + " | " if qc_feedback else "") + f"previous attempt used move={prev.get('move')}: {str(prev.get('sentence', ''))[:200]}"
+        feedback = f"\nThis is a REWORK: the previous clip was rejected or flagged ({qc_feedback}). Choose a different, SAFER approach.\n" if qc_feedback else ""
+        prompt = PROMPT.format(facts=_facts(hints) or "none", feedback=feedback)
+        usage = {}
+        raw_text = _claude(photo_path, prompt, usage)
+        if not raw_text:
+            _append(clip_path, {"ts": int(time.time()), "hints": hints, "qc_feedback": qc_feedback, "raw": None, "plan": None,
+                                "problems": ["no answer from Claude"], "usage": usage, "counted": False})
+            return None
+        m = re.search(r"\{.*\}", raw_text, re.DOTALL)
+        try:
+            raw = json.loads(m.group(0)) if m else None
+        except Exception:
+            raw = None
+        result, problems = validate(raw, hints)
+        if result is None:
+            aerial = isinstance(raw, dict) and str(raw.get("view", "")).lower() == "aerial"
+            result = safe_plan(hints, "; ".join(problems) or "unreadable answer", aerial)
+        _append(clip_path, {"ts": int(time.time()), "hints": hints, "qc_feedback": qc_feedback, "raw": raw if raw is not None else raw_text[:800],
+                            "plan": result, "problems": problems, "usage": usage, "counted": False})
+        log.info(f"[Director] {result['source']}: move={result['move']} travel={result.get('travel')} risk={result['risk']} :: {result['sentence'][:160]}")
+        return result
+    except Exception as e:
+        log.warning(f"[Director] failed ({e}): old movement table for this clip")
+        return None
+
+
+def merge_into_job(job: dict, clip_path, scene_id=None) -> bool:
+    """Adds the real Claude cost of the entries not yet counted to job['claude_usage'] and copies them into job['director_history'] (once each)."""
+    try:
+        if job is None:
+            return False
+        d = read_history(clip_path)
+        new = [e for e in d.get("entries", []) if not e.get("counted")]
+        if not new:
+            return False
+        import listing_scraper as ls
+        for e in new:
+            if e.get("usage"):
+                job["claude_usage"] = ls.merge_claude_usage(job.get("claude_usage"), e["usage"])
+            e["counted"] = True
+            job.setdefault("director_history", []).append({"scene_id": scene_id, "clip": Path(str(clip_path)).name, **{k: v for k, v in e.items() if k != "counted"}})
+        sidecar_path(clip_path).write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+        return True
+    except Exception as e:
+        log.warning(f"[Director] could not add the plan history/cost to the job: {e}")
+        return False

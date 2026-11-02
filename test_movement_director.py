@@ -1,0 +1,147 @@
+"""Movement director (2026-11-02). Zero cost, no network, no key: Claude is faked. Run: python3 test_movement_director.py (numbered PASS/FAIL)."""
+import json, os, sys, tempfile, types
+from pathlib import Path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+for name in ("fal_client", "moviepy", "anthropic"):
+    if name not in sys.modules:
+        sys.modules[name] = types.ModuleType(name)
+sys.modules["anthropic"].Anthropic = getattr(sys.modules["anthropic"], "Anthropic", lambda *a, **k: "REAL")
+from PIL import Image
+import movement_director as md
+import video_generation as vg
+import camera_plan
+import described_view as dv
+fails = 0
+def check(n, c, info=""):
+    global fails
+    print(("PASS " if c else "FAIL ") + n + ("" if c else f" -- {info}"))
+    fails += 0 if c else 1
+
+FWD = {"view": "interior", "move": "forward", "target": "the far window", "travel": "medium", "risk": "low",
+       "sentence": "slow straight forward camera push-in toward the far window, the camera keeps the same height and direction and stops well before it",
+       "bulky_near_camera": False, "mirror_visible": False, "reason": "deep room"}
+ROT = {"view": "interior", "move": "rotate_right", "target": "centre of the frame", "travel": "short", "risk": "low",
+       "sentence": "slow gentle rotation to the right of at most 8 degrees, the camera stays in place", "bulky_near_camera": False, "mirror_visible": False, "reason": "x"}
+LAT = dict(ROT, move="lateral_left", sentence="very slow glide of less than half a metre to the left at constant speed")
+DEEP = {"space_type": "large", "depth": "deep", "output_format": "landscape"}
+SHAL = {"space_type": "medium", "depth": "shallow", "output_format": "landscape"}
+
+# A. switch
+os.environ.pop("PVS_DIRECTOR", None)
+check("MD1 off by default", not md.enabled())
+os.environ["PVS_DIRECTOR"] = "1"
+check("MD2 PVS_DIRECTOR=1 turns it on", md.enabled())
+
+# B. validation: accepted
+p, pr = md.validate(dict(FWD), DEEP)
+check("MD3 a good forward answer is accepted as Claude's plan, tail added", p and p["source"] == "claude" and p["move"] == "forward" and md.TAIL in p["sentence"] and not pr, (p, pr))
+check("MD4 travel medium in a deep room -> crop scale 1.25", p["scale"] == 1.25)
+p, _ = md.validate(dict(FWD, travel="long"), dict(DEEP, depth="medium"))
+check("MD5 travel is capped by depth (long in a medium room -> medium)", p["travel"] == "medium" and p["scale"] == 1.25)
+p, _ = md.validate(dict(FWD, travel="long"), dict(DEEP, space_type="outdoor"))
+check("MD6 outdoor scenes are held to short (facade gate case)", p["travel"] == "short")
+p, _ = md.validate(dict(FWD, travel="long", bulky_near_camera=True), DEEP)
+check("MD7 Claude's own 'bulky object near the camera' caps travel to short", p["travel"] == "short")
+
+# C. validation: refused
+for n, bad in (("MD8 unknown move", dict(FWD, move="orbit")), ("MD9 banned word (zoom)", dict(FWD, sentence="slow zoom toward the far window")),
+               ("MD10 empty sentence", dict(FWD, sentence="")), ("MD11 target is a door", dict(FWD, target="the balcony door")),
+               ("MD12 target is a mirror", dict(FWD, target="the mirror")), ("MD13 sentence too long", dict(FWD, sentence="forward " + "word " * 80)),
+               ("MD14 forward without saying forward", dict(FWD, sentence="slowly look at the far window")), ("MD15 unknown risk", dict(FWD, risk="maybe"))):
+    p, pr = md.validate(bad, DEEP)
+    check(n + " -> refused", p is None and pr, (p, pr))
+p, pr = md.validate("not a dict", DEEP)
+check("MD16 non-object answer refused", p is None)
+
+# D. sideways moves: Claude's decision inside the environment gates
+p, pr = md.validate(dict(ROT), DEEP)
+check("MD17 rotation allowed in a deep landscape room when Claude says risk low", p and p["move"] == "rotate_right" and p["scale"] == 1.1 and p["source"] == "claude", (p, pr))
+p, pr = md.validate(dict(LAT), DEEP)
+check("MD18 lateral glide allowed under the same conditions", p and p["move"] == "lateral_left" and p["source"] == "claude", (p, pr))
+p, _ = md.validate(dict(ROT, risk="medium"), DEEP)
+check("MD19 Claude's own risk not low -> safe plan, not the sideways move", p["source"] == "fallback" and p["move"] == "forward" and "risk" in p["adjusted"], p)
+for n, h in (("MD20 shallow room", SHAL), ("MD21 portrait frame", dict(DEEP, output_format="portrait")), ("MD22 small space", dict(DEEP, space_type="small")),
+             ("MD23 mirror in view (analysis)", dict(DEEP, reflective_surface="large")), ("MD24 foreground risk", dict(DEEP, foreground_risk=True))):
+    p, _ = md.validate(dict(LAT), h)
+    check(n + " -> sideways refused, safe plan", p["source"] == "fallback" and p["move"] in ("forward", "static") and "not allowed" in p["adjusted"], p)
+p, _ = md.validate(dict(ROT, mirror_visible=True), DEEP)
+check("MD25 a mirror that only Claude sees also closes the gate (the bedroom case)", p["source"] == "fallback", p)
+p, pr = md.validate(dict(ROT, sentence="slow rotation to the right of at most 30 degrees"), DEEP)
+check("MD26 rotation over 12 degrees refused", p is None and pr, (p, pr))
+p, pr = md.validate(dict(ROT, sentence="slow rotation to the right"), DEEP)
+check("MD27 rotation without a degree limit refused", p is None and pr)
+p, pr = md.validate(dict(LAT, sentence="very slow glide of less than half a metre to the right"), DEEP)
+check("MD28 lateral glide whose sentence says the other side refused", p is None and pr)
+
+# E. safe plans, static, aerial
+sp = md.safe_plan(DEEP, "x")
+check("MD29 safe plan in a deep room = the proven centre push-in", sp["move"] == "forward" and sp["sentence"] == camera_plan.CENTRE_MOTION and sp["source"] == "fallback")
+sp = md.safe_plan(SHAL, "x")
+check("MD30 safe plan in a shallow room = the almost static token", sp["move"] == "static" and sp["sentence"] == vg._LUMA_MOVEMENT_TOKENS["subtle_rotate"])
+p, _ = md.validate(dict(FWD, view="aerial"), DEEP)
+check("MD31 an aerial view is made static and flagged aerial", p["move"] == "static" and p["aerial"] is True and p["scale"] == md.STATIC_SCALE, p)
+p, _ = md.validate(dict(FWD, move="static", sentence="almost static shot with imperceptibly subtle depth parallax"), DEEP)
+check("MD32 a static plan uses the proven static token, not free text", p["sentence"] == vg._LUMA_MOVEMENT_TOKENS["subtle_rotate"])
+
+# F. plan(): history, fallback, no answer, rework feedback, cost merge
+tmp = Path(tempfile.mkdtemp())
+photo = tmp / "p.jpg"; Image.new("RGB", (400, 300), (120, 130, 140)).save(photo)
+calls = []
+def fake(answer):
+    def _c(photo_path, prompt, usage):
+        calls.append(prompt)
+        usage.update({"input_tokens": 1000, "output_tokens": 200, "calls": 1, "cost_eur": 0.01})
+        return answer if isinstance(answer, str) or answer is None else json.dumps(answer)
+    return _c
+clip = tmp / "scene_001.mp4"
+md._claude = fake(FWD)
+r = md.plan(photo, DEEP, clip)
+h = md.read_history(clip)
+check("MD33 plan() returns Claude's plan and writes one history entry (hints, raw answer, plan, usage)", r["source"] == "claude" and len(h["entries"]) == 1 and h["entries"][0]["raw"]["move"] == "forward" and h["entries"][0]["usage"], h)
+check("MD34 first attempt: no rework text in the question", "REWORK" not in calls[-1])
+md._claude = fake("garbage text")
+r = md.plan(photo, DEEP, clip, qc_feedback="clip QC issues: invented shelving unit")
+check("MD35 unreadable answer -> safe plan (never an exception), history keeps the problem", r["source"] == "fallback" and md.read_history(clip)["entries"][-1]["problems"], r)
+check("MD36 rework: the question carries the QC issue AND the previous move", "REWORK" in calls[-1] and "invented shelving unit" in calls[-1] and "previous attempt used move=forward" in calls[-1], calls[-1][-700:])
+md._claude = fake(None)
+check("MD37 no answer at all -> None (caller keeps the old table), history says so", md.plan(photo, DEEP, clip) is None and md.read_history(clip)["entries"][-1]["problems"] == ["no answer from Claude"])
+def boom(*a, **k): raise RuntimeError("x")
+md._claude = boom
+check("MD38 an exception inside -> None, never raised", md.plan(photo, DEEP, clip) is None)
+job = {"claude_usage": {}, "qc_results": [{"scene": 1, "type": "video", "issues": ["new shelf appears"]}]}
+check("MD39 merge_into_job adds the real cost and the history once", md.merge_into_job(job, clip, "sc_1") and job["claude_usage"]["calls"] == 3 and len(job["director_history"]) == 3, job)
+check("MD40 second merge adds nothing (counted)", md.merge_into_job(job, clip, "sc_1") is False and len(job["director_history"]) == 3)
+check("MD41 qc_feedback_for reads the last video QC issues and the job's earlier plan of that scene",
+      "new shelf appears" in md.qc_feedback_for(job, 1, "sc_1") and "previous attempt used move=" in md.qc_feedback_for(job, 1, "sc_1"))
+
+# G. integration with the prompt
+tok = "SENTENCE-FROM-DIRECTOR"
+pr = vg.assemble_pov_prompt("large", "walk_in_explore", "bright_natural", "natural_pace", "luma", "landscape", "none", "the window", "center", "deep", "LASTVIEW", tok)
+check("MD42 motion_override replaces the movement token AND the anchor text; positive rules + last view stay", pr.startswith(tok) and "LASTVIEW" in pr and "3D dolly" not in pr and "push-in toward the window" not in pr, pr[:200])
+pr0 = vg.assemble_pov_prompt("large", "walk_in_explore", "bright_natural", "natural_pace", "luma", "landscape")
+check("MD43 without override the prompt is exactly the old one", vg._LUMA_MOVEMENT_TOKENS["walk_in_explore"] in pr0 and tok not in pr0)
+dv_calls = []
+os.environ["PVS_POSITIVE_PROMPT"] = "1"
+va = sys.modules.get("vision_analysis") or __import__("vision_analysis")
+va._claude_vision_call = lambda imgs, prompt, mt, model=None, usage_out=None: (dv_calls.append(prompt) or json.dumps({"last_view": "The shot ends on a view of the room showing a sofa."}))
+big = tmp / "big.jpg"; Image.new("RGB", (1000, 800), (90, 90, 90)).save(big)
+dv.describe(big, "walk_in_explore", "large", tmp / "c2.mp4", scale=1.25)
+check("MD44 described_view uses the director's scale", json.loads(dv.sidecar_path(tmp / "c2.mp4").read_text())["scale"] == 1.25)
+dv.describe(big, "walk_in_explore", "large", tmp / "c3.mp4")
+check("MD45 without a scale it keeps the tested default (1.3)", json.loads(dv.sidecar_path(tmp / "c3.mp4").read_text())["scale"] == 1.3)
+
+# H. camera_plan.intent_kwargs and scene rework wiring
+os.environ.pop("PVS_ANCHOR", None); os.environ.pop("PVS_DIRECTOR", None)
+check("MD46 both switches off: intent_kwargs {} (as before)", camera_plan.intent_kwargs({"anchor": "the window", "anchor_side": "center", "depth": "deep"}) == {})
+os.environ["PVS_DIRECTOR"] = "1"
+check("MD47 director on, no anchor: only the depth is passed", camera_plan.intent_kwargs({"depth": "deep"}) == {"depth": "deep"})
+os.environ["PVS_ANCHOR"] = "1"
+check("MD48 anchor on + usable anchor: unchanged behaviour", camera_plan.intent_kwargs({"anchor": "the far window", "anchor_side": "center", "depth": "deep"}) == {"anchor": "the far window", "anchor_side": "center", "depth": "deep"})
+import scene_rework
+check("MD49 rework feedback empty when the director is off", (os.environ.pop("PVS_DIRECTOR") and scene_rework._director_feedback(job, 1, "sc_1")) == "")
+src = Path("scene_rework.py").read_text()
+check("MD50 rework passes qc_feedback to generate_video", "qc_feedback=_director_feedback(job, scene_idx, scene_id)" in src)
+vsrc = Path("video_generation.py").read_text()
+check("MD51 ONE place calls the director (generate_video_single); no other module does", vsrc.count("movement_director.plan(") == 1 and sum(Path(f).read_text().count("movement_director.plan(") for f in ("api_server.py", "scene_rework.py", "listing_scraper.py")) == 0)
+print(f"\n{'ALL PASS' if not fails else str(fails) + ' FAIL'}")
+sys.exit(1 if fails else 0)

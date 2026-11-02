@@ -164,6 +164,14 @@ class RedoError(Exception):
     """Raised only in strict mode (a scene being ADDED must not be skipped)."""
 
 
+def _director_feedback(job, scene_idx, scene_id) -> str:
+    try:
+        import movement_director
+        return movement_director.qc_feedback_for(job, scene_idx, scene_id) if movement_director.enabled() else ""
+    except Exception:
+        return ""
+
+
 async def redo_scenes(job, job_dir, scene_ids, deps, *, video=True, strict=False, label="Rework"):
     """Regenerates the given scenes in place. Does NOT lock, count against the
     rework budget, reassemble or notify: the caller does (api_server).
@@ -279,6 +287,7 @@ async def redo_scenes(job, job_dir, scene_ids, deps, *, video=True, strict=False
             model_tier=tier,
             output_format=job.get("output_format", "landscape"),
             do_video_upscale=job.get("do_video_upscale", True),
+            qc_feedback=_director_feedback(job, scene_idx, scene_id),   # 2026-11-02: movement director: what the clip QC found last time (rework used to reuse the same prompt)
             **camera_plan.intent_kwargs(scene),   # 2026-10-27: the scene's own anchor (same as the first generation); {} when off
         )
         if not ok_video:
