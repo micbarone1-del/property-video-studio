@@ -60,7 +60,10 @@ def main():
         print(f"  scene {i}: {st} | {cap} | {p.name}")
     best = {}
     for (i, _, _, pa), (j, _, _, pb) in itertools.permutations(ph, 2):
-        r = geo.analyse(pa, pb)
+        try:
+            r = geo.analyse(pa, pb)
+        except Exception as e:      # degenerate fit on unrelated photos = no shared structure
+            r = {"ok": False, "error": type(e).__name__}
         score = r.get("inliers", 0) if r.get("ok") else 0
         if score > best.get(i, (0,))[0]:
             best[i] = (score, j, r)
