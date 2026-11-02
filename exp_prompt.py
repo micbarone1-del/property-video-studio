@@ -32,15 +32,15 @@ import exp_endframe as ef
 POSITIVE_RULES = (
     "this is a frozen photograph of an empty, still room: every wall, window, door, curtain, piece of furniture, fixture and decoration keeps exactly the same "
     "place, shape, colour, number and state (open or closed) as in the first frame for the whole shot, and the light stays steady, "
-    "the only thing that moves is the camera, which glides forward in one smooth straight line at a constant slow speed, "
-    "everything in view at the start stays in view and in place while the nearest parts of the room leave the frame at the edges, "
-    "the shot ends on a slightly closer view of the same room that contains exactly the same elements as the first frame, "
+    "the only thing that moves is the camera, which makes the movement described above smoothly, at a constant slow speed, "
+    "everything in view at the start stays in view and in place while the parts of the room nearest the edges leave the frame, "
+    "the shot ends on a view of the same room that contains exactly the same elements as the first frame, "
     "every shadow and every reflection stays as in the source photo and the room holds only what the source photo shows"
 )
 
 
 DESCRIBE_PROMPT = """Image 1 is a photo of a room. Image 2 is the central part of image 1: exactly what will still be in view at the END of a short shot in which the camera glides straight forward.
-Write the description of image 2 for a video prompt, as 2 or 3 plain sentences in the present tense beginning "The shot ends on a closer view of the room showing ...".
+Write the description of image 2 for a video prompt, as 2 plain sentences of at most 70 words in total, in the present tense, beginning "The shot ends on a view of the room showing ...". Mention only the 6 to 8 most prominent fixed elements.
 Name every fixed element you can clearly see in image 2 (furniture, fixtures, openings, wall features) with its count, its position (left, centre, right; foreground, background) and its state (door closed, window with a curtain or without one, tap count and place...). Describe only what is really visible in image 2: if you are not sure that something is there, leave it out. Positive statements only: say what IS there, never what is absent or must not appear.
 Answer with JSON only: {"last_view": "..."}"""
 
@@ -65,7 +65,7 @@ def described_rules(photo, scale, job, index, usage):
 
 def main():
     argv = list(sys.argv[1:])
-    scale = 1.3
+    scale = None
     if "--scale" in argv:
         i = argv.index("--scale")
         scale = float(argv[i + 1])
@@ -79,9 +79,11 @@ def main():
     import video_generation as vg
     s = exp_luma.load_scene(job, index)
     movement = s["scene"].get("pov_movement", "walk_in_explore")
+    if scale is None:       # a straight forward move ends on the central 1/1.3 of the photo; a gentle rotation ends on almost the whole photo
+        scale = 1.3 if movement in ("walk_in_explore", "walk_toward") else 1.1
     print(f"scene {index}: movement {movement}, space {s['scene'].get('space_type')}, photo {s['image'].name if s['image'] else 'NOT FOUND'}")
     print("TODAY'S RULES (negations):", vg._LUMA_RULES[:260], "...")
-    print("POSITIVE RULES (this test):", POSITIVE_RULES)
+    print(f"POSITIVE RULES (this test; crop scale for the description {scale:g}):", POSITIVE_RULES)
     rules, label = POSITIVE_RULES, "positive"
     if described:
         usage = {}
