@@ -42,10 +42,15 @@ def parse_listing(page: str, url: str) -> dict:
             raise ValueError("listing description not found in the page")
         best = {"description": html.unescape(og.group(1)), "name": ""}
     found = {}
-    # the gallery images of THIS listing are the thumb/?variant=full ones (related listings only appear as variant=card);
+    # the gallery images of THIS listing are the full ones (related listings only appear as card);
     # media file names differ from listing to listing, so they cannot be used to find the photos
-    for pm in re.finditer(r"/it/immobili/foto/(\d+)/thumb/\?variant=full(?:&amp;|&)v=\d+", page):
+    # 2026-11-02: relinx.it changed its photo addresses. NEW: /img/foto/<id>/full.jpg?v=<n> (related listings: card.jpg only). OLD (kept as the
+    # fallback and for the old tests): /it/immobili/foto/<id>/thumb/?variant=full&v=<n>. The first form that finds photos wins.
+    for pm in re.finditer(r"/img/foto/(\d+)/full\.jpg\?v=\d+", page):
         found.setdefault(pm.group(1), html.unescape(pm.group(0)))
+    if not found:
+        for pm in re.finditer(r"/it/immobili/foto/(\d+)/thumb/\?variant=full(?:&amp;|&)v=\d+", page):
+            found.setdefault(pm.group(1), html.unescape(pm.group(0)))
     return {"id": lid, "name": str(best.get("name") or ("Annuncio " + lid)), "description": str(best["description"]),
             "photos": list(found.values())}
 

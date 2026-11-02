@@ -1,0 +1,569 @@
+[
+  {
+    "property_id": "prop_9c7deacf",
+    "name": "Property",
+    "agency_id": "ag_f40639b8",
+    "notes": "",
+    "created_at": "2026-07-26T17:16:00.528396"
+  },
+  {
+    "property_id": "prop_8ad4e274",
+    "name": "Via Antonio Varisco, Trullo, Morlupo",
+    "agency_id": "ag_f40639b8",
+    "notes": "",
+    "created_at": "2026-07-26T17:39:04.217687"
+  },
+  {
+    "property_id": "prop_08ed2cd2",
+    "name": "Via Francesco Marucelli, 72, Ottavia, Roma",
+    "agency_id": "ag_36f93b95",
+    "notes": "",
+    "created_at": "2026-07-29T07:04:08.718166"
+  },
+  {
+    "property_id": "prop_673b07f2",
+    "name": "Via Salento, Bologna, Roma",
+    "agency_id": "ag_f40639b8",
+    "notes": "",
+    "created_at": "2026-07-29T07:13:55.484419"
+  },
+  {
+    "property_id": "prop_2e2b28ca",
+    "name": "Property",
+    "agency_id": "",
+    "notes": "",
+    "created_at": "2026-08-25T15:34:21.925945"
+  },
+  {
+    "property_id": "prop_296aae84",
+    "name": "Via Test 123, Milano",
+    "agency_id": "ag_a7fce864",
+    "notes": "",
+    "created_at": "2026-10-01T08:46:45.109997"
+  },
+  {
+    "property_id": "prop_f90be84d",
+    "name": "Via Test HTTPS 456, Roma",
+    "agency_id": "ag_a7fce864",
+    "notes": "",
+    "created_at": "2026-10-01T09:55:35.209146"
+  },
+  {
+    "property_id": "prop_0324102c",
+    "name": "Via Test Generazione, Roma",
+    "agency_id": "ag_a7fce864",
+    "notes": "",
+    "created_at": "2026-10-01T10:43:57.679284"
+  },
+  {
+    "property_id": "prop_a1a287ff",
+    "name": "Via Test Email, Napoli",
+    "agency_id": "ag_a7fce864",
+    "notes": "",
+    "created_at": "2026-10-01T14:39:05.735160"
+  },
+  {
+    "property_id": "prop_5d6ede68",
+    "name": "Via Test Nuova Agenzia",
+    "agency_id": "ag_638d2d35",
+    "notes": "",
+    "created_at": "2026-10-01T14:53:57.400045"
+  },
+  {
+    "property_id": "prop_862f3109",
+    "name": "Via Test Redo, Torino",
+    "agency_id": "ag_d37ab905",
+    "notes": "",
+    "created_at": "2026-10-01T15:06:49.097969"
+  },
+  {
+    "property_id": "prop_268b0712",
+    "name": "Via Test Redo 2, Bologna",
+    "agency_id": "ag_53876509",
+    "notes": "",
+    "created_at": "2026-10-01T20:18:35.485691"
+  },
+  {
+    "property_id": "prop_a67240e9",
+    "name": "Borgo Giuseppe Garibaldi 36, Albano Laziale",
+    "agency_id": "ag_abea5414",
+    "notes": "",
+    "created_at": "2026-10-02T17:09:33.987279"
+  },
+  {
+    "property_id": "prop_f017e906",
+    "name": "TEMP Async Fix Test Property 2",
+    "agency_id": "ag_9471b26d",
+    "notes": "",
+    "created_at": "2026-10-02T20:23:25.392977"
+  },
+  {
+    "property_id": "prop_b7c7d1ef",
+    "name": "Via Irlanda, Albano Laziale",
+    "agency_id": "ag_abea5414",
+    "notes": "",
+    "created_at": "2026-10-03T20:55:40.422690"
+  },
+  {
+    "property_id": "prop_aae69046",
+    "name": "Test voce e logo",
+    "agency_id": "ag_abea5414",
+    "notes": "",
+    "created_at": "2026-10-07T08:02:24.923338"
+  },
+  {
+    "property_id": "prop_a69d8c62",
+    "name": "Test Luma direct",
+    "agency_id": "ag_f40639b8",
+    "notes": "",
+    "created_at": "2026-10-07T08:42:06.223515"
+  },
+  {
+    "property_id": "prop_943976d5",
+    "name": "Test Sprint REALE - Ville Savello Albano Laziale",
+    "agency_id": "ag_abea5414",
+    "notes": "",
+    "created_at": "2026-10-07T19:35:52.556128"
+  },
+  {
+    "property_id": "prop_942e967a",
+    "name": "Test",
+    "agency_id": "ag_a7fce864",
+    "notes": "",
+    "created_at": "2026-10-09T12:50:04.049693"
+  },
+  {
+    "property_id": "prop_d64f7cea",
+    "name": "ZZ EVAL Roma trilocale",
+    "agency_id": null,
+    "notes": "",
+    "created_at": "2026-10-10T16:10:52.113228"
+  },
+  {
+    "property_id": "prop_08a7119d",
+    "name": "ZZ EVAL Villa Sassoferrato",
+    "agency_id": null,
+    "notes": "",
+    "created_at": "2026-10-10T16:12:21.582179"
+  },
+  {
+    "property_id": "prop_94eb6f69",
+    "name": "ZZ EVAL Rustico Varese Ligure da ristrutturare",
+    "agency_id": null,
+    "notes": "",
+    "created_at": "2026-10-10T16:13:40.500076"
+  },
+  {
+    "property_id": "prop_750bfe11",
+    "name": "ZZ EVAL2 Roma monolocale Via Giulia",
+    "agency_id": "ag_abea5414",
+    "notes": "",
+    "created_at": "2026-10-10T17:24:47.096967"
+  },
+  {
+    "property_id": "prop_4a0e541d",
+    "name": "ZZ EVAL2 Roma trilocale Pinciano",
+    "agency_id": "ag_abea5414",
+    "notes": "",
+    "created_at": "2026-10-10T17:26:07.216505"
+  },
+  {
+    "property_id": "prop_59a240ce",
+    "name": "ZZ EVAL2 Roma villa plurifamiliare Trigoria",
+    "agency_id": "ag_abea5414",
+    "notes": "",
+    "created_at": "2026-10-10T17:27:37.173099"
+  },
+  {
+    "property_id": "prop_1ca1af27",
+    "name": "ZZ EVAL2 Roma trilocale Euclide",
+    "agency_id": "ag_abea5414",
+    "notes": "",
+    "created_at": "2026-10-10T17:29:10.591467"
+  },
+  {
+    "property_id": "prop_3c592249",
+    "name": "ZZ EVAL2 Roma bilocale Aurelio",
+    "agency_id": "ag_abea5414",
+    "notes": "",
+    "created_at": "2026-10-10T17:30:29.128581"
+  },
+  {
+    "property_id": "prop_13b937f0",
+    "name": "TEST AUTOMAZIONE villa plurifamiliare Trigoria",
+    "agency_id": "ag_080d4faf",
+    "notes": "",
+    "created_at": "2026-10-10T18:29:51.163146"
+  },
+  {
+    "property_id": "prop_7367d1af",
+    "name": "TEST AUTOMAZIONE trilocale Euclide",
+    "agency_id": "ag_d07b20d7",
+    "notes": "",
+    "created_at": "2026-10-10T18:31:23.768683"
+  },
+  {
+    "property_id": "prop_cb62d9d1",
+    "name": "TEST AUTOMAZIONE bilocale Aurelio",
+    "agency_id": "ag_a41d89a1",
+    "notes": "",
+    "created_at": "2026-10-10T18:32:32.895665"
+  },
+  {
+    "property_id": "prop_d95b5146",
+    "name": "TEST AUTOMAZIONE v2 villa plurifamiliare Trigoria",
+    "agency_id": "ag_080d4faf",
+    "notes": "",
+    "created_at": "2026-10-12T07:00:05.548895"
+  },
+  {
+    "property_id": "prop_fd5160af",
+    "name": "TEST AUTOMAZIONE v2 trilocale Euclide",
+    "agency_id": "ag_d07b20d7",
+    "notes": "",
+    "created_at": "2026-10-12T07:01:42.929568"
+  },
+  {
+    "property_id": "prop_661dcfaa",
+    "name": "TEST AUTOMAZIONE v2 bilocale Aurelio",
+    "agency_id": "ag_a41d89a1",
+    "notes": "",
+    "created_at": "2026-10-12T07:02:46.042423"
+  },
+  {
+    "property_id": "prop_3390ca76",
+    "name": "TEST AUTOMAZIONE v2 monolocale Via Giulia",
+    "agency_id": "ag_6c3fc1ae",
+    "notes": "",
+    "created_at": "2026-10-12T07:07:31.533282"
+  },
+  {
+    "property_id": "prop_ca3d1e76",
+    "name": "TEST AUTOMAZIONE v2 trilocale Pinciano",
+    "agency_id": "ag_e3c3acbd",
+    "notes": "",
+    "created_at": "2026-10-12T07:39:32.211948"
+  },
+  {
+    "property_id": "prop_7e073adb",
+    "name": "TEST AUTOMAZIONE v3 monolocale Via Giulia",
+    "agency_id": "ag_6c3fc1ae",
+    "notes": "",
+    "created_at": "2026-10-12T08:05:17.159932"
+  },
+  {
+    "property_id": "prop_a864ddae",
+    "name": "TEST AUTOMAZIONE v3 trilocale Pinciano",
+    "agency_id": "ag_e3c3acbd",
+    "notes": "",
+    "created_at": "2026-10-12T08:06:16.344973"
+  },
+  {
+    "property_id": "prop_d8fc4e16",
+    "name": "TEST AUTOMAZIONE v3 villa plurifamiliare Trigoria",
+    "agency_id": "ag_080d4faf",
+    "notes": "",
+    "created_at": "2026-10-12T08:12:31.226086"
+  },
+  {
+    "property_id": "prop_2bd44a22",
+    "name": "TEST AUTOMAZIONE v3 trilocale Euclide",
+    "agency_id": "ag_d07b20d7",
+    "notes": "",
+    "created_at": "2026-10-12T08:13:34.843429"
+  },
+  {
+    "property_id": "prop_a666ce53",
+    "name": "TEST AUTOMAZIONE v3 bilocale Aurelio",
+    "agency_id": "ag_a41d89a1",
+    "notes": "",
+    "created_at": "2026-10-12T08:44:31.522811"
+  },
+  {
+    "property_id": "prop_1f852f80",
+    "name": "TEST AUTOMAZIONE v4 trilocale Euclide",
+    "agency_id": "ag_d07b20d7",
+    "notes": "",
+    "created_at": "2026-10-12T12:55:31.748019"
+  },
+  {
+    "property_id": "prop_b28c1118",
+    "name": "TEST AUTOMAZIONE v5 monolocale Via Giulia",
+    "agency_id": "ag_6c3fc1ae",
+    "notes": "",
+    "created_at": "2026-10-12T13:02:21.436066"
+  },
+  {
+    "property_id": "prop_1c3deac7",
+    "name": "TEST AUTOMAZIONE v6 monolocale Via Giulia",
+    "agency_id": "ag_6c3fc1ae",
+    "notes": "",
+    "created_at": "2026-10-12T13:35:36.935444"
+  },
+  {
+    "property_id": "prop_90688506",
+    "name": "TEST AUTOMAZIONE v5 trilocale Euclide",
+    "agency_id": "ag_d07b20d7",
+    "notes": "",
+    "created_at": "2026-10-12T13:36:38.033326"
+  },
+  {
+    "property_id": "prop_9d7ddce6",
+    "name": "TEST AUTOMAZIONE v7 monolocale Via Giulia",
+    "agency_id": "ag_6c3fc1ae",
+    "notes": "",
+    "created_at": "2026-10-12T13:50:59.580624"
+  },
+  {
+    "property_id": "prop_9f098fce",
+    "name": "TEST AUTOMAZIONE v6 trilocale Euclide",
+    "agency_id": "ag_d07b20d7",
+    "notes": "",
+    "created_at": "2026-10-12T13:51:59.792978"
+  },
+  {
+    "property_id": "prop_83839817",
+    "name": "TEST AUTOMAZIONE v8 monolocale Via Giulia",
+    "agency_id": "ag_6c3fc1ae",
+    "notes": "",
+    "created_at": "2026-10-12T16:20:52.052072"
+  },
+  {
+    "property_id": "prop_0dcade50",
+    "name": "TEST AUTOMAZIONE v7 trilocale Euclide",
+    "agency_id": "ag_d07b20d7",
+    "notes": "",
+    "created_at": "2026-10-12T16:21:52.837836"
+  },
+  {
+    "property_id": "prop_e5815e20",
+    "name": "TEST AUTOMAZIONE C Trigoria",
+    "agency_id": "ag_080d4faf",
+    "notes": "",
+    "created_at": "2026-10-12T16:40:14.267729"
+  },
+  {
+    "property_id": "prop_c71a5630",
+    "name": "TEST AUTOMAZIONE C Pinciano",
+    "agency_id": "ag_e3c3acbd",
+    "notes": "",
+    "created_at": "2026-10-12T16:41:13.101440"
+  },
+  {
+    "property_id": "prop_c5258888",
+    "name": "TEST AUTOMAZIONE C Aurelio",
+    "agency_id": "ag_a41d89a1",
+    "notes": "",
+    "created_at": "2026-10-12T16:42:08.683337"
+  },
+  {
+    "property_id": "prop_080bc4ac",
+    "name": "TEST AUTOMAZIONE C Euclide",
+    "agency_id": "ag_d07b20d7",
+    "notes": "",
+    "created_at": "2026-10-12T17:23:07.128030"
+  },
+  {
+    "property_id": "prop_57629804",
+    "name": "TEST AUTOMAZIONE C Giulia",
+    "agency_id": "ag_6c3fc1ae",
+    "notes": "",
+    "created_at": "2026-10-12T17:24:01.015149"
+  },
+  {
+    "property_id": "prop_2192ea6d",
+    "name": "TEST AUTOMAZIONE A+ Trigoria",
+    "agency_id": "ag_080d4faf",
+    "notes": "",
+    "created_at": "2026-10-12T20:37:05.103131"
+  },
+  {
+    "property_id": "prop_8d50382d",
+    "name": "TEST AUTOMAZIONE A+ Pinciano",
+    "agency_id": "ag_e3c3acbd",
+    "notes": "",
+    "created_at": "2026-10-12T20:37:59.594060"
+  },
+  {
+    "property_id": "prop_ae4738b3",
+    "name": "TEST AUTOMAZIONE A+ Aurelio",
+    "agency_id": "ag_a41d89a1",
+    "notes": "",
+    "created_at": "2026-10-12T20:38:53.322027"
+  },
+  {
+    "property_id": "prop_c71daeba",
+    "name": "TEST AUTOMAZIONE A+ Euclide",
+    "agency_id": "ag_d07b20d7",
+    "notes": "",
+    "created_at": "2026-10-12T20:39:54.037636"
+  },
+  {
+    "property_id": "prop_a31e85b1",
+    "name": "TEST AUTOMAZIONE A+ Giulia",
+    "agency_id": "ag_6c3fc1ae",
+    "notes": "",
+    "created_at": "2026-10-12T20:40:43.149513"
+  },
+  {
+    "property_id": "prop_623665ea",
+    "name": "Villa EUR Roma - premium test",
+    "agency_id": null,
+    "notes": "",
+    "created_at": "2026-10-15T07:32:42.587843"
+  },
+  {
+    "property_id": "prop_b3611dd4",
+    "name": "largo Dell' Olgiata 15, Olgiata, Roma",
+    "agency_id": "ag_d07b20d7",
+    "notes": "",
+    "created_at": "2026-10-15T16:14:24.802140"
+  },
+  {
+    "property_id": "prop_e511a784",
+    "name": "Roma, Bologna, Via Salento",
+    "agency_id": "ag_f40639b8",
+    "notes": "",
+    "created_at": "2026-10-22T08:35:35.539337"
+  },
+  {
+    "property_id": "prop_4b3e87a4",
+    "name": "Via Girolamo Dandini, San Saba - Caracalla, Roma",
+    "agency_id": "",
+    "notes": "",
+    "created_at": "2026-10-23T08:52:21.572865"
+  },
+  {
+    "property_id": "prop_f7aad35c",
+    "name": "Via Girolamo Dandini, San Saba - Caracalla, Roma",
+    "agency_id": "ag_101eae21",
+    "notes": "",
+    "created_at": "2026-10-23T13:46:47.768570"
+  },
+  {
+    "property_id": "prop_bf732a59",
+    "name": "TEST_batch_redo",
+    "agency_id": null,
+    "notes": "",
+    "created_at": "2026-10-24T14:20:22.865909"
+  },
+  {
+    "property_id": "prop_93237aab",
+    "name": "Piazza Albania, 26, Aventino, Roma",
+    "agency_id": "ag_e65acb64",
+    "notes": "",
+    "created_at": "2026-10-27T13:42:21.317054"
+  },
+  {
+    "property_id": "prop_840c11f3",
+    "name": "Test villa",
+    "agency_id": null,
+    "notes": "",
+    "created_at": "2026-10-27T17:54:59.401941"
+  },
+  {
+    "property_id": "prop_36368928",
+    "name": "Test vuoto",
+    "agency_id": null,
+    "notes": "",
+    "created_at": "2026-10-27T17:55:09.038499"
+  },
+  {
+    "property_id": "prop_0b9aec1a",
+    "name": "Test monolocale",
+    "agency_id": null,
+    "notes": "",
+    "created_at": "2026-10-27T17:55:13.178225"
+  },
+  {
+    "property_id": "prop_00924797",
+    "name": "Test villa 2",
+    "agency_id": null,
+    "notes": "",
+    "created_at": "2026-10-27T19:02:31.087083"
+  },
+  {
+    "property_id": "prop_949caaca",
+    "name": "Test vuoto 2",
+    "agency_id": null,
+    "notes": "",
+    "created_at": "2026-10-27T19:02:44.454369"
+  },
+  {
+    "property_id": "prop_5fe8194e",
+    "name": "Test monolocale 2",
+    "agency_id": null,
+    "notes": "",
+    "created_at": "2026-10-27T19:02:50.664617"
+  },
+  {
+    "property_id": "prop_41fc2a82",
+    "name": "vuoto",
+    "agency_id": null,
+    "notes": "",
+    "created_at": "2026-10-27T20:18:28.567100"
+  },
+  {
+    "property_id": "prop_0e313627",
+    "name": "monolocale",
+    "agency_id": null,
+    "notes": "",
+    "created_at": "2026-10-27T20:18:32.387445"
+  },
+  {
+    "property_id": "prop_e986ccf0",
+    "name": "arredato",
+    "agency_id": null,
+    "notes": "",
+    "created_at": "2026-10-27T20:18:50.542019"
+  },
+  {
+    "property_id": "prop_9955c26c",
+    "name": "villa",
+    "agency_id": null,
+    "notes": "",
+    "created_at": "2026-10-27T20:46:29.700156"
+  },
+  {
+    "property_id": "prop_6d6c4bac",
+    "name": "Via Annia Faustina, 5, San Saba - Caracalla, Roma",
+    "agency_id": "",
+    "notes": "",
+    "created_at": "2026-10-27T21:21:08.015916"
+  },
+  {
+    "property_id": "prop_0955cd21",
+    "name": "many-photos",
+    "agency_id": null,
+    "notes": "",
+    "created_at": "2026-10-27T21:24:17.343218"
+  },
+  {
+    "property_id": "prop_ee783e85",
+    "name": "132055134",
+    "agency_id": null,
+    "notes": "",
+    "created_at": "2026-10-28T17:06:55.969893"
+  },
+  {
+    "property_id": "prop_b9278021",
+    "name": "132195874",
+    "agency_id": null,
+    "notes": "",
+    "created_at": "2026-10-28T17:06:57.908715"
+  },
+  {
+    "property_id": "prop_997bcf93",
+    "name": "130120864",
+    "agency_id": null,
+    "notes": "",
+    "created_at": "2026-10-28T17:07:06.907966"
+  },
+  {
+    "property_id": "prop_fa7966d3",
+    "name": "132223370",
+    "agency_id": null,
+    "notes": "",
+    "created_at": "2026-10-28T17:07:30.113113"
+  }
+]

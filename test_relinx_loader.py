@@ -37,6 +37,23 @@ try:
 except ValueError:
     check("P6 a page with no description is an error, not an empty job", True)
 
+
+# 2026-11-02: relinx.it's NEW photo addresses (/img/foto/<id>/full.jpg?v=<n>); related listings only have card.jpg
+def full2(pid):
+    return "/img/foto/%s/full.jpg?v=1791147101" % pid
+
+
+def card2(pid):
+    return "/img/foto/%s/card.jpg?v=1791147101" % pid
+
+
+page2 = ('<script type="application/ld+json">' + json.dumps(graph) + "</script>"
+         + "".join('<img src="%s"><img src="%s">' % (full2(i), full2(i).replace(".jpg", ".webp")) for i in (3011, 3010, 3012, 3010))
+         + '<img src="%s"><img src="%s">' % (card2(777), card2(778)) + '<img src="/img/foto/3010/thumb.jpg?v=1791147101">')
+L3 = rc.parse_listing(page2, "https://relinx.it/it/immobili/albano/appartamento-vendita-110-mq-3-locali-1307/")
+check("P7 new address format: gallery photos only (full.jpg), no duplicates, page order; card/thumb/webp ignored", [p.split("/")[3] for p in L3["photos"]] == ["3011", "3010", "3012"], L3["photos"])
+check("P8 the new-format photo path is requested from https://relinx.it as is (path + ?v=)", all(p.startswith("/img/foto/") and "?v=" in p for p in L3["photos"]), L3["photos"])
+
 sq = Image.new("RGB", (400, 400), (255, 255, 255))
 sq.paste(Image.new("RGB", (400, 300), (90, 120, 160)), (0, 50))
 check("T1 white bands above and below are removed", rc.trim_bands(sq).size == (400, 300), rc.trim_bands(sq).size)
