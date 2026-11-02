@@ -1,0 +1,175 @@
+diff --git a/camera_plan.py b/camera_plan.py
+index 5d85c67..7021195 100644
+--- a/camera_plan.py
++++ b/camera_plan.py
+@@ -143,7 +143,8 @@ ANCHOR_UNSAFE = ("mirror", "mirrors", "reflection", "reflective", "reflect", "sh
+ # Matched on word STEMS ("mirrored", "reflecting", "doorway", "sinks"), after the model has already been told the same rules in the prompt.
+ ANCHOR_UNSAFE_STEMS = ("mirror", "reflect", "televis", "screen", "monitor", "door", "curtain", "blind", "plant", "railing", "balustrade",
+                        "handrail", "fence", "sink", "basin", "toilet", "bidet", "bath", "shower", "radiator", "stove", "oven", "hob", "cooktop",
+-                       "fridge", "refrigerator", "appliance", "faucet", "counter", "water", "fountain", "flame", "ceiling", "lamp", "chandelier")
++                       "fridge", "refrigerator", "appliance", "faucet", "counter", "water", "fountain", "flame", "ceiling", "lamp", "chandelier",
++                       "photograph", "picture", "painting", "poster", "artwork", "framed")      # 2026-11-02: wall pictures are small decorative objects (the director aimed at one)
+ _ANCHOR_NONE = ("", "none", "null", "n/a", "no", "nothing", "nessuno")
+ ANCHOR_SIDES = ("left", "center", "right")
+ DEPTHS = ("shallow", "medium", "deep")
+diff --git a/movement_director.py b/movement_director.py
+index b07b88c..dfbec76 100644
+--- a/movement_director.py
++++ b/movement_director.py
+@@ -54,7 +54,7 @@ What the model can and cannot do (lessons learned on real clips):
+ - Aim at something FAR, fixed and worth looking at near the centre of the frame (far wall, window with a view, far end of the space, bed, sofa area). Never aim at
+   a door, mirror or other reflective surface, curtain, plant, water, screen, person, animal or a utilitarian fixture (sink, toilet, bath, radiator, stove).
+ - Photo seen from the AIR (drone, map, satellite): move "static", whatever it shows.
+-- Facade photos: a very slow short advance toward the building at the same height, stopping well before any gate or wall.
++- Facade and outdoor photos: an EXTREMELY slow advance of less than three metres toward the building or the view, at the same height, stopping well before any gate, wall or railing.
+ - Write in positive terms (what the camera DOES). No negations, no list of things that must not happen.
+ 
+ Facts from the photo analysis (may be wrong, trust your own eyes): {facts}
+@@ -109,8 +109,22 @@ def sideways_allowed(hints: dict) -> str:
+     return ""
+ 
+ 
++def forward_sentence(target: str, slow: bool = False) -> str:
++    """The positive forward-move sentence (2026-11-02, after jobs 73fed155 / de90cbaf / 50472245: the old negative CENTRE_MOTION text was the safe plan in
++    6 of 18 scenes and 3 of those 6 were flagged or rejected, one of them turning the camera towards the dining area). Slow scenes (facade, outdoors, terrace)
++    say 'very slow' and a total advance of less than three metres: Luma runs at the facade even when told 'slow' (jobs 4c34217d, 73fed155)."""
++    if slow:
++        return (f"Very slow straight forward camera push-in toward {target}, advancing less than three metres in total, the camera keeps the same height "
++                f"and direction and stops well before it, {TAIL}")
++    return f"Slow straight forward camera push-in toward {target}, the camera keeps the same height and direction and stops well before it, {TAIL}"
++
++
++def _is_slow_scene(hints: dict) -> bool:
++    return hints.get("space_type") in ("outdoor", "elevated")
++
++
+ def safe_plan(hints: dict, why: str, aerial: bool = False) -> dict:
+-    """The plan used when Claude's answer is unusable: the proven straight push-in toward the centre (camera_plan.CENTRE_MOTION), or an almost
++    """The plan used when Claude's answer is unusable: a straight push-in toward the centre of the frame (forward_sentence), or an almost
+     static shot where the room is shallow / small / aerial. Never anything the lessons learned flag."""
+     import camera_plan
+     still = aerial or str(hints.get("depth") or "").lower() == "shallow" or hints.get("space_type") in ("small", "corridor")
+@@ -118,8 +132,9 @@ def safe_plan(hints: dict, why: str, aerial: bool = False) -> dict:
+         import video_generation as vg
+         return {"move": "static", "sentence": vg._LUMA_MOVEMENT_TOKENS["subtle_rotate"], "scale": STATIC_SCALE, "risk": "low",
+                 "target": "", "travel": "short", "aerial": aerial, "source": "fallback", "reason": f"safe plan: {why}"}
+-    return {"move": "forward", "sentence": camera_plan.CENTRE_MOTION, "scale": _clip_scale("short"), "risk": "low",
+-            "target": camera_plan.CENTRE_ANCHOR, "travel": "short", "aerial": aerial, "source": "fallback", "reason": f"safe plan: {why}"}
++    return {"move": "forward", "sentence": forward_sentence(camera_plan.CENTRE_ANCHOR, _is_slow_scene(hints)), "scale": _clip_scale("short"), "risk": "low",
++            "target": camera_plan.CENTRE_ANCHOR, "travel": "short", "aerial": aerial, "source": "fallback", "reason": f"safe plan: {why}",
++            "slow": _is_slow_scene(hints)}
+ 
+ 
+ def validate(raw: dict, hints: dict):
+@@ -178,11 +193,21 @@ def validate(raw: dict, hints: dict):
+         if not re.search(r"forward|push-in|advance|dolly", low):
+             return None, ["forward move whose sentence does not say forward"]
+         tgt_ok = camera_plan.clean_anchor(target) if target and target.lower() != camera_plan.CENTRE_ANCHOR else camera_plan.CENTRE_ANCHOR
++        unsafe = ""
+         if not tgt_ok:
+-            return None, [f"unsafe or empty target {target!r}"]
+-        target = tgt_ok
+-        if hints.get("reflective_surface") in ("small", "large") and re.search(r"glass|window", target.lower()):
+-            return None, ["target is glass while a mirror or large glass is in view"]
++            unsafe = f"target {target!r} unsafe or empty"
++        elif hints.get("reflective_surface") in ("small", "large") and re.search(r"glass|mirror", tgt_ok.lower()):
++            unsafe = f"target {target!r} is glass while a mirror is in view"
++        if unsafe:
++            # keep Claude's decision (a forward move) and only change WHERE it heads: the centre of the frame, in the positive sentence
++            downgraded = f"retargeted to the centre: {unsafe}"
++            target = camera_plan.CENTRE_ANCHOR
++            sentence = forward_sentence(target, _is_slow_scene(hints))
++            low = sentence.lower()
++        else:
++            target = tgt_ok
++            if _is_slow_scene(hints):
++                sentence = forward_sentence(target, True)      # slow scenes always get the tested very-slow wording
+     if move == "static" and not aerial and not re.search(r"static|still", low):
+         return None, ["static move whose sentence does not say static"]
+     travel = _cap_travel(str(raw.get("travel", "short")).strip().lower(), hints)
+@@ -193,8 +218,8 @@ def validate(raw: dict, hints: dict):
+         sentence = vg._LUMA_MOVEMENT_TOKENS["subtle_rotate"]
+     elif TAIL not in sentence and "constant" not in low:
+         sentence = sentence.rstrip(".") + ", " + TAIL
+-    plan = {"move": move, "sentence": sentence, "center": _center(raw) if move == "forward" else (0.5, 0.5), "scale": scale, "risk": risk, "target": target, "travel": travel, "aerial": aerial,
+-            "source": "claude", "reason": str(raw.get("reason", ""))[:300]}
++    plan = {"move": move, "sentence": sentence, "center": _center(raw) if (move == "forward" and not downgraded) else (0.5, 0.5), "scale": scale, "risk": risk, "target": target, "travel": travel, "aerial": aerial,
++            "source": "claude", "reason": str(raw.get("reason", ""))[:300], "slow": bool(move == "forward" and _is_slow_scene(hints))}
+     if downgraded:
+         plan["adjusted"] = downgraded
+     return plan, []
+@@ -271,7 +296,7 @@ def last_plan(clip_path):
+ # ── Claude call ───────────────────────────────────────────────────────────────────────────────────────────────────────────
+ def _claude(photo_path, prompt, usage):
+     import vision_analysis as va
+-    return va._claude_vision_call([str(photo_path)], prompt, 600, model=va.CLIP_QC_MODEL, usage_out=usage)
++    return va._claude_vision_call([str(photo_path)], prompt, 1000, model=va.CLIP_QC_MODEL, usage_out=usage)
+ 
+ 
+ def plan(photo_path, hints: dict, clip_path, qc_feedback: str = ""):
+diff --git a/test_movement_director.py b/test_movement_director.py
+index 200a0e4..3f3d405 100644
+--- a/test_movement_director.py
++++ b/test_movement_director.py
+@@ -45,8 +45,8 @@ check("MD7 Claude's own 'bulky object near the camera' caps travel to short", p[
+ 
+ # C. validation: refused
+ for n, bad in (("MD8 unknown move", dict(FWD, move="orbit")), ("MD9 banned word (zoom)", dict(FWD, sentence="slow zoom toward the far window")),
+-               ("MD10 empty sentence", dict(FWD, sentence="")), ("MD11 target is a door", dict(FWD, target="the balcony door")),
+-               ("MD12 target is a mirror", dict(FWD, target="the mirror")), ("MD13 sentence too long", dict(FWD, sentence="forward " + "word " * 80)),
++               ("MD10 empty sentence", dict(FWD, sentence="")), 
++                ("MD13 sentence too long", dict(FWD, sentence="forward " + "word " * 80)),
+                ("MD14 forward without saying forward", dict(FWD, sentence="slowly look at the far window")), ("MD15 unknown risk", dict(FWD, risk="maybe"))):
+     p, pr = md.validate(bad, DEEP)
+     check(n + " -> refused", p is None and pr, (p, pr))
+@@ -75,7 +75,7 @@ check("MD28 lateral glide whose sentence says the other side refused", p is None
+ 
+ # E. safe plans, static, aerial
+ sp = md.safe_plan(DEEP, "x")
+-check("MD29 safe plan in a deep room = the proven centre push-in", sp["move"] == "forward" and sp["sentence"] == camera_plan.CENTRE_MOTION and sp["source"] == "fallback")
++check("MD29 safe plan in a deep room = the positive push-in toward the centre (no negations)", sp["move"] == "forward" and sp["sentence"] == md.forward_sentence(camera_plan.CENTRE_ANCHOR) and "never" not in sp["sentence"] and sp["source"] == "fallback")
+ sp = md.safe_plan(SHAL, "x")
+ check("MD30 safe plan in a shallow room = the almost static token", sp["move"] == "static" and sp["sentence"] == vg._LUMA_MOVEMENT_TOKENS["subtle_rotate"])
+ p, _ = md.validate(dict(FWD, view="aerial"), DEEP)
+@@ -163,5 +163,28 @@ lv = "The shot ends on a view of the room showing a grey sofa on the left, a rou
+ full = vg.assemble_pov_prompt("large", "walk_in_explore", "bright_natural", "natural_pace", "luma", "landscape", "none", "", "center", "deep", lv, p["sentence"])
+ old = vg.assemble_pov_prompt("large", "walk_in_explore", "bright_natural", "natural_pace", "luma", "landscape")
+ check("MD58 the final Luma prompt is not heavier than today's (words)", len(full.split()) <= len(old.split()) + 30, (len(full.split()), len(old.split())))
++
++# J. 2026-11-02 fixes after jobs 73fed155 / de90cbaf / 50472245
++for n, tg in (("MD59 a door", "the balcony door"), ("MD60 a mirror", "the mirror"), ("MD61 a wall TV and sideboard", "far wall with wall-mounted TV and sideboard"),
++              ("MD62 a wall picture (the cityscape photograph)", "cityscape photograph on the far wall")):
++    p, pr = md.validate(dict(FWD, target=tg, target_x=0.3), DEEP)
++    check(n + " as target -> Claude's forward move is KEPT, retargeted to the centre in the positive sentence (not the old negative fallback)",
++          p and p["source"] == "claude" and p["move"] == "forward" and p["target"] == camera_plan.CENTRE_ANCHOR and "retargeted" in p["adjusted"]
++          and p["center"] == (0.5, 0.5) and "never" not in p["sentence"], (p, pr))
++p, _ = md.validate(dict(FWD, target="the window with a garden view", mirror_visible=True), DEEP)
++check("MD63 a window is a good target even when a mirror is in the photo (only glass / mirror targets are refused)", p["target"] == "the window with a garden view" and "adjusted" not in p, p)
++p, _ = md.validate(dict(FWD, target="the glass door", mirror_visible=True), DEEP)
++check("MD64 a glass target with a mirror in view is retargeted", p["target"] == camera_plan.CENTRE_ANCHOR)
++p, _ = md.validate(dict(FWD, sentence="Slow push forward toward the building"), dict(DEEP, space_type="outdoor"))
++check("MD65 outdoor forward moves always get the very-slow wording with a total advance under three metres, and are marked slow",
++      p["slow"] is True and p["sentence"].startswith("Very slow") and "less than three metres" in p["sentence"], p)
++p, _ = md.validate(dict(FWD), DEEP)
++check("MD66 indoor forward moves are not marked slow", p["slow"] is False and "three metres" not in p["sentence"])
++pr_slow = vg.assemble_pov_prompt("outdoor", "approach_facade", "bright_natural", "very_slow", "luma", "landscape", "none", "", "center", "deep", "LV", "SENT")
++check("MD67 the pace words of a slow scene are 'extremely slow and subtle'", "extremely slow and subtle" in pr_slow)
++vs = Path("video_generation.py").read_text()
++check("MD68 generate_video_single passes very_slow for a slow plan", '"very_slow" if (plan and plan.get("slow")) else intensity' in vs)
++check("MD69 the director's question has room for the whole answer (max_tokens 1000)", "prompt, 1000," in Path("movement_director.py").read_text())
++check("MD70 wall pictures are unsafe anchors for the analysis too (one list)", camera_plan.clean_anchor("framed cityscape photograph") == "" and camera_plan.clean_anchor("far window with a view") != "")
+ print(f"\n{'ALL PASS' if not fails else str(fails) + ' FAIL'}")
+ sys.exit(1 if fails else 0)
+diff --git a/video_generation.py b/video_generation.py
+index b8ca940..2e70ca7 100644
+--- a/video_generation.py
++++ b/video_generation.py
+@@ -1043,7 +1043,7 @@ def generate_video_single(
+                 last_view = described_view.describe(image_path, _remap_movement(pov_movement, output_format), space_type, output_path,
+                                                     scale=plan["scale"] if plan else None, plan=plan)
+         final_prompt = assemble_pov_prompt(
+-            space_type, pov_movement, lighting, intensity, model_tier, output_format, reflective_surface,
++            space_type, pov_movement, lighting, "very_slow" if (plan and plan.get("slow")) else intensity, model_tier, output_format, reflective_surface,
+             anchor, anchor_side, depth, last_view, plan["sentence"] if plan else "",
+         )
+         if model_tier == "luma":
