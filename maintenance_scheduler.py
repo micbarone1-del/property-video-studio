@@ -91,12 +91,11 @@ CHECK_INTERVALS = {
 ALERT_COOLDOWN_MINUTES = 60  # don't re-email more than once/hour for an ongoing issue
 
 # ── Thresholds (tune as needed) ─────────────────────────────────────────────
-DISK_WARN_PCT             = 80
+DISK_WARN_PCT             = 80   # 2026-11-02: equal to retention_policy.HIGH_PCT (cleanup starts here); kept as its own warn level, see test RT9
 DISK_RED_PCT              = 90
 STUCK_JOB_MINUTES         = 45
 TEST_SCRATCH_WARN_MB      = 500
 TEST_SCRATCH_MAX_AGE_DAYS = 3
-JOB_RETENTION_DAYS        = 7
 FALLBACK_RATE_RED         = 5
 FALLBACK_LOG_TAIL_LINES   = 5000  # bound scan cost regardless of run frequency
 
@@ -276,7 +275,7 @@ def _diagnostics_headers() -> dict:
 
 
 def check_cleanup_ran() -> dict:
-    """Triggers the server's REAL 7-day auto-cleanup by calling its own
+    """Triggers the server's REAL auto-cleanup (retention_policy: disk-pressure based) by calling its own
     /diagnostics endpoint over HTTP — that's the only place the deletion
     logic actually lives, so this reuses it rather than re-implementing
     deletion in a second place. Re-scans the filesystem afterward to
@@ -304,35 +303,29 @@ def check_cleanup_ran() -> dict:
         return {"name": "cleanup_verification", "title": "Old Job Cleanup", "status": "ok",
                 "summary": "No jobs directory found.", "detail": "no jobs directory", "job_stats": job_stats}
 
-    cutoff = datetime.now() - timedelta(days=JOB_RETENTION_DAYS + 1)
-    stale = []
-    for job_dir in JOBS_DIR.iterdir():
-        if not job_dir.is_dir() or job_dir.name == "_test_scratch":
-            continue
-        # BUG FIXED: this used the DIRECTORY mtime, but the real cleanup in
-        # /diagnostics uses job_meta.json mtime (last real state change).
-        # The two disagreed: manually correcting a job status rewrites
-        # job_meta.json (making it recent, so cleanup correctly keeps it)
-        # while the directory mtime stays old (so this check wrongly flagged
-        # it forever). Now both use the same signal.
-        meta = job_dir / "job_meta.json"
-        try:
-            if meta.exists():
-                mtime = datetime.fromtimestamp(meta.stat().st_mtime)
-            else:
-                mtime = datetime.fromtimestamp(job_dir.stat().st_mtime)
-        except Exception:
-            continue
-        if mtime < cutoff:
-            stale.append(job_dir.name)
+    # 2026-11-02: same rule as the cleanup itself (retention_policy): jobs are only "overdue" when the disk is at or above the high-water
+    # mark AND the policy still lists candidates after the cleanup ran. A disk below the mark is not a problem however old the jobs are.
+    import retention_policy
+    try:
+        total, used = retention_policy.disk_usage(JOBS_DIR)
+        pct = round(used / total * 100, 1) if total else 0
+        stale = retention_policy.select_for_eviction(JOBS_DIR)
+    except Exception as e:
+        return {"name": "cleanup_verification", "title": "Old Job Cleanup", "status": "warn",
+                "summary": "Couldn't evaluate the retention policy.", "detail": str(e), "job_stats": job_stats}
 
     if stale:
-        summary = f"{len(stale)} old job(s) should have been cleaned up but weren't — worth a look."
-        detail = (f"{len(stale)} job(s) still past retention after triggering cleanup "
+        summary = f"Disk at {pct}% and {len(stale)} old job(s) should have been cleaned up but weren't — worth a look."
+        detail = (f"disk {pct}% (high-water mark {retention_policy.HIGH_PCT:g}%), {len(stale)} job(s) still deletable after triggering cleanup "
                   f"(diagnostics reported {cleaned_by_diagnostics} cleaned this run): "
                   f"{', '.join(stale[:5])}{'...' if len(stale) > 5 else ''}")
         return {"name": "cleanup_verification", "title": "Old Job Cleanup", "status": "red",
                 "summary": summary, "detail": detail, "job_stats": job_stats}
+
+    if not cleaned_by_diagnostics:
+        return {"name": "cleanup_verification", "title": "Old Job Cleanup", "status": "ok",
+                "summary": f"Disk at {pct}%: no cleanup needed (jobs are kept until {retention_policy.HIGH_PCT:g}%).",
+                "detail": f"disk {pct}%", "job_stats": job_stats}
 
     summary = (f"Cleaned up {cleaned_by_diagnostics} old job(s) automatically." if cleaned_by_diagnostics
                else "All old jobs are cleaned up — nothing needed removal.")

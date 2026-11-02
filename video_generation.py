@@ -408,6 +408,26 @@ _LYRA_LIGHTING = {
 }
 
 
+def _remap_movement(pov_movement: str, output_format: str) -> str:
+    """2026-11-02: the movement remaps that assemble_pov_prompt always applied (stand_look_around everywhere; lateral/turning -> forward in
+    portrait), extracted unchanged so the described last view (described_view) crops for the SAME movement the prompt really uses."""
+    if pov_movement == "stand_look_around":
+        log.info("[VideoGen] stand_look_around remap (all formats, confirmed broken): -> walk_in_explore")
+        pov_movement = "walk_in_explore"
+
+    _PORTRAIT_REMAPS = {
+        "walk_in_gentle":     "walk_in_explore",  # lateral tracking -> forward dolly
+        "walk_in_turn_left":  "walk_in_explore",  # left pivot -> forward dolly
+        "walk_in_turn_right": "walk_in_explore",  # right pivot -> forward dolly
+        "step_out_onto":      "walk_toward",      # widest pan of any movement (40/60 deg) -> forward approach, exterior-appropriate
+    }
+    if output_format == "portrait" and pov_movement in _PORTRAIT_REMAPS:
+        _original_movement = pov_movement
+        pov_movement = _PORTRAIT_REMAPS[pov_movement]
+        log.info(f"[VideoGen] Portrait remap: {_original_movement} -> {pov_movement}")
+    return pov_movement
+
+
 def assemble_pov_prompt(
     space_type:   str,
     pov_movement: str,
@@ -419,6 +439,7 @@ def assemble_pov_prompt(
     anchor:       str = "",             # 2026-10-27: the thing to push in toward (camera_plan; only the Luma prompt, only with PVS_ANCHOR=1)
     anchor_side:  str = "center",
     depth:        str = "",
+    last_view:    str = "",           # 2026-11-02: described_view: Claude's description of the expected last frame; when given the POSITIVE rules replace _LUMA_RULES (Luma only)
 ) -> str:
     """
     Assembles a model-specific prompt from structured token dictionaries.
@@ -442,20 +463,7 @@ def assemble_pov_prompt(
     # 2026-07-27: confirmed by the user to be broken in ANY orientation,
     # not just portrait -- unconditional remap, applied before the
     # portrait-specific checks below, regardless of output_format.
-    if pov_movement == "stand_look_around":
-        log.info("[VideoGen] stand_look_around remap (all formats, confirmed broken): -> walk_in_explore")
-        pov_movement = "walk_in_explore"
-
-    _PORTRAIT_REMAPS = {
-        "walk_in_gentle":     "walk_in_explore",  # lateral tracking -> forward dolly
-        "walk_in_turn_left":  "walk_in_explore",  # left pivot -> forward dolly
-        "walk_in_turn_right": "walk_in_explore",  # right pivot -> forward dolly
-        "step_out_onto":      "walk_toward",      # widest pan of any movement (40/60 deg) -> forward approach, exterior-appropriate
-    }
-    if output_format == "portrait" and pov_movement in _PORTRAIT_REMAPS:
-        _original_movement = pov_movement
-        pov_movement = _PORTRAIT_REMAPS[pov_movement]
-        log.info(f"[VideoGen] Portrait remap: {_original_movement} -> {pov_movement}")
+    pov_movement = _remap_movement(pov_movement, output_format)
     _PORTRAIT_ANTI_DRIFT = (
         ", camera moves strictly along a single forward axis, no lateral drift, "
         "no panning, no pivoting -- field of view stays fixed and centered "
@@ -473,6 +481,9 @@ def assemble_pov_prompt(
         motion = _LUMA_MOVEMENT_TOKENS.get(pov_movement, _LUMA_MOVEMENT_TOKENS["walk_in_explore"])
         pace   = _LUMA_INTENSITY_SUFFIX.get(intensity, _LUMA_INTENSITY_SUFFIX["natural_pace"])
         rules  = _LUMA_RULES
+        if last_view:
+            import described_view
+            rules = described_view.rules_for(last_view, space_type)
         # 2026-10-27: camera direction toward an anchor (camera_plan). Only the straight forward movements, only when the analysis named a
         # safe anchor, and never together with the mirror / glass rule (its "never move toward glass" would contradict a glass-door anchor).
         if anchor and pov_movement in camera_plan.PRODUCTION_ANCHOR_MOVEMENTS and reflective_surface not in ("small", "large"):
@@ -1011,10 +1022,19 @@ def generate_video_single(
             return download_video(sample, output_path)
 
         # ── Assemble structured prompt ─────────────────────────────────────
+        # 2026-11-02: positive Luma rules + Claude's description of the expected last frame (described_view), the standard for Luma clips;
+        # PVS_POSITIVE_PROMPT=0 or any failure of the description keeps the old rules. ONE call site: first generation AND rework come through here.
+        last_view = ""
+        if model_tier == "luma":
+            import described_view
+            if described_view.enabled():
+                last_view = described_view.describe(image_path, _remap_movement(pov_movement, output_format), space_type, output_path)
         final_prompt = assemble_pov_prompt(
             space_type, pov_movement, lighting, intensity, model_tier, output_format, reflective_surface,
-            anchor, anchor_side, depth,
+            anchor, anchor_side, depth, last_view,
         )
+        if model_tier == "luma":
+            described_view.note_prompt(output_path, final_prompt, bool(last_view))
         log.info(f"[VideoGen] Prompt: {final_prompt[:120]}...")
 
         # ── Image preparation ──────────────────────────────────────────────

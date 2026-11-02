@@ -29,20 +29,7 @@ load_dotenv(HERE / ".env")
 import exp_luma
 import exp_endframe as ef
 
-POSITIVE_RULES = (
-    "this is a frozen photograph of an empty, still room: every wall, window, door, curtain, piece of furniture, fixture and decoration keeps exactly the same "
-    "place, shape, colour, number and state (open or closed) as in the first frame for the whole shot, and the light stays steady, "
-    "the only thing that moves is the camera, which makes the movement described above smoothly, at a constant slow speed, "
-    "everything in view at the start stays in view and in place while the parts of the room nearest the edges leave the frame, "
-    "the shot ends on a view of the same room that contains exactly the same elements as the first frame, "
-    "every shadow and every reflection stays as in the source photo and the room holds only what the source photo shows"
-)
-
-
-DESCRIBE_PROMPT = """Image 1 is a photo of a room. Image 2 is the central part of image 1: exactly what will still be in view at the END of a short shot in which the camera glides straight forward.
-Write the description of image 2 for a video prompt, as 2 plain sentences of at most 70 words in total, in the present tense, beginning "The shot ends on a view of the room showing ...". Mention only the 6 to 8 most prominent fixed elements.
-Name every fixed element you can clearly see in image 2 (furniture, fixtures, openings, wall features) with its count, its position (left, centre, right; foreground, background) and its state (door closed, window with a curtain or without one, tap count and place...). Describe only what is really visible in image 2: if you are not sure that something is there, leave it out. Positive statements only: say what IS there, never what is absent or must not appear.
-Answer with JSON only: {"last_view": "..."}"""
+from described_view import POSITIVE_RULES, DESCRIBE_PROMPT   # 2026-11-02: ONE definition, now the production one (was a private copy here)
 
 
 def described_rules(photo, scale, job, index, usage):

@@ -528,3 +528,16 @@ test_photo_filters.py RESULT: ALL PASS (76/76)
 - T-H9b RUN (12 key frames + object inventory, 6 clips): correct 2, missed 2 (second tap; door/radiator deformation), false alarm 1 (object hidden behind a chair by parallax), not verified 1. Precision/recall cannot be claimed on n=6. T-H10 evaluator in shadow mode on real jobs: NOT RUN (not built).
 - Row Q16 stays open (proposal S6 O4 D7 = 168, ACT): a defective clip can still pass the content check; the physical rule on edges is untested on the server. New proposed row Q17: false alarm from occlusion (S3 O5 D3 = 45): triggers an unnecessary regeneration (cost) if the evaluator is given authority. Control: shadow mode first, measure, then act.
 - Scores remain proposals until reviewed by the user; scoreboard totals NOT recomputed here.
+
+
+## 2026-11-02 (late morning) — Retention by disk capacity, positive prompt as standard: tests (PROPOSALS, scores not reviewed)
+- T-RET1..T-RET12 test_retention_policy.py: 12/12 PASS in the sandbox (policy only; nothing is deleted by the test). NOT run on the server. NOT run: a real cleanup on the server with the disk above the high-water mark.
+- T-DV1..T-DV24 test_described_view.py: 24/24 PASS in the sandbox with a faked Claude. NOT run: a real Luma clip with the new prompt, outdoor/elevated wording, the real cost of the description.
+- Existing suite in the sandbox: the same 10 test files fail before and after (modules missing in the sandbox: test_batch_redo, test_download_retry, test_draft_check, test_end_frame, test_extract_truncation, test_foreground_risk, test_furnished_check, test_label_first, test_luma, test_scene_facts). To be run on the server after the deploy.
+- New failure modes (proposals, S/O/D not reviewed): FM-RET: the automatic cleanup deletes a job that was still needed (S9, O3, D4 = 108, ACT; control: keep flag, 14-day floor, only above 80%, nightly backup); FM-DV: the described last view contains something that is not in the photo and Luma reproduces it (S5, O4, D6 = 120, ACT; control: clip QC, PVS_POSITIVE_PROMPT=0). Scores remain proposals until reviewed; scoreboard totals NOT recomputed here.
+
+
+## 2026-11-02 (late morning) — Positive prompt + described last view: tests (PROPOSALS, scores not reviewed)
+- T-H11 positive rules + Claude description of the expected last view, Luma ray-3.2 1080p, production clip QC as judge, n=2 per scene, job 91056c3e: scene 4 pass, pass (baseline flag: second tap); scene 1 flag, reject (baseline reject: ghost curtain). Human check of the 4 clips by Michele: NOT YET RECORDED. T-H12 same plus a positive straight movement token on scene 1: NOT RUN.
+- Row Q12 (ghost animation / invented elements) stays open (S8 O5 D5 = 200, ACT, proposal): the bathroom improved in 2/2, the living room did not (0/2 pass), and the judge is the imperfect production QC; no rate can be claimed from n=2.
+- Scores remain proposals until reviewed by the user; scoreboard totals NOT recomputed here.

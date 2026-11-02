@@ -845,15 +845,21 @@ def diagnostics():
     running_jobs   = sum(1 for j in JOBS.values() if j.get("status") == "running")
 
 
-    # Auto-cleanup: remove ALL job folders (any status — done, failed, or
-    # stuck/abandoned mid-workflow) with no activity in the last 7 days.
+    # Auto-cleanup under disk pressure only (see retention_policy.py; was: ALL job folders idle for 7 days).
     # Cutoff is based on job_meta.json's own filesystem last-modified time,
     # not the created_at field inside it — job_meta.json is rewritten by
     # _save_job() on every meaningful state change (progress updates,
     # narration steps, rework, etc.), so its mtime is an accurate "last
     # touched" timestamp. This is safer than created_at for not deleting
     # something that's old but was actually worked on recently.
-    cutoff     = datetime.utcnow() - timedelta(days=7)
+    # 2026-11-02: the 7-day cutoff is gone. retention_policy decides (ONE rule, shared with maintenance_scheduler): nothing is deleted
+    # while the disk is below its high-water mark; above it only the longest-idle, unprotected (no "keep", not busy, > MIN_AGE_DAYS) go.
+    import retention_policy as _rp
+    try:
+        _evict = set(_rp.select_for_eviction(JOBS_DIR, JOBS))
+    except Exception as _e:
+        _evict = set()
+        log.warning(f"[Cleanup] retention policy failed, nothing deleted this run: {_e}")
     cleaned    = 0
     freed_mb   = 0
     for job_dir in JOBS_DIR.iterdir():
@@ -871,7 +877,7 @@ def diagnostics():
                 last_activity = datetime.utcfromtimestamp(meta.stat().st_mtime)
             else:
                 last_activity = datetime.utcfromtimestamp(job_dir.stat().st_mtime)
-            if last_activity < cutoff:
+            if job_dir.name in _evict:
                 size_mb = sum(
                     f.stat().st_size for f in job_dir.rglob("*") if f.is_file()
                 ) / (1024**2)
@@ -2430,6 +2436,7 @@ def list_jobs():
             "created_at":   job.get("created_at", ""),
             "cost_estimate": job.get("cost_estimate"),
             "needs_operator": job.get("needs_operator"),   # 2026-10-09 stage 4b
+            "keep":         bool(job.get("keep")),          # 2026-11-02: protected from the automatic cleanup
             "has_video":    bool(job.get("output_path") and Path(job["output_path"]).exists()),
         })
     jobs.sort(key=lambda j: j["created_at"], reverse=True)
@@ -3030,6 +3037,16 @@ async def reset_rework_budget(job_id: str, note: str = Form("")):
     return {"job_id": job_id, "rework_counts": {}, "rework_rounds": 0, "needs_operator": None}
 
 
+@app.post("/jobs/{job_id}/keep")
+async def set_job_keep(job_id: str, keep: bool = Form(True)):
+    """2026-11-02: operator flag "tieni": a kept job is never deleted by the automatic cleanup (retention_policy.is_protected)."""
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    JOBS[job_id]["keep"] = bool(keep)
+    _save_job(job_id)
+    return {"job_id": job_id, "keep": bool(keep)}
+
+
 def _redo_deps(job_id: str):
     """The real outside world for scene_rework.redo_scenes (tests inject fakes)."""
     import types as _types
@@ -3060,7 +3077,15 @@ def _redo_deps(job_id: str):
 
     def generate_video(*args, **kwargs):
         from video_generation import generate_video_single
-        return generate_video_single(*args, **kwargs)
+        ok = generate_video_single(*args, **kwargs)
+        try:   # 2026-11-02: the REAL Claude cost of the described last view (described_view) goes into the job, as the clip QC's does
+            import described_view as _dv
+            _out = args[2] if len(args) > 2 else kwargs.get("output_path")
+            if _out:
+                _dv.merge_usage_into_job(JOBS.get(job_id), _out)
+        except Exception as _e:
+            log.warning(f"[Job {job_id}] could not add the described-view cost: {_e}")
+        return ok
 
     return _types.SimpleNamespace(
         generate_speech=_gen_speech, audio_seconds=audio_seconds, enhance=enhance, remove_watermark=remove_watermark,
@@ -3837,6 +3862,12 @@ async def run_pipeline(
                     **camera_plan.intent_kwargs(scene),   # 2026-10-27: {} unless PVS_ANCHOR=1 and the scene has a safe anchor
                 )
 
+
+            try:   # 2026-11-02: REAL Claude cost of the described last view (described_view) into the job, as the clip QC's (Patch X)
+                import described_view as _dv
+                _dv.merge_usage_into_job(JOBS[job_id], clip_out)
+            except Exception as _e:
+                log.warning(f"[Job {job_id}] could not add the described-view cost: {_e}")
 
             model = model_tier
 

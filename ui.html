@@ -994,12 +994,13 @@ async function loadLibrary() {
         : '';
       const loadBtn = `<button class="lib-btn" onclick="loadJobIntoUI('${j.job_id}')">Apri</button>`;
       const resumeBtn = (j.status === 'interrupted' || j.status === 'stopped') ? `<button class="lib-btn lib-primary" onclick="resumeInterruptedJob('${j.job_id}')">Riprendi</button>` : '';
+      const keepBtn = `<button class="lib-btn" title="${j.keep ? 'Protetto dalla pulizia automatica: clicca per togliere' : 'Proteggi dalla pulizia automatica'}" onclick="setJobKeep('${j.job_id}', ${j.keep ? 'false' : 'true'})">${j.keep ? '📌 Tenuto' : '📌 Tieni'}</button>`;
       return `<div class="lib-job ${st.cls}" style="margin-left:16px">
         <div class="lib-info">
           <div class="lib-name">${st.icon} ${date}</div>
           <div class="lib-meta">${tier} · ${scenes} · ${j.job_id}</div>
         </div>
-        <div class="lib-actions">${dlBtn}${loadBtn}${resumeBtn}</div>
+        <div class="lib-actions">${dlBtn}${loadBtn}${resumeBtn}${keepBtn}</div>
       </div>`;
     }
 
@@ -1051,6 +1052,16 @@ async function resolveNeedsOperator(jobId) {
   try {
     const fd = new FormData(); fd.append('note', 'risolto dalla libreria');
     const r = await authFetch('/jobs/' + jobId + '/rework-budget/reset', { method: 'POST', body: fd });
+    if (!r.ok) { let d = ''; try { d = (await r.json()).detail || ''; } catch (e) {} throw new Error(d || ('HTTP ' + r.status)); }
+    loadLibrary();
+  } catch (e) { showError('Operazione non riuscita: ' + e.message); }
+}
+
+
+async function setJobKeep(jobId, keep) {
+  try {
+    const fd = new FormData(); fd.append('keep', keep ? 'true' : 'false');
+    const r = await authFetch('/jobs/' + jobId + '/keep', { method: 'POST', body: fd });
     if (!r.ok) { let d = ''; try { d = (await r.json()).detail || ''; } catch (e) {} throw new Error(d || ('HTTP ' + r.status)); }
     loadLibrary();
   } catch (e) { showError('Operazione non riuscita: ' + e.message); }
