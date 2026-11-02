@@ -515,3 +515,10 @@ test_photo_filters.py RESULT: ALL PASS (76/76)
 - New proposed row Q16: end frame that passes every check still yields a clip with zig-zag path or deformed objects (S6 O4 D6 = 144, ACT, proposal). Control proposed: evaluate the PRODUCED CLIP (flow-based speed/path profile plus Claude on key frames), regenerate up to 3 times, then cautious movement and a report flag. Not built.
 - Invariants: no double cost (cap attempts and per-scene spend), operator informed once (flag in report).
 - Scores remain proposals until reviewed by the user; scoreboard totals NOT recomputed here.
+
+
+## 2026-11-02 — Lean set-up decision and clip evaluator: tests and rows (PROPOSALS, scores not reviewed)
+- T-H8 Next Scene LoRA as end-frame generator (6 attempts): FAIL, scale 1.0, no forward move. T-H9 clip evaluator first run (12 clips, 6 key frames): content check caught 1 of 4 defects known by eye (ghost curtain: yes; second tap, zig-zag, door/radiator deformation: no); motion metric separates acceleration (originals 3.46-7.59, end-frame clips 1.35-1.9, one 3.98) but not zig-zag. T-H9b the same with 12 frames and an inventory prompt: NOT RUN. No thresholds adopted yet.
+- Row Q16 (a clip with a defect passes every automatic check): the first evaluator run would have passed 3 of 4 known-defective clips on content: ACT stays open, proposal S6 O4 D7 = 168. Control proposed: clip evaluation + regeneration cap + cautious movement + report flag; not built. Q12-Q15 unchanged (end frame parked, flag off).
+- Invariants: no double cost (cap attempts and spend per scene before enabling regeneration), operator informed once (report flag).
+- Scores remain proposals until reviewed by the user; scoreboard totals NOT recomputed here.
