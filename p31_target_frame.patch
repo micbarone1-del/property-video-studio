@@ -1,0 +1,139 @@
+diff --git a/described_view.py b/described_view.py
+index 6330fcc..6847e0f 100644
+--- a/described_view.py
++++ b/described_view.py
+@@ -34,6 +34,11 @@ Write the description of image 2 for a video prompt, as 2 plain sentences of at
+ Name every fixed element you can clearly see in image 2 (furniture, fixtures, openings, wall features) with its count, its position (left, centre, right; foreground, background) and its state (door closed, window with a curtain or without one, tap count and place...). Describe only what is really visible in image 2: if you are not sure that something is there, leave it out. Positive statements only: say what IS there, never what is absent or must not appear.
+ Answer with JSON only: {"last_view": "..."}"""
+ 
++# 2026-11-02: appended when the movement director has a plan: the description is written FOR the move (target, direction), to keep Luma on the path
++# and give it nothing to invent. Word limit 60 (the whole Luma prompt must not grow: it is about 200 words with the old rules and with these).
++PLAN_ADDENDUM = """
++The camera move for this shot: {move_text}. Image 2 is the view where this move ends, centred on {target}. Write the description so that it also tells the direction of the move: say what lies on the path between the camera and {target}, what stays at the left and right edges, and what {target} looks like (state, count). Use at most 60 words in total and the 5 to 7 most prominent fixed elements. Mention an element only if you clearly see it in image 2."""
++
+ # a straight forward move ends on the central 1/1.3 of the photo; a gentle rotation or lateral move ends on almost the whole photo (PROPOSAL, tested on interiors)
+ FORWARD_MOVEMENTS = ("walk_in_explore", "walk_toward", "walk_through", "approach_facade")
+ SCALE_FORWARD = 1.3
+@@ -81,7 +86,7 @@ def _write(clip_path, data: dict):
+         log.warning(f"[DescribedView] could not write the note next to {clip_path}: {e}")
+ 
+ 
+-def describe(photo_path, movement: str, space_type: str, clip_path, scale: float = None) -> str:
++def describe(photo_path, movement: str, space_type: str, clip_path, scale: float = None, plan: dict = None) -> str:
+     """Claude's description of the expected last view ('' on any failure -> the caller keeps the old rules). Writes <clip>.view.json."""
+     try:
+         from PIL import Image
+@@ -90,13 +95,19 @@ def describe(photo_path, movement: str, space_type: str, clip_path, scale: float
+         im = Image.open(photo_path).convert("RGB")
+         w, h = im.size
+         cw, ch = round(w / scale), round(h / scale)
+-        x0, y0 = (w - cw) // 2, (h - ch) // 2
++        cx, cy = (plan or {}).get("center") or (0.5, 0.5)       # the movement director's target: the shot ends centred on it, inside the photo
++        x0 = min(max(0, round(cx * w - cw / 2)), w - cw)
++        y0 = min(max(0, round(cy * h - ch / 2)), h - ch)
++        question = _scene_words(DESCRIBE_PROMPT, space_type)
++        if plan and plan.get("move") in ("forward", "lateral_left", "lateral_right", "rotate_left", "rotate_right"):
++            question = question.replace("Answer with JSON only", _scene_words(PLAN_ADDENDUM, space_type).format(
++                move_text=str(plan.get("sentence", ""))[:220], target=plan.get("target") or "the centre of the frame") + "\nAnswer with JSON only", 1)
+         fd, tmp = tempfile.mkstemp(suffix=".jpg")
+         os.close(fd)
+         usage = {}
+         try:
+             im.crop((x0, y0, x0 + cw, y0 + ch)).save(tmp, quality=92)
+-            raw = va._claude_vision_call([str(photo_path), tmp], _scene_words(DESCRIBE_PROMPT, space_type), 400,
++            raw = va._claude_vision_call([str(photo_path), tmp], question, 400,
+                                          model=va.CLIP_QC_MODEL, usage_out=usage)
+         finally:
+             try:
+@@ -109,7 +120,7 @@ def describe(photo_path, movement: str, space_type: str, clip_path, scale: float
+             log.warning(f"[DescribedView] no usable description (len={len(text)}): old rules for this clip")
+             _write(clip_path, {"used": False, "reason": "no usable description", "usage": usage, "counted": False})
+             return ""
+-        _write(clip_path, {"used": True, "last_view": text, "scale": scale, "movement": movement, "usage": usage, "counted": False})
++        _write(clip_path, {"used": True, "last_view": text, "scale": scale, "center": [cx, cy], "movement": movement, "usage": usage, "counted": False})
+         log.info(f"[DescribedView] {movement} (crop 1/{scale:g}): {text}")
+         return text
+     except Exception as e:
+diff --git a/movement_director.py b/movement_director.py
+index 6bf62c6..b07b88c 100644
+--- a/movement_director.py
++++ b/movement_director.py
+@@ -63,6 +63,7 @@ JSON keys:
+  "view": "interior" | "ground" | "aerial"   (ground = outdoors at ground level)
+  "move": one of forward, lateral_left, lateral_right, rotate_left, rotate_right, static
+  "target": a short English noun phrase for the far fixed thing the camera heads toward (forward) or keeps in the centre, or "centre of the frame"
++ "target_x", "target_y": where the target sits in the photo, as fractions from 0 to 1 (x from the left edge, y from the top edge); the shot ends centred on it
+  "travel": "short" | "medium" | "long"   (forward: how far the camera glides; sideways moves ignore this)
+  "risk": "low" | "medium" | "high"   (your honest chance that the model invents something with the move you chose)
+  "sentence": the camera instruction for the video prompt, English, one sentence of at most 60 words, present tense. Forward: say "slow straight forward camera push-in toward <target>",
+@@ -192,13 +193,26 @@ def validate(raw: dict, hints: dict):
+         sentence = vg._LUMA_MOVEMENT_TOKENS["subtle_rotate"]
+     elif TAIL not in sentence and "constant" not in low:
+         sentence = sentence.rstrip(".") + ", " + TAIL
+-    plan = {"move": move, "sentence": sentence, "scale": scale, "risk": risk, "target": target, "travel": travel, "aerial": aerial,
++    plan = {"move": move, "sentence": sentence, "center": _center(raw) if move == "forward" else (0.5, 0.5), "scale": scale, "risk": risk, "target": target, "travel": travel, "aerial": aerial,
+             "source": "claude", "reason": str(raw.get("reason", ""))[:300]}
+     if downgraded:
+         plan["adjusted"] = downgraded
+     return plan, []
+ 
+ 
++def _center(raw: dict):
++    """(x, y) the shot ends centred on: the target's place in the photo, kept near the middle (a far target is near it anyway; the crop
++    stays inside the photo). Missing or unusable numbers -> the exact centre."""
++    out = []
++    for k in ("target_x", "target_y"):
++        try:
++            v = float(raw.get(k))
++        except (TypeError, ValueError):
++            v = 0.5
++        out.append(round(min(max(v, 0.35), 0.65), 3))
++    return tuple(out)
++
++
+ def _facts(hints: dict) -> str:
+     keys = ("room", "space_type", "size", "depth", "anchor", "anchor_side", "anchor_height", "foreground_risk", "reflective_surface", "output_format")
+     return "; ".join(f"{k}={hints[k]}" for k in keys if hints.get(k) not in (None, "", "none"))
+diff --git a/test_movement_director.py b/test_movement_director.py
+index a0c4a08..200a0e4 100644
+--- a/test_movement_director.py
++++ b/test_movement_director.py
+@@ -143,5 +143,25 @@ src = Path("scene_rework.py").read_text()
+ check("MD50 rework passes qc_feedback to generate_video", "qc_feedback=_director_feedback(job, scene_idx, scene_id)" in src)
+ vsrc = Path("video_generation.py").read_text()
+ check("MD51 ONE place calls the director (generate_video_single); no other module does", vsrc.count("movement_director.plan(") == 1 and sum(Path(f).read_text().count("movement_director.plan(") for f in ("api_server.py", "scene_rework.py", "listing_scraper.py")) == 0)
++
++# I. target frame (2026-11-02): the description is written for the move, centred on the director's target
++p, _ = md.validate(dict(FWD, target_x=0.6, target_y=0.45), DEEP)
++check("MD52 the plan keeps the target's place in the photo", p["center"] == (0.6, 0.45), p.get("center"))
++p, _ = md.validate(dict(FWD, target_x=0.95, target_y="x"), DEEP)
++check("MD53 an extreme or unreadable target position is kept near the middle", p["center"] == (0.65, 0.5), p.get("center"))
++q = []
++va._claude_vision_call = lambda imgs, prompt, mt, model=None, usage_out=None: (q.append(prompt) or json.dumps({"last_view": "The shot ends on a view of the room showing a window."}))
++plan_f = {"move": "forward", "sentence": "slow straight forward camera push-in toward the far window", "target": "the far window", "center": (0.6, 0.5), "scale": 1.25}
++dv.describe(big, "walk_in_explore", "large", tmp / "c4.mp4", scale=1.25, plan=plan_f)
++check("MD54 with a plan the question to Claude carries the move and the target, and the 60-word limit", "far window" in q[-1] and "push-in" in q[-1] and "at most 60 words" in q[-1], q[-1][-400:])
++dv.describe(big, "walk_in_explore", "large", tmp / "c5.mp4", scale=1.25)
++check("MD55 without a plan the question is the tested one (no addendum)", "The camera move for this shot" not in q[-1])
++dv.describe(big, "walk_in_explore", "large", tmp / "c6.mp4", scale=1.25, plan=dict(plan_f, move="static"))
++check("MD56 a static plan gets no move addendum", "The camera move for this shot" not in q[-1])
++check("MD57 the centre is stored in the note next to the clip", json.loads(dv.sidecar_path(tmp / "c4.mp4").read_text())["center"] == [0.6, 0.5])
++lv = "The shot ends on a view of the room showing a grey sofa on the left, a round table in the centre, two closed windows on the right and a lamp in the background."
++full = vg.assemble_pov_prompt("large", "walk_in_explore", "bright_natural", "natural_pace", "luma", "landscape", "none", "", "center", "deep", lv, p["sentence"])
++old = vg.assemble_pov_prompt("large", "walk_in_explore", "bright_natural", "natural_pace", "luma", "landscape")
++check("MD58 the final Luma prompt is not heavier than today's (words)", len(full.split()) <= len(old.split()) + 30, (len(full.split()), len(old.split())))
+ print(f"\n{'ALL PASS' if not fails else str(fails) + ' FAIL'}")
+ sys.exit(1 if fails else 0)
+diff --git a/video_generation.py b/video_generation.py
+index 6f74f48..b8ca940 100644
+--- a/video_generation.py
++++ b/video_generation.py
+@@ -1041,7 +1041,7 @@ def generate_video_single(
+                 }, output_path, qc_feedback)
+             if described_view.enabled():
+                 last_view = described_view.describe(image_path, _remap_movement(pov_movement, output_format), space_type, output_path,
+-                                                    scale=plan["scale"] if plan else None)
++                                                    scale=plan["scale"] if plan else None, plan=plan)
+         final_prompt = assemble_pov_prompt(
+             space_type, pov_movement, lighting, intensity, model_tier, output_format, reflective_surface,
+             anchor, anchor_side, depth, last_view, plan["sentence"] if plan else "",
