@@ -64,12 +64,15 @@ def described_rules(photo, scale, job, index, usage):
 
 
 def main():
-    a = [x for x in sys.argv[1:] if not x.startswith("--") and not x.replace(".", "", 1).isdigit()]
-    go = "--go" in sys.argv
-    described = "--described" in sys.argv
+    argv = list(sys.argv[1:])
     scale = 1.3
-    if "--scale" in sys.argv:
-        scale = float(sys.argv[sys.argv.index("--scale") + 1])
+    if "--scale" in argv:
+        i = argv.index("--scale")
+        scale = float(argv[i + 1])
+        del argv[i:i + 2]                              # the value of --scale is not a positional argument (the first version dropped the scene INDEX instead)
+    go = "--go" in argv
+    described = "--described" in argv
+    a = [x for x in argv if not x.startswith("--")]
     if len(a) != 2:
         raise SystemExit(__doc__)
     job, index = a[0], int(a[1])
