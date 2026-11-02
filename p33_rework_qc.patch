@@ -1,0 +1,213 @@
+diff --git a/api_server.py b/api_server.py
+index c0d8e76..e01d494 100644
+--- a/api_server.py
++++ b/api_server.py
+@@ -3096,6 +3096,48 @@ def _redo_deps(job_id: str):
+     )
+ 
+ 
++def _rework_qc_enabled(job) -> bool:
++    """The clip QC of reworked clips follows the job's own QC switch (default on) and PVS_REWORK_QC=0 turns it off."""
++    return bool(job.get("enable_vision_qc", True)) and os.getenv("PVS_REWORK_QC", "1").strip().lower() not in ("0", "false", "no", "off")
++
++
++async def _rework_qc_gate(job_id: str, job_dir, result: dict) -> bool:
++    """Runs scene_rework.qc_redone on the clips just made. True = the job was PARKED at awaiting_approval (no reassembly); False = go on."""
++    job = JOBS[job_id]
++    from vision_analysis import analyse_output
++    deps = _redo_deps(job_id)
++    deps.analyse_clip = analyse_output
++    JOBS[job_id].update({"status": "running", "progress": 90, "message": "QC dei clip rigenerati…"})
++    qc = await asyncio.to_thread(_sr.qc_redone, job, job_dir, result["redone"], deps)
++    _save_job(job_id)
++    if not (qc["rejected"] or qc["flagged"]):
++        return False
++    job["awaiting_scenes"] = _awaiting_payload(qc["rejected"], qc["flagged"], [])
++    msg = (f"QC dopo rework: {len(qc['rejected'])} rifiutate, {len(qc['flagged'])} segnalate. "
++           f"Il video non e' stato riassemblato: rivedi le scene e decidi.")
++    job.update({"status": "awaiting_approval", "progress": 75, "message": msg})
++    # no budget left for a scene that failed again: tell the operator it needs a person (a new rework is refused by the gate anyway)
++    stuck = [s for s in ((job.get("scenes_config") or [])[i].get("scene_id") for i in qc["rejected"] + qc["flagged"])
++             if not _rwp.evaluate(job, [s])["allowed"]]
++    if stuck and _rwp.flag(job, f"QC dopo rework fallito e budget di rework esaurito per {', '.join(stuck)}", "rework_qc_failed"):
++        log.warning(f"[Job {job_id}] rework QC failed and budget exhausted for {stuck}")
++    _save_job(job_id)
++    _warm_previews(job_id)
++    prop_name = job.get("property_name", "Property")
++    try:
++        await _notify_operator(
++            job_id, "Rework QC",
++            subject=f"QC dopo rework da rivedere: {prop_name}",
++            body_html=(f"<p><b>{prop_name}</b> - dopo il rework: {len(qc['rejected'])} scene rifiutate, {len(qc['flagged'])} segnalate. "
++                       f"Il video non e' stato riassemblato.</p><p>Job ID: {job_id}</p>"),
++            push_message=f"{prop_name} - QC dopo rework: {len(qc['rejected'])} rifiutate, {len(qc['flagged'])} segnalate",
++            tags=["warning"],
++        )
++    except Exception as e:
++        log.warning(f"[Job {job_id}] Rework-QC notification failed (non-fatal): {e}")
++    return True
++
++
+ async def _run_redo(job_id: str, scene_ids: list, *, video: bool, strict: bool,
+                     policy: bool, label: str):
+     """2026-10-22 (backlog 75, architecture discipline): the ONE runner behind
+@@ -3130,6 +3172,17 @@ async def _run_redo(job_id: str, scene_ids: list, *, video: bool, strict: bool,
+                 _sr.record_rework_cost(job, _lost, job.get("model_tier", "premium"), True, job_dir=job_dir)
+         _save_job(job_id)
+ 
++        # 2026-11-02: the reworked clips are judged by the SAME clip QC as the first generation BEFORE anything is reassembled; a rejected or
++        # flagged one goes back to the operator (awaiting_approval) instead of silently into the final video.
++        if video and result["redone"] and _rework_qc_enabled(job):
++            gate = await _rework_qc_gate(job_id, job_dir, result)
++            if gate:
++                if policy:
++                    _rwp.end(JOBS[job_id])
++                    _save_job(job_id)
++                    await _rework_after(job_id, result["failed"])
++                return
++
+         await run_reassemble_only(job_id)
+         if policy:
+             _rwp.end(JOBS[job_id])
+diff --git a/gial_start.py b/gial_start.py
+index 4183b3b..e0638ca 100644
+--- a/gial_start.py
++++ b/gial_start.py
+@@ -31,7 +31,11 @@ def session():
+     return s
+ 
+ 
+-def run(job_ids, s=None, sleep=time.sleep, out=print, poll=POLL_SECS, max_wait=MAX_WAIT_SECS):
++def _say(*a):
++    print(*a, flush=True)      # unbuffered: the log read through `tee` shows lines at once
++
++
++def run(job_ids, s=None, sleep=time.sleep, out=_say, poll=POLL_SECS, max_wait=MAX_WAIT_SECS):
+     """Returns a dict job_id -> final status ('skipped:<status>' for jobs that were not drafts, 'not started' after a stop)."""
+     s = s or session()
+     result = {}
+diff --git a/scene_rework.py b/scene_rework.py
+index b553cbb..25e2f86 100644
+--- a/scene_rework.py
++++ b/scene_rework.py
+@@ -307,3 +307,53 @@ async def redo_scenes(job, job_dir, scene_ids, deps, *, video=True, strict=False
+     job["scenes"] = statuses
+     deps.save()
+     return out
++
++
++# ── Clip QC of the reworked clips (2026-11-02, Michele: "se QC fallisce al rework si va in escalation, non in assembly") ─────────────────────
++# Before this, a rework wrote qc_verdict="pass" for every redone scene WITHOUT looking at the new clip and the caller reassembled at once: a worse
++# clip went straight into the final video. Now the SAME clip QC the first generation uses (vision_analysis.analyse_output, injected as
++# deps.analyse_clip) judges every redone clip; the caller (api_server._run_redo) reassembles only when none is rejected or flagged.
++def qc_redone(job, job_dir, redone, deps):
++    """Runs the clip QC on the clips just regenerated. `redone` = the list redo_scenes returned. Updates the scene status verdict and job["qc_results"]
++    (the previous video entry of that scene is replaced; its verdict is kept as "previous_verdict") and adds the REAL Claude cost to job["claude_usage"].
++    Returns {"checked": [scene ids], "rejected": [scene idx], "flagged": [scene idx], "unchecked": [scene ids]}.
++    A clip the QC could not judge (error) is reported as unchecked and does NOT block (same as the first generation: an error is never a reject)."""
++    import listing_scraper as ls
++    scenes_config = job.get("scenes_config", [])
++    statuses = job.setdefault("scenes", [])
++    qc_results = job.setdefault("qc_results", [])
++    out = {"checked": [], "rejected": [], "flagged": [], "unchecked": []}
++    for r in redone:
++        sid = r.get("scene_id") if isinstance(r, dict) else r
++        idx = next((i for i, sc in enumerate(scenes_config) if sc.get("scene_id") == sid), None)
++        if idx is None:
++            continue
++        scene = scenes_config[idx]
++        clip = Path(job_dir) / "clips" / f"{sid}.mp4"
++        src = find_source_image(job_dir, sid, idx, deps.log)
++        if not clip.exists() or not src:
++            out["unchecked"].append(sid)
++            continue
++        try:
++            qc = deps.analyse_clip(str(clip), str(src), scene.get("space_type", "large"))
++        except Exception as e:
++            deps.log.warning(f"[rework] QC of the new clip of {sid} failed: {e}")
++            out["unchecked"].append(sid)
++            continue
++        job["claude_usage"] = ls.merge_claude_usage(job.get("claude_usage"), qc.get("claude_usage"))
++        if qc.get("error") and qc.get("verdict") not in ("reject", "flag"):
++            out["unchecked"].append(sid)
++            continue
++        verdict = qc.get("verdict", "pass")
++        prev = next((q for q in reversed(qc_results) if q.get("type") == "video" and q.get("scene") == idx), None)
++        job["qc_results"] = qc_results = [q for q in qc_results if not (q.get("type") == "video" and q.get("scene") == idx)]
++        qc_results.append({"scene": idx, "type": "video", "rework": True, "previous_verdict": (prev or {}).get("verdict"), **qc})
++        update_scene_status(statuses, sid, idx, scene, qc_verdict=verdict)
++        out["checked"].append(sid)
++        if verdict == "reject":
++            out["rejected"].append(idx)
++        elif verdict == "flag":
++            out["flagged"].append(idx)
++    deps.save()
++    return out
++
+diff --git a/test_rework_qc.py b/test_rework_qc.py
+new file mode 100644
+index 0000000..6c3c38c
+--- /dev/null
++++ b/test_rework_qc.py
+@@ -0,0 +1,61 @@
++"""Clip QC of reworked clips (2026-11-02): scene_rework.qc_redone + the api_server wiring. Fakes only. Run: python3 test_rework_qc.py"""
++import os, sys, tempfile, types, json
++from pathlib import Path
++sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
++for name in ("fal_client", "moviepy", "anthropic"):
++    if name not in sys.modules:
++        sys.modules[name] = types.ModuleType(name)
++sys.modules["anthropic"].Anthropic = getattr(sys.modules["anthropic"], "Anthropic", lambda *a, **k: "REAL")
++import scene_rework as sr
++fails = 0
++def check(n, c, info=""):
++    global fails
++    print(("PASS " if c else "FAIL ") + n + ("" if c else f" -- {info}")); fails += 0 if c else 1
++tmp = Path(tempfile.mkdtemp())
++(tmp / "clips").mkdir(); (tmp / "images").mkdir()
++for sid in ("sc_a", "sc_b", "sc_c"):
++    (tmp / "clips" / f"{sid}.mp4").write_bytes(b"x"); (tmp / "images" / f"{sid}.jpg").write_bytes(b"x")
++def job():
++    return {"scenes_config": [{"scene_id": s, "space_type": "large"} for s in ("sc_a", "sc_b", "sc_c")],
++            "scenes": [{"scene_id": s, "index": i, "qc_verdict": "pass"} for i, s in enumerate(("sc_a", "sc_b", "sc_c"))],
++            "qc_results": [{"scene": 1, "type": "video", "verdict": "reject", "issues": ["invented shelf"]}, {"scene": 1, "type": "tts", "verdict": "pass"}],
++            "claude_usage": {}}
++def deps(verdicts):
++    calls = []
++    def analyse(clip, src, space):
++        calls.append((clip, src, space))
++        v = verdicts[Path(clip).stem]
++        if isinstance(v, Exception): raise v
++        return dict(v, claude_usage={"input_tokens": 100, "output_tokens": 20, "calls": 1, "cost_eur": 0.02})
++    return types.SimpleNamespace(analyse_clip=analyse, log=types.SimpleNamespace(warning=lambda *a: None, info=lambda *a: None), save=lambda: None), calls
++P = {"verdict": "pass", "issues": []}
++d, calls = deps({"sc_a": P, "sc_b": {"verdict": "reject", "issues": ["new door"]}, "sc_c": {"verdict": "flag", "issues": ["soft"]}})
++j = job()
++r = sr.qc_redone(j, tmp, [{"scene_id": "sc_a"}, {"scene_id": "sc_b"}, {"scene_id": "sc_c"}], d)
++check("RQ1 every redone clip is judged by the injected clip QC with its own clip, original photo and space type", len(calls) == 3 and calls[0][0].endswith("clips/sc_a.mp4") and calls[0][1].endswith("images/sc_a.jpg") and calls[0][2] == "large", calls)
++check("RQ2 rejected and flagged scene INDEXES are reported; a passing one is not", r["rejected"] == [1] and r["flagged"] == [2] and r["checked"] == ["sc_a", "sc_b", "sc_c"], r)
++check("RQ3 the scene status carries the REAL verdict (no more unconditional 'pass')", [s["qc_verdict"] for s in j["scenes"]] == ["pass", "reject", "flag"], j["scenes"])
++vid = [q for q in j["qc_results"] if q["type"] == "video" and q["scene"] == 1]
++check("RQ4 the scene's earlier video QC entry is replaced (one entry), keeps the old verdict, marked rework; tts entry untouched",
++      len(vid) == 1 and vid[0]["rework"] is True and vid[0]["previous_verdict"] == "reject" and vid[0]["issues"] == ["new door"] and any(q["type"] == "tts" for q in j["qc_results"]), j["qc_results"])
++check("RQ5 the REAL Claude cost of the 3 checks is added to the job", j["claude_usage"]["calls"] == 3 and abs(j["claude_usage"]["cost_eur"] - 0.06) < 1e-9, j["claude_usage"])
++d, _ = deps({"sc_a": P, "sc_b": P, "sc_c": P}); j = job()
++r = sr.qc_redone(j, tmp, [{"scene_id": s} for s in ("sc_a", "sc_b", "sc_c")], d)
++check("RQ6 all clips pass -> nothing rejected or flagged (the caller reassembles)", not r["rejected"] and not r["flagged"])
++d, _ = deps({"sc_a": RuntimeError("api down"), "sc_b": {"verdict": "pass", "issues": [], "error": "parse"}, "sc_c": P}); j = job()
++r = sr.qc_redone(j, tmp, [{"scene_id": s} for s in ("sc_a", "sc_b", "sc_c")], d)
++check("RQ7 a QC that crashes or returns an error is 'unchecked' and does NOT block (an error is never a reject)", r["unchecked"] == ["sc_a", "sc_b"] and not r["rejected"] and r["checked"] == ["sc_c"], r)
++(tmp / "clips" / "sc_c.mp4").unlink()
++d, _ = deps({"sc_a": P, "sc_b": P, "sc_c": P}); j = job()
++r = sr.qc_redone(j, tmp, [{"scene_id": "sc_c"}, {"scene_id": "nope"}], d)
++check("RQ8 a missing clip is unchecked; an unknown scene id is ignored", r["unchecked"] == ["sc_c"] and r["checked"] == [])
++src = Path("api_server.py").read_text()
++i = src.index("async def _run_redo(")
++body = src[i:src.index("async def run_redo_scene(")]
++check("RQ9 _run_redo judges the reworked clips BEFORE the reassembly and returns without reassembling when the gate parks the job",
++      body.index("_rework_qc_gate(") < body.index("await run_reassemble_only(job_id)") and "if gate:" in body and body.count("run_reassemble_only(job_id)") == 1)
++g = src[src.index("async def _rework_qc_gate("):i]
++check("RQ10 the gate parks the job at awaiting_approval with the standard awaiting payload, notifies once, and uses the same QC function as the pipeline",
++      '"status": "awaiting_approval"' in g and "_awaiting_payload(qc[" in g and "_notify_operator(" in g and "from vision_analysis import analyse_output" in g and "qc_redone" in g)
++check("RQ11 PVS_REWORK_QC=0 and the job's own QC switch turn it off", "PVS_REWORK_QC" in src and 'job.get("enable_vision_qc", True)' in src)
++print("ALL PASS" if not fails else f"{fails} FAIL"); sys.exit(1 if fails else 0)
