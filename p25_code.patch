@@ -1,0 +1,755 @@
+diff --git a/api_server.py b/api_server.py
+index 7adde86..4d3d46c 100644
+--- a/api_server.py
++++ b/api_server.py
+@@ -845,15 +845,21 @@ def diagnostics():
+     running_jobs   = sum(1 for j in JOBS.values() if j.get("status") == "running")
+ 
+ 
+-    # Auto-cleanup: remove ALL job folders (any status — done, failed, or
+-    # stuck/abandoned mid-workflow) with no activity in the last 7 days.
++    # Auto-cleanup under disk pressure only (see retention_policy.py; was: ALL job folders idle for 7 days).
+     # Cutoff is based on job_meta.json's own filesystem last-modified time,
+     # not the created_at field inside it — job_meta.json is rewritten by
+     # _save_job() on every meaningful state change (progress updates,
+     # narration steps, rework, etc.), so its mtime is an accurate "last
+     # touched" timestamp. This is safer than created_at for not deleting
+     # something that's old but was actually worked on recently.
+-    cutoff     = datetime.utcnow() - timedelta(days=7)
++    # 2026-11-02: the 7-day cutoff is gone. retention_policy decides (ONE rule, shared with maintenance_scheduler): nothing is deleted
++    # while the disk is below its high-water mark; above it only the longest-idle, unprotected (no "keep", not busy, > MIN_AGE_DAYS) go.
++    import retention_policy as _rp
++    try:
++        _evict = set(_rp.select_for_eviction(JOBS_DIR, JOBS))
++    except Exception as _e:
++        _evict = set()
++        log.warning(f"[Cleanup] retention policy failed, nothing deleted this run: {_e}")
+     cleaned    = 0
+     freed_mb   = 0
+     for job_dir in JOBS_DIR.iterdir():
+@@ -871,7 +877,7 @@ def diagnostics():
+                 last_activity = datetime.utcfromtimestamp(meta.stat().st_mtime)
+             else:
+                 last_activity = datetime.utcfromtimestamp(job_dir.stat().st_mtime)
+-            if last_activity < cutoff:
++            if job_dir.name in _evict:
+                 size_mb = sum(
+                     f.stat().st_size for f in job_dir.rglob("*") if f.is_file()
+                 ) / (1024**2)
+@@ -2430,6 +2436,7 @@ def list_jobs():
+             "created_at":   job.get("created_at", ""),
+             "cost_estimate": job.get("cost_estimate"),
+             "needs_operator": job.get("needs_operator"),   # 2026-10-09 stage 4b
++            "keep":         bool(job.get("keep")),          # 2026-11-02: protected from the automatic cleanup
+             "has_video":    bool(job.get("output_path") and Path(job["output_path"]).exists()),
+         })
+     jobs.sort(key=lambda j: j["created_at"], reverse=True)
+@@ -3030,6 +3037,16 @@ async def reset_rework_budget(job_id: str, note: str = Form("")):
+     return {"job_id": job_id, "rework_counts": {}, "rework_rounds": 0, "needs_operator": None}
+ 
+ 
++@app.post("/jobs/{job_id}/keep")
++async def set_job_keep(job_id: str, keep: bool = Form(True)):
++    """2026-11-02: operator flag "tieni": a kept job is never deleted by the automatic cleanup (retention_policy.is_protected)."""
++    if job_id not in JOBS:
++        raise HTTPException(status_code=404, detail="Job not found")
++    JOBS[job_id]["keep"] = bool(keep)
++    _save_job(job_id)
++    return {"job_id": job_id, "keep": bool(keep)}
++
++
+ def _redo_deps(job_id: str):
+     """The real outside world for scene_rework.redo_scenes (tests inject fakes)."""
+     import types as _types
+@@ -3060,7 +3077,15 @@ def _redo_deps(job_id: str):
+ 
+     def generate_video(*args, **kwargs):
+         from video_generation import generate_video_single
+-        return generate_video_single(*args, **kwargs)
++        ok = generate_video_single(*args, **kwargs)
++        try:   # 2026-11-02: the REAL Claude cost of the described last view (described_view) goes into the job, as the clip QC's does
++            import described_view as _dv
++            _out = args[2] if len(args) > 2 else kwargs.get("output_path")
++            if _out:
++                _dv.merge_usage_into_job(JOBS.get(job_id), _out)
++        except Exception as _e:
++            log.warning(f"[Job {job_id}] could not add the described-view cost: {_e}")
++        return ok
+ 
+     return _types.SimpleNamespace(
+         generate_speech=_gen_speech, audio_seconds=audio_seconds, enhance=enhance, remove_watermark=remove_watermark,
+@@ -3838,6 +3863,12 @@ async def run_pipeline(
+                 )
+ 
+ 
++            try:   # 2026-11-02: REAL Claude cost of the described last view (described_view) into the job, as the clip QC's (Patch X)
++                import described_view as _dv
++                _dv.merge_usage_into_job(JOBS[job_id], clip_out)
++            except Exception as _e:
++                log.warning(f"[Job {job_id}] could not add the described-view cost: {_e}")
++
+             model = model_tier
+ 
+ 
+diff --git a/described_view.py b/described_view.py
+new file mode 100644
+index 0000000..b100ce4
+--- /dev/null
++++ b/described_view.py
+@@ -0,0 +1,144 @@
++"""Positive Luma prompt with a described last view (2026-11-02, Michele: "prompt positivo con descrizione target frame come standard").
++
++Why: the old Luma rules (video_generation._LUMA_RULES) are ~15 NEGATIONS, and Luma has no negative-prompt parameter. Tests on job 91056c3e
++(bathroom: pass/pass twice) used the rules below instead: a positive description of a frozen room, PLUS Claude's two-sentence description of the view the
++shot is expected to END on, written from the central 1/scale crop of the real photo. The crop is NEVER sent to Luma (no end frame, no 2D zoom): it is only
++the source of the words. Evidence is small (n=2 per scene, one listing); the switch below goes back to the old rules at any time.
++
++  PVS_POSITIVE_PROMPT=0   -> the old _LUMA_RULES, exactly as before. Unset/anything else -> on.
++Any failure of the description (no key, bad answer) falls back to the old rules for that clip, logged: a clip is never blocked by this.
++This module is the ONLY place for these texts; exp_prompt.py imports them from here.
++Cost: one Claude call per clip (a few cents at most); its REAL usage is written next to the clip (<clip>.view.json) and merged into the job's
++claude_usage by merge_usage_into_job (called at the two places a clip is generated: the pipeline and the rework runner).
++"""
++import json
++import logging
++import os
++import re
++import tempfile
++from pathlib import Path
++
++log = logging.getLogger(__name__)
++
++POSITIVE_RULES = (
++    "this is a frozen photograph of an empty, still room: every wall, window, door, curtain, piece of furniture, fixture and decoration keeps exactly the same "
++    "place, shape, colour, number and state (open or closed) as in the first frame for the whole shot, and the light stays steady, "
++    "the only thing that moves is the camera, which makes the movement described above smoothly, at a constant slow speed, "
++    "everything in view at the start stays in view and in place while the parts of the room nearest the edges leave the frame, "
++    "the shot ends on a view of the same room that contains exactly the same elements as the first frame, "
++    "every shadow and every reflection stays as in the source photo and the room holds only what the source photo shows"
++)
++
++DESCRIBE_PROMPT = """Image 1 is a photo of a room. Image 2 is the central part of image 1: exactly what will still be in view at the END of a short shot in which the camera glides straight forward.
++Write the description of image 2 for a video prompt, as 2 plain sentences of at most 70 words in total, in the present tense, beginning "The shot ends on a view of the room showing ...". Mention only the 6 to 8 most prominent fixed elements.
++Name every fixed element you can clearly see in image 2 (furniture, fixtures, openings, wall features) with its count, its position (left, centre, right; foreground, background) and its state (door closed, window with a curtain or without one, tap count and place...). Describe only what is really visible in image 2: if you are not sure that something is there, leave it out. Positive statements only: say what IS there, never what is absent or must not appear.
++Answer with JSON only: {"last_view": "..."}"""
++
++# a straight forward move ends on the central 1/1.3 of the photo; a gentle rotation or lateral move ends on almost the whole photo (PROPOSAL, tested on interiors)
++FORWARD_MOVEMENTS = ("walk_in_explore", "walk_toward", "walk_through", "approach_facade")
++SCALE_FORWARD = 1.3
++SCALE_OTHER = 1.1
++OPEN_AIR = ("outdoor", "elevated")          # the tested wording says "room"; for these scenes it is changed to "scene" (NOT yet tested on a real clip)
++SIDECAR_SUFFIX = ".view.json"
++
++
++def enabled() -> bool:
++    return os.getenv("PVS_POSITIVE_PROMPT", "1").strip().lower() not in ("0", "false", "no", "off")
++
++
++def crop_scale(movement: str) -> float:
++    return SCALE_FORWARD if movement in FORWARD_MOVEMENTS else SCALE_OTHER
++
++
++def _scene_words(text: str, space_type: str) -> str:
++    if space_type not in OPEN_AIR:
++        return text
++    for a, b in (("an empty, still room", "a still scene"), ("photo of a room", "photo of a scene"), ("the same room", "the same scene"),
++                 ("parts of the room", "parts of the scene"), ("the room holds", "the scene holds"), ("view of the room", "view of the scene")):
++        text = text.replace(a, b)
++    return text
++
++
++def rules_for(last_view: str, space_type: str = "") -> str:
++    """The text that REPLACES _LUMA_RULES in the Luma prompt."""
++    return _scene_words(POSITIVE_RULES, space_type) + ", " + last_view.strip()
++
++
++def sidecar_path(clip_path) -> Path:
++    return Path(str(clip_path) + SIDECAR_SUFFIX)
++
++
++def _write(clip_path, data: dict):
++    try:
++        p = sidecar_path(clip_path)
++        old = {}
++        if p.exists() and data.get("_merge"):
++            old = json.loads(p.read_text(encoding="utf-8"))
++        data = {k: v for k, v in data.items() if k != "_merge"}
++        old.update(data)
++        p.write_text(json.dumps(old, ensure_ascii=False), encoding="utf-8")
++    except Exception as e:
++        log.warning(f"[DescribedView] could not write the note next to {clip_path}: {e}")
++
++
++def describe(photo_path, movement: str, space_type: str, clip_path) -> str:
++    """Claude's description of the expected last view ('' on any failure -> the caller keeps the old rules). Writes <clip>.view.json."""
++    try:
++        from PIL import Image
++        import vision_analysis as va
++        scale = crop_scale(movement)
++        im = Image.open(photo_path).convert("RGB")
++        w, h = im.size
++        cw, ch = round(w / scale), round(h / scale)
++        x0, y0 = (w - cw) // 2, (h - ch) // 2
++        fd, tmp = tempfile.mkstemp(suffix=".jpg")
++        os.close(fd)
++        usage = {}
++        try:
++            im.crop((x0, y0, x0 + cw, y0 + ch)).save(tmp, quality=92)
++            raw = va._claude_vision_call([str(photo_path), tmp], _scene_words(DESCRIBE_PROMPT, space_type), 400,
++                                         model=va.CLIP_QC_MODEL, usage_out=usage)
++        finally:
++            try:
++                os.unlink(tmp)
++            except Exception:
++                pass
++        m = re.search(r"\{.*\}", raw or "", re.DOTALL)
++        text = str(json.loads(m.group(0)).get("last_view", "")).strip() if m else ""
++        if not text or len(text) > 700:
++            log.warning(f"[DescribedView] no usable description (len={len(text)}): old rules for this clip")
++            _write(clip_path, {"used": False, "reason": "no usable description", "usage": usage, "counted": False})
++            return ""
++        _write(clip_path, {"used": True, "last_view": text, "scale": scale, "movement": movement, "usage": usage, "counted": False})
++        log.info(f"[DescribedView] {movement} (crop 1/{scale:g}): {text}")
++        return text
++    except Exception as e:
++        log.warning(f"[DescribedView] description failed ({e}): old rules for this clip")
++        return ""
++
++
++def note_prompt(clip_path, prompt: str, positive: bool):
++    """The exact prompt sent to Luma, kept next to the clip (it was never logged per clip before)."""
++    if positive:
++        _write(clip_path, {"prompt": prompt, "positive_prompt": True, "_merge": True})
++    else:      # old rules: replace any older note of a previous generation of this clip
++        _write(clip_path, {"prompt": prompt, "positive_prompt": False})
++
++
++def merge_usage_into_job(job: dict, clip_path) -> bool:
++    """Adds the REAL Claude usage of the description to job['claude_usage'] once (the note is marked counted). False if nothing to add."""
++    try:
++        p = sidecar_path(clip_path)
++        if not p.exists() or job is None:
++            return False
++        d = json.loads(p.read_text(encoding="utf-8"))
++        if d.get("counted") or not d.get("usage"):
++            return False
++        import listing_scraper as ls
++        job["claude_usage"] = ls.merge_claude_usage(job.get("claude_usage"), d["usage"])
++        d["counted"] = True
++        p.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
++        return True
++    except Exception as e:
++        log.warning(f"[DescribedView] could not add the description cost to the job: {e}")
++        return False
+diff --git a/exp_prompt.py b/exp_prompt.py
+index 216b12f..dce8968 100644
+--- a/exp_prompt.py
++++ b/exp_prompt.py
+@@ -29,20 +29,7 @@ load_dotenv(HERE / ".env")
+ import exp_luma
+ import exp_endframe as ef
+ 
+-POSITIVE_RULES = (
+-    "this is a frozen photograph of an empty, still room: every wall, window, door, curtain, piece of furniture, fixture and decoration keeps exactly the same "
+-    "place, shape, colour, number and state (open or closed) as in the first frame for the whole shot, and the light stays steady, "
+-    "the only thing that moves is the camera, which makes the movement described above smoothly, at a constant slow speed, "
+-    "everything in view at the start stays in view and in place while the parts of the room nearest the edges leave the frame, "
+-    "the shot ends on a view of the same room that contains exactly the same elements as the first frame, "
+-    "every shadow and every reflection stays as in the source photo and the room holds only what the source photo shows"
+-)
+-
+-
+-DESCRIBE_PROMPT = """Image 1 is a photo of a room. Image 2 is the central part of image 1: exactly what will still be in view at the END of a short shot in which the camera glides straight forward.
+-Write the description of image 2 for a video prompt, as 2 plain sentences of at most 70 words in total, in the present tense, beginning "The shot ends on a view of the room showing ...". Mention only the 6 to 8 most prominent fixed elements.
+-Name every fixed element you can clearly see in image 2 (furniture, fixtures, openings, wall features) with its count, its position (left, centre, right; foreground, background) and its state (door closed, window with a curtain or without one, tap count and place...). Describe only what is really visible in image 2: if you are not sure that something is there, leave it out. Positive statements only: say what IS there, never what is absent or must not appear.
+-Answer with JSON only: {"last_view": "..."}"""
++from described_view import POSITIVE_RULES, DESCRIBE_PROMPT   # 2026-11-02: ONE definition, now the production one (was a private copy here)
+ 
+ 
+ def described_rules(photo, scale, job, index, usage):
+diff --git a/maintenance_scheduler.py b/maintenance_scheduler.py
+index efe8cf4..28e16a2 100644
+--- a/maintenance_scheduler.py
++++ b/maintenance_scheduler.py
+@@ -91,12 +91,11 @@ CHECK_INTERVALS = {
+ ALERT_COOLDOWN_MINUTES = 60  # don't re-email more than once/hour for an ongoing issue
+ 
+ # ── Thresholds (tune as needed) ─────────────────────────────────────────────
+-DISK_WARN_PCT             = 80
++DISK_WARN_PCT             = 80   # 2026-11-02: equal to retention_policy.HIGH_PCT (cleanup starts here); kept as its own warn level, see test RT9
+ DISK_RED_PCT              = 90
+ STUCK_JOB_MINUTES         = 45
+ TEST_SCRATCH_WARN_MB      = 500
+ TEST_SCRATCH_MAX_AGE_DAYS = 3
+-JOB_RETENTION_DAYS        = 7
+ FALLBACK_RATE_RED         = 5
+ FALLBACK_LOG_TAIL_LINES   = 5000  # bound scan cost regardless of run frequency
+ 
+@@ -276,7 +275,7 @@ def _diagnostics_headers() -> dict:
+ 
+ 
+ def check_cleanup_ran() -> dict:
+-    """Triggers the server's REAL 7-day auto-cleanup by calling its own
++    """Triggers the server's REAL auto-cleanup (retention_policy: disk-pressure based) by calling its own
+     /diagnostics endpoint over HTTP — that's the only place the deletion
+     logic actually lives, so this reuses it rather than re-implementing
+     deletion in a second place. Re-scans the filesystem afterward to
+@@ -304,36 +303,30 @@ def check_cleanup_ran() -> dict:
+         return {"name": "cleanup_verification", "title": "Old Job Cleanup", "status": "ok",
+                 "summary": "No jobs directory found.", "detail": "no jobs directory", "job_stats": job_stats}
+ 
+-    cutoff = datetime.now() - timedelta(days=JOB_RETENTION_DAYS + 1)
+-    stale = []
+-    for job_dir in JOBS_DIR.iterdir():
+-        if not job_dir.is_dir() or job_dir.name == "_test_scratch":
+-            continue
+-        # BUG FIXED: this used the DIRECTORY mtime, but the real cleanup in
+-        # /diagnostics uses job_meta.json mtime (last real state change).
+-        # The two disagreed: manually correcting a job status rewrites
+-        # job_meta.json (making it recent, so cleanup correctly keeps it)
+-        # while the directory mtime stays old (so this check wrongly flagged
+-        # it forever). Now both use the same signal.
+-        meta = job_dir / "job_meta.json"
+-        try:
+-            if meta.exists():
+-                mtime = datetime.fromtimestamp(meta.stat().st_mtime)
+-            else:
+-                mtime = datetime.fromtimestamp(job_dir.stat().st_mtime)
+-        except Exception:
+-            continue
+-        if mtime < cutoff:
+-            stale.append(job_dir.name)
++    # 2026-11-02: same rule as the cleanup itself (retention_policy): jobs are only "overdue" when the disk is at or above the high-water
++    # mark AND the policy still lists candidates after the cleanup ran. A disk below the mark is not a problem however old the jobs are.
++    import retention_policy
++    try:
++        total, used = retention_policy.disk_usage(JOBS_DIR)
++        pct = round(used / total * 100, 1) if total else 0
++        stale = retention_policy.select_for_eviction(JOBS_DIR)
++    except Exception as e:
++        return {"name": "cleanup_verification", "title": "Old Job Cleanup", "status": "warn",
++                "summary": "Couldn't evaluate the retention policy.", "detail": str(e), "job_stats": job_stats}
+ 
+     if stale:
+-        summary = f"{len(stale)} old job(s) should have been cleaned up but weren't — worth a look."
+-        detail = (f"{len(stale)} job(s) still past retention after triggering cleanup "
++        summary = f"Disk at {pct}% and {len(stale)} old job(s) should have been cleaned up but weren't — worth a look."
++        detail = (f"disk {pct}% (high-water mark {retention_policy.HIGH_PCT:g}%), {len(stale)} job(s) still deletable after triggering cleanup "
+                   f"(diagnostics reported {cleaned_by_diagnostics} cleaned this run): "
+                   f"{', '.join(stale[:5])}{'...' if len(stale) > 5 else ''}")
+         return {"name": "cleanup_verification", "title": "Old Job Cleanup", "status": "red",
+                 "summary": summary, "detail": detail, "job_stats": job_stats}
+ 
++    if not cleaned_by_diagnostics:
++        return {"name": "cleanup_verification", "title": "Old Job Cleanup", "status": "ok",
++                "summary": f"Disk at {pct}%: no cleanup needed (jobs are kept until {retention_policy.HIGH_PCT:g}%).",
++                "detail": f"disk {pct}%", "job_stats": job_stats}
++
+     summary = (f"Cleaned up {cleaned_by_diagnostics} old job(s) automatically." if cleaned_by_diagnostics
+                else "All old jobs are cleaned up — nothing needed removal.")
+     return {"name": "cleanup_verification", "title": "Old Job Cleanup", "status": "ok",
+diff --git a/retention_policy.py b/retention_policy.py
+new file mode 100644
+index 0000000..4ffa342
+--- /dev/null
++++ b/retention_policy.py
+@@ -0,0 +1,98 @@
++"""Retention of old job folders (2026-11-02). ONE place for the rule, used by the cleanup in api_server (/diagnostics) AND by the check in
++maintenance_scheduler, so the two can never disagree again (before: a hard-coded "7 days" lived in both).
++
++Why it changed: every job folder with no activity for 7 days was deleted whatever the free space, and videos that could be reused later
++(GIAL) vanished. Now NOTHING is deleted while the disk is below HIGH_PCT. Above it, the job folders idle for the longest time go first, one by
++one, until the projected usage is back at LOW_PCT. Never touched, whatever the disk says:
++  - a job with "keep": true (the operator's "tieni" button in the library)
++  - a job with activity in the last MIN_AGE_DAYS days
++  - a job that is running or queued
++The folder _test_scratch has its own, separate cleanup (maintenance_scheduler.clean_test_scratch).
++Values are PROPOSALS to revisit when the daily video volume is known; each can be changed with an environment variable without touching code.
++"""
++import os
++import shutil
++from datetime import datetime, timedelta
++from pathlib import Path
++
++
++def _num(name, default):
++    try:
++        return float(os.getenv(name, default))
++    except Exception:
++        return float(default)
++
++
++HIGH_PCT = _num("PVS_RETENTION_HIGH_PCT", 80)       # start deleting only at or above this disk usage
++LOW_PCT = _num("PVS_RETENTION_LOW_PCT", 65)         # stop when the projected usage is back at or below this
++MIN_AGE_DAYS = _num("PVS_RETENTION_MIN_DAYS", 14)   # a job touched more recently than this is never deleted
++BUSY_STATUSES = ("running", "queued")
++
++
++def last_activity(job_dir: Path) -> datetime:
++    """job_meta.json's own mtime (rewritten on every real state change); the folder's mtime when there is no meta (orphan folder)."""
++    meta = Path(job_dir) / "job_meta.json"
++    ts = meta.stat().st_mtime if meta.exists() else Path(job_dir).stat().st_mtime
++    return datetime.utcfromtimestamp(ts)
++
++
++def dir_size_bytes(job_dir: Path) -> int:
++    return sum(f.stat().st_size for f in Path(job_dir).rglob("*") if f.is_file())
++
++
++def disk_usage(path):
++    u = shutil.disk_usage(str(path))
++    return u.total, u.used
++
++
++def is_protected(job_dir: Path, status=None, keep=None, now=None) -> bool:
++    """True = never delete automatically. `keep` and `status` come from the in-memory job when known, else from job_meta.json."""
++    now = now or datetime.utcnow()
++    job_dir = Path(job_dir)
++    if keep is None or status is None:
++        try:
++            import json
++            m = json.load(open(job_dir / "job_meta.json"))
++            keep = m.get("keep") if keep is None else keep
++            status = m.get("status") if status is None else status
++        except Exception:
++            pass
++    if keep:
++        return True
++    if status in BUSY_STATUSES:
++        return True
++    try:
++        return last_activity(job_dir) >= now - timedelta(days=MIN_AGE_DAYS)
++    except Exception:
++        return True          # cannot read it: do not delete it
++
++
++def select_for_eviction(jobs_dir, jobs=None, now=None, usage=None, high=None, low=None):
++    """Job folder NAMES to delete now, oldest activity first. [] while the disk is below `high`.
++    jobs: the in-memory JOBS dict (optional); usage: (total, used) bytes, default the real disk of jobs_dir."""
++    high = HIGH_PCT if high is None else high
++    low = LOW_PCT if low is None else low
++    jobs_dir = Path(jobs_dir)
++    now = now or datetime.utcnow()
++    total, used = usage if usage else disk_usage(jobs_dir)
++    if not total or used / total * 100 < high:
++        return []
++    cands = []
++    for d in jobs_dir.iterdir():
++        if not d.is_dir() or d.name == "_test_scratch":
++            continue
++        j = (jobs or {}).get(d.name) or {}
++        if is_protected(d, status=j.get("status"), keep=j.get("keep"), now=now):
++            continue
++        try:
++            cands.append((last_activity(d), d))
++        except Exception:
++            continue
++    cands.sort(key=lambda t: t[0])
++    chosen, projected = [], used
++    for _, d in cands:
++        if projected / total * 100 <= low:
++            break
++        chosen.append(d.name)
++        projected -= dir_size_bytes(d)
++    return chosen
+diff --git a/test_described_view.py b/test_described_view.py
+new file mode 100644
+index 0000000..95e6624
+--- /dev/null
++++ b/test_described_view.py
+@@ -0,0 +1,102 @@
++"""Positive Luma prompt + described last view (2026-11-02). Zero cost, no network, no key: Claude and the file system are faked.
++Run: python3 test_described_view.py   (numbered PASS/FAIL like the other test files)"""
++import json, os, re, sys, tempfile, types
++from pathlib import Path
++sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
++for name in ("fal_client", "moviepy", "anthropic"):
++    if name not in sys.modules:
++        sys.modules[name] = types.ModuleType(name)
++sys.modules["anthropic"].Anthropic = getattr(sys.modules["anthropic"], "Anthropic", lambda *a, **k: "REAL")
++from PIL import Image
++import described_view as dv
++import video_generation as vg
++import vision_analysis as va
++import listing_scraper as ls
++fails = 0
++def check(n, c, info=""):
++    global fails
++    print(("PASS " if c else "FAIL ") + n + ("" if c else f" -- {info}"))
++    fails += 0 if c else 1
++
++# --- A. the switch and the wording -----------------------------------------------------------------------------------------------------
++os.environ.pop("PVS_POSITIVE_PROMPT", None)
++check("DV1 on by default", dv.enabled())
++for v in ("0", "false", "off", "no"):
++    os.environ["PVS_POSITIVE_PROMPT"] = v
++    if dv.enabled(): check(f"DV2 PVS_POSITIVE_PROMPT={v} turns it off", False)
++os.environ["PVS_POSITIVE_PROMPT"] = "0"
++check("DV2 PVS_POSITIVE_PROMPT=0/false/off/no turns it off", not dv.enabled())
++os.environ.pop("PVS_POSITIVE_PROMPT")
++LV = "The shot ends on a view of the room showing a grey sofa on the left, a round table in the centre and a closed window on the right."
++r = dv.rules_for(LV, "large")
++check("DV3 rules = positive text + the description", r.startswith(dv.POSITIVE_RULES) and r.endswith(LV))
++check("DV4 the positive rules contain no negation list of the old kind", "no people" not in dv.POSITIVE_RULES and "do not invent" not in dv.POSITIVE_RULES and "no warping" not in dv.POSITIVE_RULES)
++check("DV5 open-air scenes: 'room' becomes 'scene' in the rules and in the question to Claude; interiors keep the tested wording",
++      "room" not in dv._scene_words(dv.POSITIVE_RULES, "outdoor") and "room" not in dv._scene_words(dv.DESCRIBE_PROMPT, "elevated")
++      and dv._scene_words(dv.POSITIVE_RULES, "large") == dv.POSITIVE_RULES)
++check("DV6 crop scale: forward movements 1.3, the rest 1.1; the scale follows the REMAPPED movement (portrait gentle -> forward)",
++      dv.crop_scale("walk_in_explore") == 1.3 and dv.crop_scale("subtle_rotate") == 1.1 and dv.crop_scale(vg._remap_movement("walk_in_gentle", "portrait")) == 1.3
++      and dv.crop_scale(vg._remap_movement("walk_in_gentle", "landscape")) == 1.1 and vg._remap_movement("stand_look_around", "landscape") == "walk_in_explore")
++
++# --- B. the prompt ----------------------------------------------------------------------------------------------------------------------
++bad = []
++for tier in ("eco", "standard", "premium", "luma"):
++    for mv in list(vg._LUMA_MOVEMENT_TOKENS) + ["unknown"]:
++        for fmt in ("landscape", "portrait"):
++            a = vg.assemble_pov_prompt("large", mv, "bright_natural", "natural_pace", tier, fmt, "none")
++            b = vg.assemble_pov_prompt("large", mv, "bright_natural", "natural_pace", tier, fmt, "none", "", "center", "", "")
++            if a != b: bad.append((tier, mv, fmt))
++check("DV7 without a description every prompt of every tier/movement/format is unchanged (empty last_view = old rules)", not bad, bad[:3])
++old = vg.assemble_pov_prompt("large", "walk_in_explore", "bright_natural", "natural_pace", "luma", "landscape")
++new = vg.assemble_pov_prompt("large", "walk_in_explore", "bright_natural", "natural_pace", "luma", "landscape", "none", "", "center", "", LV)
++check("DV8 with a description: same movement token and pace, the old rules are replaced by the positive text + description",
++      new == f"{vg._LUMA_MOVEMENT_TOKENS['walk_in_explore']}, {vg._LUMA_INTENSITY_SUFFIX['natural_pace']}, {dv.rules_for(LV, 'large')}" and vg._LUMA_RULES in old and vg._LUMA_RULES not in new)
++check("DV9 a description is ignored by the other models", all(vg.assemble_pov_prompt("large", "walk_in_explore", "bright_natural", "natural_pace", t, "landscape", "none", "", "center", "", LV) == vg.assemble_pov_prompt("large", "walk_in_explore", "bright_natural", "natural_pace", t, "landscape") for t in ("eco", "standard", "premium")))
++mir = vg.assemble_pov_prompt("large", "walk_in_explore", "bright_natural", "natural_pace", "luma", "landscape", "large", "", "center", "", LV)
++check("DV10 the mirror/glass rule and the portrait anti-drift text still get added after the positive rules", mir.endswith(vg._LUMA_MIRROR_RULE) and
++      vg.assemble_pov_prompt("large", "walk_in_explore", "bright_natural", "natural_pace", "luma", "portrait", "none", "", "center", "", LV).endswith("field of view stays fixed and centered throughout the shot"))
++
++# --- C. the description ----------------------------------------------------------------------------------------------------------------
++tmp = Path(tempfile.mkdtemp())
++photo = tmp / "p.jpg"; Image.new("RGB", (640, 360), (120, 110, 100)).save(photo)
++clip = tmp / "scene_000.mp4"
++seen = {}
++def fake_call(paths, prompt, max_tokens=250, model=None, usage_out=None):
++    seen.update(paths=list(paths), prompt=prompt, model=model)
++    sizes = [Image.open(p).size for p in paths]; seen["sizes"] = sizes
++    usage_out.update(ls.merge_claude_usage(usage_out, {"input_tokens": 1000, "output_tokens": 100, "calls": 1, "cost_eur": 0.0123}))
++    return 'sure {"last_view": "' + LV + '"}'
++va._claude_vision_call = fake_call
++out = dv.describe(photo, "walk_in_explore", "large", clip)
++check("DV11 returns Claude's sentence; the crop (1/1.3 of the photo, centred) is sent as image 2 with the whole photo as image 1",
++      out == LV and seen["sizes"][0] == (640, 360) and seen["sizes"][1] == (round(640 / 1.3), round(360 / 1.3)) and seen["model"] == va.CLIP_QC_MODEL, seen.get("sizes"))
++check("DV12 the temporary crop is deleted; nothing but the note is written next to the clip", not Path(seen["paths"][1]).exists() and sorted(p.name for p in tmp.iterdir()) == ["p.jpg", "scene_000.mp4.view.json"])
++note = json.loads(dv.sidecar_path(clip).read_text())
++check("DV13 the note keeps the sentence, scale, movement and the REAL usage, not yet counted", note["used"] and note["last_view"] == LV and note["scale"] == 1.3 and note["usage"]["cost_eur"] == 0.0123 and note["counted"] is False)
++job = {"claude_usage": {"input_tokens": 5, "output_tokens": 5, "calls": 1, "cost_eur": 0.5}}
++check("DV14 the cost is added to the job once", dv.merge_usage_into_job(job, clip) and abs(job["claude_usage"]["cost_eur"] - 0.5123) < 1e-9 and job["claude_usage"]["calls"] == 2)
++check("DV15 a second call does not count it again", not dv.merge_usage_into_job(job, clip) and abs(job["claude_usage"]["cost_eur"] - 0.5123) < 1e-9)
++dv.describe(photo, "walk_in_explore", "large", clip)
++check("DV16 a new generation of the same clip writes a fresh note that is counted again (rework)", dv.merge_usage_into_job(job, clip) and abs(job["claude_usage"]["cost_eur"] - 0.5246) < 1e-9)
++# failures -> '' (old rules), never an exception
++for label, fn in (("no answer", lambda *a, **k: None), ("not JSON", lambda *a, **k: "blah"), ("empty sentence", lambda *a, **k: '{"last_view": ""}'),
++                  ("too long", lambda *a, **k: '{"last_view": "' + "x" * 800 + '"}'), ("exception", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))):
++    va._claude_vision_call = fn
++    check(f"DV17 {label}: '' returned, no exception", dv.describe(photo, "walk_in_explore", "large", tmp / "x.mp4") == "")
++va._claude_vision_call = fake_call
++dv.note_prompt(clip, "PROMPT", True)
++n2 = json.loads(dv.sidecar_path(clip).read_text())
++check("DV18 the exact Luma prompt is kept next to the clip and keeps the description", n2["prompt"] == "PROMPT" and n2["positive_prompt"] is True and n2["last_view"] == LV)
++dv.note_prompt(clip, "OLD", False)
++n3 = json.loads(dv.sidecar_path(clip).read_text())
++check("DV19 old-rules generation replaces the previous note (no stale description)", n3 == {"prompt": "OLD", "positive_prompt": False})
++
++# --- D. wiring: one call site, Luma only, both generation paths add the cost -------------------------------------------------------------
++vsrc = open("video_generation.py").read(); asrc = open("api_server.py").read()
++check("DV20 one description call site, Luma only, behind the switch", vsrc.count("described_view.describe(") == 1 and 'if model_tier == "luma":\n            import described_view\n            if described_view.enabled():' in vsrc)
++check("DV21 the pipeline AND the rework runner both add the described-view cost to the job", asrc.count("merge_usage_into_job") == 2)
++check("DV22 the movement remap exists once and assemble_pov_prompt uses it", vsrc.count("def _remap_movement") == 1 and "pov_movement = _remap_movement(pov_movement, output_format)" in vsrc and vsrc.count("stand_look_around remap") == 1)
++check("DV23 the positive text is defined once (exp_prompt imports it)", sum(open(f).read().count("this is a frozen photograph of an empty, still room") for f in ("described_view.py", "exp_prompt.py", "video_generation.py", "exp_luma.py")) == 1)
++check("DV24 the old rules are untouched (fall-back)", "no people, no human shadows or silhouettes" in vsrc and vsrc.count("no human shadows") == 1)
++print("ALL PASS" if not fails else f"{fails} FAIL")
++sys.exit(1 if fails else 0)
+diff --git a/test_retention_policy.py b/test_retention_policy.py
+new file mode 100644
+index 0000000..cbc46e4
+--- /dev/null
++++ b/test_retention_policy.py
+@@ -0,0 +1,59 @@
++"""Retention policy (2026-11-02). Numbered PASS/FAIL, same format as the other test files. Run: python3 test_retention_policy.py
++Everything happens in a temporary folder; no real job is touched, nothing is deleted by this test (it only asks the policy WHICH folders it would delete)."""
++import json, os, re, sys, tempfile, time
++from datetime import datetime, timedelta
++from pathlib import Path
++import retention_policy as rp
++fails = 0
++def check(n, c):
++    global fails
++    print("PASS" if c else "FAIL", n)
++    fails += 0 if c else 1
++
++GB = 1024 ** 3
++NOW = datetime.utcnow()
++tmp = Path(tempfile.mkdtemp())
++
++def mk(name, age_days, size_mb=1, status="done", keep=None):
++    d = tmp / name
++    d.mkdir()
++    (d / "clip.mp4").write_bytes(b"x" * 1024)           # real size is irrelevant: sizes are injected below
++    meta = {"status": status}
++    if keep is not None:
++        meta["keep"] = keep
++    mp = d / "job_meta.json"
++    mp.write_text(json.dumps(meta))
++    t = (NOW - timedelta(days=age_days)).timestamp()
++    os.utime(mp, (t, t))
++    return d
++
++mk("old30", 30); mk("old20", 20); mk("old16", 16); mk("recent10", 10); mk("kept40", 40, keep=True); mk("busy50", 50, status="running")
++(tmp / "_test_scratch").mkdir(); (tmp / "_test_scratch" / "f").write_bytes(b"x")
++# every folder "weighs" 10 GB for the projection (dir_size_bytes is replaced), disk = 100 GB
++rp.dir_size_bytes = lambda d: 10 * GB
++
++# RT1 disk below the high-water mark: nothing is selected, however old the jobs are
++check("RT1 disk at 79%: nothing deleted even with 40-50 day old jobs", rp.select_for_eviction(tmp, usage=(100 * GB, 79 * GB), now=NOW) == [])
++# RT2 above: oldest first, only unprotected, stops at LOW (65): from 85 GB, three folders of 10 GB bring it to 55 <= 65 after 2 (85->75->65)
++sel = rp.select_for_eviction(tmp, usage=(100 * GB, 85 * GB), now=NOW)
++check("RT2 disk at 85%: the idlest unprotected first, and it stops as soon as the projection reaches 65%", sel == ["old30", "old20"])
++check("RT3 a kept job, a running job, a job younger than 14 days and _test_scratch are never selected",
++      not {"kept40", "busy50", "recent10", "_test_scratch"} & set(rp.select_for_eviction(tmp, usage=(100 * GB, 99 * GB), now=NOW)))
++all_sel = rp.select_for_eviction(tmp, usage=(100 * GB, 99 * GB), now=NOW)
++check("RT4 under heavy pressure still only the 3 old unprotected ones, oldest first", all_sel == ["old30", "old20", "old16"])
++check("RT5 exactly at the high-water mark (80%) the cleanup starts", rp.select_for_eviction(tmp, usage=(100 * GB, 80 * GB), now=NOW) != [])
++# RT6 in-memory flags win: a job whose meta says nothing but whose JOBS entry has keep
++check("RT6 keep from the in-memory job is honoured", "old30" not in rp.select_for_eviction(tmp, jobs={"old30": {"keep": True, "status": "done"}}, usage=(100 * GB, 99 * GB), now=NOW))
++# RT7 orphan folder (no job_meta.json): folder mtime decides
++o = tmp / "orphan"; o.mkdir(); t = (NOW - timedelta(days=60)).timestamp(); os.utime(o, (t, t))
++check("RT7 an old orphan folder without job_meta.json is a candidate, oldest of all", rp.select_for_eviction(tmp, usage=(100 * GB, 99 * GB), now=NOW)[0] == "orphan")
++# RT8 wiring: ONE rule, no leftover 7-day constant in either caller
++api = open("api_server.py").read(); ms = open("maintenance_scheduler.py").read()
++check("RT8 api_server and maintenance_scheduler both use retention_policy; no 7-day cutoff left", "retention_policy" in api and "retention_policy" in ms and "timedelta(days=7)" not in api and "JOB_RETENTION_DAYS" not in ms)
++check("RT9 the scheduler's disk warn level equals the cleanup's high-water mark", re.search(r"DISK_WARN_PCT\s*=\s*(\d+)", ms).group(1) == str(int(rp.HIGH_PCT)))
++check("RT10 'keep' endpoint exists, is saved with the job, and is listed", '@app.post("/jobs/{job_id}/keep")' in api and 'JOBS[job_id]["keep"] = bool(keep)' in api and '"keep":         bool(job.get("keep"))' in api)
++ui = open("ui.html").read()
++check("RT11 the library has the Tieni/Tenuto button wired to the endpoint", "setJobKeep" in ui and "'/jobs/' + jobId + '/keep'" in ui)
++check("RT12 the cleanup loop deletes only folders chosen by the policy", "if job_dir.name in _evict:" in api)
++print("ALL PASS" if not fails else f"{fails} FAIL")
++sys.exit(1 if fails else 0)
+diff --git a/ui.html b/ui.html
+index 9c303d1..0f10fac 100644
+--- a/ui.html
++++ b/ui.html
+@@ -994,12 +994,13 @@ async function loadLibrary() {
+         : '';
+       const loadBtn = `<button class="lib-btn" onclick="loadJobIntoUI('${j.job_id}')">Apri</button>`;
+       const resumeBtn = (j.status === 'interrupted' || j.status === 'stopped') ? `<button class="lib-btn lib-primary" onclick="resumeInterruptedJob('${j.job_id}')">Riprendi</button>` : '';
++      const keepBtn = `<button class="lib-btn" title="${j.keep ? 'Protetto dalla pulizia automatica: clicca per togliere' : 'Proteggi dalla pulizia automatica'}" onclick="setJobKeep('${j.job_id}', ${j.keep ? 'false' : 'true'})">${j.keep ? '📌 Tenuto' : '📌 Tieni'}</button>`;
+       return `<div class="lib-job ${st.cls}" style="margin-left:16px">
+         <div class="lib-info">
+           <div class="lib-name">${st.icon} ${date}</div>
+           <div class="lib-meta">${tier} · ${scenes} · ${j.job_id}</div>
+         </div>
+-        <div class="lib-actions">${dlBtn}${loadBtn}${resumeBtn}</div>
++        <div class="lib-actions">${dlBtn}${loadBtn}${resumeBtn}${keepBtn}</div>
+       </div>`;
+     }
+ 
+@@ -1057,6 +1058,16 @@ async function resolveNeedsOperator(jobId) {
+ }
+ 
+ 
++async function setJobKeep(jobId, keep) {
++  try {
++    const fd = new FormData(); fd.append('keep', keep ? 'true' : 'false');
++    const r = await authFetch('/jobs/' + jobId + '/keep', { method: 'POST', body: fd });
++    if (!r.ok) { let d = ''; try { d = (await r.json()).detail || ''; } catch (e) {} throw new Error(d || ('HTTP ' + r.status)); }
++    loadLibrary();
++  } catch (e) { showError('Operazione non riuscita: ' + e.message); }
++}
++
++
+ async function resumeInterruptedJob(jobId) {
+   if (!confirm('Riprendere questo job? Le scene gia pronte vengono riusate; quelle mancanti vengono generate e pagate di nuovo.')) return;
+   try {
+diff --git a/video_generation.py b/video_generation.py
+index cbb3ab2..2699907 100644
+--- a/video_generation.py
++++ b/video_generation.py
+@@ -408,6 +408,26 @@ _LYRA_LIGHTING = {
+ }
+ 
+ 
++def _remap_movement(pov_movement: str, output_format: str) -> str:
++    """2026-11-02: the movement remaps that assemble_pov_prompt always applied (stand_look_around everywhere; lateral/turning -> forward in
++    portrait), extracted unchanged so the described last view (described_view) crops for the SAME movement the prompt really uses."""
++    if pov_movement == "stand_look_around":
++        log.info("[VideoGen] stand_look_around remap (all formats, confirmed broken): -> walk_in_explore")
++        pov_movement = "walk_in_explore"
++
++    _PORTRAIT_REMAPS = {
++        "walk_in_gentle":     "walk_in_explore",  # lateral tracking -> forward dolly
++        "walk_in_turn_left":  "walk_in_explore",  # left pivot -> forward dolly
++        "walk_in_turn_right": "walk_in_explore",  # right pivot -> forward dolly
++        "step_out_onto":      "walk_toward",      # widest pan of any movement (40/60 deg) -> forward approach, exterior-appropriate
++    }
++    if output_format == "portrait" and pov_movement in _PORTRAIT_REMAPS:
++        _original_movement = pov_movement
++        pov_movement = _PORTRAIT_REMAPS[pov_movement]
++        log.info(f"[VideoGen] Portrait remap: {_original_movement} -> {pov_movement}")
++    return pov_movement
++
++
+ def assemble_pov_prompt(
+     space_type:   str,
+     pov_movement: str,
+@@ -419,6 +439,7 @@ def assemble_pov_prompt(
+     anchor:       str = "",             # 2026-10-27: the thing to push in toward (camera_plan; only the Luma prompt, only with PVS_ANCHOR=1)
+     anchor_side:  str = "center",
+     depth:        str = "",
++    last_view:    str = "",           # 2026-11-02: described_view: Claude's description of the expected last frame; when given the POSITIVE rules replace _LUMA_RULES (Luma only)
+ ) -> str:
+     """
+     Assembles a model-specific prompt from structured token dictionaries.
+@@ -442,20 +463,7 @@ def assemble_pov_prompt(
+     # 2026-07-27: confirmed by the user to be broken in ANY orientation,
+     # not just portrait -- unconditional remap, applied before the
+     # portrait-specific checks below, regardless of output_format.
+-    if pov_movement == "stand_look_around":
+-        log.info("[VideoGen] stand_look_around remap (all formats, confirmed broken): -> walk_in_explore")
+-        pov_movement = "walk_in_explore"
+-
+-    _PORTRAIT_REMAPS = {
+-        "walk_in_gentle":     "walk_in_explore",  # lateral tracking -> forward dolly
+-        "walk_in_turn_left":  "walk_in_explore",  # left pivot -> forward dolly
+-        "walk_in_turn_right": "walk_in_explore",  # right pivot -> forward dolly
+-        "step_out_onto":      "walk_toward",      # widest pan of any movement (40/60 deg) -> forward approach, exterior-appropriate
+-    }
+-    if output_format == "portrait" and pov_movement in _PORTRAIT_REMAPS:
+-        _original_movement = pov_movement
+-        pov_movement = _PORTRAIT_REMAPS[pov_movement]
+-        log.info(f"[VideoGen] Portrait remap: {_original_movement} -> {pov_movement}")
++    pov_movement = _remap_movement(pov_movement, output_format)
+     _PORTRAIT_ANTI_DRIFT = (
+         ", camera moves strictly along a single forward axis, no lateral drift, "
+         "no panning, no pivoting -- field of view stays fixed and centered "
+@@ -473,6 +481,9 @@ def assemble_pov_prompt(
+         motion = _LUMA_MOVEMENT_TOKENS.get(pov_movement, _LUMA_MOVEMENT_TOKENS["walk_in_explore"])
+         pace   = _LUMA_INTENSITY_SUFFIX.get(intensity, _LUMA_INTENSITY_SUFFIX["natural_pace"])
+         rules  = _LUMA_RULES
++        if last_view:
++            import described_view
++            rules = described_view.rules_for(last_view, space_type)
+         # 2026-10-27: camera direction toward an anchor (camera_plan). Only the straight forward movements, only when the analysis named a
+         # safe anchor, and never together with the mirror / glass rule (its "never move toward glass" would contradict a glass-door anchor).
+         if anchor and pov_movement in camera_plan.PRODUCTION_ANCHOR_MOVEMENTS and reflective_surface not in ("small", "large"):
+@@ -1011,10 +1022,19 @@ def generate_video_single(
+             return download_video(sample, output_path)
+ 
+         # ── Assemble structured prompt ─────────────────────────────────────
++        # 2026-11-02: positive Luma rules + Claude's description of the expected last frame (described_view), the standard for Luma clips;
++        # PVS_POSITIVE_PROMPT=0 or any failure of the description keeps the old rules. ONE call site: first generation AND rework come through here.
++        last_view = ""
++        if model_tier == "luma":
++            import described_view
++            if described_view.enabled():
++                last_view = described_view.describe(image_path, _remap_movement(pov_movement, output_format), space_type, output_path)
+         final_prompt = assemble_pov_prompt(
+             space_type, pov_movement, lighting, intensity, model_tier, output_format, reflective_surface,
+-            anchor, anchor_side, depth,
++            anchor, anchor_side, depth, last_view,
+         )
++        if model_tier == "luma":
++            described_view.note_prompt(output_path, final_prompt, bool(last_view))
+         log.info(f"[VideoGen] Prompt: {final_prompt[:120]}...")
+ 
+         # ── Image preparation ──────────────────────────────────────────────
