@@ -10,7 +10,7 @@ Two independent readings of the same clip:
       (ghost curtain, extra tap, bending door / radiator) while ignoring what merely leaves the frame or gets bigger by approaching.
 It only reports numbers and findings: no pass/fail thresholds are proposed here until they are checked against clips with known defects.
 
-  python3 exp_clipeval.py [--claude] LABEL=path.mp4 [LABEL=path.mp4 ...]
+  python3 exp_clipeval.py [--claude] [--frames 12] LABEL=path.mp4 [LABEL=path.mp4 ...]
 Key frames are saved in jobs/_test_scratch (never inside a job).
 """
 import argparse
@@ -28,9 +28,9 @@ import exp_endframe as ef
 STEP_S = 0.25
 WORK_W = 480
 
-CONTENT_PROMPT = """These {n} frames are in time order from a 5 second real-estate clip. The camera moves slowly forward; the room itself must stay completely STILL, with nothing appearing, disappearing, moving, animating or changing shape. Compare every frame with frame 1.
+CONTENT_PROMPT = """These {n} frames are in time order from a 5 second real-estate clip. The camera moves slowly forward; the room itself must stay completely STILL, with nothing appearing, disappearing, moving, animating or changing shape. First list, from frame 1, the main fixtures and objects with their COUNT and position (for example "bath: 2 taps on the left", "radiator under the window", "door ajar on the right"). Then check every later frame against that inventory: count, shape, position relative to the room, and state of every item.
 Report only real problems: elements that APPEAR (not just come into view at the edges), DISAPPEAR, MOVE or ANIMATE (curtains waving or falling into place, water, fabric, people, lights, steam), CHANGE (a second tap, a different object, a door or window opening or closing), or DEFORM (door, window frame, radiator, fixture, furniture bending, melting or stretching differently from the room). Do NOT report things that merely leave the frame at the edges or get bigger because the camera comes closer.
-Answer with JSON only: {{"static_scene_ok": true, "events": [{{"frames": "3-5", "what": "short description"}}], "deformations": [{{"frames": "5-6", "what": "short description"}}], "verdict": "pass", "reasons": ["short sentence"]}}
+Answer with JSON only: {{"inventory": ["item and count"], "static_scene_ok": true, "events": [{{"frames": "3-5", "what": "short description"}}], "deformations": [{{"frames": "5-6", "what": "short description"}}], "verdict": "pass", "reasons": ["short sentence"]}}
 verdict is "pass" only when events and deformations are both empty."""
 
 
@@ -96,6 +96,7 @@ def summarise(frames, fps):
 
 
 def keyframes(path, label, n=6):
+    n = max(2, int(n))
     cap = cv2.VideoCapture(str(path))
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     out = []
@@ -110,16 +111,17 @@ def keyframes(path, label, n=6):
     return out
 
 
-def content(path, label, usage):
+def content(path, label, usage, n=6):
     import exp_director as dr
-    ks = keyframes(path, label)
+    ks = keyframes(path, label, n)
     return dr.ask_claude(CONTENT_PROMPT.format(n=len(ks)), ks, usage), ks
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("clips", nargs="+", help="LABEL=path.mp4")
-    ap.add_argument("--claude", action="store_true", help="also ask Claude about the content of 6 key frames (cents)")
+    ap.add_argument("--claude", action="store_true", help="also ask Claude about the content of the key frames (cents)")
+    ap.add_argument("--frames", type=int, default=6, help="number of key frames for the content check (more frames = fewer missed changes, more cost)")
     a = ap.parse_args()
     ef.OUT_DIR.mkdir(parents=True, exist_ok=True)
     usage = {}
@@ -140,7 +142,7 @@ def main():
                   f"drift std x {m['drift_x_std_px_s']} y {m['drift_y_std_px_s']} px/s | zoom/s {m['zoom_rate_mean_per_s']} | by interval {m['zoom_rate_by_interval']}")
         if a.claude:
             try:
-                q, ks = content(path, label, usage)
+                q, ks = content(path, label, usage, a.frames)
                 print(f"{'':28s} CONTENT verdict {q.get('verdict')} | events {q.get('events')} | deformations {q.get('deformations')} | {q.get('reasons')}")
                 print(f"{'':28s} key frames: {ef.PUBLIC + ks[0].name} ... {ef.PUBLIC + ks[-1].name}")
             except Exception as e:
