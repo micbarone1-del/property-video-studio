@@ -237,5 +237,11 @@ LANG[:] = ['{"errors": [{"wrong": "Terraza", "fix": "Terrazza"}]}']
 o = run(["Terraza e giardino completano la proprieta."], [(28.5, {})], seq=None)
 check("O27 single-text path: the Italian check replaces the wrong word in the text (no sequence -> single text)", o["narration_mode"] == "single_text" and o["narration_text"].startswith("Terrazza e giardino"), o.get("narration_text"))
 
+# --- 2026-11-02: generic filler is sent back (job 4c34217d narration) ---
+import scene_script as _ss2
+_g = _ss2.generic_problems(["Gli spazi architettonici interessanti colpiscono.", "I servizi igienici funzionali e ben posizionati.", "Travi in legno a vista e doppia altezza."])
+check("GN1 filler phrases from the 4c34217d narration are rejected, a concrete block is not", len(_g) == 2 and "block 1" in _g[0] and "block 2" in _g[1])
+check("GN2 the prompt asks for one concrete distinctive fact per sentence", "SPECIFIC, NOT GENERIC" in _ss2.build_blocks_prompt("x", "y", "Gial", ["a"] * 6, ["exterior", "living", "kitchen", "bedrooms", "bathrooms", "outdoor"]))
+
 print(f"RESULT: {'ALL PASS' if not fails else 'FAILURES: ' + ', '.join(fails)} ({total - len(fails)}/{total})")
 sys.exit(1 if fails else 0)

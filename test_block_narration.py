@@ -73,7 +73,7 @@ check("B4 bedrooms named over the kitchen scene (order swapped) is rejected, bot
 bad = list(GOOD); bad[2] = "Il giardino è di 3000 metri quadri. I 4 bagni sono curati nei dettagli, contatta Coldwell Banker."
 pr = ss.validate_blocks(bad, DESC, AG, PRICE, split_fn=SPLIT, scene_sequence=SEQ)
 check("B5 garden before bathrooms (as in the real draft) is rejected", len([x for x in pr if "block 3" in x]) >= 2, pr)
-gen = list(GOOD); gen[1] = "Gli ambienti sono ben distribuiti e luminosi. Ci sono 5 camere da letto, tutte molto luminose."
+gen = list(GOOD); gen[1] = "Gli ambienti sono luminosi e silenziosi. Ci sono 5 camere da letto, tutte molto luminose."
 pr = ss.validate_blocks(gen, DESC, AG, PRICE, split_fn=SPLIT, scene_sequence=SEQ)
 check("B6 a GENERAL sentence over the kitchen scene is accepted (Michele 2026-10-25: only a wrong room name is not)", pr == [], pr)
 four = list(GOOD); four[2] = "I 4 bagni sono curati nei dettagli. Il giardino è di 3000 metri quadri, contatta Coldwell Banker."

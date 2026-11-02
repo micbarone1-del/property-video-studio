@@ -596,6 +596,27 @@ def block_scene_groups(scene_sequence: list, per_block: int = 2) -> list:
     return [list(scene_sequence[i:i + per_block]) for i in range(0, len(scene_sequence), per_block)]
 
 
+# 2026-11-02 (Michele, job 4c34217d): the narration was generic ("spazi architettonici interessanti", "servizi igienici funzionali e ben posizionati")
+# while the listing had concrete details (travi in legno a vista, doppia altezza, bagno finestrato, mansarda, palazzina d'epoca). Stems/phrases of
+# filler that say nothing about THIS property: a block containing one is sent back to the model with the reason.
+GENERIC_PHRASES = ("spazi architettonici", "architettonici interessanti", "ben posizionat", "ben distribuit", "servizi igienici", "funzionali e",
+                   "spazi funzionali", "ambienti funzionali", "ambienti interessanti", "spazi interessanti", "soluzione ideale", "ideale per",
+                   "per ogni esigenza", "ogni comfort", "tutti i comfort", "ambiente accogliente", "atmosfera accogliente", "dettagli di pregio")
+
+
+def generic_problems(blocks: list) -> list:
+    """Problems for filler phrases that fit any apartment (empty = none)."""
+    import re as _re
+    out = []
+    for b, text in enumerate(blocks or []):
+        low = _re.sub(r"\s+", " ", str(text).lower())
+        hit = [g for g in GENERIC_PHRASES if g in low]
+        if hit:
+            out.append(f"block {b + 1} uses generic filler ({', '.join(repr(h) for h in hit)}) that fits any apartment: replace it with a concrete fact "
+                       f"from the listing text (a named feature: for example exposed wooden beams, double height, a bathroom with a window, an attic, the period building, a balcony, the number of levels)")
+    return out
+
+
 def build_blocks_prompt(description: str, address: str, agency_name: str, labels: list, scene_sequence: list) -> str:
     """labels: the Italian name of what each of the 6 scenes shows, in video order. The text comes back as 3 blocks of 2 sentences;
     sentence k of a block is heard while scene k of that block is shown (Patch R)."""
@@ -634,6 +655,7 @@ CONTENT:
 - Block 1, sentence 1: the agency presenting the property ("{agency_name or "L'agenzia"} presenta ..."), saying clearly "in vendita" or "in affitto" (as the listing says; if the listing says neither sale nor rent, say neither) and the zone. Short. Sentence 2: the most important general fact (size, property type...).
 - Blocks 2 and 3: one short sentence per scene as listed above. A sentence over a room's scene may be about that room (a real fact or benefit from the listing: light, size, equipment, number of rooms) or a general sentence about the property. Name AT MOST {MAX_ROOMS_NAMED} rooms in the whole narration, only the real highlights, and a room name is ONLY allowed in the sentence heard over that room's scene (the word is checked against the audio).
 - The closing is NOT a separate sentence: sentence 2 of block 3 (heard over scene 6) states the fact about that scene and ends with a short invitation to contact {agency_name or 'the agency'} by name, joined in the SAME sentence with a comma or a colon (shape: "<outdoor fact>, contatta {agency_it}."). The invitation never mentions a visit.
+- SPECIFIC, NOT GENERIC (important): before writing, pick from the listing text the most DISTINCTIVE concrete features of this property (architecture and character such as exposed wooden beams, double-height ceilings, a bathroom with a window, an attic, a period building, number of levels, balcony, terrace, view, orientation, renovation, large windows) and spend them one per sentence, the most striking first. Every sentence after the introduction must carry at least one such concrete fact. NEVER use filler that would fit any apartment ("spazi architettonici interessanti", "servizi igienici funzionali e ben posizionati", "ambienti funzionali", "soluzione ideale"): if you cannot name a concrete fact for a sentence, shorten it to a plain fact such as the size or the number of rooms. Property-level facts (a period building, double height, an attic, the number of levels) are allowed in any sentence; only a specific ROOM is tied to its scene.
 - Never name a room twice. Never talk about a room in a sentence that is heard over a different room.
 - Objective positive adjectives are welcome (for example luminoso, ampio, funzionale, curato, silenzioso, panoramico) when the listing text supports them. Never invent a quality.
 
@@ -705,6 +727,7 @@ def validate_blocks(blocks: list, description: str, agency_name: str = None, pri
         if n < BLOCK_MIN_WORDS or n > BLOCK_MAX_WORDS:
             problems.append(f"block {b + 1} has {n} words: it must have about {BLOCK_TARGET_WORDS} (never fewer than {BLOCK_MIN_WORDS} or more than {BLOCK_MAX_WORDS})")
     problems.extend(validate_free_text(" ".join(blocks), [], description, agency_name, price, split_fn=split_fn, check_timing=False))
+    problems.extend(generic_problems(blocks))
     if scene_sequence and split_fn:
         total_named = 0
         for b, text in enumerate(blocks):
