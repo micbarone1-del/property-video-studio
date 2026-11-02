@@ -46,6 +46,13 @@ check("G10 a failed test job and another agency's job were not copied", not (P /
 snap = {p: p.read_bytes() for p in P.rglob("*") if p.is_file()}
 rc2 = gc.run(P, T, prod_ag, test_ag, "useful", True, cm.create_property, out=lambda *a: None)
 check("G11 running it again changes nothing (idempotent)", rc2 == 0 and snap == {p: p.read_bytes() for p in P.rglob("*") if p.is_file()} and len(cm.list_properties()) == 4)
+# G13 --only: exactly the named test jobs are copied; other test drafts stay out of production and untouched
+P2, T2 = tmp / "prodjobs2", tmp / "testjobs2"; P2.mkdir(); T2.mkdir()
+mk(P2, "pjX", "ag_other", "done"); mk(T2, "tjA", "ag_t0", "draft", "Ricevuto da Relinx (external_ref=T-1310-aa)"); mk(T2, "tjB", "ag_t1", "draft", "Ricevuto da Relinx (external_ref=T-1272-bb)")
+rc3 = gc.run(P2, T2, prod_ag, test_ag, "all", True, cm.create_property, keep_test=False, out=lambda *a: None, only={"tjA"})
+check("G13 --only copies the named job (production agency, keep) and nothing else; other drafts and other production jobs untouched",
+      rc3 == 0 and json.loads((P2 / "tjA" / "job_meta.json").read_text())["keep"] is True and not (P2 / "tjB").exists()
+      and "keep" not in json.loads((T2 / "tjB" / "job_meta.json").read_text()) and json.loads((P2 / "pjX" / "job_meta.json").read_text())["agency_id"] == "ag_other")
 src = open("gial_consolidate.py").read()
 check("G12 the script contains no delete call at all", not any(w in src for w in ("rmtree", ".unlink", "os.remove", "os.rmdir", "rm -")))
 print("ALL PASS" if not fails else f"{fails} FAIL"); sys.exit(1 if fails else 0)

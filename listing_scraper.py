@@ -834,26 +834,32 @@ def _is_hall_photo(image_url: str, fallback_url: str = None) -> tuple:
     return word == "hall", ok
 
 
-# 2026-11-02 (Michele, job 4c34217d): a drone / aerial photo labelled "exterior" became the opening scene and the video model invented a street-level
-# zoom; aerial views also often show a local landmark (Teatro Marcello) instead of the property. Until the camera work for them is solved they stay out
-# of the selection, unless the agency's own caption says the picture shows the property.
-_VISION_AERIAL_PROMPT = (
-    "Look at this real estate photo. Was it taken FROM THE AIR (a drone or aerial view looking down on roofs, streets or land from high above, "
-    "a satellite image or a map), as opposed to a photo taken by a person standing on the ground, on a balcony or at a window?\n"
-    "Answer with ONLY one word: aerial or ground."
+# 2026-11-02 (Michele): only REAL photos go in the video, and no aerial view unless the agency says it shows the property.
+#   - job 4c34217d: a drone / aerial photo labelled "exterior" became the opening scene and the video model invented a street-level zoom; aerial views
+#     also often show a local landmark (Teatro Marcello) instead of the property.
+#   - job 50472245 (GIAL 1272, new building): scenes 0 and 1 were ILLUSTRATIONS / renders; animated they turned into cartoons, and scene 0 hallucinated.
+# ONE question per photo (one extra Claude call): photo | aerial | illustration.
+_VISION_SOURCE_PROMPT = (
+    "Look at this real estate image. What kind of picture is it?\n"
+    "- photo: a real photograph taken by a person on the ground, inside, on a balcony or at a window.\n"
+    "- aerial: a real photograph taken FROM THE AIR (drone or aerial view looking down on roofs, streets or land from high above), a satellite image or a map.\n"
+    "- illustration: a drawing, an architectural render, a CGI image, a 3D visualisation or a sketch (even if it looks realistic, with perfect colours, "
+    "people drawn as silhouettes or a computer-generated sky and plants).\n"
+    "Answer with ONLY one word: photo, aerial or illustration."
 )
 AERIAL_PROPERTY_CAPTION_WORDS = ("facciata", "prospetto", "immobile", "la proprieta", "la proprietà", "l'edificio", "palazzina", "villa", "la casa")
+MAX_SOURCE_CHECK = 30
 
 
 def aerial_filter_enabled() -> bool:
-    """PVS_AERIAL_FILTER=0 turns the aerial exclusion off (default on)."""
+    """PVS_AERIAL_FILTER=0 turns the aerial / illustration exclusion off (default on)."""
     return os.getenv("PVS_AERIAL_FILTER", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
-def _is_aerial_photo(image_url: str, fallback_url: str = None) -> tuple:
-    """(is_aerial, ok). ok False = the call failed, callers keep the photo."""
-    word, ok = _vision_one_word(image_url, fallback_url, _VISION_AERIAL_PROMPT)
-    return word == "aerial", ok
+def _photo_source(image_url: str, fallback_url: str = None) -> tuple:
+    """(word, ok): word is photo | aerial | illustration (anything else counts as photo). ok False = the call failed, callers keep the photo."""
+    word, ok = _vision_one_word(image_url, fallback_url, _VISION_SOURCE_PROMPT)
+    return (word if word in ("photo", "aerial", "illustration") else "photo"), ok
 
 
 def caption_ties_to_property(label: str) -> bool:
@@ -905,14 +911,19 @@ def refine_exterior_outdoor_with_vision(photos: list, max_photos: int = MAX_PHOT
             p["category_source"] = "vision_refine"; p["category"] = "uncategorized"; excluded += 1
     for p in over:
         p["category_page"] = p.get("category"); p["category_source"] = "page_not_checked"
-    # 2026-11-02: aerial / drone photos leave the selection unless the agency caption ties them to the property (see _VISION_AERIAL_PROMPT)
-    ext = [p for p in todo if p.get("category") in ("exterior", "outdoor") and p.get("url") and not caption_ties_to_property(p.get("label_it"))] if aerial_filter_enabled() else []
+    # 2026-11-02: only real photos: illustrations / renders leave the selection (any category); aerial views leave it too unless the agency caption ties
+    # them to the property (see _VISION_SOURCE_PROMPT). A failed call keeps the photo.
+    src_check = [p for p in photos if p.get("category") in CATEGORIES and p.get("url")][:MAX_SOURCE_CHECK] if aerial_filter_enabled() else []
     with ThreadPoolExecutor(max_workers=CLASSIFY_WORKERS) as ex:
-        aerial_results = list(ex.map(lambda p: _is_aerial_photo(p["url"], p.get("original_url")), ext))
-    aerials = 0
-    for p, (is_aerial, ok) in zip(ext, aerial_results):
-        if ok and is_aerial:
-            p["category_before_aerial"] = p.get("category"); p["category"] = "uncategorized"; p["category_source"] = "vision_aerial"; aerials += 1
+        src_results = list(ex.map(lambda p: _photo_source(p["url"], p.get("original_url")), src_check))
+    aerials = illustrations = 0
+    for p, (word, ok) in zip(src_check, src_results):
+        if not ok:
+            continue
+        if word == "illustration":
+            p["category_before_source"] = p.get("category"); p["category"] = "uncategorized"; p["category_source"] = "vision_illustration"; illustrations += 1
+        elif word == "aerial" and p.get("category") in ("exterior", "outdoor") and not caption_ties_to_property(p.get("label_it")):
+            p["category_before_source"] = p.get("category"); p["category"] = "uncategorized"; p["category_source"] = "vision_aerial"; aerials += 1
     # 2026-10-27: photos labelled "living" are checked for the entrance hall / corridor / stairs mix-up (see _VISION_HALL_PROMPT).
     # A hall leaves the selection (category "uncategorized"); anything else keeps the page label. Standard video only has the
     # six rooms; a premium "entrance" scene is a separate backlog item.
@@ -931,7 +942,7 @@ def refine_exterior_outdoor_with_vision(photos: list, max_photos: int = MAX_PHOT
             p["category_source"] = "page_label_checked" if ok else "page_fallback"
     summary = {"method": "exterior_outdoor_check", "checked": len(todo), "confirmed": confirmed, "living_checked": len(living), "halls_removed_from_living": halls,
                "swapped_exterior_outdoor": swapped, "excluded_as_other": excluded,
-               "kept_page_label_after_failure": fallback, "not_checked_over_cap": len(over), "aerial_removed": aerials}
+               "kept_page_label_after_failure": fallback, "not_checked_over_cap": len(over), "aerial_removed": aerials, "illustrations_removed": illustrations}
     log.info(f"[Scraper] Exterior/outdoor check: {summary}")
     return summary
 

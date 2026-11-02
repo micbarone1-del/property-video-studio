@@ -307,3 +307,53 @@ async def redo_scenes(job, job_dir, scene_ids, deps, *, video=True, strict=False
     job["scenes"] = statuses
     deps.save()
     return out
+
+
+# ── Clip QC of the reworked clips (2026-11-02, Michele: "se QC fallisce al rework si va in escalation, non in assembly") ─────────────────────
+# Before this, a rework wrote qc_verdict="pass" for every redone scene WITHOUT looking at the new clip and the caller reassembled at once: a worse
+# clip went straight into the final video. Now the SAME clip QC the first generation uses (vision_analysis.analyse_output, injected as
+# deps.analyse_clip) judges every redone clip; the caller (api_server._run_redo) reassembles only when none is rejected or flagged.
+def qc_redone(job, job_dir, redone, deps):
+    """Runs the clip QC on the clips just regenerated. `redone` = the list redo_scenes returned. Updates the scene status verdict and job["qc_results"]
+    (the previous video entry of that scene is replaced; its verdict is kept as "previous_verdict") and adds the REAL Claude cost to job["claude_usage"].
+    Returns {"checked": [scene ids], "rejected": [scene idx], "flagged": [scene idx], "unchecked": [scene ids]}.
+    A clip the QC could not judge (error) is reported as unchecked and does NOT block (same as the first generation: an error is never a reject)."""
+    import listing_scraper as ls
+    scenes_config = job.get("scenes_config", [])
+    statuses = job.setdefault("scenes", [])
+    qc_results = job.setdefault("qc_results", [])
+    out = {"checked": [], "rejected": [], "flagged": [], "unchecked": []}
+    for r in redone:
+        sid = r.get("scene_id") if isinstance(r, dict) else r
+        idx = next((i for i, sc in enumerate(scenes_config) if sc.get("scene_id") == sid), None)
+        if idx is None:
+            continue
+        scene = scenes_config[idx]
+        clip = Path(job_dir) / "clips" / f"{sid}.mp4"
+        src = find_source_image(job_dir, sid, idx, deps.log)
+        if not clip.exists() or not src:
+            out["unchecked"].append(sid)
+            continue
+        try:
+            qc = deps.analyse_clip(str(clip), str(src), scene.get("space_type", "large"))
+        except Exception as e:
+            deps.log.warning(f"[rework] QC of the new clip of {sid} failed: {e}")
+            out["unchecked"].append(sid)
+            continue
+        job["claude_usage"] = ls.merge_claude_usage(job.get("claude_usage"), qc.get("claude_usage"))
+        if qc.get("error") and qc.get("verdict") not in ("reject", "flag"):
+            out["unchecked"].append(sid)
+            continue
+        verdict = qc.get("verdict", "pass")
+        prev = next((q for q in reversed(qc_results) if q.get("type") == "video" and q.get("scene") == idx), None)
+        job["qc_results"] = qc_results = [q for q in qc_results if not (q.get("type") == "video" and q.get("scene") == idx)]
+        qc_results.append({"scene": idx, "type": "video", "rework": True, "previous_verdict": (prev or {}).get("verdict"), **qc})
+        update_scene_status(statuses, sid, idx, scene, qc_verdict=verdict)
+        out["checked"].append(sid)
+        if verdict == "reject":
+            out["rejected"].append(idx)
+        elif verdict == "flag":
+            out["flagged"].append(idx)
+    deps.save()
+    return out
+

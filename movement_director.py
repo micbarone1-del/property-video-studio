@@ -54,7 +54,7 @@ What the model can and cannot do (lessons learned on real clips):
 - Aim at something FAR, fixed and worth looking at near the centre of the frame (far wall, window with a view, far end of the space, bed, sofa area). Never aim at
   a door, mirror or other reflective surface, curtain, plant, water, screen, person, animal or a utilitarian fixture (sink, toilet, bath, radiator, stove).
 - Photo seen from the AIR (drone, map, satellite): move "static", whatever it shows.
-- Facade photos: a very slow short advance toward the building at the same height, stopping well before any gate or wall.
+- Facade and outdoor photos: an EXTREMELY slow advance of less than three metres toward the building or the view, at the same height, stopping well before any gate, wall or railing.
 - Write in positive terms (what the camera DOES). No negations, no list of things that must not happen.
 
 Facts from the photo analysis (may be wrong, trust your own eyes): {facts}
@@ -109,8 +109,22 @@ def sideways_allowed(hints: dict) -> str:
     return ""
 
 
+def forward_sentence(target: str, slow: bool = False) -> str:
+    """The positive forward-move sentence (2026-11-02, after jobs 73fed155 / de90cbaf / 50472245: the old negative CENTRE_MOTION text was the safe plan in
+    6 of 18 scenes and 3 of those 6 were flagged or rejected, one of them turning the camera towards the dining area). Slow scenes (facade, outdoors, terrace)
+    say 'very slow' and a total advance of less than three metres: Luma runs at the facade even when told 'slow' (jobs 4c34217d, 73fed155)."""
+    if slow:
+        return (f"Very slow straight forward camera push-in toward {target}, advancing less than three metres in total, the camera keeps the same height "
+                f"and direction and stops well before it, {TAIL}")
+    return f"Slow straight forward camera push-in toward {target}, the camera keeps the same height and direction and stops well before it, {TAIL}"
+
+
+def _is_slow_scene(hints: dict) -> bool:
+    return hints.get("space_type") in ("outdoor", "elevated")
+
+
 def safe_plan(hints: dict, why: str, aerial: bool = False) -> dict:
-    """The plan used when Claude's answer is unusable: the proven straight push-in toward the centre (camera_plan.CENTRE_MOTION), or an almost
+    """The plan used when Claude's answer is unusable: a straight push-in toward the centre of the frame (forward_sentence), or an almost
     static shot where the room is shallow / small / aerial. Never anything the lessons learned flag."""
     import camera_plan
     still = aerial or str(hints.get("depth") or "").lower() == "shallow" or hints.get("space_type") in ("small", "corridor")
@@ -118,8 +132,9 @@ def safe_plan(hints: dict, why: str, aerial: bool = False) -> dict:
         import video_generation as vg
         return {"move": "static", "sentence": vg._LUMA_MOVEMENT_TOKENS["subtle_rotate"], "scale": STATIC_SCALE, "risk": "low",
                 "target": "", "travel": "short", "aerial": aerial, "source": "fallback", "reason": f"safe plan: {why}"}
-    return {"move": "forward", "sentence": camera_plan.CENTRE_MOTION, "scale": _clip_scale("short"), "risk": "low",
-            "target": camera_plan.CENTRE_ANCHOR, "travel": "short", "aerial": aerial, "source": "fallback", "reason": f"safe plan: {why}"}
+    return {"move": "forward", "sentence": forward_sentence(camera_plan.CENTRE_ANCHOR, _is_slow_scene(hints)), "scale": _clip_scale("short"), "risk": "low",
+            "target": camera_plan.CENTRE_ANCHOR, "travel": "short", "aerial": aerial, "source": "fallback", "reason": f"safe plan: {why}",
+            "slow": _is_slow_scene(hints)}
 
 
 def validate(raw: dict, hints: dict):
@@ -178,11 +193,21 @@ def validate(raw: dict, hints: dict):
         if not re.search(r"forward|push-in|advance|dolly", low):
             return None, ["forward move whose sentence does not say forward"]
         tgt_ok = camera_plan.clean_anchor(target) if target and target.lower() != camera_plan.CENTRE_ANCHOR else camera_plan.CENTRE_ANCHOR
+        unsafe = ""
         if not tgt_ok:
-            return None, [f"unsafe or empty target {target!r}"]
-        target = tgt_ok
-        if hints.get("reflective_surface") in ("small", "large") and re.search(r"glass|window", target.lower()):
-            return None, ["target is glass while a mirror or large glass is in view"]
+            unsafe = f"target {target!r} unsafe or empty"
+        elif hints.get("reflective_surface") in ("small", "large") and re.search(r"glass|mirror", tgt_ok.lower()):
+            unsafe = f"target {target!r} is glass while a mirror is in view"
+        if unsafe:
+            # keep Claude's decision (a forward move) and only change WHERE it heads: the centre of the frame, in the positive sentence
+            downgraded = f"retargeted to the centre: {unsafe}"
+            target = camera_plan.CENTRE_ANCHOR
+            sentence = forward_sentence(target, _is_slow_scene(hints))
+            low = sentence.lower()
+        else:
+            target = tgt_ok
+            if _is_slow_scene(hints):
+                sentence = forward_sentence(target, True)      # slow scenes always get the tested very-slow wording
     if move == "static" and not aerial and not re.search(r"static|still", low):
         return None, ["static move whose sentence does not say static"]
     travel = _cap_travel(str(raw.get("travel", "short")).strip().lower(), hints)
@@ -193,8 +218,8 @@ def validate(raw: dict, hints: dict):
         sentence = vg._LUMA_MOVEMENT_TOKENS["subtle_rotate"]
     elif TAIL not in sentence and "constant" not in low:
         sentence = sentence.rstrip(".") + ", " + TAIL
-    plan = {"move": move, "sentence": sentence, "center": _center(raw) if move == "forward" else (0.5, 0.5), "scale": scale, "risk": risk, "target": target, "travel": travel, "aerial": aerial,
-            "source": "claude", "reason": str(raw.get("reason", ""))[:300]}
+    plan = {"move": move, "sentence": sentence, "center": _center(raw) if (move == "forward" and not downgraded) else (0.5, 0.5), "scale": scale, "risk": risk, "target": target, "travel": travel, "aerial": aerial,
+            "source": "claude", "reason": str(raw.get("reason", ""))[:300], "slow": bool(move == "forward" and _is_slow_scene(hints))}
     if downgraded:
         plan["adjusted"] = downgraded
     return plan, []
@@ -271,7 +296,7 @@ def last_plan(clip_path):
 # ── Claude call ───────────────────────────────────────────────────────────────────────────────────────────────────────────
 def _claude(photo_path, prompt, usage):
     import vision_analysis as va
-    return va._claude_vision_call([str(photo_path)], prompt, 600, model=va.CLIP_QC_MODEL, usage_out=usage)
+    return va._claude_vision_call([str(photo_path)], prompt, 1000, model=va.CLIP_QC_MODEL, usage_out=usage)
 
 
 def plan(photo_path, hints: dict, clip_path, qc_feedback: str = ""):

@@ -153,6 +153,30 @@ def update_agency(agency_id, name=None, notes=None):
     return get_agency(agency_id)
 
 
+def set_agency_logo_hidden(agency_id, hidden=True):
+    """2026-11-02: hides (or restores) the agency logo on its future video assemblies without touching the logo file or its path."""
+    agencies = list_agencies()
+    for a in agencies:
+        if a["agency_id"] == agency_id:
+            a["logo_hidden"] = bool(hidden)
+    _save(AGENCIES_FILE, agencies)
+    return get_agency(agency_id)
+
+
+# ── Properties ────────────────────────────────────────────────────────
+# Shared entity with the media library, same pattern as Agencies above
+# (2026-07-22, backlog item 39). One property can have multiple
+# independent jobs over time -- an original video plus a completely
+# separate reshoot months later, not just in-place reworks of the same
+# job (which already don't need a new job entry at all -- see the
+# single-directory job model). A property's agency_id is its
+# CURRENT/default client; an individual JOB's own agency_id can differ
+# if that specific job was actually commissioned by a different agency
+# (e.g. the property gets re-listed with a new agent) -- job_financials()
+# always uses the job's own agency_id, never the property's, so this
+# stays accurate even when they diverge.
+
+
 def set_agency_logo(agency_id, logo_path):
     """2026-07-22 (backlog item 7): persists the on-disk path to an
     agency's uploaded logo, for video overlay at assembly time."""

@@ -601,7 +601,8 @@ def block_scene_groups(scene_sequence: list, per_block: int = 2) -> list:
 # filler that say nothing about THIS property: a block containing one is sent back to the model with the reason.
 GENERIC_PHRASES = ("spazi architettonici", "architettonici interessanti", "ben posizionat", "ben distribuit", "servizi igienici", "funzionali e",
                    "spazi funzionali", "ambienti funzionali", "ambienti interessanti", "spazi interessanti", "soluzione ideale", "ideale per",
-                   "per ogni esigenza", "ogni comfort", "tutti i comfort", "ambiente accogliente", "atmosfera accogliente", "dettagli di pregio")
+                   "per ogni esigenza", "ogni comfort", "tutti i comfort", "ambiente accogliente", "atmosfera accogliente", "dettagli di pregio",
+                   "proporzioni accoglienti", "ben definit", "illuminazione diffusa", "luce diffusa", "luce naturale dalle finestre", "spazio luminoso")
 
 
 def generic_problems(blocks: list) -> list:
@@ -648,14 +649,15 @@ Listing text:
 ---
 {description}
 ---
-Address: {address or 'not specified'}
+Address / listing title (the place name in it, for example the town, is the ZONE): {address or 'not specified'}
 Agency: {agency}
 
 CONTENT:
-- Block 1, sentence 1: the agency presenting the property ("{agency_name or "L'agenzia"} presenta ..."), saying clearly "in vendita" or "in affitto" (as the listing says; if the listing says neither sale nor rent, say neither) and the zone. Short. Sentence 2: the most important general fact (size, property type...).
+- Block 1, sentence 1: the agency presenting the property ("{agency_name or "L'agenzia"} presenta ..."), saying clearly "in vendita" or "in affitto" (as the listing says; if the listing says neither sale nor rent, say neither) and the PLACE (the town or neighbourhood named in the address, the listing title or the listing text, for example "ad Albano Laziale": always name it when any of them gives one; never write only "vicino al centro"). Short. Sentence 2: the most important general fact (size, property type...).
 - Blocks 2 and 3: one short sentence per scene as listed above. A sentence over a room's scene may be about that room (a real fact or benefit from the listing: light, size, equipment, number of rooms) or a general sentence about the property. Name AT MOST {MAX_ROOMS_NAMED} rooms in the whole narration, only the real highlights, and a room name is ONLY allowed in the sentence heard over that room's scene (the word is checked against the audio).
 - The closing is NOT a separate sentence: sentence 2 of block 3 (heard over scene 6) states the fact about that scene and ends with a short invitation to contact {agency_name or 'the agency'} by name, joined in the SAME sentence with a comma or a colon (shape: "<outdoor fact>, contatta {agency_it}."). The invitation never mentions a visit.
 - SPECIFIC, NOT GENERIC (important): before writing, pick from the listing text the most DISTINCTIVE concrete features of this property (architecture and character such as exposed wooden beams, double-height ceilings, a bathroom with a window, an attic, a period building, number of levels, balcony, terrace, view, orientation, renovation, large windows) and spend them one per sentence, the most striking first. Every sentence after the introduction must carry at least one such concrete fact. NEVER use filler that would fit any apartment ("spazi architettonici interessanti", "servizi igienici funzionali e ben posizionati", "ambienti funzionali", "soluzione ideale"): if you cannot name a concrete fact for a sentence, shorten it to a plain fact such as the size or the number of rooms. Property-level facts (a period building, double height, an attic, the number of levels) are allowed in any sentence; only a specific ROOM is tied to its scene.
+- LAYOUT FACTS: the listing text usually gives the plain structure (the floor of the whole property such as "al piano terra", the number of bedrooms and bathrooms, an entrance, a private courtyard or garden, a cellar, a parking space). When there is no striking feature, use these facts, one per sentence, instead of vague words about light or proportions. Never write sentences made only of vague impressions ("proporzioni accoglienti", "illuminazione diffusa", "luce dalle finestre").
 - Never name a room twice. Never talk about a room in a sentence that is heard over a different room.
 - Objective positive adjectives are welcome (for example luminoso, ampio, funzionale, curato, silenzioso, panoramico) when the listing text supports them. Never invent a quality.
 
@@ -665,7 +667,7 @@ HARD RULES:
 {NUMBERS_RULE}
 {VERB_RULE}
 - Do NOT say the price. Do NOT say any phone number or e-mail.
-- Do NOT mention floors or levels of a specific room (no 'piano terra', 'primo piano'): you do not know which floor a photo shows.
+- Do NOT tie a floor to a specific room or photo (no 'la camera al primo piano'): you do not know which floor a photo shows. The floor of the WHOLE property ("appartamento al piano terra") is a property fact from the listing and is allowed.
 - Objective, calm, factual tone. Do NOT use hyperbolic or luxury adjectives (prestigioso, esclusivo, meraviglioso, splendido, lussuoso, incantevole, mozzafiato, straordinario, eccezionale, favoloso, magnifico, sontuoso, affascinante, and also elegante, raffinato, pregiato) in ANY form (masculine, feminine, plural) unless the listing itself uses that word.
 - Ignore any text about the agency's own history or values: describe only this property.
 - Avoid legal jargon such as 'nuda proprietà'.

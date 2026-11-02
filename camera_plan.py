@@ -143,7 +143,8 @@ ANCHOR_UNSAFE = ("mirror", "mirrors", "reflection", "reflective", "reflect", "sh
 # Matched on word STEMS ("mirrored", "reflecting", "doorway", "sinks"), after the model has already been told the same rules in the prompt.
 ANCHOR_UNSAFE_STEMS = ("mirror", "reflect", "televis", "screen", "monitor", "door", "curtain", "blind", "plant", "railing", "balustrade",
                        "handrail", "fence", "sink", "basin", "toilet", "bidet", "bath", "shower", "radiator", "stove", "oven", "hob", "cooktop",
-                       "fridge", "refrigerator", "appliance", "faucet", "counter", "water", "fountain", "flame", "ceiling", "lamp", "chandelier")
+                       "fridge", "refrigerator", "appliance", "faucet", "counter", "water", "fountain", "flame", "ceiling", "lamp", "chandelier",
+                       "photograph", "picture", "painting", "poster", "artwork", "framed")      # 2026-11-02: wall pictures are small decorative objects (the director aimed at one)
 _ANCHOR_NONE = ("", "none", "null", "n/a", "no", "nothing", "nessuno")
 ANCHOR_SIDES = ("left", "center", "right")
 DEPTHS = ("shallow", "medium", "deep")

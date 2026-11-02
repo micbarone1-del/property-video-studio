@@ -82,7 +82,7 @@ def busy(*jobs_dirs):
     return found
 
 
-def run(prod_jobs, test_jobs, prod_agencies, test_agencies, scope, apply, create_property, keep_test=True, out=print):
+def run(prod_jobs, test_jobs, prod_agencies, test_agencies, scope, apply, create_property, keep_test=True, out=print, only=None):
     prod_g = prod_gial_agency(prod_agencies)
     if not prod_g:
         out("ERRORE: nessuna agenzia GIAL nella produzione"); return 2
@@ -92,7 +92,9 @@ def run(prod_jobs, test_jobs, prod_agencies, test_agencies, scope, apply, create
     in_prod = scan(prod_jobs, prod_ids | test_ids)
     in_test = scan(test_jobs, test_ids | prod_ids)
     prod_names = {n for n, _ in in_prod}
-    todo_copy = [(n, m) for n, m in in_test if n not in prod_names and in_scope(m, scope)]
+    todo_copy = [(n, m) for n, m in in_test if n not in prod_names and in_scope(m, scope) and (only is None or n in only)]
+    if only is not None:      # 2026-11-02: --only copies exactly the named test jobs and touches nothing else in production
+        in_prod = [(n, m) for n, m in in_prod if n in only]
     todo_update = [(n, m) for n, m in in_prod if m.get("agency_id") != prod_g["agency_id"] or not m.get("keep")]
     out(f"Ambito '{scope}': copio in produzione {len(todo_copy)} job dal test; aggiorno agenzia/keep di {len(todo_update)} job gia' in produzione; "
         f"marco keep su {len([1 for n, m in in_test if not m.get('keep')]) if keep_test else 0} originali del test")
@@ -143,6 +145,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--scope", choices=list(SCOPES))
     ap.add_argument("--apply", action="store_true")
+    ap.add_argument("--only", default="", help="comma list of test job ids: copy ONLY these (with --scope all)")
     ap.add_argument("--prod-jobs", default="/var/www/property-video-studio/jobs")
     ap.add_argument("--test-jobs", default="/var/www/pvs_test_jobs")
     ap.add_argument("--test-data", default="/var/www/pvs_test_state/data")
@@ -156,10 +159,12 @@ def main():
         pf = cost_model.PROPERTIES_FILE
         if pf.exists() and not Path(str(pf) + ".bak_p28").exists():
             shutil.copy2(pf, str(pf) + ".bak_p28")
+    only = {x.strip() for x in a.only.split(',') if x.strip()} or None
     rc = 0
     for sc in ([a.scope] if a.scope else list(SCOPES)):
         print(f"\n===== AMBITO {sc} =====")
-        rc = run(Path(a.prod_jobs), Path(a.test_jobs), prod_agencies, test_agencies, sc, a.apply, cost_model.create_property)
+        rc = run(Path(a.prod_jobs), Path(a.test_jobs), prod_agencies, test_agencies, sc, a.apply, cost_model.create_property,
+                 keep_test=not only, only=only)
     return rc
 
 

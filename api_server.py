@@ -2196,7 +2196,7 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
 
         narration = await asyncio.to_thread(
             scraper.generate_narration_and_derive_scenes,
-            description_full, None, None, payload.voice_id or None, False,
+            description_full, (None if (payload.property_name or "").strip() in ("", "Property") else payload.property_name.strip()), None, payload.voice_id or None, False,
             agency.get("name"), scene_category_order, scene_sequence,
             scraper.standard_scene_photos(pre_selection),
         )
@@ -3096,6 +3096,48 @@ def _redo_deps(job_id: str):
     )
 
 
+def _rework_qc_enabled(job) -> bool:
+    """The clip QC of reworked clips follows the job's own QC switch (default on) and PVS_REWORK_QC=0 turns it off."""
+    return bool(job.get("enable_vision_qc", True)) and os.getenv("PVS_REWORK_QC", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+async def _rework_qc_gate(job_id: str, job_dir, result: dict) -> bool:
+    """Runs scene_rework.qc_redone on the clips just made. True = the job was PARKED at awaiting_approval (no reassembly); False = go on."""
+    job = JOBS[job_id]
+    from vision_analysis import analyse_output
+    deps = _redo_deps(job_id)
+    deps.analyse_clip = analyse_output
+    JOBS[job_id].update({"status": "running", "progress": 90, "message": "QC dei clip rigenerati…"})
+    qc = await asyncio.to_thread(_sr.qc_redone, job, job_dir, result["redone"], deps)
+    _save_job(job_id)
+    if not (qc["rejected"] or qc["flagged"]):
+        return False
+    job["awaiting_scenes"] = _awaiting_payload(qc["rejected"], qc["flagged"], [])
+    msg = (f"QC dopo rework: {len(qc['rejected'])} rifiutate, {len(qc['flagged'])} segnalate. "
+           f"Il video non e' stato riassemblato: rivedi le scene e decidi.")
+    job.update({"status": "awaiting_approval", "progress": 75, "message": msg})
+    # no budget left for a scene that failed again: tell the operator it needs a person (a new rework is refused by the gate anyway)
+    stuck = [s for s in ((job.get("scenes_config") or [])[i].get("scene_id") for i in qc["rejected"] + qc["flagged"])
+             if not _rwp.evaluate(job, [s])["allowed"]]
+    if stuck and _rwp.flag(job, f"QC dopo rework fallito e budget di rework esaurito per {', '.join(stuck)}", "rework_qc_failed"):
+        log.warning(f"[Job {job_id}] rework QC failed and budget exhausted for {stuck}")
+    _save_job(job_id)
+    _warm_previews(job_id)
+    prop_name = job.get("property_name", "Property")
+    try:
+        await _notify_operator(
+            job_id, "Rework QC",
+            subject=f"QC dopo rework da rivedere: {prop_name}",
+            body_html=(f"<p><b>{prop_name}</b> - dopo il rework: {len(qc['rejected'])} scene rifiutate, {len(qc['flagged'])} segnalate. "
+                       f"Il video non e' stato riassemblato.</p><p>Job ID: {job_id}</p>"),
+            push_message=f"{prop_name} - QC dopo rework: {len(qc['rejected'])} rifiutate, {len(qc['flagged'])} segnalate",
+            tags=["warning"],
+        )
+    except Exception as e:
+        log.warning(f"[Job {job_id}] Rework-QC notification failed (non-fatal): {e}")
+    return True
+
+
 async def _run_redo(job_id: str, scene_ids: list, *, video: bool, strict: bool,
                     policy: bool, label: str):
     """2026-10-22 (backlog 75, architecture discipline): the ONE runner behind
@@ -3129,6 +3171,17 @@ async def _run_redo(job_id: str, scene_ids: list, *, video: bool, strict: bool,
                             f"{[x['lost_generation'] for x in _lost]}")
                 _sr.record_rework_cost(job, _lost, job.get("model_tier", "premium"), True, job_dir=job_dir)
         _save_job(job_id)
+
+        # 2026-11-02: the reworked clips are judged by the SAME clip QC as the first generation BEFORE anything is reassembled; a rejected or
+        # flagged one goes back to the operator (awaiting_approval) instead of silently into the final video.
+        if video and result["redone"] and _rework_qc_enabled(job):
+            gate = await _rework_qc_gate(job_id, job_dir, result)
+            if gate:
+                if policy:
+                    _rwp.end(JOBS[job_id])
+                    _save_job(job_id)
+                    await _rework_after(job_id, result["failed"])
+                return
 
         await run_reassemble_only(job_id)
         if policy:
@@ -3350,7 +3403,8 @@ async def run_reassemble_only(job_id: str):
         _job_agency_id = job.get("agency_id")
         if _job_agency_id:
             _agency = cost_model.get_agency(_job_agency_id)
-            if _agency and _agency.get("logo_path") and os.path.exists(_agency["logo_path"]):
+            # 2026-11-02: agency flag logo_hidden = no logo on the video (file stays)
+            if _agency and _agency.get("logo_path") and not _agency.get("logo_hidden") and os.path.exists(_agency["logo_path"]):
                 _logo_path = _agency["logo_path"]
         from video_assembly import assemble_property_video
         ok = await asyncio.to_thread(

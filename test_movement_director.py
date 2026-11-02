@@ -45,8 +45,8 @@ check("MD7 Claude's own 'bulky object near the camera' caps travel to short", p[
 
 # C. validation: refused
 for n, bad in (("MD8 unknown move", dict(FWD, move="orbit")), ("MD9 banned word (zoom)", dict(FWD, sentence="slow zoom toward the far window")),
-               ("MD10 empty sentence", dict(FWD, sentence="")), ("MD11 target is a door", dict(FWD, target="the balcony door")),
-               ("MD12 target is a mirror", dict(FWD, target="the mirror")), ("MD13 sentence too long", dict(FWD, sentence="forward " + "word " * 80)),
+               ("MD10 empty sentence", dict(FWD, sentence="")), 
+                ("MD13 sentence too long", dict(FWD, sentence="forward " + "word " * 80)),
                ("MD14 forward without saying forward", dict(FWD, sentence="slowly look at the far window")), ("MD15 unknown risk", dict(FWD, risk="maybe"))):
     p, pr = md.validate(bad, DEEP)
     check(n + " -> refused", p is None and pr, (p, pr))
@@ -75,7 +75,7 @@ check("MD28 lateral glide whose sentence says the other side refused", p is None
 
 # E. safe plans, static, aerial
 sp = md.safe_plan(DEEP, "x")
-check("MD29 safe plan in a deep room = the proven centre push-in", sp["move"] == "forward" and sp["sentence"] == camera_plan.CENTRE_MOTION and sp["source"] == "fallback")
+check("MD29 safe plan in a deep room = the positive push-in toward the centre (no negations)", sp["move"] == "forward" and sp["sentence"] == md.forward_sentence(camera_plan.CENTRE_ANCHOR) and "never" not in sp["sentence"] and sp["source"] == "fallback")
 sp = md.safe_plan(SHAL, "x")
 check("MD30 safe plan in a shallow room = the almost static token", sp["move"] == "static" and sp["sentence"] == vg._LUMA_MOVEMENT_TOKENS["subtle_rotate"])
 p, _ = md.validate(dict(FWD, view="aerial"), DEEP)
@@ -163,5 +163,28 @@ lv = "The shot ends on a view of the room showing a grey sofa on the left, a rou
 full = vg.assemble_pov_prompt("large", "walk_in_explore", "bright_natural", "natural_pace", "luma", "landscape", "none", "", "center", "deep", lv, p["sentence"])
 old = vg.assemble_pov_prompt("large", "walk_in_explore", "bright_natural", "natural_pace", "luma", "landscape")
 check("MD58 the final Luma prompt is not heavier than today's (words)", len(full.split()) <= len(old.split()) + 30, (len(full.split()), len(old.split())))
+
+# J. 2026-11-02 fixes after jobs 73fed155 / de90cbaf / 50472245
+for n, tg in (("MD59 a door", "the balcony door"), ("MD60 a mirror", "the mirror"), ("MD61 a wall TV and sideboard", "far wall with wall-mounted TV and sideboard"),
+              ("MD62 a wall picture (the cityscape photograph)", "cityscape photograph on the far wall")):
+    p, pr = md.validate(dict(FWD, target=tg, target_x=0.3), DEEP)
+    check(n + " as target -> Claude's forward move is KEPT, retargeted to the centre in the positive sentence (not the old negative fallback)",
+          p and p["source"] == "claude" and p["move"] == "forward" and p["target"] == camera_plan.CENTRE_ANCHOR and "retargeted" in p["adjusted"]
+          and p["center"] == (0.5, 0.5) and "never" not in p["sentence"], (p, pr))
+p, _ = md.validate(dict(FWD, target="the window with a garden view", mirror_visible=True), DEEP)
+check("MD63 a window is a good target even when a mirror is in the photo (only glass / mirror targets are refused)", p["target"] == "the window with a garden view" and "adjusted" not in p, p)
+p, _ = md.validate(dict(FWD, target="the glass door", mirror_visible=True), DEEP)
+check("MD64 a glass target with a mirror in view is retargeted", p["target"] == camera_plan.CENTRE_ANCHOR)
+p, _ = md.validate(dict(FWD, sentence="Slow push forward toward the building"), dict(DEEP, space_type="outdoor"))
+check("MD65 outdoor forward moves always get the very-slow wording with a total advance under three metres, and are marked slow",
+      p["slow"] is True and p["sentence"].startswith("Very slow") and "less than three metres" in p["sentence"], p)
+p, _ = md.validate(dict(FWD), DEEP)
+check("MD66 indoor forward moves are not marked slow", p["slow"] is False and "three metres" not in p["sentence"])
+pr_slow = vg.assemble_pov_prompt("outdoor", "approach_facade", "bright_natural", "very_slow", "luma", "landscape", "none", "", "center", "deep", "LV", "SENT")
+check("MD67 the pace words of a slow scene are 'extremely slow and subtle'", "extremely slow and subtle" in pr_slow)
+vs = Path("video_generation.py").read_text()
+check("MD68 generate_video_single passes very_slow for a slow plan", '"very_slow" if (plan and plan.get("slow")) else intensity' in vs)
+check("MD69 the director's question has room for the whole answer (max_tokens 1000)", "prompt, 1000," in Path("movement_director.py").read_text())
+check("MD70 wall pictures are unsafe anchors for the analysis too (one list)", camera_plan.clean_anchor("framed cityscape photograph") == "" and camera_plan.clean_anchor("far window with a view") != "")
 print(f"\n{'ALL PASS' if not fails else str(fails) + ' FAIL'}")
 sys.exit(1 if fails else 0)
