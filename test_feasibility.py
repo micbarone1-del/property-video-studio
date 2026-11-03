@@ -43,4 +43,15 @@ check("F8 short reason for notifications", ls.acceptance_short_reason({"code": "
 rep = ls.build_selection_report(photos, {"selected": {}, "total_selected": 0}, 6)
 check("F9 selection report carries photo_audit and excluded_counts", len(rep["photo_audit"]) == 7 and rep["excluded_counts"] == ex)
 check("F10 the illustration check covers up to 60 photos", ls.MAX_SOURCE_CHECK == 60)
+ex2 = ls.exclusion_counts([ph(1, "uncategorized", "vision", other_kind="floorplan"), ph(2, "uncategorized", "vision", other_kind="hall"), ph(3, "uncategorized", "vision")])
+check("F11 'other' photos are counted by what they are (piantina / ingresso) when known", ex2 == {"piantina": 1, "ingresso o corridoio": 1, "ambiente non riconosciuto": 1}, ex2)
+def fake_word(url, fb, prompt):
+    if prompt == ls._VISION_CLASSIFY_PROMPT:
+        return ("other", True)
+    if prompt == ls._VISION_OTHER_PROMPT:
+        return (("floorplan" if url == "p1" else "banana"), True)
+    return ("x", True)
+ls._vision_one_word = fake_word
+res = ls.resolve_uncategorized_photos([{"url": "p1", "category": "uncategorized"}, {"url": "p2", "category": "uncategorized"}, {"url": "k", "category": "living"}])
+check("F12 resolve_uncategorized_photos records the kind of an 'other' photo and ignores an unknown word", res[0].get("other_kind") == "floorplan" and "other_kind" not in res[1] and res[2]["category"] == "living", res)
 print("ALL PASS" if not fails else f"{fails} FAIL"); sys.exit(1 if fails else 0)
