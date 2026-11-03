@@ -546,3 +546,24 @@ test_photo_filters.py RESULT: ALL PASS (76/76)
 ## 2026-11-02 (14:36) — p25 deployed; live-test incident
 - T-DV and T-RET suites PASS on the server (12/12, 24/24). Still NOT run: a real clip with the new prompt; a real cleanup above the 80% mark; the keep button in the library (UI wiring checked by source only).
 - Incident IN-1: test_batch_redo.py (live integration test against production) was run by mistake in a verification block: 3 real Luma clips, about EUR 3.3 (estimate), job a49a2b7d left in awaiting_approval. Control added: live tests only with the operator's explicit OK (proposal; scores not reviewed).
+
+## 2026-11-03 - p27-p39: risk rows, tests and status (PROPOSALS, scores not reviewed by Michele; "not run" stays "not run")
+
+**New / changed FMEA rows (proposals)**
+| Row | Failure mode | S | O | D | RPN | Level | Control / test |
+|---|---|---|---|---|---|---|---|
+| F-DIR1 | Director picks a forward target at one side of the photo -> Luma turns the camera and invents what lies beyond (job 3fcff5a9 scene 2) | 7 | 5 | 4 | 140 | ACT | p37 retargets to the centre; MD71-MD75 PASS (sandbox + server). NOT run on a new real clip. |
+| F-DIR2 | High viewpoint looking down is pushed forward like a ground view (scene 5 of 3fcff5a9) | 6 | 4 | 4 | 96 | open | p38 (aerial prompt + director prompt); AF12, MD76 PASS (source-text level). NOT run on a real clip. |
+| F-PHOTO1 | Illustrations / renders animated into cartoons (job 50472245 scenes 0-1) | 8 | 4 | 3 | 96 | open | p35 photo-source filter, cap 60 photos; AF1-AF12 PASS. NOT run on a real listing with renders. |
+| F-NARR1 | Narration generic / no place named / light repeated (de90cbaf, 1337, 1189, 1252) | 5 | 6 | 3 | 90 | open | p36 + p37; NP1-NP10 PASS (prompt text and validator). Real evidence: three drafts after p36 name the place and use concrete facts; light limit (p37) NOT yet seen on a real draft. |
+| F-FEAS1 | Empty rooms without labels produce an unusable video; or arrangement judged "empty" by mistake blocks a good listing | 6 | 5 | 5 | 150 | ACT | p39 unlabeled_empty_rooms + photo_audit; F1-F10 PASS. NOT run on a real listing: false-positive rate unknown. Accepted until the pilot data (2026-11-03). |
+| F-SEC1 | Secret (API keys) committed by git add -A (the .env.bak_limit near-miss) | 9 | 3 | 2 | 54 | ACT (S>=9) | GitHub push protection blocked it (evidence: GH013 on 2026-11-03); .gitignore .env.bak*; staging guard in every commit block; NO secret was published. |
+| F-OPS1 | An integration test run by mistake against the live instance spends money (test_batch_redo, second time, ~3.4 EUR, job 10e6e3b5) | 4 | 4 | 3 | 48 | open | Rule: never in generic verification blocks (backlog 2026-11-02). Still not protected in code: proposal to move it to the test instance or require a confirmation. |
+| F-REWORK2 | Reworked clip accepted without QC | 7 | 3 | 3 | 63 | open | p33 gate. RQ1-RQ11 PASS on source text; NOT run on a real rework (the three jobs parked at QC were first generations). |
+
+**Test status (sandbox = fakes; server = output seen)**
+- test_movement_director MD1-MD76: PASS (server output seen up to p38). test_narration_place NP1-NP10: PASS (server). test_aerial_filter AF1-AF12: PASS (server). test_feasibility F1-F10: PASS (server, 2026-11-03). test_gial_rename GR1-GR5: PASS (server). test_scene_script 85/85, test_block_narration 75/75, test_rework_qc RQ1-RQ11, test_furnished_check 15/15, test_selection_report 29/29, test_photo_filters 76/76, test_standard_3b 32/32, test_partner_failure 20/20: PASS on the server after p39.
+- FAIL / not run: test_anchor_direction C4/C5 FAIL on the server (PVS_DIRECTOR=1 in .env, needs the variable cleared inside the test); test_foreground_risk gave no output; test_batch_redo must NOT be run (live integration); photo_quality_probe NOT run; real end-to-end of p33-p39 on a listing NOT run yet (drafts block 396 pending).
+- Real-listing evidence so far: three GIAL videos generated with p29-p36 (afa4c2e7 and 3fcff5a9 parked at the first-generation QC, c6b0bfd6 done without rework). The invariant "no job lost" held; costs were measured per job in the app (see status.md); the invariant "operator informed once" is NOT evidenced for the new QC parking.
+
+**Scoreboard**: not recomputed (manual). Open ACT rows added today: F-DIR1, F-FEAS1, F-SEC1 (the last one controlled).
