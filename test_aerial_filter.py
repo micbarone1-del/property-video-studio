@@ -44,4 +44,5 @@ check("AF10 prompt asks for photo | aerial | illustration", all(w in ls._VISION_
 os.environ["PVS_AERIAL_FILTER"] = "0"
 ps = photos(); r = ls.refine_exterior_outdoor_with_vision(ps)
 check("AF11 switch off also keeps illustrations", r["illustrations_removed"] == 0 and {p["url"]: p for p in ps}["u_render"]["category"] == "exterior")
+check("AF12 the question also covers high viewpoints looking down (Michele 2026-11-03, job 3fcff5a9 scene 5)", "looks clearly DOWNWARDS" in ls._VISION_SOURCE_PROMPT and "NOT aerial" in ls._VISION_SOURCE_PROMPT)
 print("ALL PASS" if not fails else f"{fails} FAIL"); sys.exit(1 if fails else 0)
