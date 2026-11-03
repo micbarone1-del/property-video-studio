@@ -47,6 +47,12 @@ check("T7 a scene without sidecar is reported, not invented", ab.build_jobs([("j
 jobs, pb = ab.build_jobs([("job1", 0)], ["A", "B", "C", "D"], 2)
 check("T8 4 variants x 2 reps = 8 clips; A is the untouched prompt", len(jobs) == 8 and all(j["prompt"] == BASE for j in jobs if j["variant"] == "A" or j["variant"] == "D"))
 check("T9 B and C differ from A", all(j["prompt"] != BASE for j in jobs if j["variant"] in "BC"))
+nj, npb = ab.build_jobs([("job1", 0)], ["A", "N"], 2, make_near=lambda j, i, n: ("NEAR PROMPT", "target='x'"))
+check("T20 N uses the prompt built by the production chain, once per scene, for every rep", len(nj) == 4 and [x["prompt"] for x in nj if x["variant"] == "N"] == ["NEAR PROMPT"] * 2 and npb == [])
+nj2, npb2 = ab.build_jobs([("job1", 0)], ["N"], 1, make_near=lambda j, i, n: (None, "the director gave no plan"))
+check("T21 a failed N build is reported and skipped, never replaced by another prompt", nj2 == [] and npb2 and "the director gave no plan" in npb2[0])
+nj3, _ = ab.build_jobs([("job1", 0)], ["N"], 1)
+check("T22 plan mode (no --go) builds nothing and spends nothing", len(nj3) == 1 and "built at run time" in nj3[0]["prompt"])
 kf = ab.mid_keyframe(tmp / "job1" / "images" / "scene_000.jpg", 1.3, [0.5, 0.5], tmp / "mid.jpg")
 check("T10 the half-way keyframe has the photo size", Image.open(kf).size == (640, 360))
 calls = []
