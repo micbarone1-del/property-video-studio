@@ -15,3 +15,6 @@ partners.json
 notification_topics.json
 clients/
 Noise
+.env.bak*
+*.bak_p*
+*.tmp_p*
