@@ -5,6 +5,8 @@ Ideas from Luma support (email of 2026-11-03), tested ONE AT A TIME on the same 
   B  nomove     the same prompt without the words move / moves / moving / down
   C  lock       "Stationary view ... Locked off camera": for clips that must stay still (aerial view, hallucination checks)
   D  keyframe   the same prompt as A, plus a half-way keyframe at frame index 60 of 120 (a crop at half the travel of the plan): speed control
+  F  centre     (round 2) A with the target of the push-in replaced by "the centre of the frame" (no destination such as a door or an entrance)
+  G  shorter    (round 2) A with "advancing less than three metres" replaced by "less than one metre"
 Writes ONLY into jobs/_test_scratch/prompt_ab/ (never into a job, never deletes anything). The clips get blind codes: look first, then `reveal`.
 Spend: own cap CAP_USD, every started clip counts (failed ones too, to be safe). Without --go nothing is generated and nothing is spent.
 
@@ -29,7 +31,7 @@ SPEND = OUT / "spend.json"
 CAP_USD = 4.0
 CLIP_USD = 0.06            # 360p, 5 s, SDR = 20 credits (docs.agents.lumalabs.ai/guides/pricing)
 RESOLUTION = "360p"
-VARIANTS = ("A", "B", "C", "D")
+VARIANTS = ("A", "B", "C", "D", "F", "G")
 MID_INDEX = 60             # of 0..120 for a 5 s clip
 LINK_BASE = os.environ.get("PVS_LINK_BASE", "http://187.77.196.94:8000/test-scratch/prompt_ab")
 
@@ -57,6 +59,20 @@ def nomove(prompt: str) -> tuple:
     for a, b in B_REPLACE:
         out = re.sub(a, b, out, flags=re.I)
     return out, sorted(set(m.group(0).lower() for m in BAD_RE.finditer(out)))
+
+
+RETARGET_RE = re.compile(r"(push-in toward )(.+?)(, advancing less than)", re.I | re.S)
+
+
+def retarget(prompt: str) -> tuple:
+    """(new prompt, True if the target phrase was found and replaced)"""
+    new, n = RETARGET_RE.subn(r"\1the centre of the frame\3", prompt, count=1)
+    return new, n == 1
+
+
+def shorter(prompt: str) -> tuple:
+    new, n = re.subn(r"advancing less than three metres", "advancing less than one metre", prompt, count=1, flags=re.I)
+    return new, n == 1
 
 
 def lock(prompt: str) -> tuple:
@@ -146,6 +162,11 @@ def build_jobs(cases: list, variants: list, reps: int) -> tuple:
             elif v == "C":
                 prompt, miss = lock(base)
                 note = f"{miss} clause(s) of the rules not found" if miss else ""
+            elif v in ("F", "G"):
+                prompt, found = (retarget if v == "F" else shorter)(base)
+                if not found:
+                    problems.append(f"{job}:{idx} {v} - the prompt has no push-in target / travel phrase to change: skipped")
+                    continue
             elif v == "D":
                 extra = {"scale": notes["view_data"].get("scale") or 1.2, "center": notes["view_data"].get("center")}
             for r in range(reps):
