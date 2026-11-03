@@ -15,4 +15,12 @@ check("NP4 floor of the whole property allowed, floor of a room not", "WHOLE pro
 bad = ["Lo spazio luminoso si trova vicino al centro.", "Gli ambienti mantengono proporzioni accoglienti e ben definite.", "La cucina riceve luce naturale dalle finestre.", "Ampie finestre con illuminazione diffusa."]
 check("NP5 the four vague sentences of de90cbaf are rejected", all(ss.generic_problems([b]) for b in bad))
 check("NP6 a concrete sentence passes", not ss.generic_problems(["Due bagni e una corte ad uso esclusivo al piano terra."]))
+import re as _re
+_split = lambda t: [x for x in _re.split(r"(?<=[.!?])\s+", t.strip()) if x]
+b3 = ["Villa su due livelli. Gli ambienti sono luminosi e ben organizzati.", "Le camere hanno luce naturale abbondante. Il bagno ha una finestra con luce naturale.", "Il giardino misura 150 metri quadri. Contatta GIAL."]
+check("NP7 light in 4 sentences is a problem (job 1337 style)", len(ss.light_problems(b3, _split)) == 1)
+b1 = ["Villa su due livelli. Gli ambienti sono luminosi.", "Tre camere da letto. Il bagno ha una finestra.", "Il giardino misura 150 metri quadri. Contatta GIAL."]
+check("NP8 one light sentence is allowed", ss.light_problems(b1, _split) == [])
+check("NP9 the prompt carries the LIGHT rule", "at most ONE sentence" in pr and "LIGHT:" in pr)
+check("NP10 validate_blocks calls the light check", "light_problems(blocks, split_fn)" in open("scene_script.py").read())
 print("ALL PASS" if not fails else f"{fails} FAIL"); sys.exit(1 if fails else 0)
