@@ -57,7 +57,8 @@ _PROMO_STEMS = [
     "rifinit", "perfett", "impeccabil", "ottim", "eccellent",
 ]
 
-# Floors are never named in the standard video (Michele, 2026-10-22): a photo's floor is not known.
+# A floor is never tied to a ROOM in the standard video: a photo's floor is not known (rule from the Patch B spec of 2026-10-22). 2026-11-03: Michele does not remember
+# banning floors, so the floor of the WHOLE property ("appartamento al piano terra", a fact of the listing) is allowed in a sentence that names no room.
 _FLOOR_RE = re.compile(
     r"\b(piano terra|primo piano|secondo piano|terzo piano|ultimo piano|piano rialzato|piano superiore|"
     r"piano inferiore|piano interrato|seminterrato|interrato|al piano|del piano|sul piano)\b", re.I)
@@ -226,8 +227,8 @@ def _fact_problems(s: str, tag: str, low: str, desc: str, desc_numbers: set, pri
     for stem in _PROMO_STEMS:
         if _has_stem(low, stem) and not _has_stem(desc, stem):
             problems.append(f"{tag}: promotional adjective '{stem}...' is not in the listing text")
-    if _FLOOR_RE.search(s):
-        problems.append(f"{tag}: names a floor")
+    if _FLOOR_RE.search(s) and named_rooms(s):
+        problems.append(f"{tag}: names a floor together with a room")
     return problems
 
 
@@ -687,7 +688,7 @@ HARD RULES:
 {NUMBERS_RULE}
 {VERB_RULE}
 - Do NOT say the price. Do NOT say any phone number or e-mail.
-- Do NOT mention floors or levels of a specific room (no 'piano terra', 'primo piano'): you do not know which floor a photo shows. (Michele's standing rule 2026-10-22; the validator rejects any floor name.)
+- Do NOT tie a floor to a room or a photo (no 'la camera al primo piano', no room word in a sentence that names a floor): you do not know which floor a photo shows. The floor of the WHOLE property ("appartamento al piano terra") is a fact of the listing and is allowed, in a sentence that names no room.
 - Objective, calm, factual tone. Do NOT use hyperbolic or luxury adjectives (prestigioso, esclusivo, meraviglioso, splendido, lussuoso, incantevole, mozzafiato, straordinario, eccezionale, favoloso, magnifico, sontuoso, affascinante, and also elegante, raffinato, pregiato) in ANY form (masculine, feminine, plural) unless the listing itself uses that word.
 - Ignore any text about the agency's own history or values: describe only this property.
 - Avoid legal jargon such as 'nuda proprietà'.
