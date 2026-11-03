@@ -842,7 +842,7 @@ def _is_hall_photo(image_url: str, fallback_url: str = None) -> tuple:
 _VISION_SOURCE_PROMPT = (
     "Look at this real estate image. What kind of picture is it?\n"
     "- photo: a real photograph taken by a person on the ground, inside, on a balcony or at a window.\n"
-    "- aerial: a real photograph taken FROM THE AIR (drone or aerial view looking down on roofs, streets or land from high above), a satellite image or a map.\n"
+    "- aerial: a real photograph taken FROM THE AIR (drone or aerial view looking down on roofs, streets or land from high above), a satellite image or a map; ALSO a photo taken from a high point (upper-floor balcony, roof, terrace edge, hill) that looks clearly DOWNWARDS so that streets, roofs, gardens or cars below fill much of the picture. A view that looks straight out at the horizon from a balcony is NOT aerial.\n"
     "- illustration: a drawing, an architectural render, a CGI image, a 3D visualisation or a sketch (even if it looks realistic, with perfect colours, "
     "people drawn as silhouettes or a computer-generated sky and plants).\n"
     "Answer with ONLY one word: photo, aerial or illustration."
