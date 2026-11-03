@@ -10,8 +10,9 @@ pr = ss.build_blocks_prompt("appartamento al piano terra, due bagni, corte esclu
                             ["living", "kitchen", "bedrooms", "bathrooms", "outdoor", "exterior"])
 check("NP1 the address / title line is in the prompt", "Appartamento Albano Laziale" in pr)
 check("NP2 the prompt demands the place in block 1 sentence 1", "PLACE" in pr and "never write only" in pr)
-check("NP3 layout facts rule present", "LAYOUT FACTS" in pr and "due bagni" not in "LAYOUT FACTS")
-check("NP4 floor of the whole property allowed, floor of a room not", "WHOLE property" in pr and "Do NOT tie a floor to a specific room" in pr)
+check("NP3 layout facts rule present", "LAYOUT FACTS" in pr)
+check("NP4 floors stay forbidden (Michele 2026-10-22): the prompt says so and no longer invites piano terra", "Do NOT mention floors" in pr and "WHOLE property" not in pr)
+check("NP4b layout facts warn that counting rooms names them and outdoor words belong to the outdoor scene", "counts as NAMING" in pr and "ONLY in the sentence heard over the outdoor scene" in pr)
 bad = ["Lo spazio luminoso si trova vicino al centro.", "Gli ambienti mantengono proporzioni accoglienti e ben definite.", "La cucina riceve luce naturale dalle finestre.", "Ampie finestre con illuminazione diffusa."]
 check("NP5 the four vague sentences of de90cbaf are rejected", all(ss.generic_problems([b]) for b in bad))
 check("NP6 a concrete sentence passes", not ss.generic_problems(["Due bagni e una corte ad uso esclusivo al piano terra."]))
