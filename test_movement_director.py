@@ -147,8 +147,10 @@ check("MD51 ONE place calls the director (generate_video_single); no other modul
 # I. target frame (2026-11-02): the description is written for the move, centred on the director's target
 p, _ = md.validate(dict(FWD, target_x=0.6, target_y=0.45), DEEP)
 check("MD52 the plan keeps the target's place in the photo", p["center"] == (0.6, 0.45), p.get("center"))
-p, _ = md.validate(dict(FWD, target_x=0.95, target_y="x"), DEEP)
-check("MD53 an extreme or unreadable target position is kept near the middle", p["center"] == (0.65, 0.5), p.get("center"))
+p, _ = md.validate(dict(FWD, target_x=0.68, target_y="x"), DEEP)
+check("MD53 a near-edge or unreadable target position is kept near the middle", p["center"] == (0.65, 0.5), p.get("center"))
+p, _ = md.validate(dict(FWD, target_x=0.95, target_y=0.5), DEEP)
+check("MD53b an extreme target (x=0.95) is retargeted to the exact centre (2026-11-03)", p["center"] == (0.5, 0.5) and p["target"] == "the centre of the frame", p)
 q = []
 va._claude_vision_call = lambda imgs, prompt, mt, model=None, usage_out=None: (q.append(prompt) or json.dumps({"last_view": "The shot ends on a view of the room showing a window."}))
 plan_f = {"move": "forward", "sentence": "slow straight forward camera push-in toward the far window", "target": "the far window", "center": (0.6, 0.5), "scale": 1.25}
@@ -186,5 +188,19 @@ vs = Path("video_generation.py").read_text()
 check("MD68 generate_video_single passes very_slow for a slow plan", '"very_slow" if (plan and plan.get("slow")) else intensity' in vs)
 check("MD69 the director's question has room for the whole answer (max_tokens 1000)", "prompt, 1000," in Path("movement_director.py").read_text())
 check("MD70 wall pictures are unsafe anchors for the analysis too (one list)", camera_plan.clean_anchor("framed cityscape photograph") == "" and camera_plan.clean_anchor("far window with a view") != "")
+_H = {"space_type": "large", "depth": "medium", "output_format": "landscape"}
+def _fw(t, x):
+    return {"view": "interior", "move": "forward", "target": t, "target_x": x, "target_y": 0.5, "travel": "medium", "risk": "low", "bulky_near_camera": False,
+            "mirror_visible": False, "reason": "x",
+            "sentence": f"Slow straight forward camera push-in toward the {t}, the camera keeps the same height and direction and stops well before it"}
+p, _ = md.validate(_fw("glazed patio panels on the far right wall", 0.8), _H)
+check("MD71 a forward target on a side wall (phrase and x) becomes the centre of the frame (job 3fcff5a9 scene 2 turned right)", p["target"] == "the centre of the frame" and "off to one side" in p["adjusted"], p)
+p, _ = md.validate(_fw("kitchen island", 0.85), _H)
+check("MD72 a forward target at x=0.85 is retargeted to the centre even when the phrase names no side", p["target"] == "the centre of the frame", p)
+p, _ = md.validate(_fw("kitchen island", 0.5), _H)
+check("MD73 a central target is kept", p["target"] == "kitchen island" and not p.get("adjusted"), p)
+p, _ = md.validate(_fw("far end wall of the room", 0.5), _H)
+check("MD74 'far end wall' is not a side", p["target"] == "far end wall of the room", p)
+check("MD75 the director's question tells Claude the target must be central", "target_x between 0.3 and 0.7" in Path("movement_director.py").read_text())
 print(f"\n{'ALL PASS' if not fails else str(fails) + ' FAIL'}")
 sys.exit(1 if fails else 0)
