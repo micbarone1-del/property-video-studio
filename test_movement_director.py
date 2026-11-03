@@ -202,5 +202,6 @@ check("MD73 a central target is kept", p["target"] == "kitchen island" and not p
 p, _ = md.validate(_fw("far end wall of the room", 0.5), _H)
 check("MD74 'far end wall' is not a side", p["target"] == "far end wall of the room", p)
 check("MD75 the director's question tells Claude the target must be central", "target_x between 0.3 and 0.7" in Path("movement_director.py").read_text())
+check("MD76 the director treats a high viewpoint looking down as aerial -> static", "looking clearly DOWN" in Path("movement_director.py").read_text() and "aerial = drone, map, or a high viewpoint" in Path("movement_director.py").read_text())
 print(f"\n{'ALL PASS' if not fails else str(fails) + ' FAIL'}")
 sys.exit(1 if fails else 0)
