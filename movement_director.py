@@ -74,6 +74,38 @@ JSON keys:
  "reason": at most 40 words: why this move for this room (depth, what is at the edges, what could go wrong)."""
 
 
+# 2026-11-03 (Michele, A/B on 360p clips of job 3fcff5a9): "se dai un obiettivo a Luma in 5 s cercherà di arrivarci in 5 s": the deep facade scene aimed at "entrance and far row
+# of houses" and the camera rushed (3 clips of 4 too fast, one cut across the grass); shortening the written travel (G) did not help, only the target distance matters.
+# PVS_DIRECTOR_NEAR=1 swaps three sentences of the prompt: the target is a NEAR/middle-distance fixed feature that can be reached calmly in five seconds.
+# The anchor / target / described_view principle is kept: there is still a target, it is only close enough to reach slowly.
+_FAR_LINE = """- Aim at something FAR, fixed and worth looking at near the centre of the frame (far wall, window with a view, far end of the space, bed, sofa area). Never aim at
+  a door, mirror or other reflective surface, curtain, plant, water, screen, person, animal or a utilitarian fixture (sink, toilet, bath, radiator, stove)."""
+_FACADE_LINE = """- Facade and outdoor photos: an EXTREMELY slow advance of less than three metres toward the building or the view, at the same height, stopping well before any gate, wall or railing."""
+_TARGET_PHRASE = """a short English noun phrase for the far fixed thing the camera heads toward (forward) or keeps in the centre, or "centre of the frame"."""
+NEAR_REPLACEMENTS = (
+    (_FAR_LINE, """- Aim at something NEAR enough to reach calmly within the five seconds of the shot: a fixed feature in the foreground or middle distance, about a third of the way
+  into the visible depth (the nearest part of the paved yard or drive, a stretch of the near wall, the sofa or table area). The video model tries to ARRIVE at its target
+  before the shot ends, so a far target makes the camera rush: in a deep scene (long drive, garden, large hall) never aim at the far background. Never aim at
+  a door, entrance, gate, mirror or other reflective surface, curtain, plant, water, screen, person, animal or a utilitarian fixture (sink, toilet, bath, radiator, stove)."""),
+    (_FACADE_LINE, """- Facade and outdoor photos: aim at the ground or the nearest fixed feature in front of the building (the paved yard, the drive, the lawn edge), not at the building or its
+  entrance: an EXTREMELY slow advance of a few metres at the same height, stopping well before any gate, wall or railing."""),
+    (_TARGET_PHRASE, """a short English noun phrase for the NEAR fixed thing the camera heads toward (forward) or keeps in the centre, or "centre of the frame"."""),
+)
+
+
+def near_enabled() -> bool:
+    return os.getenv("PVS_DIRECTOR_NEAR", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def prompt_text() -> str:
+    """The director prompt: the standard one, or (PVS_DIRECTOR_NEAR=1) the near-target version. ONE place, used by plan()."""
+    out = PROMPT
+    if near_enabled():
+        for a, b in NEAR_REPLACEMENTS:
+            out = out.replace(a, b)
+    return out
+
+
 # ── switch ────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 def enabled() -> bool:
     return os.getenv("PVS_DIRECTOR", "0").strip().lower() in ("1", "true", "yes", "on")
@@ -325,7 +357,7 @@ def plan(photo_path, hints: dict, clip_path, qc_feedback: str = ""):
         if prev and "previous attempt" not in qc_feedback:
             qc_feedback = (qc_feedback + " | " if qc_feedback else "") + f"previous attempt used move={prev.get('move')}: {str(prev.get('sentence', ''))[:200]}"
         feedback = f"\nThis is a REWORK: the previous clip was rejected or flagged ({qc_feedback}). Choose a different, SAFER approach.\n" if qc_feedback else ""
-        prompt = PROMPT.format(facts=_facts(hints) or "none", feedback=feedback)
+        prompt = prompt_text().format(facts=_facts(hints) or "none", feedback=feedback)
         usage = {}
         raw_text = _claude(photo_path, prompt, usage)
         if not raw_text:
