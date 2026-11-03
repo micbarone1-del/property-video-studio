@@ -4,8 +4,8 @@ Michele: "job GIAL in produzione sotto GIAL in cronologia con nome proprieta agg
   python3 gial_rename.py            dry run: prints what it would rename, writes nothing
   python3 gial_rename.py --apply    does it (refuses while a job is running)
 
-The short description comes from the label next to each URL in relinx_listings*.txt ("URL | 1189 5 locali 140mq Centro"). A listing without a label keeps its
-current name (it is listed at the end). Only jobs of the production GIAL agency are touched. NOTHING IS DELETED: properties.json and every job_meta.json are
+The short description comes from the label next to each URL ("URL | 1189 5 locali 140mq Centro") in relinx_listings*.txt / gial_*.txt / golden_batch*.txt; without a manual
+label it is built from the URL's own words ("appartamento 70mq 3 locali Cecchina"). A listing whose URL is in none of those files keeps its current name (listed at the end). Only jobs of the production GIAL agency are touched. NOTHING IS DELETED: properties.json and every job_meta.json are
 copied to <name>.bak_p39 before the first change. Run from /var/www/property-video-studio with the venv active.
 """
 import argparse
@@ -21,9 +21,29 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 
+URL_RE = re.compile(r"relinx\.it/it/immobili/([a-z0-9-]+)/([a-z0-9-]+?)-(\d{3,5})/?")
+
+
+def slug_label(zone_seg: str, slug: str) -> str:
+    """'appartamento-vendita-70-mq-3-locali' + 'albano-laziale-cecchina' -> 'appartamento 70mq 3 locali Cecchina' (2026-11-03: the URL itself says what the listing is)."""
+    kind = slug.split("-vendita")[0].split("-affitto")[0].replace("-", " ").strip() or "annuncio"
+    mq = re.search(r"-(\d+)-mq", slug)
+    loc = re.search(r"-(\d+(?:-\d)?)-locali", slug)
+    zone = zone_seg
+    for pre in ("albano-laziale-", "castel-gandolfo-", "roma-"):
+        if zone.startswith(pre):
+            zone = zone[len(pre):]
+    zone = zone.replace("-", " ").strip().title()
+    parts = [kind]
+    if mq: parts.append(f"{mq.group(1)}mq")
+    if loc: parts.append(f"{loc.group(1).replace('-', ',')} locali")
+    if zone: parts.append(zone)
+    return " ".join(parts)
+
+
 def read_labels(paths):
-    """{listing number: label without the number} from lines 'URL | 1189 5 locali 140mq Centro'."""
-    out = {}
+    """{listing number: short label}. A manual label ('URL | 1189 5 locali 140mq Centro') wins; otherwise the label is built from the URL's own words."""
+    out, manual = {}, {}
     for p in paths:
         try:
             lines = Path(p).read_text(encoding="utf-8").splitlines()
@@ -32,9 +52,14 @@ def read_labels(paths):
         for ln in lines:
             if ln.strip().startswith("#") or "|" not in ln:
                 continue
-            m = re.match(r"\s*(\d{3,5})\s+(.+?)\s*$", ln.split("|", 1)[1])
+            left, right = ln.split("|", 1)
+            m = re.match(r"\s*(\d{3,5})\s+(.+?)\s*$", right)
             if m:
-                out[m.group(1)] = m.group(2)
+                manual[m.group(1)] = m.group(2)
+            u = URL_RE.search(left)
+            if u and u.group(3) not in out:
+                out[u.group(3)] = slug_label(u.group(1), u.group(2))
+    out.update(manual)
     return out
 
 
@@ -85,7 +110,7 @@ def main():
         if not gs:
             print("ERRORE: nessuna agenzia GIAL"); return 2
         ag = gs[0]["agency_id"]
-    labels = read_labels(sorted(glob.glob(str(HERE / "relinx_listings*.txt"))))
+    labels = read_labels(sorted(set(glob.glob(str(HERE / "relinx_listings*.txt")) + glob.glob(str(HERE / "gial_*.txt")) + glob.glob(str(HERE / "golden_batch*.txt")))))
     props = cost_model.list_properties()
     todo, unchanged = plan(a.jobs, ag, labels, props)
     print(f"Agenzia {ag}: {len(todo)} job da rinominare, {len(unchanged)} senza etichetta (nome invariato)")
