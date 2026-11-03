@@ -25,6 +25,14 @@ nc, miss = ab.lock(BASE)
 check("T4 C starts with the stationary prefix and has no movement clause", nc.startswith("Stationary view, locked off camera") and "the only thing that moves" not in nc and miss == 0)
 check("T5 C counts a missing clause", ab.lock("this is a frozen photograph x")[1] == 3)
 
+REAL = ("Very slow straight forward camera push-in toward distant wooded hillside, advancing less than three metres in total, smooth continuous motion at a constant slow speed, no stepping or bobbing, realistic physics, extremely slow and subtle, "
+        "this is a frozen photograph of a still scene: every wall keeps the same place, and the light stays steady, the only thing that moves is the camera, which makes the movement described above smoothly, at a constant slow speed, "
+        "everything in view at the start stays in view and in place while the parts of the scene nearest the edges leave the frame, the shot ends on a view of the same scene that contains exactly the same elements as the first frame, "
+        "every shadow and every reflection stays as in the source photo and the scene holds only what the source photo shows, The shot ends on a view of the scene showing a curved road that the camera pushes along.")
+rc_, rm = ab.lock(REAL)
+check("T15 C on a REAL production prompt: all 3 clauses applied, no push-in, no end-view description", rm == 0 and "push" not in rc_.lower() and "curved road" not in rc_ and rc_.startswith("Stationary view, locked off camera") and "nothing moves" in rc_)
+nr, lr = ab.nomove(REAL)
+check("T16 B on a REAL production prompt: no forbidden word left, movement kept", lr == [] and "movement described above" in nr)
 jd = tmp / "job1"; (jd / "clips").mkdir(parents=True); (jd / "images").mkdir()
 Image.new("RGB", (640, 360), (120, 120, 120)).save(jd / "images" / "scene_000.jpg")
 (jd / "job_meta.json").write_text(json.dumps({"scenes_config": [{"scene_id": "s0", "pov_movement": "walk_in_explore"}]}))
