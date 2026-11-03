@@ -26,4 +26,12 @@ b1 = ["Villa su due livelli. Gli ambienti sono luminosi.", "Tre camere da letto.
 check("NP8 one light sentence is allowed", ss.light_problems(b1, _split) == [])
 check("NP9 the prompt carries the LIGHT rule", "at most ONE sentence" in pr and "LIGHT:" in pr)
 check("NP10 validate_blocks calls the light check", "light_problems(blocks, split_fn)" in open("scene_script.py").read())
+fl = lambda s, d: [x for x in ss._fact_problems(s, "s", s.lower(), d, set(), set()) if "floor" in x]
+check("NP11 floor + room allowed when the listing ties them", fl("La cucina si trova al primo piano.", "cucina al primo piano con vista") == [])
+check("NP12 floor + room refused when the listing does not tie them", fl("La cucina si trova al primo piano.", "appartamento al primo piano. cucina abitabile e due camere, tanto altro testo qui per allontanare le parole fra loro nel testo") != [])
+sq = ["outdoor", "living", "kitchen", "bedrooms", "bathrooms", "living"]
+bl = ["GIAL presenta un attico ad Albano. L'immobile ha due livelli.", "Una cucina abitabile con balcone completa gli spazi. La zona notte ha due camere.", "Il bagno ha una finestra. Il soggiorno e ampio, contatta GIAL."]
+d1 = "attico su due livelli, cucina abitabile con balcone, zona notte"
+check("NP13 room+outdoor over the room scene is accepted when the listing says 'cucina con balcone'", not [x for x in ss.validate_blocks(bl, d1, "GIAL", None, split_fn=_split, scene_sequence=sq) if "names outdoor" in x])
+check("NP14 same sentence refused when the listing does not tie them", [x for x in ss.validate_blocks(bl, "attico su due livelli. cucina abitabile. un balcone si trova altrove", "GIAL", None, split_fn=_split, scene_sequence=sq) if "names outdoor" in x])
 print("ALL PASS" if not fails else f"{fails} FAIL"); sys.exit(1 if fails else 0)
