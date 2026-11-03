@@ -166,6 +166,47 @@ def derive_available_category_order(photos: list, priority_order: list = None) -
     present = {p.get("category") for p in photos}
     return [cat for cat in order if cat in present]
 
+# 2026-11-03 (Michele): "teniamo i motivi delle selezioni per capire se funziona e come". For every photo: where its category came from and why it left the selection.
+EXCLUSION_REASONS = {"vision_illustration": "illustrazioni o render", "vision_aerial": "viste aeree o dall'alto", "vision_hall": "ingressi o corridoi",
+                     "vision_refine": "esterni non confermati", "vision_quality": "scarsa qualit\u00e0"}
+
+
+def photo_exclusion(p: dict):
+    """The reason (Italian) why a photo is NOT usable, or None when it is."""
+    if p.get("quality_rejected"):
+        return EXCLUSION_REASONS["vision_quality"]
+    cat = p.get("category")
+    if cat in CATEGORIES:
+        return None
+    return EXCLUSION_REASONS.get(p.get("category_source")) or "ambiente non riconosciuto"
+
+
+def build_photo_audit(photos: list) -> list:
+    out, seen = [], set()
+    for i, p in enumerate(photos or []):
+        u = p.get("url")
+        if u in seen:
+            continue
+        seen.add(u)
+        out.append({"n": i + 1, "url": u, "label": p.get("label_it") or None, "category": p.get("category"),
+                    "category_from_page": p.get("category_page") or p.get("category_before_source"),
+                    "source": p.get("category_source") or "partner_or_page", "excluded": photo_exclusion(p)})
+    return out
+
+
+def exclusion_counts(photos: list) -> dict:
+    n, seen = {}, set()
+    for p in photos or []:
+        u = p.get("url")
+        if u in seen:
+            continue
+        seen.add(u)
+        r = photo_exclusion(p)
+        if r:
+            n[r] = n.get(r, 0) + 1
+    return n
+
+
 MIN_USABLE_PHOTOS = 5
 MIN_ENVIRONMENT_TYPES = 4
 _STANDARD_TYPES_IT = "facciata, soggiorno, cucina, camera da letto, bagno, balcone/giardino"
@@ -199,6 +240,10 @@ def check_listing_acceptance(photos: list) -> dict:
         msg += " Mancano: " + ", ".join(CATEGORY_ITALIAN_LABELS[c] for c in missing) + "."
     if only_outside:
         msg += " Le foto mostrano solo esterni: servono anche gli interni."
+    excl = exclusion_counts(photos)
+    if excl:
+        msg += " Foto escluse: " + ", ".join(f"{n} {r}" for r, n in sorted(excl.items(), key=lambda x: -x[1])) + "."
+    result["excluded"] = excl
     result.update({"ok": False, "code": "insufficient_photos", "message": msg})
     log.warning(f"[Scraper] Listing rejected (insufficient_photos): {msg}")
     return result
@@ -210,7 +255,9 @@ def check_listing_acceptance(photos: list) -> dict:
 FURNISHED_SAMPLE_PER_ROOM = 2
 FURNISHED_ROOMS = ("living", "bedrooms")
 UNFURNISHED_MESSAGE = "Annuncio non supportato: appartamento non arredato (al momento non disponibile)."
-ACCEPTANCE_SHORT_REASON = {"insufficient_photos": "foto insufficienti", "unfurnished": "non arredato"}
+ACCEPTANCE_SHORT_REASON = {"insufficient_photos": "foto insufficienti", "unfurnished": "non arredato", "unlabeled_empty_rooms": "stanze vuote senza etichette"}
+UNLABELED_EMPTY_MESSAGE = ("Annuncio non idoneo: le stanze risultano vuote e le foto non hanno etichette che ne indichino l'ambiente; "
+                           "senza arredi e senza etichette non \u00e8 possibile riconoscere le stanze e produrre un video di qualit\u00e0.")
 _VISION_FURNISHED_PROMPT = (
     "Look at this real estate interior photo. Does the room contain furniture (a sofa, table, chairs, a bed, a wardrobe, a desk, shelves "
     "or similar movable furniture)? Built-in kitchen units, fixed lights and curtains do NOT count as furniture.\n"
@@ -228,6 +275,7 @@ def check_listing_furnished(photos: list, ask=None) -> dict:
     # with no failed call. Anything unsure (no photo, failed call, unclear answer) never blocks a listing.
     ask = ask or _vision_one_word
     detail, verdicts, seen = {}, [], set()
+    unlabeled = False
     for room in FURNISHED_ROOMS:
         sample = []
         for p in photos or []:
@@ -248,6 +296,9 @@ def check_listing_furnished(photos: list, ask=None) -> dict:
         if empties * 2 > len(words):
             detail[room] = "empty (" + str(empties) + " of " + str(len(words)) + " photos)"
             verdicts.append("empty")
+            # 2026-11-03: a room whose category came from the classifier (no label from the page or the partner) cannot be told apart when it is empty
+            if any(p.get("category_source") == "vision" and not str(p.get("label_it") or "").strip() for p in sample):
+                unlabeled = True
         elif furnished:
             detail[room] = "furnished"
             verdicts.append("furnished")
@@ -255,7 +306,7 @@ def check_listing_furnished(photos: list, ask=None) -> dict:
             detail[room] = "unknown (unclear answer)"
             verdicts.append(None)
     blocked = bool(verdicts) and all(v == "empty" for v in verdicts)
-    return {"ok": not blocked, "detail": detail}
+    return {"ok": not blocked, "detail": detail, "unlabeled": bool(blocked and unlabeled)}
 
 
 def furnished_enforced() -> bool:
@@ -274,7 +325,10 @@ def check_listing_scope(photos: list, ask=None) -> dict:
     result["furnished_check"] = furn["detail"]
     result["furnished_status"] = "ok" if furn["ok"] else "unfurnished"
     if not furn["ok"]:
-        if furnished_enforced():
+        if furn.get("unlabeled"):          # 2026-11-03 (Michele): empty rooms WITH labels are feasible; empty rooms WITHOUT labels are stopped
+            result.update({"ok": False, "code": "unlabeled_empty_rooms", "message": UNLABELED_EMPTY_MESSAGE})
+            log.warning("[Scraper] Listing rejected (empty rooms without labels): " + str(furn["detail"]))
+        elif furnished_enforced():
             result.update({"ok": False, "code": "unfurnished", "message": UNFURNISHED_MESSAGE})
             log.warning("[Scraper] Listing rejected (unfurnished): " + str(furn["detail"]))
         else:
@@ -848,7 +902,7 @@ _VISION_SOURCE_PROMPT = (
     "Answer with ONLY one word: photo, aerial or illustration."
 )
 AERIAL_PROPERTY_CAPTION_WORDS = ("facciata", "prospetto", "immobile", "la proprieta", "la proprietà", "l'edificio", "palazzina", "villa", "la casa")
-MAX_SOURCE_CHECK = 30
+MAX_SOURCE_CHECK = 60
 
 
 def aerial_filter_enabled() -> bool:
@@ -1121,6 +1175,8 @@ def build_selection_report(photos: list, selection: dict, scene_count_requested=
         "quality_checked": len({id(p) for p in photos if p.get("quality")}),
         "quality_rejected": [{"category": p.get("category"), "url": p.get("url"), "verdict": p.get("quality")}
                              for p in photos if p.get("quality_rejected")],
+        "photo_audit": build_photo_audit(photos),          # 2026-11-03: every photo with the source of its category and the reason it was excluded
+        "excluded_counts": exclusion_counts(photos),
     }
     log.info(f"[Scraper] selection report: scenes_requested={scene_count_requested} "
              f"candidates={report['candidates_by_category']} used={report['categories_used']} "
