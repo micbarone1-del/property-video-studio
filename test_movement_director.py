@@ -203,5 +203,18 @@ p, _ = md.validate(_fw("far end wall of the room", 0.5), _H)
 check("MD74 'far end wall' is not a side", p["target"] == "far end wall of the room", p)
 check("MD75 the director's question tells Claude the target must be central", "target_x between 0.3 and 0.7" in Path("movement_director.py").read_text())
 check("MD76 the director treats a high viewpoint looking down as aerial -> static", "looking clearly DOWN" in Path("movement_director.py").read_text() and "aerial = drone, map, or a high viewpoint" in Path("movement_director.py").read_text())
+import os as _os
+_old = _os.environ.pop("PVS_DIRECTOR_NEAR", None)
+_std = md.prompt_text()
+_os.environ["PVS_DIRECTOR_NEAR"] = "1"
+_near = md.prompt_text()
+if _old is None:
+    _os.environ.pop("PVS_DIRECTOR_NEAR", None)
+else:
+    _os.environ["PVS_DIRECTOR_NEAR"] = _old
+check("MD77 without the switch the director prompt is exactly the standard one", _std == md.PROMPT and "Aim at something FAR" in _std)
+check("MD78 with PVS_DIRECTOR_NEAR=1 the target is NEAR (reachable in five seconds), never the far background, never an entrance", "Aim at something NEAR" in _near and "Aim at something FAR" not in _near
+      and "ARRIVE at its target" in _near and "not at the building or its" in _near)
+check("MD79 the near version keeps every other rule (central target, aerial, braces for format)", "target_x between 0.3 and 0.7" in _near and "looking clearly DOWN" in _near and bool(_near.format(facts="x", feedback="")))
 print(f"\n{'ALL PASS' if not fails else str(fails) + ' FAIL'}")
 sys.exit(1 if fails else 0)
