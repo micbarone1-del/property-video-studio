@@ -178,6 +178,8 @@ def photo_exclusion(p: dict):
     cat = p.get("category")
     if cat in CATEGORIES:
         return None
+    if p.get("other_kind") and not EXCLUSION_REASONS.get(p.get("category_source")):
+        return OTHER_KINDS_IT.get(p["other_kind"], "ambiente non riconosciuto")
     return EXCLUSION_REASONS.get(p.get("category_source")) or "ambiente non riconosciuto"
 
 
@@ -1001,12 +1003,36 @@ def refine_exterior_outdoor_with_vision(photos: list, max_photos: int = MAX_PHOT
     return summary
 
 
+# 2026-11-03: the classifier answers "other" for entrance halls, corridors, stairs, shared areas, floor plans and details. For the per-photo audit (Michele: keep the
+# reasons of the selection) one more cheap question says WHICH of them it is, only for the photos that ended up "uncategorized".
+OTHER_KINDS_IT = {"hall": "ingresso o corridoio", "stairs": "scale", "floorplan": "piantina", "shared": "parti comuni dell'edificio", "detail": "dettaglio ravvicinato"}
+_VISION_OTHER_PROMPT = (
+    "Look at this real estate photo. What does it mainly show?\n"
+    "- hall: entrance hall, corridor, hallway or landing inside the home.\n"
+    "- stairs: a staircase.\n"
+    "- floorplan: a floor plan, drawing or map of the layout.\n"
+    "- shared: shared building areas (courtyard, portico, lobby, lift, communal garden, parking, street).\n"
+    "- detail: a close-up of a detail, an object, a plant, a door or a wall.\n"
+    "- other: anything else.\n"
+    "Answer with ONLY one word: hall, stairs, floorplan, shared, detail or other."
+)
+
+
+def _other_kind(image_url: str, fallback_url: str = None) -> str:
+    word, ok = _vision_one_word(image_url, fallback_url, _VISION_OTHER_PROMPT)
+    return word if ok and word in OTHER_KINDS_IT else ""
+
+
 def resolve_uncategorized_photos(photos: list) -> list:
-    """Runs the vision-QC fallback on every 'uncategorized' photo, in place."""
+    """Runs the vision-QC fallback on every 'uncategorized' photo, in place. A photo the classifier calls "other" gets p["other_kind"] (audit only)."""
     for p in photos:
         if p.get("category") == "uncategorized":
             p["category"] = classify_uncategorized_photo(p["url"], p.get("original_url"))
             p["category_source"] = "vision"
+            if p["category"] == "uncategorized":
+                kind = _other_kind(p["url"], p.get("original_url"))
+                if kind:
+                    p["other_kind"] = kind
     return photos
 
 
