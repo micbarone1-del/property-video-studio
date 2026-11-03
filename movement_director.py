@@ -53,14 +53,14 @@ What the model can and cannot do (lessons learned on real clips):
 - Stop well before any furniture, wall or object: shallow rooms (wall or furniture close to the camera) get a very short move or none.
 - Aim at something FAR, fixed and worth looking at near the centre of the frame (far wall, window with a view, far end of the space, bed, sofa area). Never aim at
   a door, mirror or other reflective surface, curtain, plant, water, screen, person, animal or a utilitarian fixture (sink, toilet, bath, radiator, stove).
-- Photo seen from the AIR (drone, map, satellite): move "static", whatever it shows.
+- Photo seen from the AIR (drone, map, satellite) or taken from a high point looking clearly DOWN at the street, roofs or garden below (view "aerial"): move "static", whatever it shows. Pushing forward over such a view makes the video model drop the camera and invent the ground.
 - Facade and outdoor photos: an EXTREMELY slow advance of less than three metres toward the building or the view, at the same height, stopping well before any gate, wall or railing.
 - Write in positive terms (what the camera DOES). No negations, no list of things that must not happen.
 
 Facts from the photo analysis (may be wrong, trust your own eyes): {facts}
 {feedback}
 JSON keys:
- "view": "interior" | "ground" | "aerial"   (ground = outdoors at ground level)
+ "view": "interior" | "ground" | "aerial"   (ground = outdoors at ground level; aerial = drone, map, or a high viewpoint looking down)
  "move": one of forward, lateral_left, lateral_right, rotate_left, rotate_right, static
  "target": a short English noun phrase for the far fixed thing the camera heads toward (forward) or keeps in the centre, or "centre of the frame". A forward target MUST sit near the horizontal middle of the photo (target_x between 0.3 and 0.7) and its phrase names no side ("far right wall", "left corner"): the video model turns the camera towards any target that is off to one side. If the interesting thing is at a side, use "centre of the frame"
  "target_x", "target_y": where the target sits in the photo, as fractions from 0 to 1 (x from the left edge, y from the top edge); the shot ends centred on it
