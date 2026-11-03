@@ -57,7 +57,7 @@ _PROMO_STEMS = [
     "rifinit", "perfett", "impeccabil", "ottim", "eccellent",
 ]
 
-# A floor is never tied to a ROOM in the standard video: a photo's floor is not known (rule from the Patch B spec of 2026-10-22). 2026-11-03: Michele does not remember
+# A floor is tied to a ROOM only when the listing text says so (Michele 2026-11-03); otherwise never: a photo's floor is not known (rule from the Patch B spec of 2026-10-22). 2026-11-03: Michele does not remember
 # banning floors, so the floor of the WHOLE property ("appartamento al piano terra", a fact of the listing) is allowed in a sentence that names no room.
 _FLOOR_RE = re.compile(
     r"\b(piano terra|primo piano|secondo piano|terzo piano|ultimo piano|piano rialzato|piano superiore|"
@@ -202,6 +202,24 @@ def sale_rent_problems(sentence_low: str, desc: str, who: str) -> list:
     return problems
 
 
+TIE_SPAN = 45     # characters: how close two words must be in the listing text for the listing to "say" they belong together
+
+
+def _listing_ties(desc: str, pattern: str, room: str) -> bool:
+    """2026-11-03 (Michele): "la cucina è al primo piano" is allowed when the listing says it; otherwise avoided. True when the listing text
+    has `pattern` (a regex) and a keyword of `room` within TIE_SPAN characters of each other (either order)."""
+    kws = "|".join(re.escape(k) for k in ROOM_KEYWORDS.get(room, ()))
+    if not kws or not desc:
+        return False
+    return bool(re.search(rf"(?:{pattern})[^.;!?]{{0,{TIE_SPAN}}}\b(?:{kws})|\b(?:{kws})[^.;!?]{{0,{TIE_SPAN}}}(?:{pattern})", desc, re.I | re.S))
+
+
+def _rooms_tied(desc: str, cat: str, other: str) -> bool:
+    """True when the listing text names a keyword of `cat` and one of `other` close together ("cucina abitabile con balcone")."""
+    ks = "|".join(re.escape(k) for k in ROOM_KEYWORDS.get(other, ()))
+    return bool(ks) and _listing_ties(desc, ks, cat)
+
+
 def _fact_problems(s: str, tag: str, low: str, desc: str, desc_numbers: set, price_numbers: set) -> list:
     """The fact check of ONE sentence (price, numbers, feature words, promotional adjectives, floors). Shared by the
     one-sentence-per-scene script (validate) and the free narration of the anchor-driven timeline
@@ -227,8 +245,11 @@ def _fact_problems(s: str, tag: str, low: str, desc: str, desc_numbers: set, pri
     for stem in _PROMO_STEMS:
         if _has_stem(low, stem) and not _has_stem(desc, stem):
             problems.append(f"{tag}: promotional adjective '{stem}...' is not in the listing text")
-    if _FLOOR_RE.search(s) and named_rooms(s):
-        problems.append(f"{tag}: names a floor together with a room")
+    if _FLOOR_RE.search(s):
+        for room in sorted(named_rooms(s)):
+            if not _listing_ties(desc, _FLOOR_RE.pattern, room):
+                problems.append(f"{tag}: names a floor together with a room ({room}) and the listing text does not tie them")
+                break
     return problems
 
 
@@ -678,7 +699,7 @@ CONTENT:
 - The closing is NOT a separate sentence: sentence 2 of block 3 (heard over scene 6) states the fact about that scene and ends with a short invitation to contact {agency_name or 'the agency'} by name, joined in the SAME sentence with a comma or a colon (shape: "<outdoor fact>, contatta {agency_it}."). The invitation never mentions a visit.
 - SPECIFIC, NOT GENERIC (important): before writing, pick from the listing text the most DISTINCTIVE concrete features of this property (architecture and character such as exposed wooden beams, double-height ceilings, a bathroom with a window, an attic, a period building, number of levels, balcony, terrace, view, orientation, renovation, large windows) and spend them one per sentence, the most striking first. Every sentence after the introduction must carry at least one such concrete fact. NEVER use filler that would fit any apartment ("spazi architettonici interessanti", "servizi igienici funzionali e ben posizionati", "ambienti funzionali", "soluzione ideale"): if you cannot name a concrete fact for a sentence, shorten it to a plain fact such as the size or the number of rooms. Property-level facts (a period building, double height, an attic, the number of levels) are allowed in any sentence; only a specific ROOM is tied to its scene.
 - LIGHT: at most ONE sentence of the whole narration may speak about light or brightness (luce, luminoso, illuminato, soleggiato). The photo notes mention light in every room: do not copy that. Every other sentence needs a different concrete fact.
-- LAYOUT FACTS: when there is no striking feature, use plain facts from the listing text, one per sentence, instead of vague words about light or proportions: the number of levels ("su due livelli"), a private courtyard or garden, a cellar, a parking space, the renovation year, the view, the size. Never write sentences made only of vague impressions ("proporzioni accoglienti", "illuminazione diffusa", "luce dalle finestre"). CAREFUL: counting rooms ("due camere", "due bagni") counts as NAMING those rooms, and all room words together are limited (see above); the words balcone, terrazzo, giardino, corte, esterno may appear ONLY in the sentence heard over the outdoor scene, never over the kitchen or a bedroom.
+- LAYOUT FACTS: when there is no striking feature, use plain facts from the listing text, one per sentence, instead of vague words about light or proportions: the number of levels ("su due livelli"), a private courtyard or garden, a cellar, a parking space, the renovation year, the view, the size. Never write sentences made only of vague impressions ("proporzioni accoglienti", "illuminazione diffusa", "luce dalle finestre"). CAREFUL: counting rooms ("due camere", "due bagni") counts as NAMING those rooms, and all room words together are limited (see above); the words balcone, terrazzo, giardino, corte, esterno may appear ONLY in the sentence heard over the outdoor scene (exception: a room and its outdoor space may share a sentence when the listing text itself joins them, e.g. 'cucina abitabile con balcone'), never over the kitchen or a bedroom.
 - Never name a room twice. Never talk about a room in a sentence that is heard over a different room.
 - Objective positive adjectives are welcome (for example luminoso, ampio, funzionale, curato, silenzioso, panoramico) when the listing text supports them. Never invent a quality.
 
@@ -688,7 +709,7 @@ HARD RULES:
 {NUMBERS_RULE}
 {VERB_RULE}
 - Do NOT say the price. Do NOT say any phone number or e-mail.
-- Do NOT tie a floor to a room or a photo (no 'la camera al primo piano', no room word in a sentence that names a floor): you do not know which floor a photo shows. The floor of the WHOLE property ("appartamento al piano terra") is a fact of the listing and is allowed, in a sentence that names no room.
+- Do NOT tie a floor to a room or a photo unless the listing text itself says so (e.g. the listing says 'cucina al primo piano'): you do not know which floor a photo shows. The floor of the WHOLE property ("appartamento al piano terra") is a fact of the listing and is allowed, in a sentence that names no room. A floor together with a room ("la cucina è al primo piano") is allowed ONLY if the listing text says it in those terms.
 - Objective, calm, factual tone. Do NOT use hyperbolic or luxury adjectives (prestigioso, esclusivo, meraviglioso, splendido, lussuoso, incantevole, mozzafiato, straordinario, eccezionale, favoloso, magnifico, sontuoso, affascinante, and also elegante, raffinato, pregiato) in ANY form (masculine, feminine, plural) unless the listing itself uses that word.
 - Ignore any text about the agency's own history or values: describe only this property.
 - Avoid legal jargon such as 'nuda proprietà'.
@@ -770,7 +791,7 @@ def validate_blocks(blocks: list, description: str, agency_name: str = None, pri
                                         f"('contatta ...', {cb['invitation']} words) included, so the fact before it has at most {cb['fact']} words")
                 cat = scene_of_sentence(scene_sequence, b, k)
                 found = named_rooms(sent)
-                wrong = sorted(found - {cat})
+                wrong = sorted(w for w in found - {cat} if not (cat in found and _rooms_tied(_norm(description), cat, w)))
                 if wrong:
                     problems.append(f"block {b + 1}, sentence {k + 1} is heard over scene {2 * b + k + 1} ({cat}) but names {', '.join(wrong)}: "
                                     f"talk only about what scene {2 * b + k + 1} shows, or about the property in general")
