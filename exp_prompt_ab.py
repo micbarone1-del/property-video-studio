@@ -43,11 +43,12 @@ BAD_RE = re.compile(r"\b(move|moves|moving|down)\b", re.I)
 
 # C: the movement clause of the positive rules is replaced by a still camera
 C_PREFIX = "Stationary view, locked off camera, no camera movement. "
-C_REPLACE = [
-    ("the only thing that moves is the camera, which makes the movement described above smoothly, at a constant slow speed", "nothing moves, the camera stays locked off"),
-    ("everything in view at the start stays in view and in place while the parts of the room nearest the edges leave the frame", "everything in view stays in view and in place"),
-    ("the shot ends on a view of the same room that contains exactly the same elements as the first frame", "the last frame is identical to the first frame"),
+C_REPLACE = [      # regexes: production says "room" or "scene" depending on the photo
+    (r"the only thing that moves is the camera, which makes the movement described above smoothly, at a constant slow speed", "nothing moves, the camera stays locked off"),
+    (r"everything in view at the start stays in view and in place while the parts of the (room|scene) nearest the edges leave the frame", "everything in view stays in view and in place"),
+    (r"the shot ends on a view of the same (room|scene) that contains exactly the same elements as the first frame", "the last frame is identical to the first frame"),
 ]
+C_CUT = re.compile(r",?\s*The shot ends on a view of the (?:room|scene) showing\b.*$", re.S | re.I)   # Claude's description of the END view: it describes travelling, so it goes
 
 
 def nomove(prompt: str) -> tuple:
@@ -59,16 +60,17 @@ def nomove(prompt: str) -> tuple:
 
 
 def lock(prompt: str) -> tuple:
-    """(new prompt, number of replacements that did NOT apply)"""
+    """(new prompt, number of replacements that did NOT apply). Keeps only the rules; the movement sentence at the start and the description of the end view go."""
     i = prompt.find("this is a frozen photograph")
     rules = prompt[i:] if i >= 0 else prompt
+    rules = C_CUT.sub("", rules)
     miss = 0
     for a, b in C_REPLACE:
-        if a in rules:
-            rules = rules.replace(a, b)
-        else:
+        new = re.sub(a, b, rules, flags=re.I)
+        if new == rules:
             miss += 1
-    return C_PREFIX + rules, miss
+        rules = new
+    return C_PREFIX + rules.rstrip(", "), miss
 
 
 def find_clip_notes(job: str, index: int) -> dict:
