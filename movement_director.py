@@ -62,7 +62,7 @@ Facts from the photo analysis (may be wrong, trust your own eyes): {facts}
 JSON keys:
  "view": "interior" | "ground" | "aerial"   (ground = outdoors at ground level)
  "move": one of forward, lateral_left, lateral_right, rotate_left, rotate_right, static
- "target": a short English noun phrase for the far fixed thing the camera heads toward (forward) or keeps in the centre, or "centre of the frame"
+ "target": a short English noun phrase for the far fixed thing the camera heads toward (forward) or keeps in the centre, or "centre of the frame". A forward target MUST sit near the horizontal middle of the photo (target_x between 0.3 and 0.7) and its phrase names no side ("far right wall", "left corner"): the video model turns the camera towards any target that is off to one side. If the interesting thing is at a side, use "centre of the frame"
  "target_x", "target_y": where the target sits in the photo, as fractions from 0 to 1 (x from the left edge, y from the top edge); the shot ends centred on it
  "travel": "short" | "medium" | "long"   (forward: how far the camera glides; sideways moves ignore this)
  "risk": "low" | "medium" | "high"   (your honest chance that the model invents something with the move you chose)
@@ -198,6 +198,8 @@ def validate(raw: dict, hints: dict):
             unsafe = f"target {target!r} unsafe or empty"
         elif hints.get("reflective_surface") in ("small", "large") and re.search(r"glass|mirror", tgt_ok.lower()):
             unsafe = f"target {target!r} is glass while a mirror is in view"
+        elif _off_centre(raw, tgt_ok):
+            unsafe = f"target {target!r} is off to one side (the video model turns the camera towards it)"
         if unsafe:
             # keep Claude's decision (a forward move) and only change WHERE it heads: the centre of the frame, in the positive sentence
             downgraded = f"retargeted to the centre: {unsafe}"
@@ -223,6 +225,22 @@ def validate(raw: dict, hints: dict):
     if downgraded:
         plan["adjusted"] = downgraded
     return plan, []
+
+
+SIDE_WORDS = re.compile(r"\b(left|right|corner|side|edge)\b", re.I)
+
+
+def _off_centre(raw: dict, target: str) -> bool:
+    """2026-11-03 (job 3fcff5a9 scene 2): 'toward the glazed French doors on the far right wall' made Luma turn the camera to the right and invent what
+    lies beyond the photo. A forward target must be near the horizontal middle, and its phrase must name no side. The centre of the frame is the cure."""
+    import camera_plan
+    if target and target.lower() != camera_plan.CENTRE_ANCHOR and SIDE_WORDS.search(target):
+        return True
+    try:
+        x = float(raw.get("target_x"))
+    except (TypeError, ValueError):
+        return False
+    return x < 0.3 or x > 0.7
 
 
 def _center(raw: dict):
