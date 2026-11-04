@@ -4,7 +4,7 @@ Why: Michele wants to avoid skipping usable photos. e21367fe / e7f516e3 lost the
 photos are excluded as 'parti comuni dell'edificio' / 'ingresso o corridoio'. This shows every photo with that verdict so a person can say whether it was right.
 No Claude, no spend, nothing is written into a job. Uses the SAME functions as relinx_pilot_check.py (page parsing, white-band rule) so the numbers match the job's photo_audit.
 
-  python3 photo_sheet.py JOB_ID LISTING_URL [--only 5,10,12]   --only: instead of thumbnails, ONE large image per listed photo (1400 px wide) plus a 1:1 crop of its centre at the
+  python3 photo_sheet.py JOB_ID LISTING_URL [--only 5,10,12]   --only 5,10 or --only rejected (= the photos the quality filter threw out); URL optional (read from the draft): instead of thumbnails, ONE large image per listed photo (1400 px wide) plus a 1:1 crop of its centre at the
                                                           real pixels (the view the quality judge also gets), to judge sharpness on a tablet. JOB_ID = a draft of the test instance (/var/www/pvs_test_jobs); sheets go to jobs/_test_scratch/ (port 8000 serves them)
 """
 import io
@@ -43,6 +43,22 @@ def verdicts(job: str) -> dict:
     return out
 
 
+def listing_url(job: str) -> str:
+    """The relinx.it listing page of a draft, read from its job_meta.json (first https://relinx.it/... string found)."""
+    import re
+    txt = (TEST_JOBS / job / "job_meta.json").read_text()
+    m = re.search(r'https://relinx\.it/[^"\\ ]*?/immobili/[^"\\ ]+', txt) or re.search(r'https://relinx\.it/[^"\\ ]+', txt)
+    if not m:
+        raise SystemExit(f"no relinx.it url in {job}/job_meta.json: pass it as second argument")
+    return m.group(0)
+
+
+def rejected_indices(job: str) -> dict:
+    """{photo index: quality verdict} of the photos the quality filter threw out (selection_report.quality_rejected)."""
+    sr = json.loads((TEST_JOBS / job / "job_meta.json").read_text()).get("selection_report") or {}
+    return {index_of(q.get("url")): q.get("verdict") for q in sr.get("quality_rejected") or [] if index_of(q.get("url")) is not None}
+
+
 def big_views(job, kept, only):
     """Large image + 1:1 centre crop for each wanted photo index; returns the links."""
     from PIL import Image
@@ -57,7 +73,8 @@ def big_views(job, kept, only):
         cw, ch = min(w, 1100), min(h, 700)
         x0, y0 = (w - cw) // 2, (h - ch) // 2
         cname = f"photos_{job}_{n_out}_crop.jpg"; im.crop((x0, y0, x0 + cw, y0 + ch)).save(SCRATCH / cname, quality=92)
-        links.append((n_out, f"{w}x{h}", f"{LINK_BASE}/{name}", f"{LINK_BASE}/{cname}"))
+        fname = f"photos_{job}_{n_out}_full.jpg"; im.save(SCRATCH / fname, quality=95)
+        links.append((n_out, f"{w}x{h}", f"{LINK_BASE}/{name}", f"{LINK_BASE}/{cname}", f"{LINK_BASE}/{fname}"))
     return links
 
 
@@ -71,8 +88,9 @@ def main(job, url, only=None):
     imgs = [Image.open(io.BytesIO(requests.get("https://relinx.it" + rel, headers=rp.UA, timeout=60).content)).convert("RGB") for rel in L["photos"]]
     kept, info = rp.choose_clean_photos(imgs, listing_scraper.MIN_USABLE_PHOTOS)
     if only:
-        for n_out, size, big, crop in big_views(job, kept, only):
-            print(f"#{n_out} ({size} px, label: {verdicts(job).get(n_out, '?')})\n   whole: {big}\n   1:1 crop: {crop}")
+        v = verdicts(job); rej = rejected_indices(job)
+        for n_out, size, big, crop, full in big_views(job, kept, only):
+            print(f"#{n_out} ({size} px, label: {v.get(n_out, '?')}, quality verdict: {rej.get(n_out, '-')})\n   whole: {big}\n   1:1 crop: {crop}\n   FULL resolution: {full}")
         return 0
     thumbs = []
     for n_out, (pos, im) in enumerate(kept):
@@ -104,7 +122,14 @@ def main(job, url, only=None):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) not in (3, 5):
+    a = sys.argv[1:]
+    if "--only" in a:
+        i = a.index("--only"); spec = a[i + 1]; del a[i:i + 2]
+    else:
+        spec = None
+    if not a or len(a) > 2:
         print(__doc__); sys.exit(1)
-    only = {int(x) for x in sys.argv[sys.argv.index("--only") + 1].split(",")} if "--only" in sys.argv else None
-    sys.exit(main(sys.argv[1], sys.argv[2], only))
+    job = a[0]
+    url = a[1] if len(a) == 2 else listing_url(job)
+    only = (set(rejected_indices(job)) if spec == "rejected" else {int(x) for x in spec.split(",")}) if spec else None
+    sys.exit(main(job, url, only))
