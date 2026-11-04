@@ -16,10 +16,12 @@ Round 2 (2026-11-04, after the blind judgement of run 1104_144423: G 5 clearly b
   D1  the director with the ORIGINAL facade rule (PVS_DIRECTOR_NEAR=0: toward the building, Michele's 2026-10-25 rule), a MINIMAL move (end view scale 1.05 instead of 1.12, a sentence
       without metres: the anchor ends only slightly larger in the frame) and the outdoor FROZEN-SCENE rule (buildings, vehicles, trees, signs and any figure fixed in place)
   D2  the same director and the same frozen-scene rule, but the normal move of today (scale 1.12, the old sentence): separates the effect of the rule from the effect of the small move
+Round 3 (2026-11-04, Michele: "dobbiamo usare tutte le raccomandazioni"): L = the camera-only prompt Luma's support recommended (one sentence, no room description, no metres, no rules, no
+  move/movement/down words, no names of things that can move, no rotation: a static plan becomes "Stationary view of the [room]. Locked off camera."), P = the production prompt of today.
   The anchor stays what the director chooses for each scene (not one fixed target). Compare with the G/B/S judgements already given.
 
   python3 exp_facade.py plan   JOB1,JOB2,... [--set d]            free: lists the facade scenes found ('exterior' scenes)
-  python3 exp_facade.py run    JOB1,JOB2,... [--set d] [--reps 2] [--cap 4.5] [--max-scenes 12] --go     --set d = round 2 (D1, D2); default = round 1 (G, B, S)
+  python3 exp_facade.py run    JOB1,JOB2,... [--set d] [--reps 2] [--cap 4.5] [--max-scenes 12] --go     --set d = round 2 (D1, D2); --set l [--per-cat 2] = round 3 (P production vs L Luma-recommended, scenes of ALL categories); default = round 1 (G, B, S)
   python3 exp_facade.py reveal RUN_ID
   PVS_JOBS_DIR = where the drafts are (test instance: /var/www/pvs_test_jobs); PVS_VOLUME_SCRATCH = where the videos go (production scratch, served on port 8000)
 """
@@ -39,6 +41,10 @@ OUT = ev.SCRATCH / "facade"
 BUILDING_TARGET = "the base of the front wall of the building"
 VARIANTS = ("G", "B", "S")
 VARIANTS_D = ("D1", "D2")
+VARIANTS_L = ("P", "L")      # round 3: P = production prompt as it is today, L = the prompt Luma's support recommended (camera only)
+ROOM_LABEL = {"living": "living room", "kitchen": "kitchen", "bedrooms": "bedroom", "bathrooms": "bathroom", "exterior": "building facade", "outdoor": "terrace"}
+FORBIDDEN = re.compile(r"\b(move|moves|moving|moved|movement|movements|down)\b", re.I)                      # Luma support 2026-11-04: the model assigns these to the camera / pulls things into motion
+MOVABLE = re.compile(r"\b(curtains?|plants?|water|trees?|flags?|vehicles?|cars?|people|persons?|figures?|wind)\b", re.I)   # Luma support: do not name things that can move
 CATEGORY = "exterior"
 
 
@@ -105,6 +111,36 @@ class _env:
                 os.environ[k] = v
 
 
+def lint(prompt: str) -> dict:
+    """{'forbidden': [...], 'movable': [...]}: the words Luma's support advised against, found in a prompt (deterministic, free)."""
+    return {"forbidden": sorted({m.group(0).lower() for m in FORBIDDEN.finditer(prompt)}), "movable": sorted({m.group(0).lower() for m in MOVABLE.finditer(prompt)})}
+
+
+def l_prompt(plan: dict, category: str) -> tuple:
+    """(prompt L, 1 if the director's move was not a plain forward one and became a locked-off shot). Camera only; no room description, no metres, no rules, no negations.
+    Rotation and sideways glides are avoided (Luma support), so they become the 'Stationary view ... Locked off camera' recipe."""
+    room = ROOM_LABEL.get(str(category or "").lower(), "room")
+    if plan and plan.get("move") == "forward" and plan.get("target"):
+        return f"Slow steady forward push-in toward {plan['target']}.", 0
+    return f"Stationary view of the {room}. Locked off camera.", 1
+
+
+def pick_scenes(job_ids, per_cat: int) -> list:
+    """[(job, scene, category)]: up to per_cat scenes of EACH category over the drafts, in draft order."""
+    seen, out = {}, []
+    for jid in job_ids:
+        try:
+            meta = json.loads((ev.JOBS_DIR / jid / "job_meta.json").read_text())
+        except Exception:
+            continue
+        for i, sc in enumerate(meta.get("scenes_config") or []):
+            cat = str(sc.get("category") or sc.get("room") or "").lower()
+            if cat and seen.get(cat, 0) < per_cat:
+                seen[cat] = seen.get(cat, 0) + 1
+                out.append((jid, i, cat))
+    return out
+
+
 def capture_prompt(job: str, i: int, force_building: bool = False, transform=None):
     """(prompt, plan text) the production chain would send to Luma for this scene. The Luma call is replaced by a function that only records the prompt."""
     import movement_director as md
@@ -136,12 +172,31 @@ def capture_prompt(job: str, i: int, force_building: bool = False, transform=Non
     finally:
         vg._generate_luma_direct, vg._generate_luma, vg._generate_veo, vg.FAL_FALLBACK_ENABLED, md.plan = saved
     pl = used[-1] if used else None
+    capture_prompt.last_plan = pl          # the plan dict itself (round 3 builds prompt L from it)
     return (got[0] if got else None), (f"{pl.get('move')} -> {pl.get('target')}" if pl else "?"), img
 
 
-def build_cases(job_ids, max_scenes, variants=VARIANTS):
+def build_cases_l(scenes):
+    """Round 3: P (production prompt of today) and L (camera-only) for each scene. Exterior scenes use the director with the ORIGINAL facade rule (PVS_DIRECTOR_NEAR=0) for BOTH."""
+    cases = []
+    for job, i, cat in scenes:
+        env = {"PVS_DIRECTOR_NEAR": "0"} if cat in ("exterior", "outdoor") else {}
+        with _env(**env):
+            pp, pplan, img = capture_prompt(job, i)
+        plan = getattr(capture_prompt, "last_plan", None)
+        if not pp or not plan:
+            ev.say(f"{job}:{i} no production prompt captured: skipped"); continue
+        lp, became_static = l_prompt(plan, cat)
+        ev.say(f"{job}:{i} [{cat}] plan: {pplan}{' -> L locked off' if became_static else ''}\n    L: {lp}\n    lint P {lint(pp)} | lint L {lint(lp)}")
+        cases.append({"job": job, "scene": i, "img": str(img), "prompts": {"P": pp, "L": lp}, "plans": {"P": pplan, "L": "locked off" if became_static else pplan}})
+    return cases
+
+
+def build_cases(job_ids, max_scenes, variants=VARIANTS, per_cat=2):
     import exp_prompt_ab as ab
     cases = []
+    if variants == VARIANTS_L:
+        return build_cases_l(pick_scenes(job_ids, per_cat)[:max_scenes])
     for job, i in facade_scenes(job_ids)[:max_scenes]:
         if variants == VARIANTS_D:
             with _env(PVS_DIRECTOR_NEAR="0"):        # the original facade rule: toward the building (Michele 2026-10-25)
@@ -163,8 +218,8 @@ def build_cases(job_ids, max_scenes, variants=VARIANTS):
     return cases
 
 
-def run(job_ids, reps, cap, max_scenes, go, variants=VARIANTS):
-    scenes = facade_scenes(job_ids)
+def run(job_ids, reps, cap, max_scenes, go, variants=VARIANTS, per_cat=2):
+    scenes = pick_scenes(job_ids, per_cat) if variants == VARIANTS_L else facade_scenes(job_ids)
     ev.say(f"{len(scenes)} facade scene(s): {scenes}")
     n_clips = min(len(scenes), max_scenes) * len(variants) * reps
     ev.say(f"{n_clips} clips x {ev.CLIP_USD} = {round(n_clips * ev.CLIP_USD, 2)} USD (cap {cap})")
@@ -174,7 +229,7 @@ def run(job_ids, reps, cap, max_scenes, go, variants=VARIANTS):
     load_dotenv(ev.HERE / ".env")
     ev.OUT = OUT; ev.SPEND = OUT / "spend.json"
     import exp_prompt_ab as ab
-    cases = build_cases(job_ids, max_scenes, variants)
+    cases = build_cases(job_ids, max_scenes, variants, per_cat)
     tasks = []
     for c in cases:
         for v in variants:
@@ -216,7 +271,7 @@ def run(job_ids, reps, cap, max_scenes, go, variants=VARIANTS):
             lab = run_dir / f"lab_{k['code']}.mp4"
             if ev.label_clip(run_dir / f"{k['code']}.mp4", lab, k["code"]):
                 parts.append(lab)
-        name = f"facade_{run_id}_{c['job']}_{c['scene']}.mp4"
+        name = f"{'lum' if variants == VARIANTS_L else 'facade'}_{run_id}_{c['job']}_{c['scene']}.mp4"
         if parts and ev.concat(parts, ev.SCRATCH / name):
             ev.say(f"{c['job']} scena {c['scene']}: {ev.LINK_BASE}/{name}\n   ordine: {' '.join(k['code'] for k in mine)}")
     ev.say(f"RUN {run_id} done. Look at the codes, tell me what you see, THEN: python3 exp_facade.py reveal {run_id}")
@@ -236,7 +291,7 @@ if __name__ == "__main__":
     def opt(name, default):
         return a[a.index(name) + 1] if name in a else default
     if len(a) >= 2 and a[0] in ("plan", "run"):
-        sys.exit(run([x for x in a[1].split(",") if x], int(opt("--reps", "2")), float(opt("--cap", "4.5")), int(opt("--max-scenes", "12")), a[0] == "run" and "--go" in a, VARIANTS_D if opt("--set", "") == "d" else VARIANTS))
+        sys.exit(run([x for x in a[1].split(",") if x], int(opt("--reps", "2")), float(opt("--cap", "4.5")), int(opt("--max-scenes", "12")), a[0] == "run" and "--go" in a, {"d": VARIANTS_D, "l": VARIANTS_L}.get(opt("--set", ""), VARIANTS), int(opt("--per-cat", "2"))))
     elif len(a) >= 2 and a[0] == "reveal":
         sys.exit(reveal(a[1]))
     print(__doc__)
