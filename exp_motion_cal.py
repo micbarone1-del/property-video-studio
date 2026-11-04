@@ -5,6 +5,7 @@ acceleration; clip_speed_probe.speed: motion energy, and that energy relative to
 and, for each measure, the best single threshold between bad and ok with how many bad clips it catches and how many ok clips it would flag. No decision is taken here.
 
   python3 exp_motion_cal.py [--labels motion_labels.json]      PVS_VOLUME_SCRATCH = where the runs are
+  python3 exp_motion_cal.py ensemble                          FREE, after the above: judge verdict and motion measures TOGETHER on the labelled clips (needs the saved judge answers of the runs)
 """
 import json
 import os
@@ -91,6 +92,58 @@ def main(labels_file):
     return 0
 
 
+# thresholds from the calibration above (IN-SAMPLE: optimistic). Extremes = almost no false alarms; drift / rel_e = broader.
+RULES = {
+    "judge":            lambda r: r["judge"] in ("review", "fail"),
+    "motion_extremes":  lambda r: (r.get("accel_last_over_first") or 0) >= 11.8 or (r.get("drift_y_std_px_s") or 0) >= 4.5,
+    "motion_broad":     lambda r: (r.get("rel_e") or 0) >= 1.1 or (r.get("drift_x_std_px_s") or 0) >= 3.6,
+}
+
+
+def judge_by_code(run) -> dict:
+    """{code: verdict} from the saved answers of exp_judge (calibrate or run); {} when none was saved."""
+    out = {}
+    for name in (f"judge_calibration_{run}.json", f"judge_run_{run}.json"):
+        try:
+            for r in json.loads((OUT / name).read_text()):
+                out.setdefault(r["code"], r["verdict"])
+        except Exception:
+            pass
+    return out
+
+
+def evaluate(rows, combos) -> dict:
+    """{combo name: {'bad': n, 'caught': k, 'ok': n, 'flagged': k}} on the rows that have a judge verdict. A combo is a tuple of RULES names (OR)."""
+    out = {}
+    for combo in combos:
+        d = {"bad": 0, "caught": 0, "ok": 0, "flagged": 0}
+        for r in rows:
+            if r["cls"] not in ("bad", "ok") or not r.get("judge"):
+                continue
+            hit = any(RULES[n](r) for n in combo)
+            d[r["cls"]] += 1
+            d["caught" if r["cls"] == "bad" else "flagged"] += 1 if hit else 0
+        out["+".join(combo)] = d
+    return out
+
+
+def ensemble():
+    rows = json.loads((OUT / "motion_calibration.json").read_text())
+    j = {run: judge_by_code(run) for run in {r["run"] for r in rows}}
+    for r in rows:
+        r["judge"] = j[r["run"]].get(r["code"])
+    have = [r for r in rows if r.get("judge")]
+    print(f"{len(have)} labelled clips have a judge verdict (of {len(rows)} with motion numbers)")
+    combos = [("judge",), ("motion_extremes",), ("motion_broad",), ("judge", "motion_extremes"), ("judge", "motion_broad"), ("judge", "motion_extremes", "motion_broad")]
+    for name, d in evaluate(rows, combos).items():
+        print(f"{name:42s} catches {d['caught']}/{d['bad']} bad, flags {d['flagged']}/{d['ok']} ok")
+    missed = [f"{r['run'][-6:]}/{r['code']}" for r in have if r["cls"] == "bad" and not any(RULES[n](r) for n in ("judge", "motion_extremes", "motion_broad"))]
+    print("bad clips none of the rules catches:", " ".join(missed) or "none")
+    return 0
+
+
 if __name__ == "__main__":
     a = sys.argv[1:]
+    if a and a[0] == "ensemble":
+        sys.exit(ensemble())
     sys.exit(main(a[a.index("--labels") + 1] if "--labels" in a else str(HERE / "motion_labels.json")))
