@@ -4,8 +4,9 @@ Why: in the volume check (drafts 3cfaa75f, c9e60007) the facade clips were wrong
 2026-11-04 says "aim at the ground in front of the building", the opposite of Michele's 2026-10-25 rule: the facade clip approaches the building); c9e60007 scene 0
 had the plan 'static' and the facade still slid sideways fast over the cornice. Three variants on the SAME facade photos, 2 repetitions each, blind codes:
   G  ground    the production prompt as it is today (director near-target text: aim at the ground / drive in front of the building)
-  B  building  the same chain, only the director's facade sentence changes: aim at the base of the front wall, near the middle, a few metres away (still near, so it can be
-               reached calmly within five seconds, but it is the BUILDING that is approached)
+  B  building  the same chain, but the director's plan is overridden AFTER it answers: always a very slow forward push-in toward "the base of the front wall of the building"
+               (still near, so it can be reached calmly within five seconds, but it is the BUILDING that is approached). The first attempt, changing the director's facade
+               sentence, was stopped: the director kept choosing the road / the ground (3cfaa75f) or 'static' (c9e60007), so B would have been the same prompt as G
   S  still     the production prompt of G turned into the locked-off version (exp_prompt_ab.lock: "Stationary view, locked off camera ...")
 The prompts of G and B are the REAL production prompts: video_generation.generate_video_single runs unchanged, only the final Luma call is intercepted (its prompt is
 captured, nothing is sent, nothing is spent there; the director and the description cost a few cents of Claude). The clips are then generated at 360p with the same
@@ -28,8 +29,7 @@ from pathlib import Path
 import exp_volume as ev
 
 OUT = ev.SCRATCH / "facade"
-FACADE_BUILDING = """- Facade and outdoor photos: aim at the lowest part of the building front near the middle of the frame (the base of the front wall, a few metres away) and advance toward it at an
-  EXTREMELY slow constant speed at the same height, stopping well before any gate, wall or railing."""
+BUILDING_TARGET = "the base of the front wall of the building"
 VARIANTS = ("G", "B", "S")
 CATEGORY = "exterior"
 
@@ -48,7 +48,15 @@ def facade_scenes(job_ids) -> list:
     return out
 
 
-def capture_prompt(job: str, i: int, facade_text: str = ""):
+def building_plan(plan: dict) -> dict:
+    """The director's plan with its move and target replaced: a very slow forward push-in toward the base of the front wall (travel short, scale of a short travel)."""
+    import movement_director as md
+    p = dict(plan)
+    p.update(move="forward", target=BUILDING_TARGET, travel="short", slow=True, scale=md._clip_scale("short"), sentence=md.forward_sentence(BUILDING_TARGET, True))
+    return p
+
+
+def capture_prompt(job: str, i: int, force_building: bool = False):
     """(prompt, plan text) the production chain would send to Luma for this scene. The Luma call is replaced by a function that only records the prompt."""
     import movement_director as md
     import video_generation as vg
@@ -56,18 +64,19 @@ def capture_prompt(job: str, i: int, facade_text: str = ""):
         raise SystemExit("LUMA_DIRECT is off: refusing (the fal.ai path would spend and is not the production path)")
     img, kw, _ = ev.scene_args(job, i)
     got = []
-    saved = (vg._generate_luma_direct, vg._generate_luma, vg._generate_veo, vg.FAL_FALLBACK_ENABLED, md.NEAR_REPLACEMENTS)
+    saved = (vg._generate_luma_direct, vg._generate_luma, vg._generate_veo, vg.FAL_FALLBACK_ENABLED, md.plan)
     vg._generate_luma_direct = lambda image_url, prompt, *a, **k: (got.append(prompt), None)[1]
     vg._generate_luma = vg._generate_veo = lambda *a, **k: None
     vg.FAL_FALLBACK_ENABLED = False
-    if facade_text:
-        md.NEAR_REPLACEMENTS = tuple((a, facade_text if a == md._FACADE_LINE else b) for a, b in md.NEAR_REPLACEMENTS)
+    if force_building:
+        real_plan = md.plan
+        md.plan = lambda *a, **k: (lambda p: building_plan(p) if p else p)(real_plan(*a, **k))
     OUT.mkdir(parents=True, exist_ok=True)
     tmp = OUT / f"cap_{job}_{i}_{''.join(random.choice(string.ascii_lowercase) for _ in range(5))}.mp4"
     try:
         vg.generate_video_single(str(img), 5, str(tmp), **kw)
     finally:
-        vg._generate_luma_direct, vg._generate_luma, vg._generate_veo, vg.FAL_FALLBACK_ENABLED, md.NEAR_REPLACEMENTS = saved
+        vg._generate_luma_direct, vg._generate_luma, vg._generate_veo, vg.FAL_FALLBACK_ENABLED, md.plan = saved
     return (got[0] if got else None), ev.plan_text(tmp), img
 
 
@@ -76,7 +85,7 @@ def build_cases(job_ids, max_scenes):
     cases = []
     for job, i in facade_scenes(job_ids)[:max_scenes]:
         g, gplan, img = capture_prompt(job, i)
-        b, bplan, _ = capture_prompt(job, i, FACADE_BUILDING)
+        b, bplan, _ = capture_prompt(job, i, True)
         if not g or not b:
             ev.say(f"{job}:{i} no production prompt captured: skipped"); continue
         s, miss = ab.lock(g)
