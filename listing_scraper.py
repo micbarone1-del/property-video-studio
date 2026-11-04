@@ -192,7 +192,8 @@ def build_photo_audit(photos: list) -> list:
         seen.add(u)
         out.append({"n": i + 1, "url": u, "label": p.get("label_it") or None, "category": p.get("category"),
                     "category_from_page": p.get("category_page") or p.get("category_before_source"),
-                    "source": p.get("category_source") or "partner_or_page", "excluded": photo_exclusion(p)})
+                    "source": p.get("category_source") or "partner_or_page", "excluded": photo_exclusion(p),
+                    "quality": p.get("quality"), "sharp": p.get("sharp")})
     return out
 
 
@@ -831,7 +832,13 @@ def filter_poor_quality_candidates(by_category: dict, assess=None, enforce=None)
                 fetched = fetch_photo_bytes(p.get("url"), p.get("original_url"), timeout=15)
                 if not fetched["ok"]:
                     return {"verdict": "unknown", "call_ok": False}
-                return assess(fetched["content"], label=f"{cat}")
+                r = dict(assess(fetched["content"], label=f"{cat}"))
+                try:
+                    import photo_metrics
+                    r["sharp"] = photo_metrics.sharpness_of_bytes(fetched["content"])     # 2026-11-04: measured next to the judge's verdict (no decision taken on it)
+                except Exception:
+                    r["sharp"] = {}
+                return r
             except Exception as e:
                 log.warning(f"[Scraper] Photo quality failed for {cat}: {e}")
                 return {"verdict": "unknown", "call_ok": False}
@@ -841,6 +848,7 @@ def filter_poor_quality_candidates(by_category: dict, assess=None, enforce=None)
         poor = 0
         for (cat, p), r in zip(items, results):
             p["quality"] = r["verdict"]
+            p["sharp"] = r.get("sharp") or None
             p["overlay"] = r.get("overlay")
             p["quality_by_model"] = r.get("by_model")
             p["blockiness"] = r.get("blockiness")
