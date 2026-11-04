@@ -70,6 +70,28 @@ NOMOVE_FROM = "the only thing that moves is the camera, which makes the movement
 NOMOVE_TO = "the only thing that changes is the camera position, which makes the movement described above"
 
 
+# 2026-11-04 EXPERIMENTAL (off): two candidate root causes of the rushing outliers, tested by the blind A/B (exp_prompt_ab variants N1 / N2) before any default changes.
+# N1: the standard addendum asks Claude to say "what lies on the PATH between the camera and {target}" and what {target} looks like, so the description of the end
+#     view says "a walkway that leads ... to a closed double glass door": a destination sits in the prompt even when the movement target is near.
+PLAN_ADDENDUM_NEUTRAL = """
+The camera move for this shot: {move_text}. Image 2 is the view where this move ends, centred on {target}. Describe only what is visible in image 2: what fills the foreground, the centre and the left and right edges, each with its count and state. Write it as a still view, without any movement, path, direction or destination: no words such as toward, along, leads, reaches, ahead or path, and a door, entrance or gate is named only as a part of the wall where it stands. Use at most 60 words in total and the 5 to 7 most prominent fixed elements. Mention an element only if you clearly see it in image 2."""
+# N2: the rules paragraph is about 150 of the ~240 words of the prompt; the movement sentence is the first fifth. A short version keeps the same ideas.
+SHORT_RULES = ("this is a frozen photograph of a still scene: every wall, window, door, fixture and piece of furniture keeps exactly the same place, shape, colour, number and state "
+               "as in the first frame, the light stays steady, only the camera position changes, smoothly at a constant slow speed")
+
+
+def neutral_enabled() -> bool:
+    return os.getenv("PVS_DESCRIBE_NEUTRAL", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def short_rules_enabled() -> bool:
+    return os.getenv("PVS_LUMA_SHORT_RULES", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def plan_addendum() -> str:
+    return PLAN_ADDENDUM_NEUTRAL if neutral_enabled() else PLAN_ADDENDUM
+
+
 def nomove_enabled() -> bool:
     return os.getenv("PVS_LUMA_NOMOVE", "1").strip().lower() not in ("0", "false", "no", "off")
 
@@ -77,6 +99,8 @@ def nomove_enabled() -> bool:
 def rules_for(last_view: str, space_type: str = "") -> str:
     """The text that REPLACES _LUMA_RULES in the Luma prompt."""
     rules = POSITIVE_RULES.replace(NOMOVE_FROM, NOMOVE_TO) if nomove_enabled() else POSITIVE_RULES
+    if short_rules_enabled():
+        rules = SHORT_RULES
     return _scene_words(rules, space_type) + ", " + last_view.strip()
 
 
@@ -111,7 +135,7 @@ def describe(photo_path, movement: str, space_type: str, clip_path, scale: float
         y0 = min(max(0, round(cy * h - ch / 2)), h - ch)
         question = _scene_words(DESCRIBE_PROMPT, space_type)
         if plan and plan.get("move") in ("forward", "lateral_left", "lateral_right", "rotate_left", "rotate_right"):
-            question = question.replace("Answer with JSON only", _scene_words(PLAN_ADDENDUM, space_type).format(
+            question = question.replace("Answer with JSON only", _scene_words(plan_addendum(), space_type).format(
                 move_text=str(plan.get("sentence", ""))[:220], target=plan.get("target") or "the centre of the frame") + "\nAnswer with JSON only", 1)
         fd, tmp = tempfile.mkstemp(suffix=".jpg")
         os.close(fd)
