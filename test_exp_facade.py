@@ -34,9 +34,10 @@ sys.modules["movement_director"] = md; sys.modules["video_generation"] = vg
 real_plan = md.plan
 ef.ev.scene_args = lambda j, i: ("/x.jpg", {}, {})
 p, plan, img = ef.capture_prompt("j1", 0)
-check("F2 the production prompt is captured with the director's own plan (G)", p == "PROMPT-X almost static static" and plan == "forward -> ground")
+check("F2 the production prompt is captured with the director's own plan (G)", p == "PROMPT-X almost static static" and plan == "static -> centre of the frame")
 check("F3 nothing is sent while capturing and the fal fallback is off", seen["direct"] is None and seen["fal"] is False)
-p2, _, _ = ef.capture_prompt("j1", 0, True)
+p2, plan2, _ = ef.capture_prompt("j1", 0, True)
+check("F4b the plan shown is the one really used (building target), not the director's history", plan2 == "forward -> the base of the front wall of the building")
 check("F4 the building variant overrides move and target after the director answers", p2 == "PROMPT-X Very slow push-in toward the base of the front wall of the building forward")
 check("F5 everything is restored afterwards", vg._generate_luma_direct("u", "p", 5) == "REAL-SENT" and vg.FAL_FALLBACK_ENABLED is True and md.plan is real_plan)
 vg.LUMA_DIRECT = False
