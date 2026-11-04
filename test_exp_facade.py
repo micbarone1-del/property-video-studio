@@ -83,4 +83,12 @@ check("F23 E3: camera only, anchor kept, same height and direction", ef.l2_promp
 check("F24 E3 for a static plan: a very slow push-in toward the centre, never a still picture", "the centre of the frame" in ef.l2_prompt({"move": "static"}, "kitchen") and "Stationary" not in ef.l2_prompt({"move": "static"}, "kitchen"))
 check("F25 E3 passes the lint", ef.lint(ef.l2_prompt({"move": "forward", "target": "the stone wall"}, "living")) == {"forbidden": [], "movable": []})
 check("F26 round 4 plan costs 3 x reps x scenes and spends nothing", ef.VARIANTS_E == ("E1", "E2", "E3") and ef.run(["j3"], 1, 4.5, 12, False, ef.VARIANTS_E, 2) == 0)
+# round 5 (C0..C3, the loop)
+fwd = {"move": "forward", "target": "the stone wall"}
+c3 = ef.c3_prompt(fwd, "PRODUCTION")
+check("F27 C3 keeps the speed words, the anchor and the height clause; no forbidden word", "extremely slow and subtle" in c3 and "constant" in c3 and "the stone wall" in c3 and "same height" in c3 and ef.lint(c3) == {"forbidden": [], "movable": []})
+check("F28 C3 for a still plan keeps the production prompt (no conversion to a push-in)", ef.c3_prompt({"move": "static"}, "PRODUCTION") == "PRODUCTION")
+check("F29 C1: still plan -> Luma's recipe, forward plan -> C0 unchanged", ef.c1_prompt({"move": "static"}, "PRODUCTION", "bathrooms") == "Stationary view of the bathroom. Locked off camera." and ef.c1_prompt(fwd, "PRODUCTION", "living") == "PRODUCTION")
+check("F30 skip: the first N scenes of each category are left out (hold-out)", ef.pick_scenes(["j3"], 1, 1) == [("j3", 1, "living")] and ef.pick_scenes(["j3"], 2, 0) == [("j3", 0, "living"), ("j3", 1, "living"), ("j3", 3, "kitchen")])
+check("F31 round 5 plan: 4 configurations", ef.VARIANTS_C == ("C0", "C1", "C2", "C3") and ef.run(["j3"], 2, 4.5, 12, False, ef.VARIANTS_C, 2) == 0)
 sys.exit(1 if fails else 0)
