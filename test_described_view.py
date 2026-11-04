@@ -29,7 +29,7 @@ check("DV2 PVS_POSITIVE_PROMPT=0/false/off/no turns it off", not dv.enabled())
 os.environ.pop("PVS_POSITIVE_PROMPT")
 LV = "The shot ends on a view of the room showing a grey sofa on the left, a round table in the centre and a closed window on the right."
 r = dv.rules_for(LV, "large")
-check("DV3 rules = positive text + the description", r.startswith(dv.POSITIVE_RULES) and r.endswith(LV))
+check("DV3 rules = positive text (with the standard no-move clause) + the description", r.startswith(dv.POSITIVE_RULES.replace(dv.NOMOVE_FROM, dv.NOMOVE_TO)) and r.endswith(LV))
 check("DV4 the positive rules contain no negation list of the old kind", "no people" not in dv.POSITIVE_RULES and "do not invent" not in dv.POSITIVE_RULES and "no warping" not in dv.POSITIVE_RULES)
 check("DV5 open-air scenes: 'room' becomes 'scene' in the rules and in the question to Claude; interiors keep the tested wording",
       "room" not in dv._scene_words(dv.POSITIVE_RULES, "outdoor") and "room" not in dv._scene_words(dv.DESCRIBE_PROMPT, "elevated")
@@ -99,14 +99,14 @@ check("DV22 the movement remap exists once and assemble_pov_prompt uses it", vsr
 check("DV23 the positive text is defined once (exp_prompt imports it)", sum(open(f).read().count("this is a frozen photograph of an empty, still room") for f in ("described_view.py", "exp_prompt.py", "video_generation.py", "exp_luma.py")) == 1)
 check("DV24 the old rules are untouched (fall-back)", "no people, no human shadows or silhouettes" in vsrc and vsrc.count("no human shadows") == 1)
 import os as os
-_o = os.environ.pop("PVS_LUMA_NOMOVE", None)
+_o = os.environ.get("PVS_LUMA_NOMOVE")
+os.environ["PVS_LUMA_NOMOVE"] = "0"
 _std = dv.rules_for("view", "large")
-os.environ["PVS_LUMA_NOMOVE"] = "1"
-_nm = dv.rules_for("view", "large")
 os.environ.pop("PVS_LUMA_NOMOVE", None)
+_nm = dv.rules_for("view", "large")           # no variable at all = the default
 if _o is not None:
     os.environ["PVS_LUMA_NOMOVE"] = _o
-check("DV-NM1 without the switch the rules are the production text", "the only thing that moves is the camera" in _std)
-check("DV-NM2 with PVS_LUMA_NOMOVE=1 only that clause changes: no 'moves', 'movement' kept, same length class", "moves" not in _nm and "the only thing that changes is the camera position, which makes the movement described above" in _nm and _nm.replace("changes is the camera position", "moves is the camera") == _std)
+check("DV-NM1 PVS_LUMA_NOMOVE=0 gives the old rules text", "the only thing that moves is the camera" in _std)
+check("DV-NM2 by default (no variable) only that clause changes: no 'moves', 'movement' kept, same length class", "moves" not in _nm and "the only thing that changes is the camera position, which makes the movement described above" in _nm and _nm.replace("changes is the camera position", "moves is the camera") == _std)
 print("ALL PASS" if not fails else f"{fails} FAIL")
 sys.exit(1 if fails else 0)
