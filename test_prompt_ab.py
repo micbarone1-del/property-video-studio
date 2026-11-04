@@ -1,9 +1,17 @@
 """test_prompt_ab.py - offline checks of exp_prompt_ab (no network, no spend)."""
-import json, os, sys, tempfile
+import json, os, sys, tempfile, types
 from pathlib import Path
 tmp = Path(tempfile.mkdtemp())
 os.environ["PVS_JOBS_DIR"] = str(tmp)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+for _n in ("fal_client", "moviepy", "anthropic"):
+    if _n not in sys.modules:
+        try:
+            __import__(_n)
+        except Exception:
+            sys.modules[_n] = types.ModuleType(_n)
+if not hasattr(sys.modules["anthropic"], "Anthropic"):
+    sys.modules["anthropic"].Anthropic = lambda *a, **k: "REAL"
 import exp_prompt_ab as ab
 from PIL import Image
 fails = 0
@@ -47,9 +55,9 @@ check("T7 a scene without sidecar is reported, not invented", ab.build_jobs([("j
 jobs, pb = ab.build_jobs([("job1", 0)], ["A", "B", "C", "D"], 2)
 check("T8 4 variants x 2 reps = 8 clips; A is the untouched prompt", len(jobs) == 8 and all(j["prompt"] == BASE for j in jobs if j["variant"] == "A" or j["variant"] == "D"))
 check("T9 B and C differ from A", all(j["prompt"] != BASE for j in jobs if j["variant"] in "BC"))
-nj, npb = ab.build_jobs([("job1", 0)], ["A", "N"], 2, make_near=lambda j, i, n: ("NEAR PROMPT", "target='x'"))
+nj, npb = ab.build_jobs([("job1", 0)], ["A", "N"], 2, make_near=lambda j, i, n, v: ("NEAR PROMPT", "target='x'"))
 check("T20 N uses the prompt built by the production chain, once per scene, for every rep", len(nj) == 4 and [x["prompt"] for x in nj if x["variant"] == "N"] == ["NEAR PROMPT"] * 2 and npb == [])
-nj2, npb2 = ab.build_jobs([("job1", 0)], ["N"], 1, make_near=lambda j, i, n: (None, "the director gave no plan"))
+nj2, npb2 = ab.build_jobs([("job1", 0)], ["N"], 1, make_near=lambda j, i, n, v: (None, "the director gave no plan"))
 check("T21 a failed N build is reported and skipped, never replaced by another prompt", nj2 == [] and npb2 and "the director gave no plan" in npb2[0])
 nj3, _ = ab.build_jobs([("job1", 0)], ["N"], 1)
 check("T22 plan mode (no --go) builds nothing and spends nothing", len(nj3) == 1 and "built at run time" in nj3[0]["prompt"])
@@ -67,4 +75,19 @@ rc = ab.cmd_plan_or_run("job1:0", ["A", "B", "D"], 1, True, generate=fake)
 check("T13 over the cap is refused, nothing more generated", rc == 3 and len(calls) == 3)
 keys = sorted(ab.OUT.glob("key_*.json"))
 check("T14 the key file maps each blind code to its variant", keys and {k["variant"] for k in json.loads(keys[0].read_text())} == {"A", "B", "D"})
+import json as _j
+import movement_director as _md, described_view as _dv
+(tmp / "job1" / "clips" / "scene_000.mp4.plan.json").write_text(_j.dumps({"entries": [{"hints": {"space_type": "outdoor", "depth": "deep", "anchor": "x", "anchor_side": "center", "reflective_surface": "none", "output_format": "landscape"}}]}))
+calls = {"plan": 0, "desc": []}
+_md.plan = lambda *a, **k: (calls.__setitem__("plan", calls["plan"] + 1) or {"move": "forward", "sentence": "Very slow straight forward camera push-in toward the yard, advancing less than three metres in total", "target": "yard", "scale": 1.12, "slow": True})
+_dv.describe = lambda *a, **k: (calls["desc"].append(os.environ.get("PVS_DESCRIBE_NEUTRAL")) or ("LAST-NEUTRAL" if os.environ.get("PVS_DESCRIBE_NEUTRAL") == "1" else "LAST-STANDARD"))
+notes = ab.find_clip_notes("job1", 0)
+ab._NEAR_CACHE.clear()
+pn, _ = ab.near_prompt("job1", 0, notes, tmp / "job1" / "images" / "scene_000.jpg", "N")
+p1, _ = ab.near_prompt("job1", 0, notes, tmp / "job1" / "images" / "scene_000.jpg", "N1")
+p2, _ = ab.near_prompt("job1", 0, notes, tmp / "job1" / "images" / "scene_000.jpg", "N2")
+check("T23 N, N1 and N2 of one scene share ONE director plan (only the thing under test differs)", calls["plan"] == 1)
+check("T24 N1 uses the neutral description, N and N2 the standard one", pn.endswith("LAST-STANDARD") and p1.endswith("LAST-NEUTRAL") and p2.endswith("LAST-STANDARD") and calls["desc"] == ["0", "1"])
+check("T25 N2 has the short rules (much shorter), N and N1 the full ones", len(p2.split()) < len(pn.split()) - 60 and abs(len(pn.split()) - len(p1.split())) < 3)
+check("T25b env restored after the calls", os.environ.get("PVS_LUMA_SHORT_RULES") is None and os.environ.get("PVS_DESCRIBE_NEUTRAL") is None and os.environ.get("PVS_DIRECTOR_NEAR") is None)
 print("ALL PASS" if not fails else f"{fails} FAIL"); sys.exit(1 if fails else 0)
