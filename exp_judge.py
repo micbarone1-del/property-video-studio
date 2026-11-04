@@ -73,6 +73,21 @@ def order_flagged(results) -> list:
     return sorted(results, key=lambda r: rank.get(r["verdict"], 1))
 
 
+def resolve_run(run_id: str) -> str:
+    """'last' = the run whose key file is the newest."""
+    if run_id != "last":
+        return run_id
+    keys = sorted(OUT.glob("key_*.json"), key=lambda p: p.stat().st_mtime)
+    if not keys:
+        raise SystemExit(f"no key_*.json in {OUT}")
+    return keys[-1].stem[len("key_"):]
+
+
+def _save(name, obj):
+    OUT.mkdir(parents=True, exist_ok=True)
+    (OUT / name).write_text(json.dumps(obj, ensure_ascii=False, indent=1))
+
+
 def _clip_path(run_id, code):
     return OUT / run_id / f"{code}.mp4"
 
@@ -95,18 +110,23 @@ def calibrate(run_id, labels_file, cap):
         rows.append((cls, r["verdict"]))
         detail.append((code, cls, r))
         print(f"{code} Michele={cls:4s} judge={r['verdict']:6s} dir={r.get('direction')} speed={r.get('speed')} | {r.get('reason')}")
+    _save(f"judge_calibration_{run_id}.json", [{"code": c, "michele": cls, **r} for c, cls, r in detail])
     s = score(rows)
     print("=" * 20, "CALIBRATION", run_id, f"spent about {spend_usd(usage)} USD")
     for cls in ("bad", "part", "ok"):
         print(f"Michele {cls}: {s[cls]}")
     print(f"bad clips caught (judge says review or fail): {s['bad_caught']} | bad clips MISSED (judge says pass): {s['bad_missed']}")
     print(f"ok clips flagged by mistake: {s['ok_false_alarm']} (of which fail: {s['ok_fail']})")
+    print("bad clips the judge PASSED:", " ".join(c for c, cls, r in detail if cls == "bad" and r["verdict"] == "pass") or "none")
+    print("ok clips the judge FAILED :", " ".join(c for c, cls, r in detail if cls == "ok" and r["verdict"] == "fail") or "none")
+    print(f"(all answers saved in {OUT}/judge_calibration_{run_id}.json)")
     return 0
 
 
 def run(run_id, cap, reveal):
     from dotenv import load_dotenv
     load_dotenv(HERE / ".env")
+    run_id = resolve_run(run_id)
     key = json.loads((OUT / f"key_{run_id}.json").read_text())
     usage, results = {}, []
     for k in key:
@@ -121,6 +141,7 @@ def run(run_id, cap, reveal):
             print(f"{k['code']}: judge error {str(e)[:120]}"); continue
         r.update(code=k["code"], case=k["case"], variant=k["variant"])
         results.append(r)
+    _save(f"judge_run_{run_id}.json", results)
     print("=" * 20, "JUDGE", run_id, f"spent about {spend_usd(usage)} USD, {len(results)} clips")
     for r in order_flagged(results):
         print(f"{r['verdict']:6s} {r['code']} {r['case']} dir={r.get('direction')} speed={r.get('speed')} | {r.get('reason')}" + (f" | variant {r['variant']}" if reveal else ""))
