@@ -68,16 +68,24 @@ def capture_prompt(job: str, i: int, force_building: bool = False):
     vg._generate_luma_direct = lambda image_url, prompt, *a, **k: (got.append(prompt), None)[1]
     vg._generate_luma = vg._generate_veo = lambda *a, **k: None
     vg.FAL_FALLBACK_ENABLED = False
-    if force_building:
-        real_plan = md.plan
-        md.plan = lambda *a, **k: (lambda p: building_plan(p) if p else p)(real_plan(*a, **k))
+    used = []      # the plan the chain REALLY used (the director's history file holds its own answer, before any override)
+    real_plan = md.plan
+
+    def recording_plan(*a, **k):
+        p = real_plan(*a, **k)
+        if p and force_building:
+            p = building_plan(p)
+        used.append(p)
+        return p
+    md.plan = recording_plan
     OUT.mkdir(parents=True, exist_ok=True)
     tmp = OUT / f"cap_{job}_{i}_{''.join(random.choice(string.ascii_lowercase) for _ in range(5))}.mp4"
     try:
         vg.generate_video_single(str(img), 5, str(tmp), **kw)
     finally:
         vg._generate_luma_direct, vg._generate_luma, vg._generate_veo, vg.FAL_FALLBACK_ENABLED, md.plan = saved
-    return (got[0] if got else None), ev.plan_text(tmp), img
+    pl = used[-1] if used else None
+    return (got[0] if got else None), (f"{pl.get('move')} -> {pl.get('target')}" if pl else "?"), img
 
 
 def build_cases(job_ids, max_scenes):
@@ -89,7 +97,7 @@ def build_cases(job_ids, max_scenes):
         if not g or not b:
             ev.say(f"{job}:{i} no production prompt captured: skipped"); continue
         s, miss = ab.lock(g)
-        ev.say(f"{job}:{i} G plan: {gplan}\n{job}:{i} B plan: {bplan}\n{job}:{i} S clauses not found: {miss}")
+        ev.say(f"{job}:{i} G plan used: {gplan}\n    G prompt starts: {g[:150]}\n{job}:{i} B plan used: {bplan}\n    B prompt starts: {b[:150]}\n{job}:{i} S clauses not found: {miss}")
         cases.append({"job": job, "scene": i, "img": str(img), "prompts": {"G": g, "B": b, "S": s}, "plans": {"G": gplan, "B": bplan, "S": "locked off"}})
     return cases
 
