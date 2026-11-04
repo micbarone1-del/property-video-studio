@@ -74,4 +74,13 @@ check("F18 the lint finds Luma's warned words", bad["forbidden"] == ["down", "mo
 (tmp / "j3" / "job_meta.json").write_text(json.dumps({"scenes_config": [{"category": "living"}, {"category": "living"}, {"category": "living"}, {"category": "kitchen"}]}))
 check("F19 pick_scenes: at most per_cat scenes of each category", ef.pick_scenes(["j3"], 2) == [("j3", 0, "living"), ("j3", 1, "living"), ("j3", 3, "kitchen")])
 check("F20 round 3 plan costs 2 x reps x scenes and spends nothing", ef.run(["j3"], 2, 4.5, 12, False, ef.VARIANTS_L, 2) == 0)
+# round 4 (E1 / E2 / E3)
+rules = "this is a frozen photograph of an empty, still room: every wall, window, door, curtain, piece of furniture and decoration keeps exactly the same place, the only thing that changes is the camera position, which makes the movement described above smoothly, a car moves down the road, trees and water"
+cl = ef.sanitize(rules)
+check("F21 sanitize: no forbidden word, no movable noun left", ef.lint(cl) == {"forbidden": [], "movable": []})
+check("F22 sanitize: the rest of the sentence survives (no double commas or spaces)", "camera motion described above" in cl and ",," not in cl and ", ," not in cl and "  " not in cl and "frozen photograph" in cl)
+check("F23 E3: camera only, anchor kept, same height and direction", ef.l2_prompt({"move": "forward", "target": "the stone wall"}, "living") == "Slow steady forward push-in toward the stone wall, the camera keeps the same height and direction.")
+check("F24 E3 for a static plan: a very slow push-in toward the centre, never a still picture", "the centre of the frame" in ef.l2_prompt({"move": "static"}, "kitchen") and "Stationary" not in ef.l2_prompt({"move": "static"}, "kitchen"))
+check("F25 E3 passes the lint", ef.lint(ef.l2_prompt({"move": "forward", "target": "the stone wall"}, "living")) == {"forbidden": [], "movable": []})
+check("F26 round 4 plan costs 3 x reps x scenes and spends nothing", ef.VARIANTS_E == ("E1", "E2", "E3") and ef.run(["j3"], 1, 4.5, 12, False, ef.VARIANTS_E, 2) == 0)
 sys.exit(1 if fails else 0)
