@@ -21,7 +21,7 @@ Round 3 (2026-11-04, Michele: "dobbiamo usare tutte le raccomandazioni"): L = th
   The anchor stays what the director chooses for each scene (not one fixed target). Compare with the G/B/S judgements already given.
 
   python3 exp_facade.py plan   JOB1,JOB2,... [--set d]            free: lists the facade scenes found ('exterior' scenes)
-  python3 exp_facade.py run    JOB1,JOB2,... [--set d] [--reps 2] [--cap 4.5] [--max-scenes 12] --go     --set d = round 2 (D1, D2); --set e = round 4 (E1, E2, E3: eye-level anchor, words cleaned, camera only + height); --set l [--per-cat 2] = round 3 (P production vs L Luma-recommended, scenes of ALL categories); default = round 1 (G, B, S)
+  python3 exp_facade.py run    JOB1,JOB2,... [--set d] [--reps 2] [--cap 4.5] [--max-scenes 12] --go     --set d = round 2 (D1, D2); --set c [--skip N] = round 5, the loop (C0..C3); --set e = round 4 (E1, E2, E3: eye-level anchor, words cleaned, camera only + height); --set l [--per-cat 2] = round 3 (P production vs L Luma-recommended, scenes of ALL categories); default = round 1 (G, B, S)
   python3 exp_facade.py reveal RUN_ID
   PVS_JOBS_DIR = where the drafts are (test instance: /var/www/pvs_test_jobs); PVS_VOLUME_SCRATCH = where the videos go (production scratch, served on port 8000)
 """
@@ -42,6 +42,8 @@ BUILDING_TARGET = "the base of the front wall of the building"
 VARIANTS = ("G", "B", "S")
 VARIANTS_D = ("D1", "D2")
 VARIANTS_E = ("E1", "E2", "E3")      # round 4: E1 = production + eye-level director, E2 = E1 with the words Luma advised against removed, E3 = camera-only + same height/direction + eye-level director
+VARIANTS_C = ("C0", "C1", "C2", "C3")   # round 5 (the loop): C0 = E1 reference, C1 = Luma recipe for still scenes, C2 = words cleaned, C3 = short camera-only WITH the speed words
+SKIP = 0              # --skip N: take the scenes after the first N of each category (hold-out)
 VARIANTS_L = ("P", "L")      # round 3: P = production prompt as it is today, L = the prompt Luma's support recommended (camera only)
 ROOM_LABEL = {"living": "living room", "kitchen": "kitchen", "bedrooms": "bedroom", "bathrooms": "bathroom", "exterior": "building facade", "outdoor": "terrace"}
 FORBIDDEN = re.compile(r"\b(move|moves|moving|moved|movement|movements|down)\b", re.I)                      # Luma support 2026-11-04: the model assigns these to the camera / pulls things into motion
@@ -150,7 +152,7 @@ def l2_prompt(plan: dict, category: str) -> str:
     return f"Slow steady forward push-in toward {target}, the camera keeps the same height and direction."
 
 
-def pick_scenes(job_ids, per_cat: int) -> list:
+def pick_scenes(job_ids, per_cat: int, skip: int = 0) -> list:
     """[(job, scene, category)]: up to per_cat scenes of EACH category over the drafts, in draft order."""
     seen, out = {}, []
     for jid in job_ids:
@@ -160,8 +162,11 @@ def pick_scenes(job_ids, per_cat: int) -> list:
             continue
         for i, sc in enumerate(meta.get("scenes_config") or []):
             cat = str(sc.get("category") or sc.get("room") or "").lower()
-            if cat and seen.get(cat, 0) < per_cat:
-                seen[cat] = seen.get(cat, 0) + 1
+            if not cat:
+                continue
+            n = seen.get(cat, 0)
+            seen[cat] = n + 1
+            if skip <= n < skip + per_cat:
                 out.append((jid, i, cat))
     return out
 
@@ -217,6 +222,38 @@ def build_cases_l(scenes):
     return cases
 
 
+SPEED_WORDS = "extremely slow and subtle, smooth constant slow speed"
+
+
+def c3_prompt(plan: dict, c0_prompt: str) -> str:
+    """C3: camera only, WITH the speed words (round 4 showed camera-only prompts rushed: speeds 10-28 against 6-9 for the long ones). A still plan keeps the production prompt."""
+    if plan and plan.get("move") == "forward" and plan.get("target"):
+        return f"Extremely slow, smooth constant-speed forward camera push-in toward {plan['target']}, the camera keeps the same height and direction, {SPEED_WORDS}."
+    return c0_prompt
+
+
+def c1_prompt(plan: dict, c0_prompt: str, category: str) -> str:
+    """C1: Luma's recipe for a still scene replaces the production still prompt; a forward plan stays C0."""
+    if plan and plan.get("move") == "forward" and plan.get("target"):
+        return c0_prompt
+    return f"Stationary view of the {ROOM_LABEL.get(str(category or '').lower(), 'room')}. Locked off camera."
+
+
+def build_cases_c(scenes):
+    """Round 5: four configurations of the loop, all with the eye-level director."""
+    cases = []
+    for job, i, cat in scenes:
+        with _env(PVS_DIRECTOR_EYE="1"):
+            c0, plan_text, img = capture_prompt(job, i)
+        plan = getattr(capture_prompt, "last_plan", None)
+        if not c0 or not plan:
+            ev.say(f"{job}:{i} no production prompt captured: skipped"); continue
+        pr = {"C0": c0, "C1": c1_prompt(plan, c0, cat), "C2": sanitize(c0), "C3": c3_prompt(plan, c0)}
+        ev.say(f"{job}:{i} [{cat}] plan: {plan_text}\n    C3: {pr['C3'][:140]}\n    lint " + " | ".join(f"{k} {lint(v)}" for k, v in pr.items() if k != "C0"))
+        cases.append({"job": job, "scene": i, "img": str(img), "prompts": pr, "plans": {k: plan_text for k in pr}})
+    return cases
+
+
 def build_cases_e(scenes):
     """Round 4: the director runs with the EYE-level rule (PVS_DIRECTOR_EYE=1); same chain as production for E1, then E2 (words removed) and E3 (camera only)."""
     cases = []
@@ -238,6 +275,8 @@ def build_cases(job_ids, max_scenes, variants=VARIANTS, per_cat=2):
     cases = []
     if variants == VARIANTS_E:
         return build_cases_e(pick_scenes(job_ids, per_cat)[:max_scenes])
+    if variants == VARIANTS_C:
+        return build_cases_c(pick_scenes(job_ids, per_cat, SKIP)[:max_scenes])
     if variants == VARIANTS_L:
         return build_cases_l(pick_scenes(job_ids, per_cat)[:max_scenes])
     for job, i in facade_scenes(job_ids)[:max_scenes]:
@@ -262,7 +301,7 @@ def build_cases(job_ids, max_scenes, variants=VARIANTS, per_cat=2):
 
 
 def run(job_ids, reps, cap, max_scenes, go, variants=VARIANTS, per_cat=2):
-    scenes = pick_scenes(job_ids, per_cat) if variants in (VARIANTS_L, VARIANTS_E) else facade_scenes(job_ids)
+    scenes = pick_scenes(job_ids, per_cat, SKIP) if variants in (VARIANTS_L, VARIANTS_E, VARIANTS_C) else facade_scenes(job_ids)
     ev.say(f"{len(scenes)} facade scene(s): {scenes}")
     n_clips = min(len(scenes), max_scenes) * len(variants) * reps
     ev.say(f"{n_clips} clips x {ev.CLIP_USD} = {round(n_clips * ev.CLIP_USD, 2)} USD (cap {cap})")
@@ -314,7 +353,7 @@ def run(job_ids, reps, cap, max_scenes, go, variants=VARIANTS, per_cat=2):
             lab = run_dir / f"lab_{k['code']}.mp4"
             if ev.label_clip(run_dir / f"{k['code']}.mp4", lab, k["code"]):
                 parts.append(lab)
-        name = f"{'lum' if variants in (VARIANTS_L, VARIANTS_E) else 'facade'}_{run_id}_{c['job']}_{c['scene']}.mp4"
+        name = f"{'lum' if variants in (VARIANTS_L, VARIANTS_E, VARIANTS_C) else 'facade'}_{run_id}_{c['job']}_{c['scene']}.mp4"
         if parts and ev.concat(parts, ev.SCRATCH / name):
             ev.say(f"{c['job']} scena {c['scene']}: {ev.LINK_BASE}/{name}\n   ordine: {' '.join(k['code'] for k in mine)}")
     ev.say(f"RUN {run_id} done. Look at the codes, tell me what you see, THEN: python3 exp_facade.py reveal {run_id}")
@@ -333,8 +372,9 @@ if __name__ == "__main__":
 
     def opt(name, default):
         return a[a.index(name) + 1] if name in a else default
+    SKIP = int(opt("--skip", "0"))
     if len(a) >= 2 and a[0] in ("plan", "run"):
-        sys.exit(run([x for x in a[1].split(",") if x], int(opt("--reps", "2")), float(opt("--cap", "4.5")), int(opt("--max-scenes", "12")), a[0] == "run" and "--go" in a, {"d": VARIANTS_D, "l": VARIANTS_L, "e": VARIANTS_E}.get(opt("--set", ""), VARIANTS), int(opt("--per-cat", "2"))))
+        sys.exit(run([x for x in a[1].split(",") if x], int(opt("--reps", "2")), float(opt("--cap", "4.5")), int(opt("--max-scenes", "12")), a[0] == "run" and "--go" in a, {"d": VARIANTS_D, "l": VARIANTS_L, "e": VARIANTS_E, "c": VARIANTS_C}.get(opt("--set", ""), VARIANTS), int(opt("--per-cat", "2"))))
     elif len(a) >= 2 and a[0] == "reveal":
         sys.exit(reveal(a[1]))
     print(__doc__)
