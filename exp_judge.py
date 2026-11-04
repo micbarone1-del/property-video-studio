@@ -27,7 +27,7 @@ Judge the clip like a strict quality inspector for a real-estate agency:
 - animated: people, vehicles, curtains, flags, water or leaves that MOVE or change.
 - direction: where the camera travels, one of "toward_main_subject" (the building / room feature that dominates frame 1 gets closer), "along_street_or_path", "sideways", "backward", "downward", "upward", "static".
 - speed: "static", "slow", "fast", "very_fast" (fast = the picture changes a lot within one second).
-- verdict: "fail" if something is invented, or people/vehicles animate, or the camera goes away from the main subject, backward or downward, or it is very fast; "review" if the camera drifts sideways/along a path, is fast, or you are unsure; otherwise "pass".
+- verdict: "fail" if something is invented, or people/vehicles animate, or the camera goes away from the main subject, backward or downward, or it is very fast; "review" if the camera drifts sideways/along a path, is fast, you are unsure, or the clip is essentially a STILL PICTURE with no visible camera motion at all; otherwise "pass".
 Answer with JSON only: {{"invented": [{{"frames": "3-5", "what": "short"}}], "animated": [{{"frames": "2-6", "what": "short"}}], "direction": "...", "speed": "...", "verdict": "pass", "reason": "one short sentence"}}"""
 
 
