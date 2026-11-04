@@ -98,5 +98,15 @@ check("DV21 the pipeline AND the rework runner both add the described-view cost 
 check("DV22 the movement remap exists once and assemble_pov_prompt uses it", vsrc.count("def _remap_movement") == 1 and "pov_movement = _remap_movement(pov_movement, output_format)" in vsrc and vsrc.count("stand_look_around remap") == 1)
 check("DV23 the positive text is defined once (exp_prompt imports it)", sum(open(f).read().count("this is a frozen photograph of an empty, still room") for f in ("described_view.py", "exp_prompt.py", "video_generation.py", "exp_luma.py")) == 1)
 check("DV24 the old rules are untouched (fall-back)", "no people, no human shadows or silhouettes" in vsrc and vsrc.count("no human shadows") == 1)
+import os as os
+_o = os.environ.pop("PVS_LUMA_NOMOVE", None)
+_std = dv.rules_for("view", "large")
+os.environ["PVS_LUMA_NOMOVE"] = "1"
+_nm = dv.rules_for("view", "large")
+os.environ.pop("PVS_LUMA_NOMOVE", None)
+if _o is not None:
+    os.environ["PVS_LUMA_NOMOVE"] = _o
+check("DV-NM1 without the switch the rules are the production text", "the only thing that moves is the camera" in _std)
+check("DV-NM2 with PVS_LUMA_NOMOVE=1 only that clause changes: no 'moves', 'movement' kept, same length class", "moves" not in _nm and "the only thing that changes is the camera position, which makes the movement described above" in _nm and _nm.replace("changes is the camera position", "moves is the camera") == _std)
 print("ALL PASS" if not fails else f"{fails} FAIL")
 sys.exit(1 if fails else 0)
