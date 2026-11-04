@@ -1,21 +1,23 @@
 """exp_volume.py - volume check of the FINAL Luma prompt configuration on NEW listings, 360p draft tier (2026-11-04, Michele: "Facciamo volume", "Vai veloce con batch").
 
-What it does (unattended; run inside `screen`; nothing under jobs/ is ever deleted):
-  1. For every listing URL: creates a DRAFT job in the production app (POST /jobs/from-url, the same call the UI makes, under the GIAL agency) and waits until the
-     draft is ready. A listing the app refuses (scope filter) is reported with the app's own reason and skipped. The app allows 5 new jobs per hour: on 429 it waits.
-  2. For every scene of every draft: calls the REAL production function video_generation.generate_video_single (director -> description -> prompt assembly -> Luma),
-     with the production arguments of that scene, the only differences being PVS_LUMA_RESOLUTION=360p (about 0.06 USD per clip) and the ORIGINAL photo of the
-     scene (the draft has no lighting-corrected copy yet). So the prompt is exactly what production would send with the current defaults (B, N, N1).
-  3. Measures the camera speed of each clip (clip_speed_probe), flags the ones much faster than the rest of the SAME listing (PROVISIONAL threshold, calibrated
-     at 360p only), and writes one video per listing (clips in scene order, label with listing/scene/plan) into jobs/_test_scratch/ so it can be watched at
-     http://<server>:8000/test-scratch/<file>.
-Own spend cap (every STARTED clip counts, failed ones too); no generation above it.
+The drafts are NOT created here: GIAL listings are read by relinx_pilot_check.py (the app's from-url path says "Site not yet supported: relinx.it"; the
+Relinx drafts have always been made on the TEST instance, port 8002, jobs in /var/www/pvs_test_jobs). This script takes the ids of drafts that are ready.
 
-  python3 exp_volume.py plan URL1,URL2,...      free: lists what would happen
-  python3 exp_volume.py run  URL1,URL2,... [--cap 6] [--agency ag_xxx] [--workers 3]
+For every scene of every draft it calls the REAL production function video_generation.generate_video_single (director -> description -> prompt assembly -> Luma)
+with the production arguments of that scene; the only differences are PVS_LUMA_RESOLUTION=360p (about 0.06 USD per clip) and the ORIGINAL photo of the scene
+(a draft has no lighting-corrected copy yet). So the prompt is exactly what production sends with the current defaults (B, N, N1).
+Then it measures the camera speed of each clip (clip_speed_probe), flags the ones much faster than the rest of the SAME listing (PROVISIONAL threshold,
+calibrated at 360p only) and writes one video per listing (clips in scene order, label with listing/scene/plan) into the scratch folder served at
+http://<server>:8000/test-scratch/<file>. Own spend cap (every STARTED clip counts, failed ones too). Nothing is deleted; nothing is written into a job.
+
+  python3 exp_volume.py ids LOG_FILE            prints the ids of the drafts that reached 'in_review' in a relinx_pilot_check.py log
+  python3 exp_volume.py plan JOB1,JOB2,...      free: shows what would happen
+  python3 exp_volume.py run  JOB1,JOB2,... [--cap 6] [--workers 3]
+  PVS_JOBS_DIR = where the drafts are (test instance: /var/www/pvs_test_jobs); PVS_VOLUME_SCRATCH = where videos go (production scratch, so port 8000 serves them)
 """
 import json
 import os
+import re
 import statistics
 import subprocess
 import sys
@@ -25,13 +27,11 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 JOBS_DIR = Path(os.environ.get("PVS_JOBS_DIR") or (HERE / "jobs"))
-SCRATCH = JOBS_DIR / "_test_scratch"
+SCRATCH = Path(os.environ.get("PVS_VOLUME_SCRATCH") or (JOBS_DIR / "_test_scratch"))
 OUT = SCRATCH / "volume"
 SPEND = OUT / "spend.json"
 CLIP_USD = 0.06
 DEFAULT_CAP = 6.0
-DRAFT_WAIT_SECS = 20 * 60
-RATE_WAIT_SECS = 600
 FAST_REL = 1.5            # PROVISIONAL: a clip whose motion energy is 1.5x the median of its listing is flagged "da guardare"
 LINK_BASE = os.environ.get("PVS_LINK_BASE", "http://187.77.196.94:8000/test-scratch")
 FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
@@ -61,41 +61,18 @@ def add_spend(usd: float, note: str):
         SPEND.write_text(json.dumps(d, ensure_ascii=False, indent=1))
 
 
-def listing_number(url: str) -> str:
+def parse_job_ids(log_text: str) -> list:
+    """Ids of the drafts that reached partner status in_review in a relinx_pilot_check.py log ('  job 1a2b3c4d partner status in_review after 40s ...')."""
     import re
-    m = re.search(r"-(\d{3,5})/?$", url.rstrip("/") + "/") or re.search(r"(\d{3,5})/?$", url)
-    return m.group(1) if m else "x"
+    return re.findall(r"\bjob ([0-9a-f]{8}) partner status in_review", log_text)
 
 
-def create_draft(s, base, url, agency, attempts=6):
-    """-> (job_id or None, why). Waits on 429 (5 new jobs per hour)."""
-    for n in range(attempts):
-        r = s.post(f"{base}/jobs/from-url", data={"url": url, "agency_id": agency or "", "model_tier": "luma", "property_name": "", "voice_id": ""}, timeout=60)
-        if r.status_code == 429:
-            say(f"{url[-30:]}: 429 (limit of new jobs per hour), waiting {RATE_WAIT_SECS // 60} min")
-            time.sleep(RATE_WAIT_SECS)
-            continue
-        if r.status_code != 200:
-            return None, f"create refused {r.status_code} {r.text[:200]}"
-        return r.json()["job_id"], "created"
-    return None, "still rate-limited after waiting"
-
-
-def wait_draft(s, base, jid, max_wait=DRAFT_WAIT_SECS):
-    """-> (ok, status, message)."""
-    waited = 0
-    while waited < max_wait:
-        try:
-            j = s.get(f"{base}/jobs/{jid}", timeout=30).json()
-        except Exception as e:
-            j = {"status": "preparing", "message": f"read failed {e}"}
-        st = j.get("status")
-        if st == "draft":
-            return True, st, str(j.get("message") or "")
-        if st != "preparing":
-            return False, st, str(j.get("message") or j.get("error") or j)[:300]
-        time.sleep(20); waited += 20
-    return False, "timeout", "the draft was not ready in time"
+def listing_label(job: str) -> str:
+    try:
+        meta = json.loads((JOBS_DIR / job / "job_meta.json").read_text())
+        return str(meta.get("property_name") or meta.get("external_ref") or job)[:40]
+    except Exception:
+        return job
 
 
 def scene_args(job: str, i: int):
@@ -122,7 +99,7 @@ def probe(mp4):
 
 
 def label_clip(src: Path, dst: Path, text: str) -> bool:
-    safe = text.replace(":", " ").replace("'", "").replace("%", "")
+    safe = re.sub(r"[^A-Za-z0-9 ._>-]", " ", text)      # drawtext is picky: letters, digits and a few signs only
     vf = f"scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:(ow-iw)/2:(oh-ih)/2,drawtext=fontfile={FONT}:text='{safe}':x=10:y=10:fontsize=22:fontcolor=yellow:box=1:boxcolor=black@0.6,fps=24"
     try:
         subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(src), "-an", "-vf", vf, "-c:v", "libx264", "-pix_fmt", "yuv420p", str(dst)], check=True, timeout=120)
@@ -178,38 +155,27 @@ def generate_scene(job, i, run_dir, cap):
     return row
 
 
-def main(urls, cap, agency, workers, go):
+def main(job_ids, cap, workers, go):
     if not go:
-        for u in urls:
-            say("would create a draft for", u)
-        say(f"then one 360p clip per scene (about {CLIP_USD} USD each, cap {cap} USD, already spent {spent():.2f}). Nothing done (no `run`).")
+        for j in job_ids:
+            say("would generate one 360p clip per scene of job", j, listing_label(j))
+        say(f"(about {CLIP_USD} USD per clip, cap {cap} USD, already spent {spent():.2f}). Nothing done (no `run`).")
         return 0
     from dotenv import load_dotenv
     load_dotenv(HERE / ".env")
     os.environ["PVS_LUMA_RESOLUTION"] = "360p"
-    import gial_start
     import video_generation as vg
     vg.FAL_FALLBACK_ENABLED = False          # a failed Luma call must not silently become a pricier fal.ai clip in a test
-    s, base = gial_start.session(), gial_start.BASE
     run_id = time.strftime("%m%d_%H%M%S")
     run_dir = OUT / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
-    say(f"RUN {run_id}: {len(urls)} listing(s), cap {cap} USD")
-    jobs, report = {}, {}
-    for u in urls:
-        n = listing_number(u)
-        jid, why = create_draft(s, base, u, agency)
-        if not jid:
-            say(f"{n}: not created - {why}"); report[n] = {"status": "not created", "why": why}; continue
-        jobs[n] = jid
-        say(f"{n}: draft requested (job {jid})")
+    say(f"RUN {run_id}: {len(job_ids)} draft(s), cap {cap} USD, drafts in {JOBS_DIR}, videos in {SCRATCH}")
+    report = {}
     ready = {}
-    for n, jid in jobs.items():
-        ok, st, msg = wait_draft(s, base, jid)
-        if ok:
-            ready[n] = jid; say(f"{n}: draft ready (job {jid})")
-        else:
-            say(f"{n}: NOT a draft - {st}: {msg}"); report[n] = {"status": st, "why": msg, "job": jid}
+    for jid in job_ids:
+        if not (JOBS_DIR / jid / "job_meta.json").exists():
+            say(f"{jid}: no job_meta.json in {JOBS_DIR}: skipped"); report[jid] = {"status": "missing"}; continue
+        ready[jid] = jid
     from concurrent.futures import ThreadPoolExecutor
     tasks = []
     for n, jid in ready.items():
@@ -231,7 +197,7 @@ def main(urls, cap, agency, workers, go):
             r["rel"] = round(r["speed"]["e_all"] / med, 2) if med and r.get("speed") else None
             r["flag"] = bool(r["rel"] and r["rel"] >= FAST_REL)
             lab = run_dir / f"lab_{jid}_{r['scene']:03d}.mp4"
-            if label_clip(Path(r["clip"]), lab, f"{n} scena {r['scene']} {r['category']} {r['plan'][:40]} rel {r['rel']}"):
+            if label_clip(Path(r["clip"]), lab, f"{n} {listing_label(jid)[:14]} scena {r['scene']} {r['category']} {r['plan'][:36]} rel {r['rel']}"):
                 parts.append(lab)
         name = f"vol_{run_id}_{n}.mp4"
         if parts and concat(parts, SCRATCH / name):
@@ -251,9 +217,11 @@ def main(urls, cap, agency, workers, go):
 
 if __name__ == "__main__":
     a = sys.argv[1:]
-    if len(a) < 2 or a[0] not in ("plan", "run"):
+    if len(a) < 2 or a[0] not in ("ids", "plan", "run"):
         print(__doc__); sys.exit(1)
+    if a[0] == "ids":
+        print(" ".join(parse_job_ids(Path(a[1]).read_text(errors="replace")))); sys.exit(0)
 
     def opt(name, default):
         return a[a.index(name) + 1] if name in a else default
-    sys.exit(main([u.strip() for u in a[1].split(",") if u.strip()], float(opt("--cap", DEFAULT_CAP)), opt("--agency", "ag_abea5414"), int(opt("--workers", "3")), a[0] == "run"))
+    sys.exit(main([u.strip() for u in a[1].split(",") if u.strip()], float(opt("--cap", DEFAULT_CAP)), int(opt("--workers", "3")), a[0] == "run"))
