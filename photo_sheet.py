@@ -44,13 +44,21 @@ def verdicts(job: str) -> dict:
 
 
 def listing_url(job: str) -> str:
-    """The relinx.it listing page of a draft, read from its job_meta.json (first https://relinx.it/... string found)."""
+    """The relinx.it page of a draft. job_meta has only external_ref 'T-<listing number>-<hash>', so the page is found by that number
+    in the listing files kept next to this script (gial_test_candidates.txt, relinx_listings*.txt, golden_*.txt)."""
     import re
-    txt = (TEST_JOBS / job / "job_meta.json").read_text()
-    m = re.search(r'https://relinx\.it/[^"\\ ]*?/immobili/[^"\\ ]+', txt) or re.search(r'https://relinx\.it/[^"\\ ]+', txt)
+    meta = json.loads((TEST_JOBS / job / "job_meta.json").read_text())
+    m = re.match(r"T-(\d+)-", str(meta.get("external_ref") or ""))
     if not m:
-        raise SystemExit(f"no relinx.it url in {job}/job_meta.json: pass it as second argument")
-    return m.group(0)
+        raise SystemExit(f"{job}: no listing number in external_ref: pass the url as second argument")
+    num = m.group(1)
+    pat = re.compile(r"https://relinx\.it\S*?[/-]" + num + r"(?!\d)\S*")
+    for f in sorted(Path(__file__).resolve().parent.glob("*.txt")):
+        hit = pat.search(f.read_text(errors="replace"))
+        if hit:
+            print(f"listing {num}: {hit.group(0)} (from {f.name})")
+            return hit.group(0)
+    raise SystemExit(f"{job}: listing {num} not found in the *.txt listing files: pass the url as second argument")
 
 
 def rejected_indices(job: str) -> dict:
