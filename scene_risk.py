@@ -35,10 +35,14 @@ def _file() -> Path:
 
 
 def enabled() -> bool:
-    """On by default; PVS_SCENE_RISK=0 turns the recording off; never records fake-provider runs (their clips are not real)."""
+    """On by default; PVS_SCENE_RISK=0 turns the recording off; never records fake-provider runs or a run started from a test_*.py script (their clips are not real)."""
     if os.getenv("PVS_FAKE_PROVIDERS", "").strip() == "1":
         return False
-    return os.getenv("PVS_SCENE_RISK", "1").strip().lower() not in ("0", "false", "no", "off")
+    v = os.getenv("PVS_SCENE_RISK")
+    if v is not None:                       # an explicit setting always wins (test_scene_risk.py forces it on)
+        return v.strip().lower() not in ("0", "false", "no", "off")
+    # 2026-11-04: the existing test scripts (test_rework_qc.py ...) call qc_redone with FAKE clips; they must never write into the real registry
+    return not os.path.basename(sys.argv[0] or "").startswith("test_")
 
 
 def category_of(scene) -> str:
