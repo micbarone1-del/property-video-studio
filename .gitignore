@@ -18,3 +18,4 @@ Noise
 .env.bak*
 *.bak_p*
 *.tmp_p*
+scene_risk_events.jsonl
