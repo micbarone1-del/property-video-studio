@@ -96,7 +96,8 @@ NEAR_REPLACEMENTS = (
 
 # 2026-11-04 (blind rounds 1 and 3, judged by Michele): the NEAR rule above lets the director choose the FLOOR or the ground as the target ("the floor in the middle of the room",
 # "asphalt road surface ahead"): the camera then tilts down to the floor (e7f516e3 scenes 0 and 1) or runs along the road (facades). EYE: the target is a vertical fixed feature at about
-# eye level, and a deterministic guard (_too_low) sends any floor / ground / low target to the centre of the frame. OFF by default until the blind comparison proves it (PVS_DIRECTOR_EYE=1).
+# eye level, and a deterministic guard (_too_low) sends any floor / ground / low target to the centre of the frame. ON by default since 2026-11-04 (Michele approved after the blind round 4:
+# 0 clips of 36 tilted down, against 2 of 24 in round 3 with the floor targets); PVS_DIRECTOR_EYE=0 restores the NEAR text exactly (rollback). Rollback commit of the repo: 4eeccb6.
 _EYE_NEAR = """- Aim at a fixed VERTICAL feature at about eye level, NEAR enough to reach calmly within the five seconds of the shot: a stretch of the near or middle wall, a window, the front of the
   sofa, table or counter (not the floor, the ground, the road or paving: a low target makes the camera tilt down). The video model tries to ARRIVE at its target before the shot ends,
   so a far target makes the camera rush: in a deep scene (long drive, garden, large hall) never aim at the far background. Never aim at
@@ -109,7 +110,7 @@ LOW_Y = 0.68
 
 
 def eye_enabled() -> bool:
-    return os.getenv("PVS_DIRECTOR_EYE", "0").strip().lower() in ("1", "true", "yes", "on")
+    return os.getenv("PVS_DIRECTOR_EYE", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
 def _too_low(raw: dict, target: str) -> bool:
