@@ -1,0 +1,25 @@
+"""test_exp_judge.py - offline checks of exp_judge (no network, no spend)."""
+import json, os, sys, tempfile
+from pathlib import Path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import exp_judge as ej
+fails = 0
+def check(n, c):
+    global fails
+    print(("PASS " if c else "FAIL ") + n)
+    fails += 0 if c else 1
+lab = ej.load_labels(Path(__file__).resolve().parent / "judge_labels_1104_144423.json")
+check("J1 labels: every code in one class, 3-letter codes", all(len(c) == 3 for c in lab) and set(lab.values()) == {"bad", "part", "ok"} and lab["shy"] == "bad" and lab["xat"] == "ok" and lab["gra"] == "part")
+usage = {}
+def fake_ask(prompt, imgs, u):
+    u["in"] = u.get("in", 0) + 3000; u["out"] = u.get("out", 0) + 300
+    return {"verdict": "FAIL", "direction": "sideways", "speed": "fast", "reason": "x"}
+r = ej.judge_clip("x.mp4", "abc", usage, ask=fake_ask, frames=["f1", "f2"])
+check("J2 verdict is normalised to lower case and the prompt carries the frame count", r["verdict"] == "fail" and "2 frames" in ej.JUDGE_PROMPT.format(n=2))
+check("J3 an unknown verdict becomes review (never silently pass)", ej.judge_clip("x", "a", {}, ask=lambda p, i, u: {"verdict": "maybe"}, frames=["f"])["verdict"] == "review")
+check("J4 spend estimate from tokens", ej.spend_usd({"in": 1000000, "out": 100000}) == 4.5)
+s = ej.score([("bad", "fail"), ("bad", "pass"), ("bad", "review"), ("ok", "pass"), ("ok", "pass"), ("ok", "review"), ("part", "fail")])
+check("J5 score: bad caught 2/3, 1 missed, ok flagged 1/3", abs(s["bad_caught"] - 2 / 3) < 1e-9 and s["bad_missed"] == 1 and abs(s["ok_false_alarm"] - 1 / 3) < 1e-9 and s["ok_fail"] == 0)
+o = ej.order_flagged([{"verdict": "pass", "code": "a"}, {"verdict": "fail", "code": "b"}, {"verdict": "review", "code": "c"}, {"verdict": "fail", "code": "d"}])
+check("J6 flagged first: fail, review, pass; stable", [x["code"] for x in o] == ["b", "d", "c", "a"])
+sys.exit(1 if fails else 0)
