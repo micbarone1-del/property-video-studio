@@ -791,7 +791,7 @@ def _generate_luma_direct(image_url: str, prompt: str, duration: int, aspect_rat
                 "prompt": prompt,
                 "aspect_ratio": aspect_ratio,
                 "video": {
-                    "resolution": "1080p",
+                    "resolution": os.environ.get("PVS_LUMA_RESOLUTION", "1080p").strip() or "1080p",   # 2026-11-04: ONLY the cheap 360p volume tests set it (exp_volume.py); production never does
                     "duration": luma_dur,
                     "start_frame": {"url": image_url},
                     **({"end_frame": {"url": end_frame_url}} if end_frame_url else {}),   # 2026-10-27: a crop of the photo (the first frame is its twin crop), see end_frame.py
