@@ -81,7 +81,8 @@ SHORT_RULES = ("this is a frozen photograph of a still scene: every wall, window
 
 
 def neutral_enabled() -> bool:
-    return os.getenv("PVS_DESCRIBE_NEUTRAL", "0").strip().lower() in ("1", "true", "yes", "on")
+    # 2026-11-04: ON by default after the blind round 4 (N1 0/12 defects vs N 4/12 vs N2 3/12); PVS_DESCRIBE_NEUTRAL=0 restores the old description (rollback)
+    return os.getenv("PVS_DESCRIBE_NEUTRAL", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
 def short_rules_enabled() -> bool:
