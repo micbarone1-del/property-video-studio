@@ -64,9 +64,20 @@ def _scene_words(text: str, space_type: str) -> str:
     return text
 
 
+# 2026-11-03 (Luma support: avoid "move / moving / down"; blind A/B on 360p clips: 0 flawed clips of 15 with the clause below changed, 4 of 15 with the original).
+# PVS_LUMA_NOMOVE=1 swaps ONE clause of the rules. Off by default; the production text is unchanged until Michele switches it on.
+NOMOVE_FROM = "the only thing that moves is the camera, which makes the movement described above"
+NOMOVE_TO = "the only thing that changes is the camera position, which makes the movement described above"
+
+
+def nomove_enabled() -> bool:
+    return os.getenv("PVS_LUMA_NOMOVE", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
 def rules_for(last_view: str, space_type: str = "") -> str:
     """The text that REPLACES _LUMA_RULES in the Luma prompt."""
-    return _scene_words(POSITIVE_RULES, space_type) + ", " + last_view.strip()
+    rules = POSITIVE_RULES.replace(NOMOVE_FROM, NOMOVE_TO) if nomove_enabled() else POSITIVE_RULES
+    return _scene_words(rules, space_type) + ", " + last_view.strip()
 
 
 def sidecar_path(clip_path) -> Path:
