@@ -3947,6 +3947,12 @@ async def run_pipeline(
                 JOBS[job_id]["claude_usage"] = _ls_qc.merge_claude_usage(JOBS[job_id].get("claude_usage"), vid_qc.get("claude_usage"))
                 log.info(f"[Job {job_id}] Video QC scene {i}: {video_verdict}")
                 qc_results.append({"scene": i, "type": "video", **vid_qc})
+                # 2026-11-04: shadow-mode scene risk registry (records only; never raises, never changes the verdict)
+                try:
+                    import scene_risk as _scene_risk
+                    _scene_risk.record(job_id, scene.get("scene_id") or f"scene_{i:03d}", scene, video_verdict, stage="first", movement=pov_movement, tier=model_tier)
+                except Exception:
+                    pass
 
 
                 if video_verdict == "reject":
@@ -3956,6 +3962,11 @@ async def run_pipeline(
             elif not ok:
                 video_verdict = "failed"
                 failed_scenes.append(i)
+                try:
+                    import scene_risk as _scene_risk
+                    _scene_risk.record(job_id, scene.get("scene_id") or f"scene_{i:03d}", scene, "failed", stage="first", movement=pov_movement, tier=model_tier)
+                except Exception:
+                    pass
 
 
             scene_statuses.append({
