@@ -1,0 +1,95 @@
+{
+ "note": "Michele's blind judgements turned into bad / part / ok by Claude, per run (2026-11-04). Run 3 only lists the codes he named; run 4 the ones he commented. Correct any code.",
+ "1104_144423": {
+  "bad": [
+   "dyx",
+   "dzs",
+   "urk",
+   "yrb",
+   "qde",
+   "shy",
+   "ndl",
+   "rqj",
+   "tck"
+  ],
+  "part": [
+   "gvh",
+   "dtx",
+   "lns",
+   "qii",
+   "gra",
+   "mvh",
+   "zvz",
+   "pzo",
+   "zal",
+   "tqa"
+  ],
+  "ok": [
+   "xat",
+   "nim",
+   "ecx",
+   "hua",
+   "yym",
+   "wix",
+   "hmn",
+   "fyu",
+   "nmt",
+   "btc",
+   "koh",
+   "zyu",
+   "beb",
+   "lyd",
+   "zyz",
+   "ipf",
+   "pen",
+   "fkr",
+   "lxm",
+   "shw",
+   "qan",
+   "koa",
+   "bca",
+   "ujc",
+   "ceu",
+   "hyv",
+   "udw",
+   "bfm",
+   "qfo",
+   "rnv",
+   "fpg",
+   "ieq",
+   "fue",
+   "lqv",
+   "nqj"
+  ]
+ },
+ "1104_175835": {
+  "bad": [
+   "toj",
+   "jrq",
+   "abp",
+   "bav",
+   "uju",
+   "tsj"
+  ],
+  "part": [],
+  "ok": []
+ },
+ "1104_190922": {
+  "bad": [
+   "iao",
+   "ssp",
+   "vlp",
+   "ley",
+   "kao"
+  ],
+  "part": [
+   "gmf",
+   "ceh"
+  ],
+  "ok": [
+   "uvp",
+   "hyy",
+   "ocx"
+  ]
+ }
+}
