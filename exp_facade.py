@@ -12,14 +12,21 @@ The prompts of G and B are the REAL production prompts: video_generation.generat
 captured, nothing is sent, nothing is spent there; the director and the description cost a few cents of Claude). The clips are then generated at 360p with the same
 Luma call exp_prompt_ab uses. Drafts are only read. Own spend cap (every started clip counts).
 
-  python3 exp_facade.py plan   JOB1,JOB2,...                       free: lists the facade scenes found ('exterior' scenes)
-  python3 exp_facade.py run    JOB1,JOB2,... [--reps 2] [--cap 4.5] [--max-scenes 12] --go
+Round 2 (2026-11-04, after the blind judgement of run 1104_144423: G 5 clearly bad, B 9 good / 2 bad / 3 partial, S not really still and people/cars invented):
+  D1  the director with the ORIGINAL facade rule (PVS_DIRECTOR_NEAR=0: toward the building, Michele's 2026-10-25 rule), a MINIMAL move (end view scale 1.05 instead of 1.12, a sentence
+      without metres: the anchor ends only slightly larger in the frame) and the outdoor FROZEN-SCENE rule (buildings, vehicles, trees, signs and any figure fixed in place)
+  D2  the same director and the same frozen-scene rule, but the normal move of today (scale 1.12, the old sentence): separates the effect of the rule from the effect of the small move
+  The anchor stays what the director chooses for each scene (not one fixed target). Compare with the G/B/S judgements already given.
+
+  python3 exp_facade.py plan   JOB1,JOB2,... [--set d]            free: lists the facade scenes found ('exterior' scenes)
+  python3 exp_facade.py run    JOB1,JOB2,... [--set d] [--reps 2] [--cap 4.5] [--max-scenes 12] --go     --set d = round 2 (D1, D2); default = round 1 (G, B, S)
   python3 exp_facade.py reveal RUN_ID
   PVS_JOBS_DIR = where the drafts are (test instance: /var/www/pvs_test_jobs); PVS_VOLUME_SCRATCH = where the videos go (production scratch, served on port 8000)
 """
 import json
 import os
 import random
+import re
 import string
 import sys
 import time
@@ -31,6 +38,7 @@ import exp_volume as ev
 OUT = ev.SCRATCH / "facade"
 BUILDING_TARGET = "the base of the front wall of the building"
 VARIANTS = ("G", "B", "S")
+VARIANTS_D = ("D1", "D2")
 CATEGORY = "exterior"
 
 
@@ -56,7 +64,48 @@ def building_plan(plan: dict) -> dict:
     return p
 
 
-def capture_prompt(job: str, i: int, force_building: bool = False):
+FROZEN_OUTDOOR = ("frozen photograph of a still outdoor scene: every building, wall, balcony, window, door, gate, parked vehicle, tree, sign, flag, shadow and every figure present "
+                  "is fixed in its place and keeps exactly the same")
+_FROZEN_RE = re.compile(r"frozen photograph of [^:]*:\s*every .*?keeps exactly the same", re.S | re.I)
+
+
+def frozen_outdoor(prompt: str) -> tuple:
+    """(prompt with the interior list of fixed things replaced by the outdoor one, 1 if the clause was NOT found). Positive wording only: nothing says 'no people'."""
+    new, n = _FROZEN_RE.subn(FROZEN_OUTDOOR, prompt, count=1)
+    return new, (0 if n else 1)
+
+
+def minimal_sentence(target: str) -> str:
+    """Round 2 move sentence: no metres (Luma does not measure them), the goal is a framing: the anchor ends only slightly larger than at the start."""
+    import movement_director as md
+    return (f"Extremely slow, barely perceptible straight forward camera push-in toward {target}, the camera keeps the same height and direction, "
+            f"{target} ends only slightly larger in the frame than at the start, {md.TAIL}")
+
+
+def minimal_plan(plan: dict) -> dict:
+    """D1: when the director chose a forward move, keep ITS anchor and make the move minimal (end view scale 1.05); any other plan is left as it is."""
+    import movement_director as md
+    p = dict(plan)
+    if p.get("move") == "forward" and p.get("target"):
+        p.update(slow=True, travel="short", scale=md.STATIC_SCALE, sentence=minimal_sentence(p["target"]))
+    return p
+
+
+class _env:
+    def __init__(self, **kw):
+        self.kw = kw
+    def __enter__(self):
+        self.old = {k: os.environ.get(k) for k in self.kw}
+        os.environ.update(self.kw)
+    def __exit__(self, *a):
+        for k, v in self.old.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def capture_prompt(job: str, i: int, force_building: bool = False, transform=None):
     """(prompt, plan text) the production chain would send to Luma for this scene. The Luma call is replaced by a function that only records the prompt."""
     import movement_director as md
     import video_generation as vg
@@ -75,6 +124,8 @@ def capture_prompt(job: str, i: int, force_building: bool = False):
         p = real_plan(*a, **k)
         if p and force_building:
             p = building_plan(p)
+        elif p and transform:
+            p = transform(p)
         used.append(p)
         return p
     md.plan = recording_plan
@@ -88,10 +139,20 @@ def capture_prompt(job: str, i: int, force_building: bool = False):
     return (got[0] if got else None), (f"{pl.get('move')} -> {pl.get('target')}" if pl else "?"), img
 
 
-def build_cases(job_ids, max_scenes):
+def build_cases(job_ids, max_scenes, variants=VARIANTS):
     import exp_prompt_ab as ab
     cases = []
     for job, i in facade_scenes(job_ids)[:max_scenes]:
+        if variants == VARIANTS_D:
+            with _env(PVS_DIRECTOR_NEAR="0"):        # the original facade rule: toward the building (Michele 2026-10-25)
+                d2, d2plan, img = capture_prompt(job, i)
+                d1, d1plan, _ = capture_prompt(job, i, transform=minimal_plan)
+            if not d1 or not d2:
+                ev.say(f"{job}:{i} no production prompt captured: skipped"); continue
+            d1, m1 = frozen_outdoor(d1); d2, m2 = frozen_outdoor(d2)
+            ev.say(f"{job}:{i} D1 plan used: {d1plan}\n    D1 prompt starts: {d1[:170]}\n{job}:{i} D2 plan used: {d2plan}\n    frozen clause not found: D1 {m1} D2 {m2}")
+            cases.append({"job": job, "scene": i, "img": str(img), "prompts": {"D1": d1, "D2": d2}, "plans": {"D1": d1plan, "D2": d2plan}})
+            continue
         g, gplan, img = capture_prompt(job, i)
         b, bplan, _ = capture_prompt(job, i, True)
         if not g or not b:
@@ -102,10 +163,10 @@ def build_cases(job_ids, max_scenes):
     return cases
 
 
-def run(job_ids, reps, cap, max_scenes, go):
+def run(job_ids, reps, cap, max_scenes, go, variants=VARIANTS):
     scenes = facade_scenes(job_ids)
     ev.say(f"{len(scenes)} facade scene(s): {scenes}")
-    n_clips = min(len(scenes), max_scenes) * len(VARIANTS) * reps
+    n_clips = min(len(scenes), max_scenes) * len(variants) * reps
     ev.say(f"{n_clips} clips x {ev.CLIP_USD} = {round(n_clips * ev.CLIP_USD, 2)} USD (cap {cap})")
     if not go:
         ev.say("Nothing done (no --go)."); return 0
@@ -113,10 +174,10 @@ def run(job_ids, reps, cap, max_scenes, go):
     load_dotenv(ev.HERE / ".env")
     ev.OUT = OUT; ev.SPEND = OUT / "spend.json"
     import exp_prompt_ab as ab
-    cases = build_cases(job_ids, max_scenes)
+    cases = build_cases(job_ids, max_scenes, variants)
     tasks = []
     for c in cases:
-        for v in VARIANTS:
+        for v in variants:
             for r in range(reps):
                 tasks.append((c, v, r + 1))
     random.shuffle(tasks)
@@ -175,7 +236,7 @@ if __name__ == "__main__":
     def opt(name, default):
         return a[a.index(name) + 1] if name in a else default
     if len(a) >= 2 and a[0] in ("plan", "run"):
-        sys.exit(run([x for x in a[1].split(",") if x], int(opt("--reps", "2")), float(opt("--cap", "4.5")), int(opt("--max-scenes", "12")), a[0] == "run" and "--go" in a))
+        sys.exit(run([x for x in a[1].split(",") if x], int(opt("--reps", "2")), float(opt("--cap", "4.5")), int(opt("--max-scenes", "12")), a[0] == "run" and "--go" in a, VARIANTS_D if opt("--set", "") == "d" else VARIANTS))
     elif len(a) >= 2 and a[0] == "reveal":
         sys.exit(reveal(a[1]))
     print(__doc__)
