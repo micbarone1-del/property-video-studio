@@ -7,6 +7,7 @@ speed, and a verdict pass / review / fail. Codes only (the variant stays hidden)
   python3 exp_judge.py calibrate RUN_ID [--labels judge_labels_1104_144423.json] [--cap 1.5]   judges the clips Michele already labelled and prints how often the judge agrees
   python3 exp_judge.py run RUN_ID [--cap 2.0] [--reveal]                                      judges every clip of a run; flagged ones first, with the video link of each scene
   python3 exp_judge.py summary RUN_ID|last                                                       FREE: reads the saved answers of `run` and counts verdicts and directions per VARIANT (reveals them)
+  python3 exp_judge.py show RUN_ID|last CODE1,CODE2,...                                           FREE: variant, plan, measured speed, judge verdict and the real prompt of the given clips
   PVS_VOLUME_SCRATCH = where the runs are (production scratch, port 8000)
 Cost: a few cents per clip (tokens are counted; the cap stops the run). Nothing is written into a job.
 """
@@ -187,6 +188,25 @@ def summary(run_id):
     return 0
 
 
+def show(run_id, codes):
+    run_id = resolve_run(run_id)
+    key = {k["code"]: k for k in json.loads((OUT / f"key_{run_id}.json").read_text())}
+    try:
+        judged = {r["code"]: r for r in json.loads((OUT / f"judge_run_{run_id}.json").read_text())}
+    except Exception:
+        judged = {}
+    for c in codes:
+        k = key.get(c)
+        if not k:
+            print(f"{c}: not in run {run_id}"); continue
+        j = judged.get(c, {})
+        sp = k.get("speed") or {}
+        print(f"=== {c} {k['case']} variant {k['variant']} rep{k['rep']} | speed e_all {sp.get('e_all')} | judge {j.get('verdict')} dir={j.get('direction')}")
+        print(f"    plan: {k.get('plan')}")
+        print(f"    prompt: {str(k.get('prompt'))[:700]}")
+    return 0
+
+
 if __name__ == "__main__":
     a = sys.argv[1:]
 
@@ -194,6 +214,8 @@ if __name__ == "__main__":
         return a[a.index(name) + 1] if name in a else default
     if len(a) >= 2 and a[0] == "calibrate":
         sys.exit(calibrate(a[1], opt("--labels", str(HERE / "judge_labels_1104_144423.json")), float(opt("--cap", "1.5"))))
+    if len(a) >= 3 and a[0] == "show":
+        sys.exit(show(a[1], [c for c in a[2].split(",") if c]))
     if len(a) >= 2 and a[0] == "summary":
         sys.exit(summary(a[1]))
     if len(a) >= 2 and a[0] == "run":
