@@ -9,6 +9,9 @@ Ideas from Luma support (email of 2026-11-03), tested ONE AT A TIME on the same 
   G  shorter    (round 2) A with "advancing less than three metres" replaced by "less than one metre"
   N  near       (round 3) the REAL director with PVS_DIRECTOR_NEAR=1 (target near enough to reach calmly in 5 s), then the production description + prompt assembly.
                 Built once per scene at run time (a few cents of Claude); the chosen target and sentence are printed
+  N1 neutral    (round 4) N with the end-view description written as a still view: no path, no direction, no destination (PVS_DESCRIBE_NEUTRAL=1)
+  N2 short      (round 4) N with the rules paragraph cut from about 150 to about 45 words (PVS_LUMA_SHORT_RULES=1)
+                N, N1 and N2 of one scene share the SAME director plan (cached): only the one thing under test differs
 Writes ONLY into jobs/_test_scratch/prompt_ab/ (never into a job, never deletes anything). The clips get blind codes: look first, then `reveal`.
 Spend: own cap CAP_USD, every started clip counts (failed ones too, to be safe). Without --go nothing is generated and nothing is spent.
 
@@ -33,7 +36,7 @@ SPEND = OUT / "spend.json"
 CAP_USD = 6.0      # 2026-11-03: raised from 4.0 by Michele ("Ok proseguiamo") for round 3
 CLIP_USD = 0.06            # 360p, 5 s, SDR = 20 credits (docs.agents.lumalabs.ai/guides/pricing)
 RESOLUTION = "360p"
-VARIANTS = ("A", "B", "C", "D", "F", "G", "N")
+VARIANTS = ("A", "B", "C", "D", "F", "G", "N", "N1", "N2")
 MID_INDEX = 60             # of 0..120 for a 5 s clip
 LINK_BASE = os.environ.get("PVS_LINK_BASE", "http://187.77.196.94:8000/test-scratch/prompt_ab")
 
@@ -106,9 +109,13 @@ def find_clip_notes(job: str, index: int) -> dict:
     return {}
 
 
-def near_prompt(job: str, index: int, notes: dict, photo) -> tuple:
-    """(prompt, info) of variant N: the production chain (movement_director -> described_view -> assemble_pov_prompt) with PVS_DIRECTOR_NEAR=1.
-    Same functions and argument order as video_generation.generate_video_single; only the director's prompt differs. (None, why) on failure."""
+_NEAR_CACHE = {}
+
+
+def near_prompt(job: str, index: int, notes: dict, photo, variant: str = "N") -> tuple:
+    """(prompt, info) of variants N / N1 / N2: the production chain (movement_director -> described_view -> assemble_pov_prompt).
+    Same functions and argument order as video_generation.generate_video_single. The director plan (and, for N2, the description) is computed ONCE per scene
+    and shared by N, N1 and N2, so that only the thing under test differs. (None, why) on failure."""
     import movement_director as md
     import described_view
     import video_generation as vg
@@ -122,23 +129,35 @@ def near_prompt(job: str, index: int, notes: dict, photo) -> tuple:
     pov = ((meta.get("scenes_config") or [])[index]).get("pov_movement", "walk_in_explore")
     OUT.mkdir(parents=True, exist_ok=True)
     clip = OUT / f"near_{job}_{index}.mp4"
-    old = os.environ.get("PVS_DIRECTOR_NEAR")
-    os.environ["PVS_DIRECTOR_NEAR"] = "1"
-    try:
-        plan = md.plan(str(photo), hints, str(clip), "")
-    finally:
-        if old is None:
-            os.environ.pop("PVS_DIRECTOR_NEAR", None)
-        else:
-            os.environ["PVS_DIRECTOR_NEAR"] = old
-    if not plan:
-        return None, "the director gave no plan"
     space = hints.get("space_type", "large")
     fmt = hints.get("output_format", "landscape")
-    last = described_view.describe(str(photo), vg._remap_movement(pov, fmt), space, str(clip), scale=plan.get("scale"), plan=plan)
-    prompt = vg.assemble_pov_prompt(space, pov, "bright_natural", "very_slow" if plan.get("slow") else vg.DEFAULT_INTENSITY, "luma", fmt,
-                                    hints.get("reflective_surface", "none"), hints.get("anchor", ""), hints.get("anchor_side", "center"), hints.get("depth", ""),
-                                    last, plan.get("sentence", ""))
+
+    def with_env(env: dict, fn):
+        old = {k: os.environ.get(k) for k in env}
+        os.environ.update(env)
+        try:
+            return fn()
+        finally:
+            for k, v in old.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    c = _NEAR_CACHE.setdefault((job, index), {})
+    if "plan" not in c:
+        c["plan"] = with_env({"PVS_DIRECTOR_NEAR": "1"}, lambda: md.plan(str(photo), hints, str(clip), ""))
+    plan = c["plan"]
+    if not plan:
+        return None, "the director gave no plan"
+    key = "last_neutral" if variant == "N1" else "last"
+    if key not in c:
+        env = {"PVS_DESCRIBE_NEUTRAL": "1"} if variant == "N1" else {"PVS_DESCRIBE_NEUTRAL": "0"}
+        c[key] = with_env(env, lambda: described_view.describe(str(photo), vg._remap_movement(pov, fmt), space, str(clip), scale=plan.get("scale"), plan=plan))
+    env = {"PVS_LUMA_SHORT_RULES": "1"} if variant == "N2" else {"PVS_LUMA_SHORT_RULES": "0"}
+    prompt = with_env(env, lambda: vg.assemble_pov_prompt(space, pov, "bright_natural", "very_slow" if plan.get("slow") else vg.DEFAULT_INTENSITY, "luma", fmt,
+                      hints.get("reflective_surface", "none"), hints.get("anchor", ""), hints.get("anchor_side", "center"), hints.get("depth", ""),
+                      c[key], plan.get("sentence", "")))
     return prompt, f"move={plan.get('move')} target={plan.get('target')!r} travel={plan.get('travel')} :: {plan.get('sentence', '')[:160]}"
 
 
@@ -205,11 +224,11 @@ def build_jobs(cases: list, variants: list, reps: int, make_near=None) -> tuple:
                 if not found:
                     problems.append(f"{job}:{idx} {v} - the prompt has no push-in target / travel phrase to change: skipped")
                     continue
-            elif v == "N":
+            elif v in ("N", "N1", "N2"):
                 if make_near is None:
                     prompt, note = "(built at run time: director with PVS_DIRECTOR_NEAR=1 + description + assembly)", "prompt built when the clips are generated"
                 else:
-                    prompt, note = make_near(job, idx, notes)
+                    prompt, note = make_near(job, idx, notes, v)
                     if not prompt:
                         problems.append(f"{job}:{idx} N - {note}: skipped")
                         continue
@@ -275,7 +294,7 @@ def cmd_plan_or_run(arg: str, variants: list, reps: int, go: bool, generate=gene
     for c in arg.split(","):
         j, i = c.split(":")
         cases.append((j.strip(), int(i)))
-    near = (lambda j, i, notes: near_prompt(j, i, notes, load_photo(j, i))) if go else None
+    near = (lambda j, i, notes, v: near_prompt(j, i, notes, load_photo(j, i), v)) if go else None
     jobs, problems = build_jobs(cases, variants, reps, make_near=near)
     for p in problems:
         print("NOTE:", p)
