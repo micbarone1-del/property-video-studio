@@ -26,4 +26,7 @@ import tempfile
 ej.OUT = Path(tempfile.mkdtemp())
 (ej.OUT / "key_a.json").write_text("[]"); import time; time.sleep(0.02); (ej.OUT / "key_b.json").write_text("[]")
 check("J7 'last' picks the newest run, a given id is kept", ej.resolve_run("last") == "b" and ej.resolve_run("a") == "a")
+sm = ej.summarise([{"variant": "P", "verdict": "fail", "direction": "backward", "speed": "slow"}, {"variant": "P", "verdict": "pass", "direction": "toward_main_subject", "speed": "slow"},
+                   {"variant": "L", "verdict": "pass", "direction": "static", "speed": "static"}])
+check("J8 summary counts verdicts and directions per variant", sm["P"]["n"] == 2 and sm["P"]["fail"] == 1 and sm["P"]["pass"] == 1 and sm["P"]["directions"]["backward"] == 1 and sm["L"]["speeds"] == {"static": 1})
 sys.exit(1 if fails else 0)
