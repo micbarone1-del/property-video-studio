@@ -208,7 +208,9 @@ _old = _os.environ.get("PVS_DIRECTOR_NEAR")
 _os.environ["PVS_DIRECTOR_NEAR"] = "0"
 _std = md.prompt_text()
 _os.environ.pop("PVS_DIRECTOR_NEAR", None)
+_os.environ["PVS_DIRECTOR_EYE"] = "0"          # the NEAR text itself (EYE, on by default since 2026-11-04, replaces two of its lines)
 _near = md.prompt_text()                      # no variable at all = the default
+_os.environ.pop("PVS_DIRECTOR_EYE", None)
 _default_is_near = _near != md.PROMPT
 if _old is None:
     _os.environ.pop("PVS_DIRECTOR_NEAR", None)
@@ -221,11 +223,12 @@ check("MD79 the near version keeps every other rule (central target, aerial, bra
 print(f"\n{'ALL PASS' if not fails else str(fails) + ' FAIL'}")
 
 # EYE (2026-11-04): floor / ground targets
-os.environ.pop("PVS_DIRECTOR_EYE", None)
+os.environ["PVS_DIRECTOR_EYE"] = "0"
 p, _ = md.validate(dict(FWD, target="the floor in the middle of the room", target_y=0.8), DEEP)
-check("MDE1 EYE off (default): a floor target is kept as before", p["target"] == "the floor in the middle of the room", p)
-check("MDE2 EYE off: the prompt is the NEAR one, unchanged", "within the five seconds" in md.prompt_text() and "VERTICAL feature" not in md.prompt_text())
-os.environ["PVS_DIRECTOR_EYE"] = "1"
+check("MDE1 EYE off (PVS_DIRECTOR_EYE=0): a floor target is kept as before", p["target"] == "the floor in the middle of the room", p)
+check("MDE2 EYE off (PVS_DIRECTOR_EYE=0): the prompt is the NEAR one, unchanged", "within the five seconds" in md.prompt_text() and "VERTICAL feature" not in md.prompt_text())
+os.environ.pop("PVS_DIRECTOR_EYE", None)
+check("MDE0 EYE is ON by default", md.eye_enabled())
 p, _ = md.validate(dict(FWD, target="the floor in the middle of the room", target_y=0.8), DEEP)
 check("MDE3 EYE on: a floor target becomes the centre of the frame", p["target"] == "the centre of the frame" and "tilt down" in p["adjusted"], p)
 p, _ = md.validate(dict(FWD, target="the stone wall", target_y=0.75), DEEP)
