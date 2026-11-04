@@ -29,4 +29,11 @@ check("J7 'last' picks the newest run, a given id is kept", ej.resolve_run("last
 sm = ej.summarise([{"variant": "P", "verdict": "fail", "direction": "backward", "speed": "slow"}, {"variant": "P", "verdict": "pass", "direction": "toward_main_subject", "speed": "slow"},
                    {"variant": "L", "verdict": "pass", "direction": "static", "speed": "static"}])
 check("J8 summary counts verdicts and directions per variant", sm["P"]["n"] == 2 and sm["P"]["fail"] == 1 and sm["P"]["pass"] == 1 and sm["P"]["directions"]["backward"] == 1 and sm["L"]["speeds"] == {"static": 1})
+import io, contextlib
+(ej.OUT / "key_s.json").write_text(json.dumps([{"code": "abc", "case": "j:1", "variant": "E2", "rep": 1, "plan": "forward -> the wall", "prompt": "P" * 900, "speed": {"e_all": 5.5}}]))
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    ej.show("s", ["abc", "zzz"])
+out = buf.getvalue()
+check("J9 show prints variant, plan, speed and a cut prompt, and says when a code is missing", "variant E2" in out and "forward -> the wall" in out and "e_all 5.5" in out and out.count("P") <= 720 and "zzz: not in run" in out)
 sys.exit(1 if fails else 0)
