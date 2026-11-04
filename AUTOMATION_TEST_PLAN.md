@@ -567,3 +567,8 @@ test_photo_filters.py RESULT: ALL PASS (76/76)
 - Real-listing evidence so far: three GIAL videos generated with p29-p36 (afa4c2e7 and 3fcff5a9 parked at the first-generation QC, c6b0bfd6 done without rework). The invariant "no job lost" held; costs were measured per job in the app (see status.md); the invariant "operator informed once" is NOT evidenced for the new QC parking.
 
 **Scoreboard**: not recomputed (manual). Open ACT rows added today: F-DIR1, F-FEAS1, F-SEC1 (the last one controlled).
+
+## 2026-11-04 - Prompt Luma, misura di velocita', analisi prompt (PROPOSALS, scores not reviewed by Michele; "not run" stays "not run")
+- Nuovi test automatici, tutti PASS in locale e sul server: `test_prompt_ab.py` (T1-T25b), `test_clip_speed_probe.py` (P1-P3), `test_movement_director.py` (MD77-MD79: near-target standard, `PVS_DIRECTOR_NEAR=0` = vecchio), `test_described_view.py` (DV-NM1/NM2, DV-N1/N2).
+- Rischio nuovo: "outlier di velocita' non rilevato prima del cliente". Controllo: misura di velocita' (AUC 0,96-0,98 sulle etichette di Michele a 360p). Stato: misurata a posteriori, NON ancora agganciata alla pipeline; soglie non calibrate su 1080p. Test 1080p: not run.
+- Rischio nuovo: cambio di default sul percorso principale (B+N). Punto di ritorno `d6ecccf`. Test end-to-end a 1080p con annunci completi: not run.
