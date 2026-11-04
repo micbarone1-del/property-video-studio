@@ -8,7 +8,7 @@ for name in ("fal_client", "moviepy", "anthropic"):
 sys.modules["anthropic"].Anthropic = getattr(sys.modules["anthropic"], "Anthropic", lambda *a, **k: "REAL")
 tmp = Path(tempfile.mkdtemp())
 os.environ["PVS_SCENE_RISK_FILE"] = str(tmp / "ev.jsonl")
-os.environ.pop("PVS_FAKE_PROVIDERS", None); os.environ.pop("PVS_SCENE_RISK", None)
+os.environ.pop("PVS_FAKE_PROVIDERS", None); os.environ["PVS_SCENE_RISK"] = "1"
 import scene_risk as sr
 import scene_rework as srw
 fails = 0
@@ -23,7 +23,7 @@ check("S3 fields", e["job"] == "j1" and e["cat"] == "kitchen" and e["move"] == "
 check("S4 an unknown verdict is not recorded", sr.record("j1", "sc_a", {}, "banana") is False and len(F.read_text().splitlines()) == 1)
 os.environ["PVS_SCENE_RISK"] = "0"
 check("S5 PVS_SCENE_RISK=0 records nothing", sr.record("j1", "sc_b", {}, "pass") is False and len(F.read_text().splitlines()) == 1)
-os.environ.pop("PVS_SCENE_RISK"); os.environ["PVS_FAKE_PROVIDERS"] = "1"
+os.environ["PVS_SCENE_RISK"] = "1"; os.environ["PVS_FAKE_PROVIDERS"] = "1"
 check("S6 fake providers record nothing", sr.record("j1", "sc_b", {}, "pass") is False)
 os.environ.pop("PVS_FAKE_PROVIDERS")
 os.environ["PVS_SCENE_RISK_FILE"] = str(tmp / "afile" / "x" / "ev.jsonl")
@@ -59,6 +59,9 @@ check("S13 qc_redone behaves as before", out["rejected"] == [1] and out["flagged
 check("S14 qc_redone recorded both, with stage rework and the previous verdict", [(x["scene"], x["verdict"], x["stage"], x.get("previous"), x["job"]) for x in new] == [("sc_a", "pass", "rework", "flag", "jobX"), ("sc_b", "reject", "rework", "reject", "jobX")], new)
 srcs = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "api_server.py"), encoding="utf-8").read()
 check("S15 the first-generation QC is wired (verdict and failed), inside try/except", srcs.count("_scene_risk.record(") == 2 and srcs.count("import scene_risk as _scene_risk") == 2)
+os.environ.pop("PVS_SCENE_RISK")
+check("S15b by default a test_*.py script never records (unset switch)", sr.enabled() is False)
+os.environ["PVS_SCENE_RISK"] = "1"
 check("S16 the registry file is gitignored", "scene_risk_events.jsonl" in open(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".gitignore")).read())
 print("FAILS:", fails)
 sys.exit(1 if fails else 0)
