@@ -94,6 +94,34 @@ NEAR_REPLACEMENTS = (
 )
 
 
+# 2026-11-04 (blind rounds 1 and 3, judged by Michele): the NEAR rule above lets the director choose the FLOOR or the ground as the target ("the floor in the middle of the room",
+# "asphalt road surface ahead"): the camera then tilts down to the floor (e7f516e3 scenes 0 and 1) or runs along the road (facades). EYE: the target is a vertical fixed feature at about
+# eye level, and a deterministic guard (_too_low) sends any floor / ground / low target to the centre of the frame. OFF by default until the blind comparison proves it (PVS_DIRECTOR_EYE=1).
+_EYE_NEAR = """- Aim at a fixed VERTICAL feature at about eye level, NEAR enough to reach calmly within the five seconds of the shot: a stretch of the near or middle wall, a window, the front of the
+  sofa, table or counter (not the floor, the ground, the road or paving: a low target makes the camera tilt down). The video model tries to ARRIVE at its target before the shot ends,
+  so a far target makes the camera rush: in a deep scene (long drive, garden, large hall) never aim at the far background. Never aim at
+  a door, entrance, gate, mirror or other reflective surface, curtain, plant, water, screen, person, animal or a utilitarian fixture (sink, toilet, bath, radiator, stove)."""
+_EYE_FACADE = """- Facade and outdoor photos: aim at the building itself, at a wall section or a window of its front at about eye level (never the ground, the road, the yard or the lawn): an EXTREMELY slow
+  advance of a few metres at the same height, stopping well before any gate, wall or railing."""
+EYE_REPLACEMENTS = ((NEAR_REPLACEMENTS[0][1], _EYE_NEAR), (NEAR_REPLACEMENTS[1][1], _EYE_FACADE))
+LOW_WORDS = re.compile(r"\b(floor|ground|road|asphalt|paving|pavement|paved|tiles?|tiled|yard|lawn|drive|carpet|grass|street|path|walkway)\b", re.I)
+LOW_Y = 0.68
+
+
+def eye_enabled() -> bool:
+    return os.getenv("PVS_DIRECTOR_EYE", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _too_low(raw: dict, target: str) -> bool:
+    """A forward target on the floor / ground (words) or low in the photo (target_y): the camera would tilt down or follow the road."""
+    if target and LOW_WORDS.search(target):
+        return True
+    try:
+        return float(raw.get("target_y")) > LOW_Y
+    except (TypeError, ValueError):
+        return False
+
+
 def near_enabled() -> bool:
     return os.getenv("PVS_DIRECTOR_NEAR", "1").strip().lower() not in ("0", "false", "no", "off")
 
@@ -104,6 +132,9 @@ def prompt_text() -> str:
     if near_enabled():
         for a, b in NEAR_REPLACEMENTS:
             out = out.replace(a, b)
+        if eye_enabled():
+            for a, b in EYE_REPLACEMENTS:
+                out = out.replace(a, b)
     return out
 
 
@@ -233,6 +264,8 @@ def validate(raw: dict, hints: dict):
             unsafe = f"target {target!r} is glass while a mirror is in view"
         elif _off_centre(raw, tgt_ok):
             unsafe = f"target {target!r} is off to one side (the video model turns the camera towards it)"
+        elif eye_enabled() and _too_low(raw, tgt_ok):
+            unsafe = f"target {target!r} is on the floor or ground, or low in the photo (the camera would tilt down)"
         if unsafe:
             # keep Claude's decision (a forward move) and only change WHERE it heads: the centre of the frame, in the positive sentence
             downgraded = f"retargeted to the centre: {unsafe}"
