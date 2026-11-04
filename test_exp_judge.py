@@ -22,4 +22,8 @@ s = ej.score([("bad", "fail"), ("bad", "pass"), ("bad", "review"), ("ok", "pass"
 check("J5 score: bad caught 2/3, 1 missed, ok flagged 1/3", abs(s["bad_caught"] - 2 / 3) < 1e-9 and s["bad_missed"] == 1 and abs(s["ok_false_alarm"] - 1 / 3) < 1e-9 and s["ok_fail"] == 0)
 o = ej.order_flagged([{"verdict": "pass", "code": "a"}, {"verdict": "fail", "code": "b"}, {"verdict": "review", "code": "c"}, {"verdict": "fail", "code": "d"}])
 check("J6 flagged first: fail, review, pass; stable", [x["code"] for x in o] == ["b", "d", "c", "a"])
+import tempfile
+ej.OUT = Path(tempfile.mkdtemp())
+(ej.OUT / "key_a.json").write_text("[]"); import time; time.sleep(0.02); (ej.OUT / "key_b.json").write_text("[]")
+check("J7 'last' picks the newest run, a given id is kept", ej.resolve_run("last") == "b" and ej.resolve_run("a") == "a")
 sys.exit(1 if fails else 0)
