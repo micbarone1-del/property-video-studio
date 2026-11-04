@@ -76,7 +76,8 @@ JSON keys:
 
 # 2026-11-03 (Michele, A/B on 360p clips of job 3fcff5a9): "se dai un obiettivo a Luma in 5 s cercherà di arrivarci in 5 s": the deep facade scene aimed at "entrance and far row
 # of houses" and the camera rushed (3 clips of 4 too fast, one cut across the grass); shortening the written travel (G) did not help, only the target distance matters.
-# PVS_DIRECTOR_NEAR=1 swaps three sentences of the prompt: the target is a NEAR/middle-distance fixed feature that can be reached calmly in five seconds.
+# NEAR target is now the STANDARD (default ON since 2026-11-04, Michele: "se funzionano perche spenti?"; PVS_DIRECTOR_NEAR=0 restores the old FAR-target text).
+# It swaps three sentences of the prompt: the target is a NEAR/middle-distance fixed feature that can be reached calmly in five seconds.
 # The anchor / target / described_view principle is kept: there is still a target, it is only close enough to reach slowly.
 _FAR_LINE = """- Aim at something FAR, fixed and worth looking at near the centre of the frame (far wall, window with a view, far end of the space, bed, sofa area). Never aim at
   a door, mirror or other reflective surface, curtain, plant, water, screen, person, animal or a utilitarian fixture (sink, toilet, bath, radiator, stove)."""
@@ -94,11 +95,11 @@ NEAR_REPLACEMENTS = (
 
 
 def near_enabled() -> bool:
-    return os.getenv("PVS_DIRECTOR_NEAR", "0").strip().lower() in ("1", "true", "yes", "on")
+    return os.getenv("PVS_DIRECTOR_NEAR", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
 def prompt_text() -> str:
-    """The director prompt: the standard one, or (PVS_DIRECTOR_NEAR=1) the near-target version. ONE place, used by plan()."""
+    """The director prompt: the near-target version (standard), or with PVS_DIRECTOR_NEAR=0 the old far-target one. ONE place, used by plan()."""
     out = PROMPT
     if near_enabled():
         for a, b in NEAR_REPLACEMENTS:
