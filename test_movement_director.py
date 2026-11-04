@@ -219,4 +219,22 @@ check("MD78 with PVS_DIRECTOR_NEAR=1 the target is NEAR (reachable in five secon
       and "ARRIVE at its target" in _near and "not at the building or its" in _near)
 check("MD79 the near version keeps every other rule (central target, aerial, braces for format)", "target_x between 0.3 and 0.7" in _near and "looking clearly DOWN" in _near and bool(_near.format(facts="x", feedback="")))
 print(f"\n{'ALL PASS' if not fails else str(fails) + ' FAIL'}")
+
+# EYE (2026-11-04): floor / ground targets
+os.environ.pop("PVS_DIRECTOR_EYE", None)
+p, _ = md.validate(dict(FWD, target="the floor in the middle of the room", target_y=0.8), DEEP)
+check("MDE1 EYE off (default): a floor target is kept as before", p["target"] == "the floor in the middle of the room", p)
+check("MDE2 EYE off: the prompt is the NEAR one, unchanged", "within the five seconds" in md.prompt_text() and "VERTICAL feature" not in md.prompt_text())
+os.environ["PVS_DIRECTOR_EYE"] = "1"
+p, _ = md.validate(dict(FWD, target="the floor in the middle of the room", target_y=0.8), DEEP)
+check("MDE3 EYE on: a floor target becomes the centre of the frame", p["target"] == "the centre of the frame" and "tilt down" in p["adjusted"], p)
+p, _ = md.validate(dict(FWD, target="the stone wall", target_y=0.75), DEEP)
+check("MDE4 EYE on: a target low in the photo (y 0.75) becomes the centre", p["target"] == "the centre of the frame", p)
+p, _ = md.validate(dict(FWD, target="the stone wall", target_y=0.5), DEEP)
+check("MDE5 EYE on: a wall at eye level is kept", p["target"] == "the stone wall", p)
+p, _ = md.validate(dict(FWD, target="the asphalt road surface ahead", target_y=0.6), dict(DEEP, space_type="outdoor"))
+check("MDE6 EYE on: the road is never a target", p["target"] == "the centre of the frame", p)
+pt = md.prompt_text()
+check("MDE7 EYE on: the prompt asks for a vertical feature at eye level, facades aim at the building", "VERTICAL feature at about eye level" in pt and "aim at the building itself" in pt and "aim at the ground" not in pt)
+os.environ.pop("PVS_DIRECTOR_EYE", None)
 sys.exit(1 if fails else 0)
