@@ -6,6 +6,7 @@ speed, and a verdict pass / review / fail. Codes only (the variant stays hidden)
 
   python3 exp_judge.py calibrate RUN_ID [--labels judge_labels_1104_144423.json] [--cap 1.5]   judges the clips Michele already labelled and prints how often the judge agrees
   python3 exp_judge.py run RUN_ID [--cap 2.0] [--reveal]                                      judges every clip of a run; flagged ones first, with the video link of each scene
+  python3 exp_judge.py summary RUN_ID|last                                                       FREE: reads the saved answers of `run` and counts verdicts and directions per VARIANT (reveals them)
   PVS_VOLUME_SCRATCH = where the runs are (production scratch, port 8000)
 Cost: a few cents per clip (tokens are counted; the cap stops the run). Nothing is written into a job.
 """
@@ -154,6 +155,38 @@ def run(run_id, cap, reveal):
     return 0
 
 
+def summarise(results) -> dict:
+    """{variant: {'n', 'pass', 'review', 'fail', 'directions': {...}, 'speeds': {...}}} from saved judge answers."""
+    out = {}
+    for r in results:
+        v = out.setdefault(r.get("variant", "?"), {"n": 0, "pass": 0, "review": 0, "fail": 0, "directions": {}, "speeds": {}})
+        v["n"] += 1
+        v[r["verdict"]] = v.get(r["verdict"], 0) + 1
+        for fld, key in (("directions", "direction"), ("speeds", "speed")):
+            k = str(r.get(key))
+            v[fld][k] = v[fld].get(k, 0) + 1
+    return out
+
+
+def summary(run_id):
+    run_id = resolve_run(run_id)
+    results = json.loads((OUT / f"judge_run_{run_id}.json").read_text())
+    print("=" * 20, "SUMMARY BY VARIANT", run_id, f"({len(results)} clips; judge answers, no new cost)")
+    for var, v in sorted(summarise(results).items()):
+        print(f"variant {var}: n {v['n']} | pass {v['pass']} review {v['review']} fail {v['fail']} | directions {v['directions']} | speeds {v['speeds']}")
+    cases = {}
+    for r in results:
+        cases.setdefault(r["case"], {}).setdefault(r["variant"], []).append(r["verdict"])
+    print("per scene (verdicts of the 2 repetitions):")
+    for c, d in cases.items():
+        print(f"  {c}: " + " | ".join(f"{var} {' '.join(vs)}" for var, vs in sorted(d.items())))
+    print("fails and reviews with variant:")
+    for r in order_flagged(results):
+        if r["verdict"] != "pass":
+            print(f"  {r['verdict']:6s} {r['code']} {r['case']} variant {r['variant']} dir={r.get('direction')} | {r.get('reason')}")
+    return 0
+
+
 if __name__ == "__main__":
     a = sys.argv[1:]
 
@@ -161,6 +194,8 @@ if __name__ == "__main__":
         return a[a.index(name) + 1] if name in a else default
     if len(a) >= 2 and a[0] == "calibrate":
         sys.exit(calibrate(a[1], opt("--labels", str(HERE / "judge_labels_1104_144423.json")), float(opt("--cap", "1.5"))))
+    if len(a) >= 2 and a[0] == "summary":
+        sys.exit(summary(a[1]))
     if len(a) >= 2 and a[0] == "run":
         sys.exit(run(a[1], float(opt("--cap", "2.0")), "--reveal" in a))
     print(__doc__)
