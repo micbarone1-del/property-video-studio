@@ -86,15 +86,35 @@ def big_views(job, kept, only):
     return links
 
 
-def main(job, url, only=None):
+def sharpness(im) -> dict:
+    """Numbers, no opinion: lap = edge strength at 1024 px width (higher = sharper); detail = how much is lost going down to half size and back
+    (about 0 = the picture holds no real detail at that scale = soft or enlarged from a small original)."""
+    import numpy as np
+    from PIL import Image
+    g = im.convert("L")
+    g = g.resize((1024, max(1, round(g.height * 1024 / g.width))))
+    a = np.asarray(g, dtype="float32")
+    lap = a[1:-1, 1:-1] * 4 - a[:-2, 1:-1] - a[2:, 1:-1] - a[1:-1, :-2] - a[1:-1, 2:]
+    half = np.asarray(g.resize((512, g.height // 2)).resize(g.size), dtype="float32")
+    return {"lap": round(float(lap.var()), 1), "detail": round(float(np.abs(a - half).mean()), 2)}
+
+
+def main(job, url, only=None, sharp=False):
     import requests
     from PIL import Image, ImageDraw, ImageFont
     import relinx_pilot_check as rp
     import listing_scraper
     page = requests.get(url, headers=rp.UA, timeout=60).text
     L = rp.parse_listing(page, url)
-    imgs = [Image.open(io.BytesIO(requests.get("https://relinx.it" + rel, headers=rp.UA, timeout=60).content)).convert("RGB") for rel in L["photos"]]
+    raw = [requests.get("https://relinx.it" + rel, headers=rp.UA, timeout=60).content for rel in L["photos"]]
+    imgs = [Image.open(io.BytesIO(b)).convert("RGB") for b in raw]
     kept, info = rp.choose_clean_photos(imgs, listing_scraper.MIN_USABLE_PHOTOS)
+    if sharp:
+        v = verdicts(job); print("n  | size        | file KB | bytes/px | lap    | detail | label")
+        for n_out, (pos, im) in enumerate(kept):
+            m = sharpness(im); kb = len(raw[pos]) / 1024 if isinstance(pos, int) and pos < len(raw) else 0
+            print(f"{n_out:<3}| {im.width}x{im.height:<6}| {kb:7.0f} | {len(raw[pos]) / (im.width * im.height) if kb else 0:8.3f} | {m['lap']:6.1f} | {m['detail']:6.2f} | {v.get(n_out, '?')}")
+        return 0
     if only:
         v = verdicts(job); rej = rejected_indices(job)
         for n_out, size, big, crop, full in big_views(job, kept, only):
@@ -131,6 +151,9 @@ def main(job, url, only=None):
 
 if __name__ == "__main__":
     a = sys.argv[1:]
+    sharp = "--sharp" in a
+    if sharp:
+        a.remove("--sharp")
     if "--only" in a:
         i = a.index("--only"); spec = a[i + 1]; del a[i:i + 2]
     else:
@@ -140,4 +163,4 @@ if __name__ == "__main__":
     job = a[0]
     url = a[1] if len(a) == 2 else listing_url(job)
     only = (set(rejected_indices(job)) if spec == "rejected" else {int(x) for x in spec.split(",")}) if spec else None
-    sys.exit(main(job, url, only))
+    sys.exit(main(job, url, only, sharp))
