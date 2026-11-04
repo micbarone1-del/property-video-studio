@@ -62,4 +62,16 @@ os.environ["PVS_X"] = "keep"
 with ef._env(PVS_X="tmp"):
     inside = os.environ["PVS_X"]
 check("F14 the env override is restored", inside == "tmp" and os.environ["PVS_X"] == "keep")
+# round 3 (P / L)
+lp, st = ef.l_prompt({"move": "forward", "target": "the far wall"}, "living")
+check("F15 L for a forward plan: one camera sentence, the director's anchor, no room description", lp == "Slow steady forward push-in toward the far wall." and st == 0)
+lp2, st2 = ef.l_prompt({"move": "static", "target": "centre"}, "bathrooms")
+check("F16 L for a static / rotating plan is the locked-off recipe", lp2 == "Stationary view of the bathroom. Locked off camera." and st2 == 1)
+check("F17 L prompts pass the lint (no forbidden words, no movable nouns)", ef.lint(lp) == {"forbidden": [], "movable": []} and ef.lint(lp2) == {"forbidden": [], "movable": []})
+bad = ef.lint("the only thing that moves is the camera, the curtain and the movement described above, a tree down the road")
+check("F18 the lint finds Luma's warned words", bad["forbidden"] == ["down", "movement", "moves"] and bad["movable"] == ["curtain", "tree"])
+(tmp / "j3").mkdir()
+(tmp / "j3" / "job_meta.json").write_text(json.dumps({"scenes_config": [{"category": "living"}, {"category": "living"}, {"category": "living"}, {"category": "kitchen"}]}))
+check("F19 pick_scenes: at most per_cat scenes of each category", ef.pick_scenes(["j3"], 2) == [("j3", 0, "living"), ("j3", 1, "living"), ("j3", 3, "kitchen")])
+check("F20 round 3 plan costs 2 x reps x scenes and spends nothing", ef.run(["j3"], 2, 4.5, 12, False, ef.VARIANTS_L, 2) == 0)
 sys.exit(1 if fails else 0)
