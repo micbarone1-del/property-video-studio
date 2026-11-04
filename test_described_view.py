@@ -108,5 +108,15 @@ if _o is not None:
     os.environ["PVS_LUMA_NOMOVE"] = _o
 check("DV-NM1 PVS_LUMA_NOMOVE=0 gives the old rules text", "the only thing that moves is the camera" in _std)
 check("DV-NM2 by default (no variable) only that clause changes: no 'moves', 'movement' kept, same length class", "moves" not in _nm and "the only thing that changes is the camera position, which makes the movement described above" in _nm and _nm.replace("changes is the camera position", "moves is the camera") == _std)
+_ns = {k: os.environ.pop(k, None) for k in ("PVS_DESCRIBE_NEUTRAL", "PVS_LUMA_SHORT_RULES")}
+_a0, _r0 = dv.plan_addendum(), dv.rules_for("view", "large")
+os.environ["PVS_DESCRIBE_NEUTRAL"] = "1"; os.environ["PVS_LUMA_SHORT_RULES"] = "1"
+_a1, _r1 = dv.plan_addendum(), dv.rules_for("view", "large")
+for k, v in _ns.items():
+    os.environ.pop(k, None)
+    if v is not None:
+        os.environ[k] = v
+check("DV-N1 by default the addendum still asks for the path (standard), the neutral one only with PVS_DESCRIBE_NEUTRAL=1", "what lies on the path" in _a0 and "what lies on the path" not in _a1 and "toward, along, leads" in _a1)
+check("DV-N2 short rules only with PVS_LUMA_SHORT_RULES=1: much shorter, still frozen photograph + constant slow speed, ends with the description", len(_r0.split()) > 120 and len(_r1.split()) < 70 and "frozen photograph" in _r1 and "constant slow speed" in _r1 and _r1.endswith("view"))
 print("ALL PASS" if not fails else f"{fails} FAIL")
 sys.exit(1 if fails else 0)
