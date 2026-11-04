@@ -349,6 +349,12 @@ def qc_redone(job, job_dir, redone, deps):
         job["qc_results"] = qc_results = [q for q in qc_results if not (q.get("type") == "video" and q.get("scene") == idx)]
         qc_results.append({"scene": idx, "type": "video", "rework": True, "previous_verdict": (prev or {}).get("verdict"), **qc})
         update_scene_status(statuses, sid, idx, scene, qc_verdict=verdict)
+        # 2026-11-04: shadow-mode scene risk registry: the QC of the REGENERATED clip (pass = the first problem was resolved, flag/reject = it persisted)
+        try:
+            import scene_risk
+            scene_risk.record(Path(job_dir).name, sid, scene, verdict, stage="rework", previous=(prev or {}).get("verdict"), movement=scene.get("pov_movement"))
+        except Exception:
+            pass
         out["checked"].append(sid)
         if verdict == "reject":
             out["rejected"].append(idx)
