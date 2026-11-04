@@ -1,166 +1,34 @@
-"""photo_sheet.py - contact sheet of ALL the photos of a relinx.it listing as the intake saw them, labelled with the intake's own verdict (2026-11-04).
-
-Why: Michele wants to avoid skipping usable photos. e21367fe / e7f516e3 lost their only bedroom, bathrooms, kitchen and living to the 'soft' quality verdict, and many
-photos are excluded as 'parti comuni dell'edificio' / 'ingresso o corridoio'. This shows every photo with that verdict so a person can say whether it was right.
-No Claude, no spend, nothing is written into a job. Uses the SAME functions as relinx_pilot_check.py (page parsing, white-band rule) so the numbers match the job's photo_audit.
-
-  python3 photo_sheet.py JOB_ID LISTING_URL [--only 5,10,12]   --only 5,10 or --only rejected (= the photos the quality filter threw out); URL optional (read from the draft): instead of thumbnails, ONE large image per listed photo (1400 px wide) plus a 1:1 crop of its centre at the
-                                                          real pixels (the view the quality judge also gets), to judge sharpness on a tablet. JOB_ID = a draft of the test instance (/var/www/pvs_test_jobs); sheets go to jobs/_test_scratch/ (port 8000 serves them)
-"""
-import io
-import json
-import os
-import re
-import sys
-from pathlib import Path
-
-HERE = Path(__file__).resolve().parent
-TEST_JOBS = Path(os.environ.get("PVS_TEST_JOBS", "/var/www/pvs_test_jobs"))
-SCRATCH = Path(os.environ.get("PVS_VOLUME_SCRATCH") or (HERE / "jobs" / "_test_scratch"))
-LINK_BASE = os.environ.get("PVS_LINK_BASE", "http://187.77.196.94:8000/test-scratch")
-FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-PER_SHEET, COLS, TW, TH = 12, 4, 420, 300
-
-
-def index_of(url: str):
-    """The photo number of an audit url ('http://127.0.0.1:37697/1201/020.jpg?u=..' -> 20)."""
-    m = re.search(r"/(\d{3})\.jpg", url or "")
-    return int(m.group(1)) if m else None
-
-
-def verdicts(job: str) -> dict:
-    """{photo index: 'category | USED or excluded reason'} from the job's own photo_audit and selection."""
-    meta = json.loads((TEST_JOBS / job / "job_meta.json").read_text())
-    sr = meta.get("selection_report") or {}
-    used = {index_of(p.get("url")) for ph in (sr.get("selected") or {}).values() for p in ph}
-    out = {}
-    for a in sr.get("photo_audit") or []:
-        i = index_of(a.get("url"))
-        if i is None:
-            continue
-        why = a.get("excluded") or ("USATA" if i in used else "ok, non scelta")
-        out[i] = f"{a.get('category') or '?'} | {why}"
-    return out
-
-
-def listing_url(job: str) -> str:
-    """The relinx.it page of a draft. job_meta has only external_ref 'T-<listing number>-<hash>', so the page is found by that number
-    in the listing files kept next to this script (gial_test_candidates.txt, relinx_listings*.txt, golden_*.txt)."""
-    import re
-    meta = json.loads((TEST_JOBS / job / "job_meta.json").read_text())
-    m = re.match(r"T-(\d+)-", str(meta.get("external_ref") or ""))
-    if not m:
-        raise SystemExit(f"{job}: no listing number in external_ref: pass the url as second argument")
-    num = m.group(1)
-    pat = re.compile(r"https://relinx\.it\S*?[/-]" + num + r"(?!\d)\S*")
-    for f in sorted(Path(__file__).resolve().parent.glob("*.txt")):
-        hit = pat.search(f.read_text(errors="replace"))
-        if hit:
-            print(f"listing {num}: {hit.group(0)} (from {f.name})")
-            return hit.group(0)
-    raise SystemExit(f"{job}: listing {num} not found in the *.txt listing files: pass the url as second argument")
-
-
-def rejected_indices(job: str) -> dict:
-    """{photo index: quality verdict} of the photos the quality filter threw out (selection_report.quality_rejected)."""
-    sr = json.loads((TEST_JOBS / job / "job_meta.json").read_text()).get("selection_report") or {}
-    return {index_of(q.get("url")): q.get("verdict") for q in sr.get("quality_rejected") or [] if index_of(q.get("url")) is not None}
-
-
-def big_views(job, kept, only):
-    """Large image + 1:1 centre crop for each wanted photo index; returns the links."""
-    from PIL import Image
-    SCRATCH.mkdir(parents=True, exist_ok=True)
-    links = []
-    for n_out, (pos, im) in enumerate(kept):
-        if n_out not in only:
-            continue
-        w, h = im.size
-        big = im.copy(); big.thumbnail((1400, 1400))
-        name = f"photos_{job}_{n_out}_big.jpg"; big.save(SCRATCH / name, quality=90)
-        cw, ch = min(w, 1100), min(h, 700)
-        x0, y0 = (w - cw) // 2, (h - ch) // 2
-        cname = f"photos_{job}_{n_out}_crop.jpg"; im.crop((x0, y0, x0 + cw, y0 + ch)).save(SCRATCH / cname, quality=92)
-        fname = f"photos_{job}_{n_out}_full.jpg"; im.save(SCRATCH / fname, quality=95)
-        links.append((n_out, f"{w}x{h}", f"{LINK_BASE}/{name}", f"{LINK_BASE}/{cname}", f"{LINK_BASE}/{fname}"))
-    return links
-
-
-def sharpness(im) -> dict:
-    """Numbers, no opinion: lap = edge strength at 1024 px width (higher = sharper); detail = how much is lost going down to half size and back
-    (about 0 = the picture holds no real detail at that scale = soft or enlarged from a small original)."""
-    import numpy as np
-    from PIL import Image
-    g = im.convert("L")
-    g = g.resize((1024, max(1, round(g.height * 1024 / g.width))))
-    a = np.asarray(g, dtype="float32")
-    lap = a[1:-1, 1:-1] * 4 - a[:-2, 1:-1] - a[2:, 1:-1] - a[1:-1, :-2] - a[1:-1, 2:]
-    half = np.asarray(g.resize((512, g.height // 2)).resize(g.size), dtype="float32")
-    return {"lap": round(float(lap.var()), 1), "detail": round(float(np.abs(a - half).mean()), 2)}
-
-
-def main(job, url, only=None, sharp=False):
-    import requests
-    from PIL import Image, ImageDraw, ImageFont
-    import relinx_pilot_check as rp
-    import listing_scraper
-    page = requests.get(url, headers=rp.UA, timeout=60).text
-    L = rp.parse_listing(page, url)
-    raw = [requests.get("https://relinx.it" + rel, headers=rp.UA, timeout=60).content for rel in L["photos"]]
-    imgs = [Image.open(io.BytesIO(b)).convert("RGB") for b in raw]
-    kept, info = rp.choose_clean_photos(imgs, listing_scraper.MIN_USABLE_PHOTOS)
-    if sharp:
-        v = verdicts(job); print("n  | size        | file KB | bytes/px | lap    | detail | label")
-        for n_out, (pos, im) in enumerate(kept):
-            m = sharpness(im); kb = len(raw[pos]) / 1024 if isinstance(pos, int) and pos < len(raw) else 0
-            print(f"{n_out:<3}| {im.width}x{im.height:<6}| {kb:7.0f} | {len(raw[pos]) / (im.width * im.height) if kb else 0:8.3f} | {m['lap']:6.1f} | {m['detail']:6.2f} | {v.get(n_out, '?')}")
-        return 0
-    if only:
-        v = verdicts(job); rej = rejected_indices(job)
-        for n_out, size, big, crop, full in big_views(job, kept, only):
-            print(f"#{n_out} ({size} px, label: {v.get(n_out, '?')}, quality verdict: {rej.get(n_out, '-')})\n   whole: {big}\n   1:1 crop: {crop}\n   FULL resolution: {full}")
-        return 0
-    thumbs = []
-    for n_out, (pos, im) in enumerate(kept):
-        t = im.copy(); t.thumbnail((TW, TH)); thumbs.append((n_out, t)); 
-    del imgs, kept
-    v = verdicts(job)
-    font = ImageFont.truetype(FONT, 17) if Path(FONT).exists() else ImageFont.load_default()
-    SCRATCH.mkdir(parents=True, exist_ok=True)
-    links = []
-    for k in range(0, len(thumbs), PER_SHEET):
-        chunk = thumbs[k:k + PER_SHEET]
-        rows = (len(chunk) + COLS - 1) // COLS
-        sheet = Image.new("RGB", (COLS * TW, rows * (TH + 54)), "white")
-        d = ImageDraw.Draw(sheet)
-        for j, (n_out, t) in enumerate(chunk):
-            x, y = (j % COLS) * TW, (j // COLS) * (TH + 54)
-            sheet.paste(t, (x, y))
-            txt = v.get(n_out, "?")
-            col = (180, 0, 0) if "USATA" not in txt and "ok," not in txt else (0, 120, 0)
-            d.text((x + 4, y + TH + 2), f"#{n_out}", fill="black", font=font)
-            d.text((x + 4, y + TH + 24), txt[:44], fill=col, font=font)
-        name = f"photos_{job}_{k // PER_SHEET}.jpg"
-        sheet.save(SCRATCH / name, quality=88)
-        links.append(f"{LINK_BASE}/{name}")
-    print(f"{job}: {len(thumbs)} photos ({info.get('mode')}), {len(links)} sheet(s):")
-    for l in links:
-        print("  ", l)
-    return 0
-
-
-if __name__ == "__main__":
-    a = sys.argv[1:]
-    sharp = "--sharp" in a
-    if sharp:
-        a.remove("--sharp")
-    if "--only" in a:
-        i = a.index("--only"); spec = a[i + 1]; del a[i:i + 2]
-    else:
-        spec = None
-    if not a or len(a) > 2:
-        print(__doc__); sys.exit(1)
-    job = a[0]
-    url = a[1] if len(a) == 2 else listing_url(job)
-    only = (set(rejected_indices(job)) if spec == "rejected" else {int(x) for x in spec.split(",")}) if spec else None
-    sys.exit(main(job, url, only, sharp))
+"""test_photo_metrics.py - offline checks of the measured sharpness stored next to the quality verdict (2026-11-04)."""
+import io, os, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import types
+for _n in ("anthropic", "fal_client", "moviepy"):
+    if _n not in sys.modules:
+        sys.modules[_n] = types.ModuleType(_n)
+sys.modules["anthropic"].Anthropic = getattr(sys.modules["anthropic"], "Anthropic", lambda *a, **k: None)
+import numpy as np
+from PIL import Image
+import photo_metrics as pm
+import listing_scraper as ls
+fails = 0
+def check(n, c, info=""):
+    global fails
+    print(("PASS " if c else "FAIL ") + n + ("" if c else f" -- {info}"))
+    fails += 0 if c else 1
+rng = np.random.default_rng(1)
+sharp = Image.fromarray(rng.integers(0, 255, (1500, 2000, 3), dtype="uint8"))
+soft = sharp.resize((200, 150)).resize((2000, 1500))
+a, b = pm.sharpness(sharp), pm.sharpness(soft)
+check("P1 a detailed picture measures far sharper than an enlarged small one", a["lap"] > 100 * b["lap"] and a["detail"] > 10 * b["detail"], (a, b))
+buf = io.BytesIO(); sharp.save(buf, "JPEG", quality=90)
+check("P2 sharpness_of_bytes reads a JPEG", pm.sharpness_of_bytes(buf.getvalue()).get("lap", 0) > 0)
+check("P3 unreadable input gives {} and never raises", pm.sharpness_of_bytes(b"not an image") == {} and pm.sharpness_of_bytes("liv1") == {})
+# the filter stores the measure next to the verdict and the audit carries both
+ls.fetch_photo_bytes = lambda url, fallback_url=None, timeout=20, attempts=1: {"ok": True, "content": buf.getvalue(), "url_used": url, "used_fallback": False, "error": None}
+bc = {"living": [{"url": "u1", "category": "living"}]}
+ls.filter_poor_quality_candidates(bc, assess=lambda content, label="": {"verdict": "soft", "call_ok": True}, enforce=False)
+p = bc["living"][0]
+check("P4 the filter stores the measure next to the verdict (and still enforces nothing here)", p["quality"] == "soft" and p["sharp"].get("lap", 0) > 0 and not p.get("quality_rejected"))
+au = ls.build_photo_audit([p])
+check("P5 the photo audit carries verdict and measure", au[0]["quality"] == "soft" and au[0]["sharp"]["lap"] == p["sharp"]["lap"])
+sys.exit(1 if fails else 0)
