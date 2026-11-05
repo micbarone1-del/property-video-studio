@@ -4,6 +4,7 @@ clip_standard.evaluate (the SAME code as the shadow mode in production). Michele
   python3 exp_validate.py run [--n 90] [--jobs j1,j2] [--sample 15] [--budget 9.0] [--go]    without --go: scene count, clip cost and a Claude estimate, spends nothing
   python3 exp_validate.py score RUN_ID LABELS.json      LABELS.json = {"bad": [codes], "part": [codes], "ok": [codes]} for the clips he watched
   python3 exp_validate.py reveal RUN_ID                 FREE: standard verdict, reasons and numbers per code
+  python3 exp_validate.py speed RUN_ID LABELS.json      FREE (local): measured speed numbers of the watched clips next to Michele's label, fastest first
 Environment: PVS_JOBS_DIR = drafts (test instance /var/www/pvs_test_jobs), PVS_VOLUME_SCRATCH = where the videos go (production scratch).
 The budget covers 360p clips (0.06 USD) AND the judge calls (measured, see the report); the spend file is cumulative, so the cap handed to the guard is spent + budget.
 """
@@ -77,6 +78,33 @@ def score(rows, labels) -> dict:
     return {"clips": len(rows), "rejected": sum(1 for r in rows if r.get("standard") == "reject"), "watched_rejects": len(rej), "reject_bad": rb, "reject_part": rp, "reject_ok": ro,
             "watched_passes": len(pas), "pass_bad": pb, "est_bad_in_passes": est_missed, "est_bad_caught": round(caught, 2) if caught is not None else None,
             "est_false_reject_rate": round(ro / ok_total, 3) if ok_total > 0 else None}
+
+
+def geo_measures(path) -> dict:
+    """Rotation numbers from the production geometry (clip_standard): new_max, pan_frac (net sideways shift / frame width), pan_per_s (the same per second = turning speed), zoom_net."""
+    import clip_standard as cs
+    frames, fps = cs.read_frames(path)
+    g = cs.measures(frames, fps) if frames else {"ok": False}
+    if not g.get("ok"):
+        return {}
+    dur = len(frames) / (fps or 24.0)
+    return {"new_max": g["new_max"], "pan_frac": g["pan_frac"], "pan_per_s": round(abs(g["pan_frac"]) / dur, 3) if dur else None, "zoom_net": g["zoom_net"]}
+
+
+def speed_table(rows, labels, run_dir, measure=None, geo=None) -> list:
+    """[(code, label, standard, measures)] of the watched clips, fastest (e_all) first. `measure(path)` -> speed numbers (injected in tests; default = exp_motion_cal.clip_measures, the SAME numbers the
+    motion thresholds were fitted on); `geo(path)` -> rotation numbers (default geo_measures). Both are merged into one dict per clip."""
+    if measure is None:
+        import exp_motion_cal as mc
+        measure = mc.clip_measures
+    geo = geo or geo_measures
+    out = []
+    for r in rows:
+        lab = labels.get(r["code"])
+        if lab and r.get("ok"):
+            p = Path(run_dir) / f"{r['code']}.mp4"
+            out.append((r["code"], lab, r.get("standard"), {**(measure(p) or {}), **(geo(p) or {})}))
+    return sorted(out, key=lambda t: -(t[3].get("e_all") or 0))
 
 
 def main(argv) -> int:
@@ -171,6 +199,13 @@ if __name__ == "__main__":
         for r in _rows(sys.argv[2]):
             g = r.get("geo") or {}
             print(r["code"], r["case"], r["cat"], r.get("standard"), f"new_max={g.get('new_max')}", (r.get("judge") or {}).get("verdict"), "; ".join(r.get("reasons") or []))
+        sys.exit(0)
+    if len(sys.argv) >= 4 and sys.argv[1] == "speed":
+        d = json.loads(Path(sys.argv[3]).read_text())
+        lab = {c: k for k in ("bad", "part", "ok") for c in d.get(k, [])}
+        print("code label standard | e_all accel_last/first drift_y zoom/s | new_max pan_frac pan_per_s zoom_net")
+        for c, k, st, m in speed_table(_rows(sys.argv[2]), lab, ef.OUT / sys.argv[2]):
+            print(f"{c} {k:4s} {st or '-':6s} | {m.get('e_all')} {m.get('accel_last_over_first')} {m.get('drift_y_std_px_s')} {m.get('zoom_rate_mean_per_s')} | {m.get('new_max')} {m.get('pan_frac')} {m.get('pan_per_s')} {m.get('zoom_net')}")
         sys.exit(0)
     if len(sys.argv) >= 4 and sys.argv[1] == "score":
         d = json.loads(Path(sys.argv[3]).read_text())
