@@ -578,6 +578,16 @@ def analyse_output(
             "output_description": qc["first_frame"], "last_description": qc["last_frame"],
             "new_structure": qc["new_structure"], "severity": qc["severity"], "photo_elements": qc["photo_elements"],
         })
+        # 2026-11-05: clip acceptance standard v0 in SHADOW mode (clip_standard.py): measured and recorded, it NEVER changes the verdict above.
+        # Hooked here, once: the first generation and the rework QC both call analyse_output. Its Claude cost goes into the same claude_usage.
+        try:
+            import clip_standard as _cs
+            if _cs.enabled():
+                _std = _cs.evaluate(video_path, usage_out=usage)
+                out["standard_shadow"] = _std
+                _cs.record(video_path, _std)
+        except Exception as _e:
+            log.warning(f"[Vision QC] standard shadow skipped: {_e}")
         return out
     except Exception as e:
         log.error(f"[Vision] Output QC failed: {e}", exc_info=True)
