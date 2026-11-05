@@ -4,6 +4,7 @@ clip_standard.evaluate (the SAME code as the shadow mode in production). Michele
   python3 exp_validate.py run [--n 90] [--jobs j1,j2] [--sample 15] [--budget 9.0] [--go]    without --go: scene count, clip cost and a Claude estimate, spends nothing
   python3 exp_validate.py score RUN_ID LABELS.json      LABELS.json = {"bad": [codes], "part": [codes], "ok": [codes]} for the clips he watched
   python3 exp_validate.py reveal RUN_ID                 FREE: standard verdict, reasons and numbers per code
+  python3 exp_validate.py verify RUN_ID LABELS.json     second focused look at every clip the judge said "fail" + a contact sheet of 6 frames each (about 0.01 EUR per clip)
   python3 exp_validate.py speed RUN_ID LABELS.json      FREE (local): measured speed numbers of the watched clips next to Michele's label, fastest first
 Environment: PVS_JOBS_DIR = drafts (test instance /var/www/pvs_test_jobs), PVS_VOLUME_SCRATCH = where the videos go (production scratch).
 The budget covers 360p clips (0.06 USD) AND the judge calls (measured, see the report); the spend file is cumulative, so the cap handed to the guard is spent + budget.
@@ -107,6 +108,28 @@ def speed_table(rows, labels, run_dir, measure=None, geo=None) -> list:
     return sorted(out, key=lambda t: -(t[3].get("e_all") or 0))
 
 
+def verify_run(rows, labels, run_dir, sheet_dir, usage_cost, verify=None, sheet=None) -> list:
+    """For every clip whose judge said fail: verification result, label, contact sheet. verify/sheet injectable (tests)."""
+    import clip_standard as cs
+    verify = verify or (lambda p, j, u: cs.verify(p, j, usage_out=u))
+    sheet = sheet or cs.contact_sheet
+    out = []
+    for r in rows:
+        j = r.get("judge") or {}
+        if not r.get("ok") or j.get("verdict") != "fail":
+            continue
+        p = Path(run_dir) / f"{r['code']}.mp4"
+        u = {"input_tokens": 0, "output_tokens": 0, "calls": 0, "cost_eur": 0.0}
+        v = verify(p, j, u)
+        usage_cost.append(u.get("cost_eur") or 0.0)
+        lab = labels.get(r["code"])
+        name = f"verify_{r['code']}.jpg"
+        shot = sheet(p, Path(sheet_dir) / name, f"{r['code']} label={lab} verify={v.get('confirmed')}")
+        out.append({"code": r["code"], "label": lab, "standard": r.get("standard"), "confirmed": v.get("confirmed"), "claims": v.get("claims"), "error": v.get("error"),
+                    "judge_reason": j.get("reason"), "sheet": name if shot else None})
+    return out
+
+
 def main(argv) -> int:
     def opt(name, default):
         return argv[argv.index(name) + 1] if name in argv else default
@@ -199,6 +222,26 @@ if __name__ == "__main__":
         for r in _rows(sys.argv[2]):
             g = r.get("geo") or {}
             print(r["code"], r["case"], r["cat"], r.get("standard"), f"new_max={g.get('new_max')}", (r.get("judge") or {}).get("verdict"), "; ".join(r.get("reasons") or []))
+        sys.exit(0)
+    if len(sys.argv) >= 4 and sys.argv[1] == "verify":
+        from dotenv import load_dotenv
+        load_dotenv(ev.HERE / ".env")
+        d = json.loads(Path(sys.argv[3]).read_text())
+        lab = {c: k for k in ("bad", "part", "ok") for c in d.get(k, [])}
+        cost = []
+        res = verify_run(_rows(sys.argv[2]), lab, ef.OUT / sys.argv[2], ev.SCRATCH, cost)
+        (ef.OUT / f"verify_{sys.argv[2]}.json").write_text(json.dumps(res, ensure_ascii=False, indent=1))
+        print("code label | judge->verification | what the second look found")
+        for x in res:
+            c0 = (x["claims"] or [{}])[0] if x["claims"] else {}
+            print(f"{x['code']} {str(x['label']):4s} | {'CONFIRMED' if x['confirmed'] else ('not confirmed' if x['confirmed'] is False else 'ERROR')} | {c0.get('truth')}: {str(c0.get('what'))[:50]} - {str(c0.get('evidence'))[:90]}")
+        conf = [x for x in res if x["confirmed"]]
+        print(f"judge fail {len(res)} | confirmed {len(conf)} (bad {sum(1 for x in conf if x['label']=='bad')}, part {sum(1 for x in conf if x['label']=='part')}, ok {sum(1 for x in conf if x['label']=='ok')}) | "
+              f"dropped {len(res)-len(conf)} (bad {sum(1 for x in res if not x['confirmed'] and x['label']=='bad')}, ok {sum(1 for x in res if not x['confirmed'] and x['label']=='ok')}) | cost {sum(cost):.2f} EUR")
+        print("TO LOOK AT (verification and your label disagree):")
+        for x in res:
+            if (x["confirmed"] and x["label"] == "ok") or (x["confirmed"] is False and x["label"] in ("bad", "part")):
+                print(f"  {x['code']} label {x['label']} verification {'confirmed' if x['confirmed'] else 'not confirmed'}: {ev.LINK_BASE}/{x['sheet']}")
         sys.exit(0)
     if len(sys.argv) >= 4 and sys.argv[1] == "speed":
         d = json.loads(Path(sys.argv[3]).read_text())
