@@ -29,4 +29,7 @@ sc = xv.score(rows, lab)
 check("V5 score: 3 of 4 rejects bad, 1 bad among 40 passes -> estimated catch 3/4", sc["reject_bad"] == 3 and sc["pass_bad"] == 1 and sc["est_bad_caught"] == 0.75)
 check("V6 score: false-reject rate = ok rejects / all ok", sc["est_false_reject_rate"] == round(1 / 40, 3))
 check("V7 without --go nothing is spent and a too small budget refuses", xv.main(["--n", "4"]) == 0 and xv.main(["--n", "4", "--budget", "0.1"]) == 1)
+rws = [{"code": "a", "ok": True, "standard": "pass"}, {"code": "b", "ok": True, "standard": "reject"}, {"code": "c", "ok": True}, {"code": "d", "ok": False}]
+tb = xv.speed_table(rws, {"a": "ok", "b": "part", "d": "bad"}, tmp, measure=lambda p: {"e_all": 5.0 if p.stem == "b" else 2.0}, geo=lambda p: {"new_max": 0.3, "pan_per_s": 0.1})
+check("V8 speed table: only watched and generated clips, fastest first", [t[0] for t in tb] == ["b", "a"] and tb[0][1] == "part" and tb[0][3]["new_max"] == 0.3 and tb[0][3]["e_all"] == 5.0)
 print("FAILS:", fails); sys.exit(1 if fails else 0)
