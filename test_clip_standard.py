@@ -74,5 +74,16 @@ src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "vision_anal
 check("S17 hook sits in analyse_output, once, after the verdict is built", src.count("clip_standard") == 2 and src.index("standard_shadow") > src.index("def analyse_output"))
 import exp_judge as ej, exp_rotation as er
 check("S18 experiment tools use the production copy (no duplicate)", ej.JUDGE_PROMPT is cs.JUDGE_PROMPT and er.measures is cs.measures and er.compose is cs.compose)
+check("S19 measured_verdict: only geometry, None when not measured", cs.measured_verdict({"ok": True, "new_max": 0.21})[0] == "reject" and cs.measured_verdict({"ok": True, "new_max": 0.2})[0] == "pass" and cs.measured_verdict({"ok": False})[0] is None)
+check("S20 evaluate(): a pan is a MEASURED reject even when the judge passes; a push-in is not", r2["measured_verdict"] == "reject" and r1["measured_verdict"] == "pass" and r3["measured_verdict"] == "pass")
+check("S21 zoom_rate recorded (push-in 12%: small; speed flag off)", r1["geo"]["zoom_rate"] < 0.1 and r1["speed_over_limit"] is False)
+os.environ.pop("PVS_STANDARD_ENFORCE", None)
+check("S22 enforce() is OFF by default and needs the switch", cs.enforce() is False)
+os.environ["PVS_STANDARD_ENFORCE"] = "1"
+check("S23 enforce() ON with the switch", cs.enforce() is True)
+os.environ["PVS_STANDARD_SHADOW"] = "0"
+check("S24 enforce() is OFF when the shadow evaluation is off (kill switch wins)", cs.enforce() is False)
+os.environ["PVS_STANDARD_SHADOW"] = "1"; os.environ.pop("PVS_STANDARD_ENFORCE")
+check("S25 hook: enforcement only when enforce() and measured reject, never touches the judge verdict path", "_cs.enforce()" in src and 'measured_verdict") == "reject"' in src and src.count('out["verdict"] = "reject"') == 1)
 print("FAILS:", fails)
 sys.exit(1 if fails else 0)
