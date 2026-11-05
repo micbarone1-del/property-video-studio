@@ -234,6 +234,95 @@ def summary(path=None) -> dict:
             "geo_not_measured": sum(1 for e in ev if not e.get("geo_ok")), "errors": sum(1 for e in ev if e.get("error")),
             "judge": {k: sum(1 for e in ev if e.get("judge") == k) for k in ("pass", "review", "fail")}}
 
+# ── Verification of the judge's "new object" claims (2026-11-05, EXPERIMENT: not called by evaluate() yet) ──────────────────────────────────────────────────
+VERIFY_PROMPT = """These {n} frames are in time order from a 5 second real-estate video made from ONE still photo (frame 1 is the photo itself).
+A first inspector claims this about the clip: {claims}
+Your job is to CHECK the claim, not to repeat it. For each claimed object or change decide:
+- "real_invention": clearly NOT in frame 1 (not even small, far away, dark, behind something or reflected) and clearly present in a later frame, as a solid object or a clear change of what frame 1 shows (a new wall, door, furniture, building, person, flame, bird, a lit light that was off...)
+- "already_visible": it is already in frame 1 (maybe small, far, dark or partly hidden) and only looks bigger or clearer because the camera moves closer
+- "edge_reveal": it is a part of the same room/street that simply comes into view at the edge as the camera moves; nothing was changed or invented
+- "artefact": only a compression/blur/noise difference, no object
+- "not_in_clip": the frames do not show it
+Moving cars or people far away that look natural, and a TV screen changing, are NOT invented objects: mark them "natural_motion". Mark "deformed" only for unrealistic melting, stretching or warping.
+Answer with JSON only: {{"claims": [{{"what": "short", "truth": "real_invention", "evidence": "one short sentence naming frames"}}], "confirmed": true}}
+"confirmed" is true only if at least one claim is "real_invention" or "deformed"."""
+
+
+def claims_text(judge: dict) -> str:
+    j = judge or {}
+    parts = [f"invented in frames {x.get('frames')}: {x.get('what')}" for x in (j.get("invented") or []) if isinstance(x, dict)]
+    parts += [f"animated in frames {x.get('frames')}: {x.get('what')}" for x in (j.get("animated") or []) if isinstance(x, dict)]
+    if j.get("reason"):
+        parts.append(f"summary: {j['reason']}")
+    return " | ".join(parts) or "something new appears"
+
+
+def verify(clip_path, judge, usage_out=None, ask=None, model=None) -> dict:
+    """Second, focused look at the judge's claims. NEVER raises. Returns {"confirmed": bool|None, "claims": [...], "error": str|None}."""
+    res = {"confirmed": None, "claims": [], "error": None}
+    frames_tmp = []
+    try:
+        frames_tmp = keyframes(clip_path, 6)
+        if len(frames_tmp) < 2:
+            raise ValueError("clip not readable")
+        prompt = VERIFY_PROMPT.format(n=len(frames_tmp), claims=claims_text(judge))
+        if ask is None:
+            import vision_analysis as va
+            raw = va._claude_vision_call(frames_tmp, prompt, max_tokens=va.CLIP_QC_MAX_TOKENS, model=model or va.CLIP_QC_MODEL, usage_out=usage_out)
+        else:
+            raw = ask(frames_tmp, prompt, usage_out)
+        d = parse_judge_like(raw)
+        if d is None:
+            res["error"] = "verification answer unusable"
+        else:
+            res["claims"] = d.get("claims") or []
+            bad = [c for c in res["claims"] if isinstance(c, dict) and c.get("truth") in ("real_invention", "deformed")]
+            res["confirmed"] = bool(bad)
+    except Exception as e:
+        res["error"] = f"{type(e).__name__}: {str(e)[:160]}"
+    finally:
+        for p in frames_tmp:
+            try:
+                os.remove(p)
+            except Exception:
+                pass
+    return res
+
+
+def parse_judge_like(raw):
+    """Any JSON object in the text, or None."""
+    if not raw:
+        return None
+    a, b = raw.find("{"), raw.rfind("}")
+    if a < 0 or b < a:
+        return None
+    try:
+        d = json.loads(raw[a:b + 1])
+    except Exception:
+        return None
+    return d if isinstance(d, dict) else None
+
+
+def contact_sheet(clip_path, out_path, caption="") -> bool:
+    """One JPEG with the 6 key frames (3 x 2) and a caption: what Michele opens to look at a disputed clip."""
+    ps = keyframes(clip_path, 6)
+    try:
+        ims = [cv2.imread(p) for p in ps]
+        if len(ims) < 6 or any(i is None for i in ims):
+            return False
+        ims = [cv2.resize(i, (640, 360)) for i in ims]
+        grid = np.vstack([np.hstack(ims[0:3]), np.hstack(ims[3:6])])
+        pad = np.full((60, grid.shape[1], 3), 255, np.uint8)
+        cv2.putText(pad, str(caption)[:110], (8, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)
+        return bool(cv2.imwrite(str(out_path), np.vstack([pad, grid]), [cv2.IMWRITE_JPEG_QUALITY, 85]))
+    finally:
+        for p in ps:
+            try:
+                os.remove(p)
+            except Exception:
+                pass
+
+
 
 if __name__ == "__main__":
     print(json.dumps(summary(), indent=1))
