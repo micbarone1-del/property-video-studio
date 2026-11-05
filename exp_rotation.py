@@ -2,10 +2,12 @@
 Why: the Claude judge misses wide rotations (cis, qus: 'too much rotation to the left, outside the frame') and single motion numbers (e_all, drift) cannot tell a rotation from a normal push-in.
 Idea: follow the picture with the same tracking as exp_clipeval.motion (a similarity transform per 0.25 s), COMPOSE the steps into one transform first frame -> last frame, and ask how much of the
 LAST frame was already inside the FIRST frame. A push-in only zooms into the first picture (new content ~0); a pan or a rotation or a backward move shows content that was never there.
+  new_max   = the largest of those shares over all the sampled frames (0.25 s steps)
   new_frac  = 1 - area(first frame mapped into the last frame, intersected with the last frame) / area(last frame)       0 = nothing new, 1 = a different scene
   pan_frac  = net sideways shift of the picture centre / frame width (signed: + = picture moved right = camera turned left)
   zoom_net  = net scale (>1 = closer, <1 = pulled back)
   python3 exp_rotation.py calibrate [--labels motion_labels.json]     PVS_VOLUME_SCRATCH = where the runs are; prints the class means, the best threshold, and the judge + new_frac together
+  python3 exp_rotation.py archive [--dir jobs] [--limit 300]            the clips of the jobs already produced: how many normal clips each threshold would flag
   python3 exp_rotation.py clip FILE.mp4                                 one clip
 """
 import json
@@ -41,10 +43,11 @@ def read_frames(path):
 
 
 def compose(frames, fps):
-    """3x3 transform first frame -> last frame, or None when the tracking lost the picture in some interval (then nothing is claimed)."""
+    """list of the cumulative 3x3 transforms first frame -> frame k (one per 0.25 s step, composed similarities as in exp_clipeval.motion), or None when the tracking lost the picture
+    in some interval (then nothing is claimed)."""
     step = max(1, round(STEP_S * fps))
     total = np.eye(3)
-    n = 0
+    out = []
     for i in range(0, len(frames) - step, step):
         a = cv2.cvtColor(frames[i], cv2.COLOR_BGR2GRAY)
         b = cv2.cvtColor(frames[i + step], cv2.COLOR_BGR2GRAY)
@@ -59,24 +62,29 @@ def compose(frames, fps):
         if M is None:
             return None
         total = np.vstack([M, [0, 0, 1]]) @ total
-        n += 1
-    return total if n >= 4 else None
+        out.append(total.copy())
+    return out if len(out) >= 4 else None
 
 
 def measures(frames, fps) -> dict:
+    """new_frac = share of the LAST frame outside the first frame; new_max = the largest such share over all the sampled frames (Michele: sampled frames, not only the last)."""
     if len(frames) < 12:
         return {"ok": False, "why": "too few frames"}
-    T = compose(frames, fps)
-    if T is None:
+    Ts = compose(frames, fps)
+    if Ts is None:
         return {"ok": False, "why": "tracking lost"}
     H, W = frames[0].shape[:2]
     quad = np.array([[0, 0], [W, 0], [W, H], [0, H]], np.float32)
-    mapped = (T @ np.vstack([quad.T, np.ones(4)])).T[:, :2].astype(np.float32)
-    area, _ = cv2.intersectConvexConvex(mapped, quad)
-    new_frac = max(0.0, min(1.0, 1.0 - float(area) / float(W * H)))
+
+    def new_area(T):
+        mapped = (T @ np.vstack([quad.T, np.ones(4)])).T[:, :2].astype(np.float32)
+        area, _ = cv2.intersectConvexConvex(mapped, quad)
+        return max(0.0, min(1.0, 1.0 - float(area) / float(W * H)))
+    shares = [new_area(T) for T in Ts]
+    T = Ts[-1]
     c = T @ np.array([W / 2, H / 2, 1.0])
     s = math.sqrt(abs(np.linalg.det(T[:2, :2])))
-    return {"ok": True, "new_frac": round(new_frac, 3), "pan_frac": round(float((c[0] - W / 2) / W), 3), "zoom_net": round(s, 3)}
+    return {"ok": True, "new_frac": round(shares[-1], 3), "new_max": round(max(shares), 3), "pan_frac": round(float((c[0] - W / 2) / W), 3), "zoom_net": round(s, 3)}
 
 
 def clip(path) -> dict:
@@ -95,7 +103,7 @@ def calibrate(labels_file) -> int:
         if m.get("ok"):
             rows.append(dict(m, run=run, code=code, cls=cls, abs_pan=abs(m["pan_frac"])))
     print(f"{len(rows)} labelled clips measured")
-    for k in ("new_frac", "abs_pan"):
+    for k in ("new_frac", "new_max", "abs_pan"):
         print("=" * 10, k)
         for cls in ("bad", "part", "ok"):
             v = sorted(r[k] for r in rows if r["cls"] == cls)
@@ -125,10 +133,29 @@ def calibrate(labels_file) -> int:
     return 0
 
 
+def archive(root: Path, limit: int) -> int:
+    """distribution of new_frac / new_max over the clips of the jobs already produced (NOT labelled): what share of normal production clips each threshold would flag."""
+    vals, mx = [], []
+    for p in sorted(root.glob("*/clips/*.mp4"))[:limit]:
+        m = clip(p)
+        if m.get("ok"):
+            vals.append(m["new_frac"]); mx.append(m["new_max"])
+    if not vals:
+        print("no clip measured"); return 1
+    n = len(vals)
+    print(f"{n} clips of {root}")
+    for name, v in (("new_frac", sorted(vals)), ("new_max", sorted(mx))):
+        print("%-9s median %.3f | 75%% %.3f | 90%% %.3f | 95%% %.3f | max %.3f" % (name, v[n // 2], v[int(n * .75)], v[int(n * .9)], v[int(n * .95)], v[-1]))
+        print("  flagged at: " + " | ".join(f"{t}: {sum(1 for x in v if x >= t)} ({100 * sum(1 for x in v if x >= t) // n}%)" for t in (0.1, 0.15, 0.2, 0.25, 0.3, 0.4)))
+    return 0
+
+
 if __name__ == "__main__":
     a = sys.argv[1:]
     if a[:1] == ["clip"] and len(a) > 1:
         print(clip(a[1])); sys.exit(0)
     if a[:1] == ["calibrate"]:
         sys.exit(calibrate(Path(a[a.index("--labels") + 1]) if "--labels" in a else HERE / "motion_labels.json"))
+    if a[:1] == ["archive"]:
+        sys.exit(archive(Path(a[a.index("--dir") + 1]) if "--dir" in a else HERE / "jobs", int(a[a.index("--limit") + 1]) if "--limit" in a else 300))
     print(__doc__); sys.exit(1)
