@@ -36,4 +36,19 @@ res = gs.run(["zzz", "a"], s=f, sleep=lambda x: None, out=lambda *a: None)
 check("S5 an unknown job id stops the batch before spending anything", f.posts == [] and res["a"] == "not started", (f.posts, res))
 src = open("gial_start.py").read()
 check("S6 the access key is never printed and the script has no delete call", "print(key" not in src and "out(key" not in src and not any(w in src for w in ("rmtree", "unlink", "os.remove", ".delete(")))
+import json, tempfile
+from pathlib import Path
+jd = Path(tempfile.mkdtemp())
+def mk(name, status, ref):
+    (jd / name).mkdir(); (jd / name / "job_meta.json").write_text(json.dumps({"status": status, "external_ref": f"T-{ref}-abc123"}))
+mk("old11860", "done", "1186"); mk("new11860", "draft", "1186"); mk("other123", "draft", "1237"); mk("old1237x", "failed", "1237")
+check("S10 done_listings reads only finished videos, by listing number", gs.done_listings(jd) == {"1186": ["old11860"]})
+check("S11 same_listing_done: a draft whose listing already has a finished video", gs.same_listing_done("new11860", jd) == ["old11860"] and gs.same_listing_done("other123", jd) == [] and gs.same_listing_done("old11860", jd) == [])
+f2 = Fake({"new11860": ["running", "done"], "other123": ["running", "done"]})
+logs = []
+res2 = gs.run(["new11860", "other123"], s=f2, sleep=lambda x: None, out=lambda *a: logs.append(" ".join(map(str, a))), jobs_dir=jd)
+check("S12 duplicate listing is skipped with no start call, the next job still runs", res2["new11860"].startswith("skipped:duplicate") and f2.posts == ["other123"], (res2, f2.posts))
+f3 = Fake({"new11860": ["running", "done"]})
+res3 = gs.run(["new11860"], s=f3, sleep=lambda x: None, out=lambda *a: None, jobs_dir=jd, again=True)
+check("S13 --again generates it anyway", f3.posts == ["new11860"] and res3["new11860"] == "done", (res3, f3.posts))
 print("ALL PASS" if not fails else f"{fails} FAIL"); sys.exit(1 if fails else 0)
