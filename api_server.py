@@ -3995,6 +3995,27 @@ async def run_pipeline(
             JOBS[job_id]["video_clip_paths"] = video_clip_paths
             JOBS[job_id]["audio_paths"]      = audio_paths
             JOBS[job_id]["enhanced_paths"]   = enhanced_paths
+            # 2026-11-05: first automatic rework (PVS_AUTO_REWORK, default off) when the WHOLE stop is measured rejects.
+            # Same runner as "Rifai" (_run_redo); a still-rejected result parks the job for the operator there.
+            try:
+                import auto_rework as _ar
+                _ap = _ar.plan(JOBS[job_id], qc_results, rejected_scenes, flagged_scenes, failed_scenes, scenes_config, _rwp.evaluate)
+            except Exception as _e:
+                log.warning(f"[Job {job_id}] auto-rework plan failed (non-fatal): {_e}")
+                _ap = {"scene_ids": []}
+            if _ap["scene_ids"] and _acquire_job_lock(job_id, f"Auto rework {len(_ap['scene_ids'])} scene(s)"):
+                JOBS[job_id].setdefault("auto_reworked", []).extend(_ap["scene_ids"])
+                JOBS[job_id].update({"status": "running", "progress": 76,
+                                     "message": f"Rework automatico (misura): {', '.join(_ap['scene_ids'])}"})
+                _save_job(job_id)
+                try:
+                    _record_actual_cost(job_id, scenes_config, models_used, audio_chars,
+                                        do_upscale, enable_vision_qc, model_tier)
+                except Exception as e:
+                    log.warning(f"[Job {job_id}] Could not record cost before auto rework (non-fatal): {e}")
+                log.info(f"[Job {job_id}] auto rework on measured reject: {_ap['scene_ids']}")
+                await _run_redo(job_id, _ap["scene_ids"], video=True, strict=False, policy=True, label="Rework automatico")
+                return
             update(
                 "awaiting_approval", 75,
                 f"QC review needed: {len(rejected_scenes)} rejected, "
