@@ -5,11 +5,13 @@ clip_standard.evaluate (the SAME code as the shadow mode in production). Michele
   python3 exp_validate.py score RUN_ID LABELS.json      LABELS.json = {"bad": [codes], "part": [codes], "ok": [codes]} for the clips he watched
   python3 exp_validate.py reveal RUN_ID                 FREE: standard verdict, reasons and numbers per code
   python3 exp_validate.py verify RUN_ID LABELS.json     second focused look at every clip the judge said "fail" + a contact sheet of 6 frames each (about 0.01 EUR per clip)
+  python3 exp_validate.py rejudge RUN_ID LABELS.json    the judge with ONE changed sentence (edge appearances listed in "edge_new" instead of ignored) on the watched clips, next to the old verdict (about 0.3 EUR)
   python3 exp_validate.py speed RUN_ID LABELS.json      FREE (local): measured speed numbers of the watched clips next to Michele's label, fastest first
 Environment: PVS_JOBS_DIR = drafts (test instance /var/www/pvs_test_jobs), PVS_VOLUME_SCRATCH = where the videos go (production scratch).
 The budget covers 360p clips (0.06 USD) AND the judge calls (measured, see the report); the spend file is cumulative, so the cap handed to the guard is spent + budget.
 """
 import json
+import os
 import random
 import string
 import sys
@@ -130,6 +132,54 @@ def verify_run(rows, labels, run_dir, sheet_dir, usage_cost, verify=None, sheet=
     return out
 
 
+EDGE_OLD = "Do not count things that merely come into view at the edges as the camera moves."
+EDGE_NEW = ("Things that merely come into view at the edges as the camera moves are NOT 'invented': do not put them there. Instead list in \"edge_new\" every wall, door, arch, pillar, building, furniture "
+            "or vehicle at the edge that was NOT visible in frame 1 (not just more of a surface that was already visible), with \"share\" = the part of the frame width it occupies, 0 to 1.")
+
+
+def edge_prompt() -> str:
+    """The production judge prompt with ONE sentence changed (experiment only; clip_standard.JUDGE_PROMPT stays untouched)."""
+    import clip_standard as cs
+    p = cs.JUDGE_PROMPT
+    assert EDGE_OLD in p, "edge sentence not found in the judge prompt"
+    p = p.replace(EDGE_OLD, EDGE_NEW)
+    key = '"verdict": "pass", "reason": "one short sentence"}}'
+    assert key in p, "answer format not found in the judge prompt"
+    return p.replace(key, '"edge_new": [{{"frames": "4-6", "what": "short", "share": 0.1}}], ' + key)
+
+
+def rejudge_run(rows, labels, run_dir, cost, ask=None) -> list:
+    """The judge with the edge prompt on the watched clips. ask(frames, prompt, usage) injectable."""
+    import clip_standard as cs
+    out = []
+    for r in rows:
+        lab = labels.get(r["code"])
+        if not lab or not r.get("ok"):
+            continue
+        p = Path(run_dir) / f"{r['code']}.mp4"
+        u = {"input_tokens": 0, "output_tokens": 0, "calls": 0, "cost_eur": 0.0}
+        fr = cs.keyframes(p, 6)
+        try:
+            prompt = edge_prompt().format(n=len(fr))
+            if ask is None:
+                import vision_analysis as va
+                raw = va._claude_vision_call(fr, prompt, max_tokens=va.CLIP_QC_MAX_TOKENS, model=va.CLIP_QC_MODEL, usage_out=u)
+            else:
+                raw = ask(fr, prompt, u)
+        finally:
+            for f in fr:
+                try:
+                    os.remove(f)
+                except Exception:
+                    pass
+        cost.append(u.get("cost_eur") or 0.0)
+        j = cs.parse_judge(raw) or {}
+        edge = [e for e in (j.get("edge_new") or []) if isinstance(e, dict)]
+        out.append({"code": r["code"], "label": lab, "old": (r.get("judge") or {}).get("verdict"), "new": j.get("verdict"), "edge_new": edge,
+                    "edge_max": max([float(e.get("share") or 0) for e in edge] or [0.0])})
+    return out
+
+
 def main(argv) -> int:
     def opt(name, default):
         return argv[argv.index(name) + 1] if name in argv else default
@@ -242,6 +292,20 @@ if __name__ == "__main__":
         for x in res:
             if (x["confirmed"] and x["label"] == "ok") or (x["confirmed"] is False and x["label"] in ("bad", "part")):
                 print(f"  {x['code']} label {x['label']} verification {'confirmed' if x['confirmed'] else 'not confirmed'}: {ev.LINK_BASE}/{x['sheet']}")
+        sys.exit(0)
+    if len(sys.argv) >= 4 and sys.argv[1] == "rejudge":
+        from dotenv import load_dotenv
+        load_dotenv(ev.HERE / ".env")
+        d = json.loads(Path(sys.argv[3]).read_text())
+        lab = {c: k for k in ("bad", "part", "ok") for c in d.get(k, [])}
+        cost = []
+        res = rejudge_run(_rows(sys.argv[2]), lab, ef.OUT / sys.argv[2], cost)
+        (ef.OUT / f"rejudge_{sys.argv[2]}.json").write_text(json.dumps(res, ensure_ascii=False, indent=1))
+        print("code label | old judge -> new judge | edge_new (max share) : what")
+        for x in sorted(res, key=lambda x: -x["edge_max"]):
+            e = x["edge_new"][0] if x["edge_new"] else {}
+            print(f"{x['code']} {x['label']:4s} | {x['old']} -> {x['new']} | {x['edge_max']:.2f} : {str(e.get('what'))[:60]}")
+        print(f"cost {sum(cost):.2f} EUR")
         sys.exit(0)
     if len(sys.argv) >= 4 and sys.argv[1] == "speed":
         d = json.loads(Path(sys.argv[3]).read_text())
