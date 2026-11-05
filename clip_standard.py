@@ -7,6 +7,8 @@ Standard v0 (calibrated on 126 labelled clips + 228 archive clips, see status.md
                "review" never rejects (reported only).
   3. standard_verdict = "reject" if 1 or 2 else "pass". Tracking lost = geometry not measured (never a reject by itself).
 SHADOW: evaluate() only MEASURES. Nothing here changes a verdict, a rework or a job state. Hooked ONCE, in vision_analysis.analyse_output (first generation AND rework both call it).
+ENFORCEMENT (2026-11-05, Michele: "A"): only the MEASURED part (geometry) may change a verdict, and only with PVS_STANDARD_ENFORCE=1 (default OFF): analyse_output then turns the clip verdict into "reject", which pauses the job at the
+existing QC gate (operator review) exactly like any other reject; no automatic retry here (a retry inside the first-generation loop would bypass the per-scene cost accounting). The judge never rejects.
 Kill switch: PVS_STANDARD_SHADOW=0. Never runs for fake providers or from a test_*.py script. Optional PVS_STANDARD_FEED_NUMBER=1 hands the measured number to the judge (NOT validated yet, default off).
 Extra cost: one judge call per clip (about 0.06 USD per video), counted in the job's claude_usage like the existing QC.
 """
@@ -26,6 +28,7 @@ import numpy as np
 log = logging.getLogger(__name__)
 HERE = Path(__file__).resolve().parent
 NEW_MAX_LIMIT = 0.20
+ZOOM_RATE_LIMIT = 0.28        # PROVISIONAL (one clip, bhl): recorded as speed_over_limit, NOT enforced yet
 STEP_S = 0.25
 WORK_W = 480
 MIN_TRACKED = 20
@@ -97,7 +100,10 @@ def measures(frames, fps) -> dict:
     T = Ts[-1]
     c = T @ np.array([W / 2, H / 2, 1.0])
     s = math.sqrt(abs(np.linalg.det(T[:2, :2])))
-    return {"ok": True, "new_frac": round(shares[-1], 3), "new_max": round(max(shares), 3), "pan_frac": round(float((c[0] - W / 2) / W), 3), "zoom_net": round(s, 3)}
+    dur = len(frames) / (fps or 24.0)
+    zoom_rate = math.log(s) / dur if s > 0 and dur else 0.0     # = the zoom_rate_mean_per_s of exp_clipeval (checked: bhl 0.302, mfq 0.245)
+    return {"ok": True, "new_frac": round(shares[-1], 3), "new_max": round(max(shares), 3), "pan_frac": round(float((c[0] - W / 2) / W), 3), "zoom_net": round(s, 3),
+            "zoom_rate": round(zoom_rate, 3)}
 
 
 def enabled() -> bool:
@@ -154,15 +160,34 @@ def decide(geo: dict, judge) -> tuple:
     return ("reject" if reasons else "pass"), reasons
 
 
+def measured_verdict(geo: dict) -> tuple:
+    """The part of the standard that is MEASURED (no model opinion): (verdict, reasons); (None, []) when the geometry could not be measured. This is the only part that can be enforced:
+    on the 36 watched clips of the validation batch the judge was wrong on most of its rejects, the geometry rule on 1 of 4 (2026-11-05)."""
+    if not geo or not geo.get("ok"):
+        return None, []
+    if geo.get("new_max", 0) > NEW_MAX_LIMIT:
+        return "reject", [f"{round(geo['new_max'] * 100)}% of the frame lies outside the original photo's field of view (limit {round(NEW_MAX_LIMIT * 100)}%)"]
+    return "pass", []
+
+
+def enforce() -> bool:
+    """PVS_STANDARD_ENFORCE=1 lets the MEASURED rule change the clip QC verdict (default OFF). Needs the shadow evaluation to be on."""
+    return enabled() and os.getenv("PVS_STANDARD_ENFORCE", "").strip() == "1"
+
+
 def evaluate(clip_path, usage_out=None, ask=None, model=None) -> dict:
     """Measures one clip. NEVER raises. `ask(images, prompt, usage_out)` -> text can be injected (tests); default = vision_analysis._claude_vision_call."""
-    res = {"standard": "v0", "geo": None, "judge": None, "standard_verdict": None, "reasons": [], "error": None}
+    res = {"standard": "v0", "geo": None, "judge": None, "standard_verdict": None, "reasons": [], "error": None,
+           "measured_verdict": None, "measured_reasons": [], "speed_over_limit": None}
     frames_tmp = []
     try:
         frames, fps = read_frames(clip_path)
         if not frames:
             raise ValueError("clip not readable")
         res["geo"] = measures(frames, fps)
+        res["measured_verdict"], res["measured_reasons"] = measured_verdict(res["geo"])
+        if res["geo"].get("ok"):
+            res["speed_over_limit"] = res["geo"].get("zoom_rate", 0) >= ZOOM_RATE_LIMIT
         del frames
         frames_tmp = keyframes(clip_path, 6)
         geo_line = ""
@@ -202,7 +227,8 @@ def record(clip_path, res, stage=None) -> bool:
         g, j = (res.get("geo") or {}), (res.get("judge") or {})
         ev = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "job": p.parent.parent.name, "scene": p.stem, "new_max": g.get("new_max"), "new_frac": g.get("new_frac"),
               "geo_ok": g.get("ok"), "judge": j.get("verdict"), "direction": j.get("direction"), "speed": j.get("speed"),
-              "standard": res.get("standard_verdict"), "reasons": res.get("reasons"), "error": res.get("error")}
+              "standard": res.get("standard_verdict"), "reasons": res.get("reasons"), "error": res.get("error"),
+              "measured": res.get("measured_verdict"), "zoom_rate": g.get("zoom_rate"), "speed_over": res.get("speed_over_limit")}
         if stage:
             ev["stage"] = stage
         with _LOCK:
