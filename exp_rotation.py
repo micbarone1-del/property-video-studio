@@ -23,68 +23,9 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 SCRATCH = Path(os.environ.get("PVS_VOLUME_SCRATCH") or (HERE / "jobs" / "_test_scratch"))
 OUT = SCRATCH / "facade"
-STEP_S = 0.25
-WORK_W = 480
-MIN_TRACKED = 20
 
 
-def read_frames(path):
-    cap = cv2.VideoCapture(str(path))
-    fps = cap.get(cv2.CAP_PROP_FPS) or 24.0
-    frames = []
-    while True:
-        ok, f = cap.read()
-        if not ok:
-            break
-        k = WORK_W / f.shape[1]
-        frames.append(f if k >= 1 else cv2.resize(f, (WORK_W, round(f.shape[0] * k))))
-    cap.release()
-    return frames, fps
-
-
-def compose(frames, fps):
-    """list of the cumulative 3x3 transforms first frame -> frame k (one per 0.25 s step, composed similarities as in exp_clipeval.motion), or None when the tracking lost the picture
-    in some interval (then nothing is claimed)."""
-    step = max(1, round(STEP_S * fps))
-    total = np.eye(3)
-    out = []
-    for i in range(0, len(frames) - step, step):
-        a = cv2.cvtColor(frames[i], cv2.COLOR_BGR2GRAY)
-        b = cv2.cvtColor(frames[i + step], cv2.COLOR_BGR2GRAY)
-        p0 = cv2.goodFeaturesToTrack(a, 300, 0.01, 8)
-        if p0 is None or len(p0) < MIN_TRACKED:
-            return None
-        p1, st, _ = cv2.calcOpticalFlowPyrLK(a, b, p0, None)
-        ok = st.ravel() == 1
-        if ok.sum() < MIN_TRACKED:
-            return None
-        M, _ = cv2.estimateAffinePartial2D(p0[ok], p1[ok], method=cv2.RANSAC, ransacReprojThreshold=2.0)
-        if M is None:
-            return None
-        total = np.vstack([M, [0, 0, 1]]) @ total
-        out.append(total.copy())
-    return out if len(out) >= 4 else None
-
-
-def measures(frames, fps) -> dict:
-    """new_frac = share of the LAST frame outside the first frame; new_max = the largest such share over all the sampled frames (Michele: sampled frames, not only the last)."""
-    if len(frames) < 12:
-        return {"ok": False, "why": "too few frames"}
-    Ts = compose(frames, fps)
-    if Ts is None:
-        return {"ok": False, "why": "tracking lost"}
-    H, W = frames[0].shape[:2]
-    quad = np.array([[0, 0], [W, 0], [W, H], [0, H]], np.float32)
-
-    def new_area(T):
-        mapped = (T @ np.vstack([quad.T, np.ones(4)])).T[:, :2].astype(np.float32)
-        area, _ = cv2.intersectConvexConvex(mapped, quad)
-        return max(0.0, min(1.0, 1.0 - float(area) / float(W * H)))
-    shares = [new_area(T) for T in Ts]
-    T = Ts[-1]
-    c = T @ np.array([W / 2, H / 2, 1.0])
-    s = math.sqrt(abs(np.linalg.det(T[:2, :2])))
-    return {"ok": True, "new_frac": round(shares[-1], 3), "new_max": round(max(shares), 3), "pan_frac": round(float((c[0] - W / 2) / W), 3), "zoom_net": round(s, 3)}
+from clip_standard import read_frames, compose, measures   # moved to production 2026-11-05 (one copy)
 
 
 def clip(path) -> dict:
