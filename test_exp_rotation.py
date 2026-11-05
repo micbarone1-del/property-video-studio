@@ -37,6 +37,7 @@ check("R3 a 12% push-in reveals (almost) nothing new", mp["new_frac"] < 0.05 and
 check("R4 a pan of half a frame reveals a lot of new content", mn["new_frac"] > 0.3 and abs(mn["pan_frac"]) > 0.3)
 check("R5 pulling back 50% reveals new content and zoom_net < 1", mb["new_frac"] > 0.2 and mb["zoom_net"] < 0.95)
 check("R6 pan >> push-in, pullback >> push-in", mn["new_frac"] > mp["new_frac"] + 0.25 and mb["new_frac"] > mp["new_frac"] + 0.15)
+check("R8 new_max is the largest share over the clip (>= the last one) and clean for a push-in", mp["new_max"] < 0.06 and mn["new_max"] >= mn["new_frac"] - 1e-9)
 blank = tmp / "blank.mp4"
 w = cv2.VideoWriter(str(blank), cv2.VideoWriter_fourcc(*"mp4v"), 24, (480, 270))
 for _ in range(60):
