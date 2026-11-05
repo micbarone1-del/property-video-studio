@@ -22,14 +22,7 @@ SCRATCH = Path(os.environ.get("PVS_VOLUME_SCRATCH") or (HERE / "jobs" / "_test_s
 OUT = SCRATCH / "facade"
 IN_USD_PER_M, OUT_USD_PER_M = 3.0, 15.0        # Sonnet-class list price, only to estimate the spend of this tool
 
-JUDGE_PROMPT = """These {n} frames are in time order from a 5 second real-estate video made from ONE still photo (frame 1 is the photo). The camera may glide slowly forward or stay still; everything else in the scene must stay exactly as in frame 1: nothing may appear, disappear, move, animate, flash or deform.
-Judge the clip like a strict quality inspector for a real-estate agency:
-- invented: anything NOT in frame 1 that shows up later (new buildings or parts of buildings, arches, garages, balconies, doors, windows, staircases, signs, people, animals, black or white flashes). Do not count things that merely come into view at the edges as the camera moves.
-- animated: people, vehicles, curtains, flags, water or leaves that MOVE or change.
-- direction: where the camera travels, one of "toward_main_subject" (the building / room feature that dominates frame 1 gets closer), "along_street_or_path", "sideways", "backward", "downward", "upward", "static".
-- speed: "static", "slow", "fast", "very_fast" (fast = the picture changes a lot within one second).
-- verdict: "fail" if something is invented, or people/vehicles animate, or the camera goes away from the main subject, backward or downward, or it is very fast; "review" if the camera drifts sideways/along a path, is fast, you are unsure, or the clip is essentially a STILL PICTURE with no visible camera motion at all; otherwise "pass".
-Answer with JSON only: {{"invented": [{{"frames": "3-5", "what": "short"}}], "animated": [{{"frames": "2-6", "what": "short"}}], "direction": "...", "speed": "...", "verdict": "pass", "reason": "one short sentence"}}"""
+from clip_standard import JUDGE_PROMPT   # moved to production 2026-11-05 (one copy)
 
 
 def spend_usd(usage: dict) -> float:
