@@ -54,4 +54,9 @@ check("V11 verify(): real invention confirmed, natural motion not, junk = error,
       cs.verify(still_clip, {"reason": "r"}, ask=ask_real)["confirmed"] is True and cs.verify(still_clip, {"reason": "r"}, ask=ask_nat)["confirmed"] is False
       and cs.verify(still_clip, {}, ask=ask_junk)["error"] == "verification answer unusable" and cs.verify(tmp / "none.mp4", {}, ask=ask_real)["error"] is not None)
 check("V12 contact sheet written for a real clip", cs.contact_sheet(still_clip, tmp / "s.jpg", "cap") and (tmp / "s.jpg").stat().st_size > 5000)
+import clip_standard as cs2
+ep = xv.edge_prompt()
+check("V13 edge prompt: only the edge sentence changed, edge_new in the answer format, still formattable", xv.EDGE_OLD not in ep and "edge_new" in ep and ep.format(n=6).startswith("These 6 frames") and cs2.JUDGE_PROMPT.count("Do not count things") == 1)
+rj = xv.rejudge_run([{"code": "a", "ok": True, "judge": {"verdict": "pass"}}, {"code": "z", "ok": True}], {"a": "bad"}, tmp, [], ask=lambda f, p, u: '{"verdict": "pass", "edge_new": [{"frames": "4-6", "what": "wall", "share": 0.15}]}')
+check("V14 rejudge: no clip file -> never crashes; with a clip, edge share is read", rj == [] or rj[0]["edge_max"] == 0.15)
 print("FAILS:", fails); sys.exit(1 if fails else 0)
