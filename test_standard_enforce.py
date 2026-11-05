@@ -5,7 +5,7 @@ import cv2, numpy as np
 tmp = Path(tempfile.mkdtemp())
 os.environ["PVS_STANDARD_SHADOW_FILE"] = str(tmp / "shadow.jsonl")
 os.environ["PVS_STANDARD_SHADOW"] = "1"
-os.environ.pop("PVS_STANDARD_ENFORCE", None)
+os.environ["PVS_STANDARD_ENFORCE"] = "0"  # explicit: vision_analysis load_dotenv() would otherwise bring in the real .env value
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 for name in ("fal_client",):           # only to import vision_analysis in a sandbox without the provider package
     if name not in sys.modules:
