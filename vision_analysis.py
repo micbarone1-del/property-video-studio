@@ -586,6 +586,12 @@ def analyse_output(
                 _std = _cs.evaluate(video_path, usage_out=usage)
                 out["standard_shadow"] = _std
                 _cs.record(video_path, _std)
+                # 2026-11-05: ENFORCED part (default OFF, PVS_STANDARD_ENFORCE=1): only the MEASURED geometry rule; never downgrades a verdict, never uses the judge
+                if _cs.enforce() and _std.get("measured_verdict") == "reject":
+                    out["verdict"] = "reject"
+                    out["issues"] = list(out.get("issues") or []) + ["Standard qualita': " + r for r in _std.get("measured_reasons", [])]
+                    out["standard_enforced"] = True
+                    log.info(f"[Vision QC] standard geometry rule -> reject: {_std.get('measured_reasons')}")
         except Exception as _e:
             log.warning(f"[Vision QC] standard shadow skipped: {_e}")
         return out
