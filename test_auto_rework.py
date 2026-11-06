@@ -51,6 +51,9 @@ chk("B13 wiring: auto-approval in gate, only without failed, endpoints exist",
     and '"/operator/review-queue"' in src and '"/jobs/{job_id}/review-done"' in src
     and "([] if _cleared else flagged_scenes)" in src)
 chk("B14 approval only when no reject: reject keeps the pause", "if _cleared and not rejected_scenes:" in src)
+chk("B15 rework QC gate: minor flags left after a rework are auto-approved, then reassembly",
+    "_arq.approvable_flags(job.get(\"qc_results\") or [], qc[\"flagged\"])" in src and "if not qc[\"rejected\"] and qc[\"flagged\"]:" in src)
+chk("B16 auto-approval record merges, does not overwrite", "_prev + _ar.review_record" in src)
 import py_compile; py_compile.compile("api_server.py", doraise=True)
 chk("A15 api_server compiles", True)
 print("FAILS", F)
