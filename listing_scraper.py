@@ -832,6 +832,28 @@ def photo_blockiness_max() -> float:
         return BLOCKINESS_MAX_DEFAULT
 
 
+# 2026-11-06 (Michele: a mathematical measure is more reliable than a model that is not deterministic): the second kind of free pixel check, from
+# photo_metrics.relative_quality (scale-free: the photo is compared with itself, so a plain white wall is not flagged). Calibrated on 203 real photos of past
+# jobs + 56 real photos of 1363/1290/1337/1312 + damaged copies (calibrate_quality.py --objective): real photos period <= 1.72, fine_mid >= 0.646;
+# enlarged-pixel copies period 6.5-12.4, strong/medium blur copies fine_mid 0.50-0.51, light blur 0.52-0.55.
+#   period >= PERIOD_MAX_DEFAULT          -> "blocky" on its own (OR with the models and the JPEG-block check: wide margin, no real photo near it)
+#   a model says "soft" AND fine_mid < FINE_MID_MAX_DEFAULT -> "soft" (AND: neither is reliable alone; a model "soft" that the measure does not
+#   confirm is recorded in "soft_unconfirmed" and does NOT discard the photo)
+PERIOD_MAX_DEFAULT = 3.0
+FINE_MID_MAX_DEFAULT = 0.60
+
+
+def objective_quality_enabled() -> bool:
+    return os.environ.get("PVS_OBJECTIVE_QUALITY", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except ValueError:
+        return default
+
+
 def blockiness_score(content: bytes):
     """Free pixel check for JPEG blocking, no model involved: how much stronger the brightness jumps are ACROSS the 8-pixel block borders than
     inside the blocks, for rows and columns, at the best of the 8 possible grid offsets. About 1.0 = no block grid (also for blurred photos);
@@ -860,8 +882,9 @@ def blockiness_score(content: bytes):
 def assess_photo_quality(content: bytes, label: str = "", models: tuple = None) -> dict:
     """{"verdict": ok|soft|blocky|unknown, "overlay": none|portal|agency|unknown, "call_ok": bool, "by_model": {judge: verdict}, "blockiness": float|None}
     Every judge model looks at the photo, and so does the free pixel check (blockiness_score against photo_blockiness_max, listed in
-    by_model as "blockiness"). The photo is poor when ANY of them says soft or blocky (the first model that does decides the word, the
-    pixel check says "blocky"), ok when at least one model says ok and nothing a problem, otherwise unknown. A model whose call fails is
+    by_model as "blockiness"). 2026-11-06: a second free check, photo_metrics.relative_quality, adds "period" (enlarged pixels -> "blocky", OR) and
+    confirms or not a model's "soft" with fine_mid (AND; see PERIOD_MAX_DEFAULT). The photo is poor when ANY of them says blocky or a CONFIRMED soft
+    (the first model that does decides the word, the pixel checks say "blocky"), ok when at least one model says ok and nothing a problem, otherwise unknown. A model whose call fails is
     ignored (one broken judge does not stop the others). "unknown" is never treated as a problem."""
     try:
         images = [_image_b64_for_vision(content), _native_crop_b64(content)]
@@ -873,17 +896,38 @@ def assess_photo_quality(content: bytes, label: str = "", models: tuple = None) 
     score = blockiness_score(content)
     limit = photo_blockiness_max()
     pixel_poor = score is not None and limit > 0 and score >= limit
-    if not worked and not pixel_poor:
+    objective, soft_unconfirmed = {}, []
+    if objective_quality_enabled():
+        try:
+            import photo_metrics
+            objective = photo_metrics.relative_quality_of_bytes(content)
+        except Exception:
+            objective = {}
+    period_poor = bool(objective) and objective.get("period", 0) >= _env_float("PVS_PERIOD_MAX", PERIOD_MAX_DEFAULT)
+    if not worked and not pixel_poor and not period_poor:
         return {"verdict": "unknown", "call_ok": False, "blockiness": score}
-    poor = next((r["verdict"] for m, r in worked if r["verdict"] in PHOTO_QUALITY_POOR), None)
-    if poor is None and pixel_poor:
+    fine_mid = objective.get("fine_mid") if objective else None
+
+    def counts(m, r):
+        """A model's "soft" only counts when the measured fine_mid confirms it (or cannot be measured); "blocky" always counts."""
+        if r["verdict"] != "soft" or not objective or fine_mid is None:
+            return r["verdict"] in PHOTO_QUALITY_POOR
+        if fine_mid < _env_float("PVS_FINE_MID_MAX", FINE_MID_MAX_DEFAULT):
+            return True
+        soft_unconfirmed.append(m)
+        return False
+    poor = next((r["verdict"] for m, r in worked if counts(m, r)), None)
+    if poor is None and (pixel_poor or period_poor):
         poor = "blocky"
-    verdict = poor or ("ok" if any(r["verdict"] == "ok" for m, r in worked) else "unknown")
+    verdict = poor or ("ok" if (soft_unconfirmed or any(r["verdict"] == "ok" for m, r in worked)) else "unknown")
     overlay = next((r["overlay"] for m, r in worked if r["overlay"] != "unknown"), "unknown")
     by_model = {m: r["verdict"] for m, r in worked}
     if score is not None and limit > 0:
         by_model["blockiness"] = "blocky" if pixel_poor else "ok"
-    return {"verdict": verdict, "overlay": overlay, "call_ok": True, "by_model": by_model, "blockiness": score}
+    if period_poor:
+        by_model["period"] = "blocky"      # listed only when it votes (a photo with no grid keeps the old by_model unchanged)
+    return {"verdict": verdict, "overlay": overlay, "call_ok": True, "by_model": by_model, "blockiness": score,
+            "objective": objective or None, "soft_unconfirmed": soft_unconfirmed or None}
 
 
 def photo_quality_check_enabled() -> bool:
