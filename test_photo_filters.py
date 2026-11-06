@@ -83,7 +83,7 @@ class FakeClient:
 ls.anthropic.Anthropic = FakeClient
 
 def core(r):
-    return {k: v for k, v in r.items() if k not in ("by_model", "blockiness")}
+    return {k: v for k, v in r.items() if k not in ("by_model", "blockiness", "objective", "soft_unconfirmed")}
 ANSWER.update(text="ANSWER: blocky"); SENT.clear()
 v = ls.assess_photo_quality(jpeg(2000, 1500), "t")
 check("Q1 'ANSWER: blocky' (one word after the marker) -> verdict blocky, overlay unknown, call ok", core(v) == {"verdict": "blocky", "overlay": "unknown", "call_ok": True}, v)
@@ -184,7 +184,7 @@ os.environ["PVS_QUALITY_MODELS"] = "judge-a"
 ANSWER.update(text="ANSWER: ok none"); ANSWER["per_model"] = {}
 bad = jq(_photo, 10); good = jq(_photo, 95)
 r = ls.assess_photo_quality(bad)
-check("B5 the model says ok but the pixel check sees blocks -> blocky (the miss that was unacceptable), the pixel vote is in by_model with the score", r["verdict"] == "blocky" and r["by_model"] == {"judge-a": "ok", "blockiness": "blocky"} and r["blockiness"] > 8, r)
+check("B5 the model says ok but the pixel check sees blocks -> blocky (the miss that was unacceptable), the pixel vote is in by_model with the score", r["verdict"] == "blocky" and r["by_model"].get("judge-a") == "ok" and r["by_model"].get("blockiness") == "blocky" and r["blockiness"] > 8, r)
 r = ls.assess_photo_quality(good)
 check("B6 a normal photo: ok, pixel vote ok, score reported", r["verdict"] == "ok" and r["by_model"]["blockiness"] == "ok" and r["blockiness"] < 1.3, r)
 ANSWER.update(text="ANSWER: soft none")
@@ -192,14 +192,16 @@ r = ls.assess_photo_quality(bad)
 check("B7 the model already says soft: its word decides (the pixel vote is only the fallback word)", r["verdict"] == "soft", r)
 ANSWER.update(raise_=True); ANSWER["raise"] = True
 r = ls.assess_photo_quality(bad)
-check("B8 every model call fails but the pixel check sees blocks -> blocky, call_ok True (a check that worked)", r["verdict"] == "blocky" and r["call_ok"] and r["by_model"] == {"blockiness": "blocky"}, r)
+check("B8 every model call fails but the pixel check sees blocks -> blocky, call_ok True (a check that worked)", r["verdict"] == "blocky" and r["call_ok"] and r["by_model"].get("blockiness") == "blocky" and "judge-a" not in r["by_model"], r)
 r = ls.assess_photo_quality(good)
 check("B9 every model call fails and the pixels are fine -> unknown, call_ok False (as before)", r["verdict"] == "unknown" and not r["call_ok"], r)
 ANSWER["raise"] = False
 os.environ["PVS_BLOCKINESS_MAX"] = "0"
+os.environ["PVS_OBJECTIVE_QUALITY"] = "0"      # 2026-11-06: this test is about the JPEG-block check alone; the period check has its own switch (test_objective_quality.py)
 ANSWER.update(text="ANSWER: ok none")
 r = ls.assess_photo_quality(bad)
 check("B10 limit 0: the pixel check is off (no pixel vote, the model decides)", r["verdict"] == "ok" and "blockiness" not in r["by_model"], r)
+os.environ.pop("PVS_OBJECTIVE_QUALITY", None)
 os.environ["PVS_BLOCKINESS_MAX"] = "0"
 
 # ── the quality filter works in the SELECTION (2026-10-29) ───────────────────
