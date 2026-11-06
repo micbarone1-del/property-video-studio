@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stato operativo</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#1b1f24; --mute:#5b6570; --line:#e3e6ea; --ok:#1a7f4b; --warn:#b26a00; --bad:#b3261e; --run:#2456c7; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#111418; --card:#1b2026; --ink:#e8ebef; --mute:#9aa4af; --line:#2c333b; --ok:#4cc38a; --warn:#e0a03a; --bad:#ff7b72; --run:#7aa2ff; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  main { max-width:1100px; margin:0 auto; padding:16px; }
+  h1 { font-size:20px; margin:4px 0 12px; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin-bottom:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px 12px; }
+  .card b { display:block; font-size:22px; }
+  .card span { color:var(--mute); font-size:12.5px; }
+  .sw { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:14px; }
+  .pill { border:1px solid var(--line); background:var(--card); border-radius:99px; padding:2px 10px; font-size:12.5px; }
+  .on { color:var(--ok); } .off { color:var(--mute); }
+  table { width:100%; border-collapse:collapse; background:var(--card); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  th,td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top; font-size:14px; }
+  th { color:var(--mute); font-weight:600; font-size:12.5px; }
+  tr:last-child td { border-bottom:0; }
+  .st-done { color:var(--ok); } .st-running,.st-queued { color:var(--run); } .st-awaiting_approval,.st-draft { color:var(--warn); }
+  .st-failed,.st-interrupted { color:var(--bad); }
+  .bar { height:6px; background:var(--line); border-radius:4px; margin-top:4px; min-width:90px; } .bar i { display:block; height:100%; background:var(--run); border-radius:4px; }
+  .tag { display:inline-block; font-size:12px; border:1px solid var(--line); border-radius:6px; padding:0 6px; margin:1px 3px 1px 0; }
+  .tag.attn { border-color:var(--warn); color:var(--warn); }
+  button { font:inherit; padding:3px 10px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--ink); cursor:pointer; }
+  .mute { color:var(--mute); font-size:12.5px; }
+  .wrap { overflow-x:auto; }
+  #err { color:var(--bad); margin:8px 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Stato operativo <span class="mute" id="upd"></span></h1>
+  <div id="err"></div>
+  <div class="cards" id="cards"></div>
+  <div class="sw" id="sw"></div>
+  <div class="wrap"><table>
+    <thead><tr><th>Job</th><th>Stato</th><th>Automatico</th><th>Costo</th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table></div>
+</main>
+<script>
+const KEY_NAME = 'pvs_access';
+function getKey() { try { return localStorage.getItem(KEY_NAME) || ''; } catch (e) { return ''; } }
+function setKey(k) { try { localStorage.setItem(KEY_NAME, k); } catch (e) {} }
+function esc(t) { return String(t == null ? '' : t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+async function api(path, opt) {
+  const r = await fetch(path, Object.assign({ headers: { 'X-Access-Key': getKey() } }, opt || {}));
+  if (r.status === 403) {
+    const k = prompt('Chiave di accesso:');
+    if (k) { setKey(k.trim()); return api(path, opt); }
+    throw new Error('chiave mancante');
+  }
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
+}
+async function reviewDone(id) { try { await api('/jobs/' + id + '/review-done', { method: 'POST', headers: { 'X-Access-Key': getKey() } }); load(); } catch (e) { document.getElementById('err').textContent = e.message; } }
+function autoCell(j) {
+  const t = [];
+  if (j.auto_start) t.push('<span class="tag' + (j.auto_start.state === 'refused' ? ' attn' : '') + '" title="' + esc(j.auto_start.reason) + '">avvio: ' + esc(j.auto_start.state) + '</span>');
+  if (j.auto_reworked) t.push('<span class="tag">rework automatici: ' + j.auto_reworked + '</span>');
+  if (j.auto_approved && j.auto_approved.length) {
+    const d = j.auto_approved.map(a => 'scena ' + a.scene + ' (' + (a.severity || '-') + '): ' + (a.issues || []).join(' | ')).join('\n');
+    t.push('<span class="tag' + (j.review_pending ? ' attn' : '') + '" title="' + esc(d) + '">scene approvate dal sistema: ' + j.auto_approved.length + (j.review_pending ? ' - da rivedere' : ' - viste') + '</span>');
+    if (j.review_pending) t.push('<button onclick="reviewDone(\'' + j.job_id + '\')">Segna come vista</button>');
+  }
+  if (j.stops) t.push('<span class="tag attn">in attesa di te: ' + j.stops + ' scene</span>');
+  return t.join('') || '<span class="mute">-</span>';
+}
+async function load() {
+  try {
+    const d = await api('/operator/status');
+    document.getElementById('err').textContent = '';
+    document.getElementById('upd').textContent = 'aggiornato ' + new Date().toLocaleTimeString('it-IT');
+    const pending = d.jobs.filter(j => j.review_pending).length, waiting = d.jobs.filter(j => j.stops || j.needs_operator).length;
+    document.getElementById('cards').innerHTML =
+      '<div class="card"><b>' + d.active + ' / ' + d.max_active + '</b><span>job in generazione</span></div>' +
+      '<div class="card"><b>' + d.spent_24h_eur.toFixed(1) + ' / ' + d.cap_eur.toFixed(0) + ' EUR</b><span>impegnati nelle ultime 24 h / tetto</span></div>' +
+      '<div class="card"><b>' + waiting + '</b><span>job che aspettano te</span></div>' +
+      '<div class="card"><b>' + pending + '</b><span>job con scene da rivedere</span></div>';
+    const s = d.switches, p = (n, v) => '<span class="pill ' + (v ? 'on' : 'off') + '">' + n + ': ' + (v ? 'acceso' : 'spento') + '</span>';
+    document.getElementById('sw').innerHTML = p('avvio automatico', s.auto_start) + p('rework automatico', s.auto_rework) + p('approvazione segnalate', s.auto_approve_flags) + p('regola misurata', s.standard_enforce) + '<span class="pill">Luma: ' + esc(s.luma_resolution) + '</span>';
+    document.getElementById('rows').innerHTML = d.jobs.map(j =>
+      '<tr><td><b>' + esc(j.name || j.job_id) + '</b><div class="mute">' + esc(j.job_id) + ' - ' + esc(j.source || 'manuale') + ' - ' + esc((j.created_at || '').replace('T', ' ').slice(0, 16)) + '</div></td>' +
+      '<td><span class="st-' + esc(j.status) + '">' + esc(j.status) + '</span>' + (j.progress != null ? '<div class="bar"><i style="width:' + Math.max(0, Math.min(100, j.progress)) + '%"></i></div>' : '') + '<div class="mute">' + esc(j.message) + '</div></td>' +
+      '<td>' + autoCell(j) + '</td><td>' + (j.cost_eur != null ? j.cost_eur.toFixed(2) + ' EUR' : '<span class="mute">-</span>') + '</td></tr>').join('');
+  } catch (e) { document.getElementById('err').textContent = 'Errore: ' + e.message; }
+}
+load(); setInterval(load, 15000);
+</script>
+</body>
+</html>
