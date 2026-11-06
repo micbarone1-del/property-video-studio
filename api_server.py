@@ -2950,6 +2950,43 @@ async def delete_scene(job_id: str, background_tasks: BackgroundTasks):
 _AUTO_START_CHECKED = {}   # job_id -> draft_check results (a draft does not change while it waits)
 
 
+# ── 2026-11-06: release mode (Michele): "manual" = the partner sees "completed" only after the operator releases the job (the default,
+# and what POST /jobs/{id}/release always did); "auto" = the system releases a finished partner job by itself. Switched from the operator page.
+RELEASE_MODE_FILE = JOBS_DIR / "_release_mode.json"
+
+
+def _release_mode() -> str:
+    try:
+        m = json.loads(RELEASE_MODE_FILE.read_text()).get("mode")
+        return m if m in ("manual", "auto") else "manual"
+    except Exception:
+        return "manual"
+
+
+@app.post("/operator/release-mode")
+async def set_release_mode(mode: str = Form(...)):
+    if mode not in ("manual", "auto"):
+        raise HTTPException(status_code=400, detail="mode must be manual or auto")
+    RELEASE_MODE_FILE.write_text(json.dumps({"mode": mode, "changed_at": datetime.utcnow().isoformat()}))
+    log.info(f"[Release] mode set to {mode}")
+    return {"mode": mode}
+
+
+async def _auto_release_tick():
+    if _release_mode() != "auto":
+        return
+    for jid, j in list(JOBS.items()):
+        if (j.get("source") == "relinx" and j.get("status") == "done" and not j.get("released")
+                and not j.get("needs_operator")
+                and not (any((j.get("awaiting_scenes") or {}).get(k) for k in ("rejected", "flagged", "failed"))
+                         if isinstance(j.get("awaiting_scenes"), dict) else j.get("awaiting_scenes"))):
+            try:
+                await release_job(jid)           # the SAME path as the operator's release button
+                log.info(f"[Job {jid}] released automatically (release mode auto)")
+            except Exception as e:
+                log.warning(f"[Job {jid}] automatic release failed (non-fatal): {e}")
+
+
 async def _auto_start_tick():
     import auto_start
     import draft_check
@@ -2968,7 +3005,8 @@ async def _auto_start_tick():
             log.warning(f"[AutoStart] duplicate check failed (non-fatal): {e}")
         return res
 
-    actions = await asyncio.to_thread(auto_start.decide, dict(JOBS), datetime.utcnow(), _check)
+    actions = await asyncio.to_thread(auto_start.decide, dict(JOBS), datetime.utcnow(), _check) if auto_start.enabled() else []
+    await _auto_release_tick()
     for a in actions:
         jid, job = a["job_id"], JOBS.get(a["job_id"])
         if not job or job.get("status") != "draft":
@@ -3016,9 +3054,10 @@ async def _auto_start_boot():
     import auto_start
     if auto_start.enabled():
         log.info(f"[AutoStart] ON: cap {auto_start.cap_eur():.0f} EUR / 24h, max {auto_start.max_active()} jobs at once")
-        asyncio.create_task(_auto_start_loop())
     else:
-        log.info("[AutoStart] off (PVS_AUTO_START not set)")
+        log.info("[AutoStart] start off (PVS_AUTO_START not set)")
+    log.info(f"[Release] mode: {_release_mode()} (manual = the agency gets nothing until the operator releases the job)")
+    asyncio.create_task(_auto_start_loop())      # one loop: the automatic start (if on) and the automatic release (if the mode is auto)
 
 
 @app.get("/operator/status")
@@ -3043,7 +3082,7 @@ async def operator_status():
                      "progress": j.get("progress"), "message": str(j.get("message") or "")[:140], "created_at": j.get("created_at"),
                      "cost_eur": auto_start.job_cost_eur(j), "auto_start": j.get("auto_start"),
                      "auto_reworked": len(j.get("auto_reworked") or []), "auto_approved": j.get("auto_approved") or [],
-                     "review_pending": bool(j.get("review_pending")), "stops": len(det), "stops_detail": det,
+                     "review_pending": bool(j.get("review_pending")), "released": bool(j.get("released")), "stops": len(det), "stops_detail": det,
                      "auto_approved_scenes": [a.get("scene") for a in (j.get("auto_approved") or [])],
                      "needs_operator": bool(j.get("needs_operator"))})
     rows.sort(key=lambda r: r["created_at"] or "", reverse=True)
@@ -3053,7 +3092,7 @@ async def operator_status():
             "switches": {"auto_start": on("PVS_AUTO_START"), "auto_rework": on("PVS_AUTO_REWORK"),
                          "auto_approve_flags": on("PVS_AUTO_APPROVE_FLAGS"), "standard_enforce": on("PVS_STANDARD_ENFORCE"),
                          "luma_resolution": os.getenv("PVS_LUMA_RESOLUTION", "1080p")},
-            "jobs": rows[:80]}
+            "release_mode": _release_mode(), "jobs": rows[:80]}
 
 
 @app.get("/operator-page", response_class=FileResponse)
