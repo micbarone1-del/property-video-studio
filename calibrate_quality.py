@@ -211,10 +211,20 @@ def objective_report(photos, n_variants: int):
         v = make_variants(p["path"].read_bytes())
         for k in VARIANTS:
             dam[k].append(pm.relative_quality_of_bytes(v[k]))
+    # milder blur steps (the main test blur is very strong: radius = width/150): radius = width/N for N = 400 (medium), 800 (light)
+    import io
+    from PIL import Image, ImageFilter
+    mild = {400: [], 800: []}
+    for p in pick(photos, n_variants):
+        im = Image.open(io.BytesIO(p["path"].read_bytes())).convert("RGB")
+        for n in mild:
+            mild[n].append(pm.relative_quality(im.filter(ImageFilter.GaussianBlur(radius=max(1.0, im.size[0] / n)))))
     lo = min(r["fine_mid"] for r in real); hi = max(r["period"] for r in real)
     print(f"\nDAMAGED copies ({n_variants} photos): variant  fine_mid / period(k)   [real min fine_mid {lo}, real max period {hi}]")
     for k in VARIANTS:
         print(f"  {k:11} " + "  ".join(f"{d.get('fine_mid')}/{d.get('period')}(k{d.get('period_k')})" for d in dam[k]))
+    for n, lst in mild.items():
+        print(f"  blur radius width/{n}: fine_mid " + "  ".join(str(d.get("fine_mid")) for d in lst) + f"   below every real: {sum(1 for d in lst if d.get('fine_mid') is not None and d['fine_mid'] < lo)}/{len(lst)}")
     for k in VARIANTS:
         print(f"  {k:11} below every real fine_mid: {sum(1 for d in dam[k] if d.get('fine_mid') is not None and d['fine_mid'] < lo)}/{len(dam[k])}   above every real period: {sum(1 for d in dam[k] if d.get('period', 0) > hi)}/{len(dam[k])}")
 
