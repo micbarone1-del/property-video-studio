@@ -1,9 +1,9 @@
 """First automatic rework on a MEASURED reject (2026-11-05).
 Pure planning only: decides whether the QC gate may send scenes to the ONE shared
 rework runner (_run_redo) instead of pausing for the operator. It never runs anything.
-Scope (deliberately narrow): only jobs whose whole stop is made of enforced
-geometry rejects (qc entry standard_enforced True). Any flagged / failed / other
-reject keeps the normal pause, so no pending review can be bypassed.
+Scope: every REJECTED scene (measured geometry rule OR the existing clip QC, e.g. invented structure).
+Widened 2026-11-06: in production 7 of 9 rejects were confirmed by the operator's own redo (22% approved), and a rework costs ~1.1 EUR.
+Flagged scenes are cleared first by auto_rework.approvable_flags (or keep the pause); failed (no clip) always keep it.
 One automatic rework per scene (job['auto_reworked']); if the reworked clip is
 still rejected the shared rework QC gate parks the job for the operator."""
 import os
@@ -56,8 +56,8 @@ def plan(job, qc_results, rejected, flagged, failed, scenes_config, evaluate=Non
     ids, idxs = [], []
     for i in rejected:
         ent = next((q for q in (qc_results or []) if q.get("scene") == i and q.get("type") == "video"), None)
-        if not ent or not ent.get("standard_enforced"):
-            return no(f"scene {i}: reject not from the measured rule")
+        if not ent or ent.get("verdict") != "reject":
+            return no(f"scene {i}: no reject entry in the clip QC")
         if i >= len(scenes_config or []) or not (scenes_config[i] or {}).get("scene_id"):
             return no(f"scene {i}: no scene_id")
         sid = scenes_config[i]["scene_id"]
