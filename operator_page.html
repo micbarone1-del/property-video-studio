@@ -38,6 +38,12 @@
   .scene video { width:200px; max-width:100%; border-radius:6px; background:#000; }
   .scene .txt { flex:1; min-width:200px; font-size:13px; }
   .choice label { margin-right:10px; cursor:pointer; }
+  .ph { display:inline-block; width:96px; margin:0 6px 6px 0; vertical-align:top; font-size:11.5px; line-height:1.25; }
+  .ph img { width:96px; height:72px; object-fit:cover; border-radius:5px; display:block; background:var(--line); }
+  .ph.ex img { opacity:.45; }
+  .ph .why { color:var(--bad); }
+  .desc { white-space:pre-wrap; font-size:13px; max-height:220px; overflow:auto; border:1px solid var(--line); border-radius:6px; padding:6px; }
+  details { margin-top:6px; } summary { cursor:pointer; color:var(--mute); }
   .go { background:var(--run); color:#fff; border-color:var(--run); }
 </style>
 </head>
@@ -93,8 +99,27 @@ function sceneBlock(id, s, withChoice) {
   const choice = withChoice ? '<div class="choice"><label><input type="radio" name="c-' + id + '-' + s.scene + '" value="approve"' + (sug === 'approve' ? ' checked' : '') + '> Approva</label><label><input type="radio" name="c-' + id + '-' + s.scene + '" value="redo"' + (sug === 'redo' ? ' checked' : '') + '> Rifai (circa 1,1 EUR)</label></div>' : '';
   return '<div class="scene">' + (s.kind === 'failed' ? '' : vid) + '<div class="txt"><b>Scena ' + (s.scene + 1) + '</b> - ' + esc(KIND[s.kind] || 'approvata dal sistema') + (s.severity ? ' (' + esc(s.severity) + ')' : '') + '<div class="mute">' + esc((s.issues || []).join(' | ')) + '</div>' + choice + '</div></div>';
 }
-let OPEN = {}, LAST = null;
-function toggle(id) { OPEN[id] = !OPEN[id]; paintRev(id); }
+let OPEN = {}, LAST = null, INPUT = {};
+async function loadInput(id) {
+  if (INPUT[id]) { paintRev(id); return; }
+  try { INPUT[id] = await api('/operator/job/' + id + '/input'); paintRev(id); }
+  catch (e) { INPUT[id] = { error: e.message }; paintRev(id); }
+}
+function inputBlock(id) {
+  const d = INPUT[id]; if (!d) return '<div class="mute">carico input...</div>';
+  if (d.error) return '<div class="mute">input non disponibile: ' + esc(d.error) + '</div>';
+  const ex = d.excluded_counts || {}, exTxt = Object.keys(ex).map(k => k + ': ' + ex[k]).join(', ');
+  let h = '<details open><summary>Input: annuncio e foto</summary>';
+  h += d.listing_url ? '<div><a href="' + esc(d.listing_url) + '" target="_blank" rel="noopener">Apri l\'annuncio originale</a></div>' : '<div class="mute">link all\'annuncio non ricevuto</div>';
+  h += '<div class="mute">foto trovate: ' + (d.photos_total != null ? d.photos_total : (d.photo_audit || []).length) + (exTxt ? ' - scartate: ' + esc(exTxt) : '') + '</div>';
+  h += (d.photo_audit || []).map(a => '<div class="ph' + (a.excluded ? ' ex' : '') + '"><img loading="lazy" referrerpolicy="no-referrer" src="' + esc(a.url) + '" onerror="this.style.visibility=\'hidden\'"><div>' + (a.n || '') + '. ' + esc(a.category || '') + (a.render ? ' (render)' : '') + '</div>' + (a.excluded ? '<div class="why">' + esc(a.excluded) + '</div>' : '') + '</div>').join('');
+  h += '<details><summary>Testo dell\'annuncio</summary><div class="desc">' + esc(d.description || '') + '</div></details></details>';
+  const nsc = (d.scenes || []).length;
+  h += '<details open><summary>Output: voce e scene</summary><div class="desc">' + esc(d.narration_text || '(nessuna voce)') + '</div>';
+  if (nsc) h += (d.scenes || []).map(sc => '<div class="ph"><img loading="lazy" src="/jobs/' + id + '/image/' + sc.i + '" onerror="this.style.visibility=\'hidden\'"><div>scena ' + (sc.i + 1) + ': ' + esc(sc.category || '') + '</div>' + (d.scene_facts && d.scene_facts[sc.i] ? '<div class="mute">' + esc(d.scene_facts[sc.i]) + '</div>' : '') + '</div>').join('');
+  return h + '</details>';
+}
+function toggle(id) { OPEN[id] = !OPEN[id]; if (OPEN[id]) loadInput(id); else paintRev(id); }
 function paintRev(id) {
   const box = document.getElementById('rev-' + id); if (!box || !LAST) return;
   if (!OPEN[id]) { box.innerHTML = ''; return; }
@@ -105,7 +130,7 @@ function paintRev(id) {
   } else if (j.auto_approved && j.auto_approved.length) {
     html += j.auto_approved.map(a => sceneBlock(id, { scene: a.scene, kind: '', severity: a.severity, issues: a.issues }, false)).join('') + '<div class="mute" style="margin-top:6px">Per rifare una di queste scene usa Rifai nell\'app principale.</div>';
   } else { html = '<div class="mute">' + esc(j.message) + '</div>'; }
-  box.innerHTML = '<div class="rev">' + html + '</div>';
+  box.innerHTML = '<div class="rev">' + html + inputBlock(id) + '</div>';
 }
 async function confirmApproval(id) {
   const j = LAST.jobs.find(x => x.job_id === id); if (!j) return;
