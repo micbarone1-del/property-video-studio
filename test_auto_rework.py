@@ -54,6 +54,9 @@ chk("B14 approval only when no reject: reject keeps the pause", "if _cleared and
 chk("B15 rework QC gate: minor flags left after a rework are auto-approved, then reassembly",
     "_arq.approvable_flags(job.get(\"qc_results\") or [], qc[\"flagged\"])" in src and "if not qc[\"rejected\"] and qc[\"flagged\"]:" in src)
 chk("B16 auto-approval record merges, does not overwrite", "_prev + _ar.review_record" in src)
+chk("B17 flag that speaks of a possible human figure -> never approved", ar.approvable_flags([fq(1, issues=["Possibile figura umana poco chiara (puo essere una texture)"])], [1]) == [])
+chk("B18 structure flag stays approvable", ar.approvable_flags([fq(1, issues=["Struttura/arredo diverso dalla foto: a window appears"])], [1]) == [1])
+chk("B19 one person-flag blocks the whole set (all or none)", ar.approvable_flags([fq(1), fq(2, issues=["persona nel frame"])], [1, 2]) == [])
 import py_compile; py_compile.compile("api_server.py", doraise=True)
 chk("A15 api_server compiles", True)
 print("FAILS", F)
