@@ -46,5 +46,5 @@ os.environ.pop("PVS_ACCEPT_RENDERS", None)
 chk("R10 default is off", ls.accept_renders_enabled() is False)
 src = open("api_server.py").read()
 chk("R11 listing_url is accepted from the partner, stored, and served by the input endpoint",
-    "listing_url: str = None" in src and '"listing_url": payload.listing_url' in src and '"/operator/job/{job_id}/input"' in src)
+    "listing_url: str | None = None" in src and '"listing_url": payload.listing_url' in src and '"/operator/job/{job_id}/input"' in src)
 print("FAILS", F)

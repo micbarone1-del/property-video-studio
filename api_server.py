@@ -1971,7 +1971,7 @@ class RelinxVideoRequest(BaseModel):
     voice_id: str = ""
     output_format: str = None
     callback_url: str
-    listing_url: str = None     # 2026-11-06 (optional): the original listing page, shown on the operator page to compare input and output
+    listing_url: str | None = None     # 2026-11-06 (optional): the original listing page, shown on the operator page to compare input and output
 
 
 def _map_internal_status_to_partner_status(internal_status: str, released: bool = False) -> str:
