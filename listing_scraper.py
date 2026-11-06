@@ -193,7 +193,7 @@ def build_photo_audit(photos: list) -> list:
         out.append({"n": i + 1, "url": u, "label": p.get("label_it") or None, "category": p.get("category"),
                     "category_from_page": p.get("category_page") or p.get("category_before_source"),
                     "source": p.get("category_source") or "partner_or_page", "excluded": photo_exclusion(p),
-                    "quality": p.get("quality"), "sharp": p.get("sharp")})
+                    "quality": p.get("quality"), "sharp": p.get("sharp"), "render_accepted": bool(p.get("render_accepted"))})
     return out
 
 
@@ -920,6 +920,14 @@ def aerial_filter_enabled() -> bool:
     return os.getenv("PVS_AERIAL_FILTER", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
+INTERIOR_CATEGORIES = ("living", "kitchen", "bedrooms", "bathrooms")
+
+
+def accept_renders_enabled() -> bool:
+    """PVS_ACCEPT_RENDERS=1: a listing with no real photo may use renders of interior rooms (default off)."""
+    return os.getenv("PVS_ACCEPT_RENDERS", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _photo_source(image_url: str, fallback_url: str = None) -> tuple:
     """(word, ok): word is photo | aerial | illustration (anything else counts as photo). ok False = the call failed, callers keep the photo."""
     word, ok = _vision_one_word(image_url, fallback_url, _VISION_SOURCE_PROMPT)
@@ -980,9 +988,16 @@ def refine_exterior_outdoor_with_vision(photos: list, max_photos: int = MAX_PHOT
     src_check = [p for p in photos if p.get("category") in CATEGORIES and p.get("url")][:MAX_SOURCE_CHECK] if aerial_filter_enabled() else []
     with ThreadPoolExecutor(max_workers=CLASSIFY_WORKERS) as ex:
         src_results = list(ex.map(lambda p: _photo_source(p["url"], p.get("original_url")), src_check))
-    aerials = illustrations = 0
+    aerials = illustrations = renders_kept = 0
+    # 2026-11-06 (PVS_ACCEPT_RENDERS, default off; Michele: "fammi vedere come viene" for new-build listings such as 1327): when the listing has NO real
+    # photo at all, renders of INTERIOR rooms stay in the selection (marked render_accepted); exterior / aerial renders and everything else still leave it.
+    real_n = sum(1 for (w, ok_) in src_results if ok_ and w == "photo")
+    keep_renders = accept_renders_enabled() and real_n == 0
     for p, (word, ok) in zip(src_check, src_results):
         if not ok:
+            continue
+        if word == "illustration" and keep_renders and p.get("category") in INTERIOR_CATEGORIES:
+            p["render_accepted"] = True; renders_kept += 1
             continue
         if word == "illustration":
             p["category_before_source"] = p.get("category"); p["category"] = "uncategorized"; p["category_source"] = "vision_illustration"; illustrations += 1
@@ -1006,7 +1021,7 @@ def refine_exterior_outdoor_with_vision(photos: list, max_photos: int = MAX_PHOT
             p["category_source"] = "page_label_checked" if ok else "page_fallback"
     summary = {"method": "exterior_outdoor_check", "checked": len(todo), "confirmed": confirmed, "living_checked": len(living), "halls_removed_from_living": halls,
                "swapped_exterior_outdoor": swapped, "excluded_as_other": excluded,
-               "kept_page_label_after_failure": fallback, "not_checked_over_cap": len(over), "aerial_removed": aerials, "illustrations_removed": illustrations}
+               "kept_page_label_after_failure": fallback, "not_checked_over_cap": len(over), "aerial_removed": aerials, "illustrations_removed": illustrations, "renders_accepted": renders_kept}
     log.info(f"[Scraper] Exterior/outdoor check: {summary}")
     return summary
 
