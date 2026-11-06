@@ -2955,7 +2955,8 @@ async def _apply_auto_approval(job_id: str, idxs: list, qc_results: list, notify
         if s_.get("index") in idxs:
             s_["qc_verdict"] = "approved"
             s_["auto_approved"] = True
-    job["auto_approved"] = _ar.review_record(qc_results, idxs)
+    _prev = [r for r in (job.get("auto_approved") or []) if r.get("scene") not in idxs]
+    job["auto_approved"] = _prev + _ar.review_record(qc_results, idxs)
     job["review_pending"] = True
     _save_job(job_id)
     log.info(f"[Job {job_id}] flags auto-approved: {idxs}")
@@ -3162,6 +3163,17 @@ async def _rework_qc_gate(job_id: str, job_dir, result: dict) -> bool:
     _save_job(job_id)
     if not (qc["rejected"] or qc["flagged"]):
         return False
+    # 2026-11-06 (PVS_AUTO_APPROVE_FLAGS): after a rework only minor flags left -> approved by the system, listed for a later review, job goes on
+    if not qc["rejected"] and qc["flagged"]:
+        try:
+            import auto_rework as _arq
+            _clr = _arq.approvable_flags(job.get("qc_results") or [], qc["flagged"])
+        except Exception as _e:
+            log.warning(f"[Job {job_id}] auto-approve after rework failed (non-fatal): {_e}")
+            _clr = []
+        if _clr:
+            await _apply_auto_approval(job_id, _clr, job.get("qc_results") or [])
+            return False
     job["awaiting_scenes"] = _awaiting_payload(qc["rejected"], qc["flagged"], [])
     msg = (f"QC dopo rework: {len(qc['rejected'])} rifiutate, {len(qc['flagged'])} segnalate. "
            f"Il video non e' stato riassemblato: rivedi le scene e decidi.")
