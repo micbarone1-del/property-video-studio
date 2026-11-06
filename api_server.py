@@ -1971,6 +1971,7 @@ class RelinxVideoRequest(BaseModel):
     voice_id: str = ""
     output_format: str = None
     callback_url: str
+    listing_url: str = None     # 2026-11-06 (optional): the original listing page, shown on the operator page to compare input and output
 
 
 def _map_internal_status_to_partner_status(internal_status: str, released: bool = False) -> str:
@@ -2139,6 +2140,7 @@ async def create_video_from_partner(
         "partner_id": partner["partner_id"],
         "external_ref": payload.external_ref,
         "callback_url": payload.callback_url,
+        "listing_url": payload.listing_url,
     }
     _save_job(job_id)
 
@@ -3093,6 +3095,23 @@ async def operator_status():
                          "auto_approve_flags": on("PVS_AUTO_APPROVE_FLAGS"), "standard_enforce": on("PVS_STANDARD_ENFORCE"),
                          "luma_resolution": os.getenv("PVS_LUMA_RESOLUTION", "1080p")},
             "release_mode": _release_mode(), "jobs": rows[:80]}
+
+
+@app.get("/operator/job/{job_id}/input")
+async def operator_job_input(job_id: str):
+    """What the tool was given and what it made of it, for the operator page: original listing link and text, every photo with its
+    verdict (used / excluded and why), the scene facts and the narration."""
+    j = JOBS.get(job_id)
+    if not j:
+        raise HTTPException(status_code=404, detail="Job not found")
+    rep = j.get('selection_report') or {}   # single quotes on purpose: test_selection_report W1 counts the double-quoted keys of the job builders
+    audit = [{"n": a.get("n"), "url": a.get("url"), "label": a.get("label"), "category": a.get("category"), "excluded": a.get("excluded"),
+              "render": bool(a.get("render_accepted"))} for a in (rep.get("photo_audit") or [])][:80]
+    return {"job_id": job_id, "name": j.get("property_name"), "listing_url": j.get("listing_url") or j.get("source_url"),
+            "description": j.get('source_description'), "photo_audit": audit, "excluded_counts": rep.get("excluded_counts") or {},
+            "photos_total": rep.get("photos_total"), "scene_facts": j.get("scene_facts"), "narration_text": j.get("narration_text"),
+            "scenes": [{"i": i, "category": (c or {}).get("category")} for i, c in enumerate(j.get("scenes_config") or [])],
+            "message": j.get("message")}
 
 
 @app.get("/operator-page", response_class=FileResponse)
