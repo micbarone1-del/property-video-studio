@@ -21,4 +21,6 @@ import inspect, re
 chk("G11 view check wired in validate_free_text (all paths that use it)", "view_problems(text, description)" in inspect.getsource(ss.validate_free_text))
 src = open("listing_scraper.py").read() if __import__("os").path.exists("listing_scraper.py") else open("../fresh3/listing_scraper.py").read()
 chk("G12 marker equals the text the scraper puts before the photo facts", ss.PHOTO_FACTS_MARK in src)
+chk("G13 survivors of the battery are filler now", len(ss.generic_problems(["Un angolo cottura funzionale e accogliente."])) == 1 and len(ss.generic_problems(["Il cucinotto e pratico e funzionale."])) == 1)
+chk("G14 real facts stay allowed", ss.generic_problems(["Cucina a vista sul soggiorno, bagno con finestra, terrazzo di cento metri."]) == [])
 print("FAILS", F)
