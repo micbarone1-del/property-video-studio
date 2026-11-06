@@ -1,2984 +1,4373 @@
 """
-listing_scraper.py
-
-Extracts photos (with labels + categories), description, price, and address
-from a real-estate listing page — using the Claude API's web_fetch server
-tool, then selects the right photos per your priority order and flags gaps
-requiring manual upload.
-
-Generalized across immobiliare.it, idealista.it, and casa.it (the three
-sites agreed as initial scope) rather than one hardcoded adapter per site —
-since extraction works by having Claude read the page SEMANTICALLY (not via
-brittle CSS/DOM selectors), the same extraction logic works across
-differently-structured sites. Each site's own domain is checked against
-SUPPORTED_DOMAINS; anything else logs a "site requested" entry instead of
-guessing at an unsupported site's structure.
-
-WHY CLAUDE-FETCH INSTEAD OF A DIRECT REQUEST: immobiliare.it returns a 403
-Forbidden to direct requests.get() calls from this VPS — confirmed via live
-testing (July 9 2026) to be IP-based blocking (a full realistic browser
-header set made no difference; the same URL loaded fine from a real
-residential browser). The Claude API's web_fetch tool runs server-side on
-Anthropic's infrastructure, not this VPS, and is confirmed working. The same
-approach is used preemptively for idealista.it/casa.it since they're
-comparable commercial portals likely to have similar protections — this is
-UNCONFIRMED for those two specifically until tested.
-
-REQUIREMENTS:
-  - `anthropic` Python package (in requirements.txt)
-  - `ANTHROPIC_API_KEY` in .env
-
-STATUS: immobiliare.it extraction fully tested and confirmed working
-end-to-end (July 9 2026) — real listing, 45 photos, correct categorization,
-correct description/price/address. idealista.it and casa.it use the same
-code path but are UNTESTED — need a real listing URL from each to confirm
-before trusting them.
-
-KNOWN OPEN ITEMS (not blockers, flagged for follow-up):
-  - Image resolution: attempts common CDN size-suffix upgrades via a cheap
-    HEAD request before falling back to whatever Claude returned. This is a
-    best-effort heuristic, not a confirmed-correct mechanism for every site.
-  - Vision-QC fallback for "uncategorized" photos calls vision_analysis.py's
-    analyse_input() — ASSUMING its return schema includes a "space_type" or
-    similar field usable to derive one of our 6 categories. This assumption
-    is NOT independently re-verified in this session; check real output
-    against this assumption on first real use.
+api_server.py v3
+─────────────────
+New in v3:
+  - POST /analyse-image endpoint for vision AI space detection
+  - Vision QC after each video clip (Florence-2 via fal.ai)
+  - TTS QC after each audio generation
+  - Job pauses at "awaiting_approval" if QC flags any scene
+  - POST /jobs/{id}/approve to approve flagged scenes and proceed to assembly
+  - Cost estimation returned with job creation
+  - Actual cost tracked after completion
+  - GET /diagnostics endpoint with disk, API health, job stats, auto-cleanup
+  - GET/POST /maintenance/* endpoints — scheduled health-check report + editable alert recipient list
+  - Security: 20MB file size limit, max 20 images, rate limit 5 jobs/hour/IP
+  - File type validation by magic bytes
+  - Job persistence to disk (survives server restart) — preserved from v2
 """
+
 
 import os
-import camera_plan
-import re
-import math
+import uuid
 import json
-import time
+import shutil
+import asyncio
+import camera_plan
 import logging
-import threading
+import time
 from pathlib import Path
-from urllib.parse import urlparse, urljoin
+from datetime import datetime, timedelta
+from collections import defaultdict
 
-import requests
-import anthropic
+
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, BackgroundTasks, Request, Header, Depends
+from pydantic import BaseModel
+from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
+
 load_dotenv()
+logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-# Claude API pricing - Haiku 4.5 (verified against Anthropic pricing, July 2026)
-CLAUDE_INPUT_PER_MTOK  = 1.00   # USD per million input tokens
-CLAUDE_OUTPUT_PER_MTOK = 5.00   # USD per million output tokens
-USD_TO_EUR = 0.93
-
-# Accumulates real token usage across every Anthropic call made while building
-# one job (extraction, photo quality ranking, narration, captions). Reset per
-# job by the caller via reset_claude_usage().
-# 2026-10-29: input_tokens / output_tokens are the tokens billed at the price of MODEL (the default model). A call made with ANOTHER model
-# (the photo-quality judge uses a second, cheaper model) is priced at its own price when it is made and summed in extra_cost_eur,
-# so the job cost stays right without pretending that all tokens cost the same.
-_claude_usage = {"input_tokens": 0, "output_tokens": 0, "calls": 0, "extra_cost_eur": 0.0}
-
-def reset_claude_usage():
-    _claude_usage.update({"input_tokens": 0, "output_tokens": 0, "calls": 0, "extra_cost_eur": 0.0})
-
-_claude_lock = threading.Lock()
+# 2026-10-09 (backlog 58a): fake-providers switch. OFF unless PVS_FAKE_PROVIDERS=1
+# at process start; then every paid/external provider is replaced at transport
+# level (see fake_providers.py). Only for a separate test instance (start_fake.sh).
+import fake_providers
+fake_providers.install_if_enabled()
 
 
-def _track_claude(response, model=None):
-    """Counts the real usage of one call. model=None (or the default MODEL): tokens go to the default counters; another model: its own
-    cost is added to extra_cost_eur (claude_cost_eur prices it by model)."""
-    try:
-        u = response.usage
-        i_t = getattr(u, "input_tokens", 0) or 0
-        o_t = getattr(u, "output_tokens", 0) or 0
-        with _claude_lock:
-            if model and model != MODEL:
-                _claude_usage["extra_cost_eur"] += claude_cost_eur(i_t, o_t, model)
-            else:
-                _claude_usage["input_tokens"]  += i_t
-                _claude_usage["output_tokens"] += o_t
-            _claude_usage["calls"] += 1
-    except Exception:
-        pass
-    return response
-
-# USD per million tokens (input, output) by model. 5.5 models: platform.claude.com model pages, 2026-10-25 (prompts up to 100K tokens).
-CLAUDE_PRICES = {
-    "claude-haiku-4-5-20251001": (CLAUDE_INPUT_PER_MTOK, CLAUDE_OUTPUT_PER_MTOK),
-    "claude-haiku-5-5": (0.10, 0.50),
-    "claude-sonnet-5-5": (2.00, 10.00),
-}
+# ── Access key auth ────────────────────────────────────────────────────────────
+UI_ACCESS_KEY = os.getenv("UI_ACCESS_KEY", "").strip()
 
 
-def claude_cost_eur(input_tokens, output_tokens, model=None):
-    """THE cost formula (EUR) of a number of tokens of one model; an unknown model is priced like the default one (never zero)."""
-    pin, pout = CLAUDE_PRICES.get(model or MODEL, (CLAUDE_INPUT_PER_MTOK, CLAUDE_OUTPUT_PER_MTOK))
-    usd = (input_tokens / 1_000_000) * pin + (output_tokens / 1_000_000) * pout
-    return round(usd * USD_TO_EUR, 4)
+def _check_access(request: Request) -> bool:
+    """Returns True if request is authorised. Always True if no key configured."""
+    if not UI_ACCESS_KEY:
+        return True  # no key set — open access (backward compat)
+    key = request.headers.get("X-Access-Key", "").strip()
+    return key == UI_ACCESS_KEY
 
 
-def merge_claude_usage(base, extra):
-    """Sums two usage dicts ({input_tokens, output_tokens, calls, cost_eur}); either may be None. Used to add the usage of calls that were
-    NOT counted in the per-job counter (the clip QC runs after the draft was made) to the job's claude_usage."""
-    out = {"input_tokens": 0, "output_tokens": 0, "calls": 0, "cost_eur": 0.0}
-    for d in (base, extra):
-        for k in ("input_tokens", "output_tokens", "calls"):
-            out[k] += int((d or {}).get(k, 0) or 0)
-        out["cost_eur"] += float((d or {}).get("cost_eur", 0) or 0)
-    out["cost_eur"] = round(out["cost_eur"], 4)
-    return out
+# ── Partner API auth (backlog item 48, 2026-09-29) ──────────────────────────
+# Distinct from UI_ACCESS_KEY above: that's a single shared admin key for
+# the web UI; this supports multiple partners (e.g. Relinx), each with
+# their own revocable key, hashed at rest -- see partner_api.py.
+import partner_api
 
 
-def get_claude_cost():
-    """Real Claude API cost for the current job, in EUR."""
-    i = _claude_usage["input_tokens"]; o = _claude_usage["output_tokens"]
-    extra = round(_claude_usage.get("extra_cost_eur", 0.0), 6)
-    return {
-        "input_tokens": i, "output_tokens": o, "calls": _claude_usage["calls"],
-        "extra_cost_eur": extra,
-        "cost_eur": round(claude_cost_eur(i, o) + extra, 4),
-    }
+async def get_current_partner(authorization: str = Header(None)) -> dict:
+    """FastAPI dependency: validates the Authorization: Bearer <key> header
+    against partner_api's stored partner keys. Raises 401 if missing,
+    malformed, or invalid."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+    raw_key = authorization[len("Bearer "):].strip()
+    partner = partner_api.verify_partner_key(raw_key)
+    if not partner:
+        raise HTTPException(status_code=401, detail="Invalid or inactive API key")
+    return partner
 
-MODEL = "claude-haiku-4-5-20251001"  # cheapest current model; upgrade to
-                                       # claude-sonnet-5 if extraction quality
-                                       # proves unreliable on tricky listings
-
-CATEGORIES = ["exterior", "living", "kitchen", "bedrooms", "bathrooms", "outdoor"]
-PRIORITY_ORDER = ["exterior", "living", "kitchen", "bedrooms", "bathrooms", "outdoor"]
-
-CATEGORY_ITALIAN_LABELS = {
-    "exterior": "facciata/esterno dell'edificio",
-    "living": "soggiorno",
-    "kitchen": "cucina",
-    "bedrooms": "camere da letto",
-    "bathrooms": "bagni",
-    "outdoor": "spazi esterni (giardino/terrazza)",
-    "laundry": "lavanderia",
-    "office": "studio",
-    "garage": "garage",
-}
-
-
-def derive_available_category_order(photos: list, priority_order: list = None) -> list:
-    """Returns the subset of priority_order categories that have at least
-    one real photo, in priority_order's sequence -- this IS the actual
-    scene sequence the video will show. Lightweight on purpose: only
-    checks presence, no quality ranking, no API calls."""
-    order = priority_order if priority_order is not None else PRIORITY_ORDER
-    present = {p.get("category") for p in photos if not photo_exclusion(p)}   # only photos that are really usable (2026-11-06)
-    return [cat for cat in order if cat in present]
-
-# 2026-11-03 (Michele): "teniamo i motivi delle selezioni per capire se funziona e come". For every photo: where its category came from and why it left the selection.
-EXCLUSION_REASONS = {"vision_illustration": "illustrazioni o render", "vision_aerial": "viste aeree o dall'alto", "vision_hall": "ingressi o corridoi",
-                     "vision_refine": "esterni non confermati", "vision_quality": "scarsa qualit\u00e0", "duplicate": "foto duplicata"}
-
-
-def photo_exclusion(p: dict):
-    """The reason (Italian) why a photo is NOT usable, or None when it is. THE definition of "usable photo": the acceptance rule, the scene
-    category order, the selection and the dashboard audit all read it (2026-11-06: before, the acceptance counted photos the selection threw away)."""
-    if p.get("duplicate_of"):
-        return EXCLUSION_REASONS["duplicate"]
-    if p.get("quality_rejected"):
-        return EXCLUSION_REASONS["vision_quality"]
-    cat = p.get("category")
-    if cat in CATEGORIES:
-        return None
-    if p.get("other_kind") and not EXCLUSION_REASONS.get(p.get("category_source")):
-        return OTHER_KINDS_IT.get(p["other_kind"], "ambiente non riconosciuto")
-    return EXCLUSION_REASONS.get(p.get("category_source")) or "ambiente non riconosciuto"
-
-
-def build_photo_audit(photos: list) -> list:
-    out, seen = [], set()
-    for i, p in enumerate(photos or []):
-        u = p.get("url")
-        if u in seen:
-            continue
-        seen.add(u)
-        out.append({"n": i + 1, "url": u, "label": p.get("label_it") or None, "category": p.get("category"),
-                    "category_from_page": p.get("category_page") or p.get("category_before_source"),
-                    "source": p.get("category_source") or "partner_or_page", "excluded": photo_exclusion(p),
-                    "quality": p.get("quality"), "sharp": p.get("sharp"), "render_accepted": bool(p.get("render_accepted"))})
-    return out
-
-
-# 2026-11-06 (Michele: two kitchen photos of the same picture were both selected): duplicates are recognised by the IMAGE, not only by the URL.
-# One 256-bit difference hash per candidate photo; two photos closer than DUPLICATE_MAX_BITS bits are the same picture (re-encoded or resized copies
-# differ by a few bits, different rooms by about half of them). The first photo in page order stays, the later ones get p["duplicate_of"]; photo_exclusion()
-# then reports "foto duplicata", so the acceptance rule, the selection, the scene order and the dashboard all agree. PVS_PHOTO_DEDUPE=0 switches it off.
-DUPLICATE_MAX_BITS = 8
-DUPLICATE_MAX_PHOTOS = 60
-
-
-def photo_dedupe_enabled() -> bool:
-    return os.environ.get("PVS_PHOTO_DEDUPE", "1").strip().lower() not in ("0", "false", "no", "off")
-
-
-def photo_hash_of_bytes(content: bytes) -> int:
-    """Pure. 256-bit difference hash (16 rows of 16 left-right comparisons of a 17x16 grey thumbnail) of an image, as an integer."""
-    import io
-    from PIL import Image
-    im = Image.open(io.BytesIO(content)).convert("L").resize((17, 16), Image.LANCZOS)
-    px = list(im.getdata())
-    bits = 0
-    for row in range(16):
-        for col in range(16):
-            bits = (bits << 1) | (1 if px[row * 17 + col] > px[row * 17 + col + 1] else 0)
-    return bits
-
-
-def mark_duplicate_photos(photos: list, fetch=None) -> dict:
-    """Tags later copies of the same picture with p["duplicate_of"] = url of the one kept. Only photos with a real category are looked at (at most
-    DUPLICATE_MAX_PHOTOS). A photo that cannot be downloaded or read is simply kept. Never raises. Returns {"enabled", "checked", "duplicates"}."""
-    if not photo_dedupe_enabled():
-        return {"enabled": False}
-    try:
-        fetch = fetch or (lambda p: fetch_photo_bytes(p.get("url"), p.get("original_url"), timeout=20))
-        cands, seen = [], set()
-        for p in photos or []:
-            u = p.get("url")
-            if p.get("category") in CATEGORIES and u and u not in seen and not p.get("duplicate_of"):
-                seen.add(u)
-                cands.append(p)
-        cands = cands[:DUPLICATE_MAX_PHOTOS]
-
-        def one(p):
-            try:
-                r = fetch(p)
-                return photo_hash_of_bytes(r["content"]) if r.get("ok") else None
-            except Exception:
-                return None
-        from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=CLASSIFY_WORKERS) as ex:
-            hashes = list(ex.map(one, cands))
-        kept, dups = [], 0
-        for p, h in zip(cands, hashes):
-            if h is None:
-                continue
-            p["photo_hash"] = format(h, "064x")
-            twin = next((q for qh, q in kept if bin(qh ^ h).count("1") <= DUPLICATE_MAX_BITS), None)
-            if twin is not None:
-                p["duplicate_of"] = twin.get("url")
-                dups += 1
-            else:
-                kept.append((h, p))
-        log.info(f"[Scraper] Photo duplicates: checked {len(cands)}, duplicates {dups}")
-        return {"enabled": True, "checked": len(cands), "duplicates": dups}
-    except Exception as e:
-        log.warning(f"[Scraper] Photo duplicate check failed as a whole: {e}")
-        return {"enabled": True, "error": str(e)[:160]}
-
-
-def finish_photo_classification(photos: list) -> dict:
-    """The ONE step both workflows (URL and Relinx) run after the categories are known: facade/balcony verified by vision, then duplicate pictures marked.
-    Returns the classification summary stored in the job's selection_report."""
-    summary = refine_exterior_outdoor_with_vision(photos)
-    summary["duplicates"] = mark_duplicate_photos(photos)
-    return summary
-
-
-def refusal_report(photos: list) -> dict:
-    """What the dashboard input panel shows for a listing that was REFUSED: the photo audit (every photo, its category and why it was excluded)."""
-    seen = {p.get("url") for p in photos or []}
-    return {"photo_audit": build_photo_audit(photos), "excluded_counts": exclusion_counts(photos), "photos_total": len(seen), "refused": True}
-
-
-def exclusion_counts(photos: list) -> dict:
-    n, seen = {}, set()
-    for p in photos or []:
-        u = p.get("url")
-        if u in seen:
-            continue
-        seen.add(u)
-        r = photo_exclusion(p)
-        if r:
-            n[r] = n.get(r, 0) + 1
-    return n
-
-
-MIN_USABLE_PHOTOS = 5
-MIN_ENVIRONMENT_TYPES = int(os.getenv("PVS_MIN_ENVIRONMENT_TYPES", "4"))   # 2026-11-06: default 4 = the rule; lowered ONLY by a deliberate test-instance switch (1327 forced trial)
-_STANDARD_TYPES_IT = "facciata, soggiorno, cucina, camera da letto, bagno, balcone/giardino"
-
-
-def check_listing_acceptance(photos: list) -> dict:
-    """2026-10-12 (3B): standard-video acceptance rule, run BEFORE any narration/TTS is paid for.
-    A listing is accepted only with at least MIN_USABLE_PHOTOS usable photos (a real category, de-duplicated
-    by URL) AND at least MIN_ENVIRONMENT_TYPES distinct environment types. Otherwise it is rejected with the
-    code "insufficient_photos" and an Italian reason an operator or a partner API can show as it is."""
-    seen, by_cat = set(), {}
-    for p in photos or []:
-        cat, url = p.get("category"), p.get("url")
-        if cat in CATEGORIES and url and url not in seen and not photo_exclusion(p):   # 2026-11-06: usable = photo_exclusion(p) is None (duplicates and quality rejects do not count)
-            seen.add(url)
-            by_cat[cat] = by_cat.get(cat, 0) + 1
-    usable = sum(by_cat.values())
-    types_found = [c for c in PRIORITY_ORDER if c in by_cat]
-    missing = [c for c in PRIORITY_ORDER if c not in by_cat]
-    result = {"ok": True, "code": None, "message": None, "usable_photos": usable,
-              "environment_types": types_found, "missing_types": missing,
-              "min_photos": MIN_USABLE_PHOTOS, "min_types": MIN_ENVIRONMENT_TYPES}
-    if usable >= MIN_USABLE_PHOTOS and len(types_found) >= MIN_ENVIRONMENT_TYPES:
-        return result
-    found_it = ", ".join(CATEGORY_ITALIAN_LABELS[c] for c in types_found) or "nessuno"
-    only_outside = bool(types_found) and set(types_found) <= {"exterior", "outdoor"}
-    msg = (f"Annuncio non idoneo al video standard: {usable} foto utilizzabili e {len(types_found)} tipi di ambiente "
-           f"(servono almeno {MIN_USABLE_PHOTOS} foto e {MIN_ENVIRONMENT_TYPES} ambienti diversi tra: {_STANDARD_TYPES_IT}). "
-           f"Ambienti trovati: {found_it}.")
-    if missing:
-        msg += " Mancano: " + ", ".join(CATEGORY_ITALIAN_LABELS[c] for c in missing) + "."
-    if only_outside:
-        msg += " Le foto mostrano solo esterni: servono anche gli interni."
-    excl = exclusion_counts(photos)
-    if excl:
-        msg += " Foto escluse: " + ", ".join(f"{n} {r}" for r, n in sorted(excl.items(), key=lambda x: -x[1])) + "."
-    result["excluded"] = excl
-    result.update({"ok": False, "code": "insufficient_photos", "message": msg})
-    log.warning(f"[Scraper] Listing rejected (insufficient_photos): {msg}")
-    return result
-
-
-# 2026-10-28 (Michele): launch scope. A listing whose living room AND bedroom show no furniture is "not furnished" and out of scope for now.
-# It is checked in the SAME gate as the photo rule (check_listing_scope), before any narration or voice is paid for. Page labels decide which
-# photos are the living room and the bedroom; Claude vision is asked only whether furniture is visible (kitchen units do not count).
-FURNISHED_SAMPLE_PER_ROOM = 2
-FURNISHED_ROOMS = ("living", "bedrooms")
-UNFURNISHED_MESSAGE = "Annuncio non supportato: appartamento non arredato (al momento non disponibile)."
-ACCEPTANCE_SHORT_REASON = {"insufficient_photos": "foto insufficienti", "unfurnished": "non arredato", "unlabeled_empty_rooms": "stanze vuote senza etichette"}
-UNLABELED_EMPTY_MESSAGE = ("Annuncio non idoneo: le stanze risultano vuote e le foto non hanno etichette che ne indichino l'ambiente; "
-                           "senza arredi e senza etichette non \u00e8 possibile riconoscere le stanze e produrre un video di qualit\u00e0.")
-_VISION_FURNISHED_PROMPT = (
-    "Look at this real estate interior photo. Does the room contain furniture (a sofa, table, chairs, a bed, a wardrobe, a desk, shelves "
-    "or similar movable furniture)? Built-in kitchen units, fixed lights and curtains do NOT count as furniture.\n"
-    "Answer with ONLY one word: furnished or empty."
-)
-
-
-def acceptance_short_reason(acceptance: dict) -> str:
-    # short Italian reason for a push notification, from the failure code (one table for every gate)
-    return ACCEPTANCE_SHORT_REASON.get((acceptance or {}).get("code"), "non idoneo")
-
-
-def check_listing_furnished(photos: list, ask=None) -> dict:
-    # returns ok False ONLY when every room that has photos (living, bedrooms) was judged empty by a clear majority of its sampled photos
-    # with no failed call. Anything unsure (no photo, failed call, unclear answer) never blocks a listing.
-    ask = ask or _vision_one_word
-    detail, verdicts, seen = {}, [], set()
-    unlabeled = False
-    for room in FURNISHED_ROOMS:
-        sample = []
-        for p in photos or []:
-            url = p.get("url")
-            if p.get("category") == room and url and url not in seen and len(sample) < FURNISHED_SAMPLE_PER_ROOM:
-                seen.add(url)
-                sample.append(p)
-        if not sample:
-            detail[room] = "no photo"
-            continue
-        words = [ask(p["url"], p.get("original_url"), _VISION_FURNISHED_PROMPT) for p in sample]
-        if any(not ok for _, ok in words):
-            detail[room] = "unknown (a vision call failed)"
-            verdicts.append(None)
-            continue
-        empties = sum(1 for w, _ in words if w == "empty")
-        furnished = sum(1 for w, _ in words if w.startswith("furnished"))
-        if empties * 2 > len(words):
-            detail[room] = "empty (" + str(empties) + " of " + str(len(words)) + " photos)"
-            verdicts.append("empty")
-            # 2026-11-03: a room whose category came from the classifier (no label from the page or the partner) cannot be told apart when it is empty
-            if any(p.get("category_source") == "vision" and not str(p.get("label_it") or "").strip() for p in sample):
-                unlabeled = True
-        elif furnished:
-            detail[room] = "furnished"
-            verdicts.append("furnished")
-        else:
-            detail[room] = "unknown (unclear answer)"
-            verdicts.append(None)
-    blocked = bool(verdicts) and all(v == "empty" for v in verdicts)
-    return {"ok": not blocked, "detail": detail, "unlabeled": bool(blocked and unlabeled)}
-
-
-def furnished_enforced() -> bool:
-    # 2026-10-28: measure-only by default. An empty flat is recorded (furnished_status = unfurnished) but NOT rejected.
-    # Set PVS_FURNISHED_ENFORCE=1 in .env and restart to reject unfurnished listings again.
-    return os.environ.get("PVS_FURNISHED_ENFORCE", "0").strip().lower() in ("1", "true", "yes", "on")
-
-
-def check_listing_scope(photos: list, ask=None) -> dict:
-    # the ONE gate both workflows call before narration: the photo rule (check_listing_acceptance) first, then the furnished rule.
-    # same result shape as check_listing_acceptance, so every caller reads it exactly as before
-    result = check_listing_acceptance(photos)
-    if not result["ok"]:
-        return result
-    furn = check_listing_furnished(photos, ask=ask)
-    result["furnished_check"] = furn["detail"]
-    result["furnished_status"] = "ok" if furn["ok"] else "unfurnished"
-    if not furn["ok"]:
-        if furn.get("unlabeled"):          # 2026-11-03 (Michele): empty rooms WITH labels are feasible; empty rooms WITHOUT labels are stopped
-            result.update({"ok": False, "code": "unlabeled_empty_rooms", "message": UNLABELED_EMPTY_MESSAGE})
-            log.warning("[Scraper] Listing rejected (empty rooms without labels): " + str(furn["detail"]))
-        elif furnished_enforced():
-            result.update({"ok": False, "code": "unfurnished", "message": UNFURNISHED_MESSAGE})
-            log.warning("[Scraper] Listing rejected (unfurnished): " + str(furn["detail"]))
-        else:
-            log.info("[Scraper] Listing looks unfurnished, measure-only mode (not rejected): " + str(furn["detail"]))
-    return result
-
-
-SUPPORTED_DOMAINS = {"immobiliare.it", "www.immobiliare.it", "idealista.it", "www.idealista.it",
-                     "casa.it", "www.casa.it", "annunci.getrix.it"}
 
 BASE_DIR = Path(__file__).parent
-REQUESTED_SITES_FILE = BASE_DIR / "scraper_site_requests.json"
-
-EXTRACTION_PROMPT = """Fetch this real estate listing page: {url}
-
-Extract and return ONLY a JSON object (no other text, no markdown code fences) with this exact structure:
-
-{{
-  "photos": [
-    {{"url": "...", "label_it": "...", "category": "one of: exterior, living, kitchen, bedrooms, bathrooms, outdoor, laundry, office, garage, uncategorized"}}
-  ],
-  "description": "...",
-  "price": "...",
-  "address": "..."
-}}
-
-Rules:
-- Only include real property photos in "photos" — EXCLUDE floor plan diagrams and any agent/agency headshot or logo images.
-- "label_it" is the photo's own caption/label as shown on the page, in whatever language the site uses.
-- Map each photo's label to exactly one category: exterior (building facade, outdoor view of the property itself), living (living room, dining room, study; NOT entrance hall, corridor, hallway or stairs, which must be uncategorized), kitchen, bedrooms, bathrooms, outdoor (garden, terrace, courtyard, parking area, land/terrain), laundry (laundry/utility room -- 2026-07-24: previously lumped into bathrooms, now its own category so it can appear as an extra scene when a longer video needs it), office (study/home office, distinct from a general living-area study), garage (garage, carport, covered parking specifically -- distinct from general outdoor parking). If a label doesn't clearly fit any of these, use "uncategorized".
-- If the page provides a larger/original-resolution version of each photo (e.g. via a lightbox, srcset, or a "view full size" link), use that URL instead of a thumbnail/compressed variant.
-- "description" is the full property description text from the listing (not a shortened meta/preview version).
-- "price" and "address" as shown on the page.
-"""
-
-
-# ── Domain support / "request a new site" workflow ──────────────────────────
-
-def is_supported_domain(url: str) -> bool:
-    domain = urlparse(url).netloc.lower()
-    return domain in SUPPORTED_DOMAINS
-
-
-def log_site_request(url: str) -> None:
-    """Records a request for an unsupported domain so it can be reviewed for
-    adding real support later, rather than silently failing or guessing at
-    an unfamiliar site's structure."""
-    domain = urlparse(url).netloc.lower()
-    requests_log = []
-    if REQUESTED_SITES_FILE.exists():
-        try:
-            requests_log = json.loads(REQUESTED_SITES_FILE.read_text())
-        except Exception:
-            requests_log = []
-    requests_log.append({"domain": domain, "example_url": url,
-                          "requested_at": __import__("datetime").datetime.now().isoformat()})
-    REQUESTED_SITES_FILE.write_text(json.dumps(requests_log, indent=2))
-    log.info(f"[Scraper] Logged unsupported-site request: {domain}")
-
-
-# ── Image resolution upgrade (best-effort, cheap HEAD requests) ────────────
-
-_RESOLUTION_UPGRADE_PATTERNS = [
-    (r"/m-c\.jpg$", "/xl-c.jpg"),
-    (r"/m-c\.jpg$", "/xl.jpg"),
-    (r"/m-c\.jpg$", "/original.jpg"),
-    (r"-c\.jpg$", ".jpg"),
-    (r"_th\.jpg$", "_hd.jpg"),   # 2026-10-15: annunci.getrix.it serves thumbnails as _th and full size as _hd
-]
-
-
-_TRUNCATED_PHOTO_URL = re.compile(r"^(https?://[^/?#]+/image/\d+)/?$")
-
-
-def normalize_photo_url(url: str) -> str:
-    """2026-10-12: the page reader sometimes returns an immobiliare CDN photo URL WITHOUT its file
-    name (".../image/1963262752/" -> 404; verified live: the same id answers 200 with "/m-c.jpg",
-    "/xl-c.jpg" and "/xl.jpg"). Such a URL is rewritten to the canonical "/m-c.jpg" form, which the
-    existing try_upgrade_resolution() then upgrades exactly like any other photo. Everything else
-    is returned unchanged."""
-    m = _TRUNCATED_PHOTO_URL.match(url or "")
-    return (m.group(1) + "/m-c.jpg") if m else url
-
-
-def try_upgrade_resolution(image_url: str) -> dict:
-    """Attempts a few common CDN size-suffix substitutions via a cheap HEAD
-    request, returning the first one that responds successfully. Falls back
-    to the original URL if none work — this is a best-effort heuristic, not
-    a confirmed-correct mechanism, since it hasn't been validated against
-    which pattern (if any) actually serves a genuinely higher-resolution
-    image rather than just a differently-named same-size file.
-
-    Returns {"url": str, "upgraded": bool} — the upgraded flag makes this
-    visible/loggable instead of a silent no-op when nothing works.
-    """
-    for pattern, replacement in _RESOLUTION_UPGRADE_PATTERNS:
-        candidate = re.sub(pattern, replacement, image_url)
-        if candidate == image_url:
-            continue
-        try:
-            resp = requests.head(candidate, timeout=5)
-            if resp.status_code == 200:
-                return {"url": candidate, "upgraded": True}
-        except Exception:
-            continue
-    return {"url": image_url, "upgraded": False}
-
-
-# ── Shared photo fetch (2026-10-12, 3A) ─────────────────────────────────────
-# ONE place that downloads a photo, used by download_photo(), rank_photos_by_quality()
-# and classify_uncategorized_photo() -- they used to each call requests.get() on their
-# own. try_upgrade_resolution() only checks the "upgraded" URL with a HEAD request, but
-# the real GET can still answer 403 ("Bad Parameters"); the original URL is kept in
-# photo["original_url"] and tried second, so one bad upgraded URL no longer fails a job.
-
-def fetch_photo_bytes(url: str, fallback_url: str = None, timeout: int = 20, attempts: int = 1) -> dict:
-    """Returns {"ok", "content", "url_used", "used_fallback", "error"}.
-    Per URL: transient failures (timeout, connection error, HTTP 429/5xx) are retried up
-    to `attempts` times with a short backoff; other 4xx are permanent for that URL."""
-    urls = [url]
-    if fallback_url and fallback_url != url:
-        urls.append(fallback_url)
-    errors = []
-    for idx, u in enumerate(urls):
-        last_error = "unknown"
-        permanent = False
-        for attempt in range(attempts):
-            try:
-                resp = requests.get(u, timeout=timeout)
-                if resp.status_code == 429 or resp.status_code >= 500:
-                    last_error = f"HTTP {resp.status_code}"
-                else:
-                    resp.raise_for_status()  # other 4xx -> permanent for this URL
-                    return {"ok": True, "content": resp.content, "url_used": u,
-                            "used_fallback": idx > 0, "error": None}
-            except requests.HTTPError as e:
-                last_error = f"download failed: {e}"
-                permanent = True
-                break
-            except Exception as e:
-                last_error = str(e)
-            if attempt < attempts - 1:
-                time.sleep(1.5 * (attempt + 1))
-        errors.append(last_error if permanent else f"download failed after {attempts} attempts: {last_error}")
-    return {"ok": False, "content": None, "url_used": None, "used_fallback": False,
-            "error": " | fallback: ".join(errors)}
-
-
-# ── Core extraction ─────────────────────────────────────────────────────────
-
-# 2026-10-27: was 4096; a listing with many photos made the JSON stop in the middle (JSON parse failed, line 357). Output is billed only for what is written.
-EXTRACTION_MAX_TOKENS = 12000
-
-
-def extract_listing(url: str, attempt_resolution_upgrade: bool = True) -> dict:
-    """
-    Returns:
-      {
-        "ok": bool,
-        "photos": [ {"url": str, "label_it": str, "category": str}, ... ],
-        "description": str,
-        "price": str | None,
-        "address": str | None,
-        "error": str | None,
-      }
-    """
-    if not is_supported_domain(url):
-        log_site_request(url)
-        return {"ok": False, "photos": [], "description": "", "price": None,
-                "address": None,
-                "error": f"Site not yet supported: {urlparse(url).netloc}. "
-                         f"Request logged — upload photos manually for now."}
-
-    raw = ""
-    json_str = ""
-    try:
-        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-        response = _track_claude(client.messages.create(
-            model=MODEL,
-            max_tokens=EXTRACTION_MAX_TOKENS,
-            tools=[{"type": "web_fetch_20250910", "name": "web_fetch", "max_uses": 1}],
-            extra_headers={"anthropic-beta": "web-fetch-2025-09-10"},
-            messages=[{"role": "user", "content": EXTRACTION_PROMPT.format(url=url)}],
-        ))
-
-        text_parts = [b.text for b in response.content if getattr(b, "type", None) == "text"]
-        raw = "".join(text_parts).strip()
-
-        if getattr(response, "stop_reason", None) == "max_tokens":
-            return {"ok": False, "photos": [], "description": "", "price": None, "address": None,
-                    "error": f"Listing too large: the extraction answer was cut at {EXTRACTION_MAX_TOKENS} tokens (stop_reason=max_tokens), so it is not valid JSON."}
-
-        if not raw:
-            block_types = [getattr(b, "type", "?") for b in response.content]
-            return {"ok": False, "photos": [], "description": "", "price": None,
-                    "address": None,
-                    "error": f"No text content in response. stop_reason={response.stop_reason}, "
-                             f"content block types={block_types}"}
-
-        json_str = raw
-        fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
-        if fence_match:
-            json_str = fence_match.group(1)
-        else:
-            brace_match = re.search(r"\{.*\}", raw, re.DOTALL)
-            if brace_match:
-                json_str = brace_match.group(0)
-
-        data = json.loads(json_str)
-
-        for p in data.get("photos", []):
-            if p.get("url"):
-                # 2026-10-15: some sites (annunci.getrix.it) write photo paths relative to the page ("/foto/7039/x_th.jpg");
-                # made absolute here, in the single extraction point, so every site benefits.
-                p["url"] = normalize_photo_url(urljoin(url, p["url"]))
-            if p.get("category") not in CATEGORIES:
-                p["category"] = "uncategorized"
-            if attempt_resolution_upgrade and p.get("url"):
-                p["original_url"] = p["url"]   # 2026-10-12: kept so a failing upgraded URL can fall back to it
-                upgrade_result = try_upgrade_resolution(p["url"])
-                p["url"] = upgrade_result["url"]
-                p["resolution_upgraded"] = upgrade_result["upgraded"]
-
-        data["ok"] = True
-        data["error"] = None
-        return data
-
-    except json.JSONDecodeError as e:
-        return {"ok": False, "photos": [], "description": "", "price": None,
-                "address": None, "error": f"JSON parse failed: {e}. Extracted text was: {json_str[:500]}"}
-    except Exception as e:
-        return {"ok": False, "photos": [], "description": "", "price": None,
-                "address": None, "error": str(e)}
-
-
-# ── Uncategorized-photo fallback via existing vision QC ─────────────────────
-
-_VISION_CLASSIFY_PROMPT = (
-    "Look at this real estate photo. Which ONE category best describes what the photo mainly shows?\n\n"
-    "- exterior: the building's exterior walls and windows seen from the street OR from an inner courtyard. If the main subject is the building's outer walls, it is exterior even if a courtyard is visible.\n"
-    "- living: only when a sofa, lounge or dining table is the main subject.\n"
-    "- kitchen: choose kitchen whenever cabinets, hob, sink or appliances are the main subject, even in an open-plan room.\n"
-    "- bedrooms: bedroom or sleeping area (also the sleeping area of a studio flat).\n"
-    "- bathrooms: bathroom, toilet, shower room.\n"
-    "- outdoor: a PRIVATE outdoor space belonging to this home: balcony, terrace, private garden, or the view from that balcony/terrace, or the view FROM A WINDOW of this home (skyline, rooftops, city, sea, countryside) when the view itself is the main subject. A shared or condominium space (courtyard, portico, shared balcony or walkway) is NOT outdoor: answer other.\n"
-    "- An AERIAL or DRONE photo taken from above, a map or satellite image, and a landmark or monument photographed from outside the property (not as seen from this home's own balcony, terrace or window) are NOT exterior and NOT outdoor: answer other.\n"
-    "- other: entrance hall, corridor, hallway, stairs, shared building areas (courtyard, portico, lobby, lift, communal garden), "
-    "floor plan, close-up of a detail, a single tree or plant close up, or anything that is not one of the categories above.\n\n"
-    "Answer with ONLY one word: exterior, living, kitchen, bedrooms, bathrooms, outdoor or other."
-)
-VISION_MAX_SIDE = 768
-
-
-def _image_b64_for_vision(content: bytes) -> str:
-    """Downscaled JPEG (max side VISION_MAX_SIDE) as base64: enough to recognise a room, far cheaper and faster than the
-    full-resolution original. Falls back to the original bytes if Pillow cannot read the image."""
-    import base64, io
-    try:
-        from PIL import Image
-        img = Image.open(io.BytesIO(content)).convert("RGB")
-        img.thumbnail((VISION_MAX_SIDE, VISION_MAX_SIDE))
-        buf = io.BytesIO(); img.save(buf, "JPEG", quality=80)
-        return base64.b64encode(buf.getvalue()).decode("utf-8")
-    except Exception:
-        return base64.b64encode(content).decode("utf-8")
-
-
-def _vision_word_from_b64(b64_images: list, prompt: str, label: str = "", words: int = 1, max_tokens: int = 20, marker: str = "", model: str = "") -> tuple:
-    """The ONE place that sends one or more photos (already base64 JPEG) and a short question to Claude vision and returns the
-    answer as one lowercase word (words=2: the first two words, joined by one space). (word, ok): ok is False only when the call itself failed.
-    marker (e.g. "answer:"): the model may reason first; the words are read from AFTER the last marker (stronger models do not answer with
-    the bare words: control test 2026-10-29), with max_tokens big enough for the reasoning (some models also "think" before the text).
-    2026-10-29: split out of _vision_one_word so a question that needs a second image (the photo-quality check sends the whole
-    photo and a crop at its real pixels) uses the same sender instead of a copy of it."""
-    try:
-        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-        content = [{"type": "text", "text": prompt}]
-        for b64 in b64_images:
-            content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}})
-        response = client.messages.create(
-            model=model or MODEL, max_tokens=max_tokens, messages=[{"role": "user", "content": content}],
-        )
-        response = _track_claude(response, model) if model else _track_claude(response)   # callers without a model keep the one-argument call
-        raw = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip().lower()
-        if marker:
-            if marker not in raw:
-                return "", True          # no final answer line (reasoning cut off or ignored the format): unknown, never a problem
-            raw = raw.rsplit(marker, 1)[1]
-        if words > 1:
-            return " ".join(re.findall(r"[a-z]+", raw)[:words]), True
-        return re.sub(r"[^a-z]", "", raw), True
-    except Exception as e:
-        log.warning(f"[Scraper] Vision question failed for {label}: {e}")
-        return "", False
-
-
-def _vision_one_word(image_url: str, fallback_url: str, prompt: str) -> tuple:
-    """Downloads a listing photo, sends it downscaled with a short question to Claude vision (see _vision_word_from_b64) and
-    returns the answer as one lowercase word. (word, ok): ok is False only when the call itself failed (download or API)."""
-    try:
-        fetched = fetch_photo_bytes(image_url, fallback_url, timeout=15)
-        if not fetched["ok"]:
-            raise RuntimeError(fetched["error"])
-        b64 = _image_b64_for_vision(fetched["content"])
-    except Exception as e:
-        log.warning(f"[Scraper] Vision question failed for {image_url}: {e}")
-        return "", False
-    return _vision_word_from_b64([b64], prompt, image_url)
-
-
-def _classify_photo_vision(image_url: str, fallback_url: str = None) -> tuple:
-    """Single implementation of "which room is this photo" (Claude vision). Returns (category, ok):
-    category is one of CATEGORIES or "uncategorized" (the model answered "other"/anything else);
-    ok is False only when the call itself failed (download or API), so callers can keep a previous label."""
-    word, ok = _vision_one_word(image_url, fallback_url, _VISION_CLASSIFY_PROMPT)
-    if not ok:
-        return "uncategorized", False
-    return (word if word in CATEGORIES else "uncategorized"), True
-
-
-# ── Photo technical quality via Claude vision (2026-10-29) ───────────────────────────────────────────────────────────────
-# Job cc33f8af: a portal photo full of JPEG blocks and with the portal's watermark across the main subject gave a bad clip
-# start frame. The ranking prompt now also penalises such photos (rank_photos_by_quality, no extra call), but it skips a category
-# with one candidate and it sees the photo scaled down, where blocks disappear. This is the absolute check on the photos
-# that were chosen: the whole photo plus a crop at its real pixels.
-PHOTO_QUALITY_PROMPT = (
-    "You will see two images of the SAME real estate photo: first the whole photo scaled down, then a crop of its centre at the "
-    "original pixels (100%). A video model will build a 5 second clip from this photo as the first frame, so its technical quality "
-    "matters. You may write at most two short sentences of reasoning first. Then finish with ONE final line of exactly this form: "
-    "ANSWER: <first word> <second word> (the answer line has exactly TWO words).\n"
-    "FIRST word = the technical quality of the picture itself, whatever is written or drawn on it, never influenced by the second word:\n"
-    "- ok: normal sharpness and detail (ordinary phone or camera photos are ok).\n"
-    "- soft: clearly blurred, out of focus or smeared, or a low-resolution picture stretched up: smooth, no fine detail, edges look "
-    "painted. Answer soft only when this is clearly visible.\n"
-    "- blocky: clearly pixelated, with visible squares or JPEG blocks, banding, flat posterized colour patches or heavy noise.\n"
-    "SECOND word = what is laid over the photo, independent of the first word:\n"
-    "- none: nothing.\n"
-    "- portal: a semi-transparent text or logo of a listing portal, such as immobiliare.it.\n"
-    "- agency: a solid logo, banner, ribbon, contact bar or text of the real estate agency (for example kw HOME, a ribbon in a corner).\n"
-    "Examples of final lines: ANSWER: ok none / ANSWER: soft portal / ANSWER: blocky agency / ANSWER: ok portal."
-)
-PHOTO_QUALITY_WORDS = ("ok", "soft", "blocky")
-PHOTO_OVERLAY_WORDS = ("none", "portal", "agency")
-# 2026-10-29 (Michele, after the calibration on 101 past photos): a portal watermark or an agency logo is NOT a reason to discard a photo
-# (scraped photos nearly all carry one; the removal chosen in the UI handles it, API photos arrive clean). The overlay is only LABELLED
-# (p["overlay"], selection_report). It is asked as a separate second word because with one combined answer the judge named the overlay and
-# skipped the technical verdict (control test: 5 of 6 pixelated copies answered "portal"). TEMPORARY: review after the real GIAL job.
-PHOTO_QUALITY_POOR = ("soft", "blocky")
-QUALITY_JUDGE_MAX_TOKENS = 600          # room for a short reasoning (and for models that think first) before the ANSWER line
-QUALITY_JUDGE_PER_CATEGORY = 4      # the best-ranked candidates of each category that get a verdict (the rest are never reached)
-
-
-# 2026-10-29 (listing 1307, relinx.it page copies 4096 px wide): a centre crop at the REAL pixels of a very large photo is a tiny patch of plain wall
-# and looked "soft" to the judge (33 of 36 photos above 3000 px, 0 of 7 between 1300 and 2000 px; Michele saw all of them sharp). The video is
-# 1920x1080 whatever the photo size, so the photo is first brought to the video's scale (long side VIDEO_LONG_SIDE) and the crop is taken there.
-VIDEO_LONG_SIDE = 1920
-
-
-def to_video_scale(img):
-    """Pure: the photo scaled DOWN so its long side is VIDEO_LONG_SIDE (the scale at which the video shows it); smaller photos are unchanged."""
-    from PIL import Image
-    w, h = img.size
-    long_side = max(w, h)
-    if long_side <= VIDEO_LONG_SIDE:
-        return img
-    k = VIDEO_LONG_SIDE / long_side
-    return img.resize((max(1, round(w * k)), max(1, round(h * k))), Image.LANCZOS)
-
-
-def _native_crop_b64(content: bytes, side: int = VISION_MAX_SIDE) -> str:
-    """Centre crop of the photo at the video's scale (real pixels for photos up to VIDEO_LONG_SIDE), base64 JPEG: what a scaled-down picture hides."""
-    import base64, io
-    from PIL import Image
-    img = to_video_scale(Image.open(io.BytesIO(content)).convert("RGB"))
-    w, h = img.size
-    cw, ch = min(side, w), min(side, h)
-    x0, y0 = (w - cw) // 2, (h - ch) // 2
-    buf = io.BytesIO(); img.crop((x0, y0, x0 + cw, y0 + ch)).save(buf, "JPEG", quality=95)
-    return base64.b64encode(buf.getvalue()).decode("utf-8")
-
-
-def photo_quality_models() -> tuple:
-    """The models that judge a photo. Default: the default model plus claude-haiku-5-5 (control test 2026-10-29 on 6 photos x 3 deliberate
-    damages: alone, Haiku 4.5 found 15 of 18, Haiku 5.5 15 of 18, but they miss DIFFERENT copies - together 18 of 18, with 0 false alarms
-    on the 6 originals; Haiku 5.5 costs about a seventh). PVS_QUALITY_MODELS="a,b" overrides (one name = a single judge)."""
-    env = os.environ.get("PVS_QUALITY_MODELS", "").strip()
-    if env:
-        return tuple(m.strip() for m in env.split(",") if m.strip())
-    return (MODEL, "claude-haiku-5-5")
-
-
-def _assess_with_model(images: list, model: str, label: str) -> dict:
-    word, ok = _vision_word_from_b64(images, PHOTO_QUALITY_PROMPT, label, words=2, max_tokens=QUALITY_JUDGE_MAX_TOKENS, marker="answer:", model=model)
-    if not ok:
-        return {"verdict": "unknown", "overlay": "unknown", "call_ok": False}
-    parts = word.split()
-    tech = parts[0] if parts and parts[0] in PHOTO_QUALITY_WORDS else "unknown"
-    overlay = parts[1] if len(parts) > 1 and parts[1] in PHOTO_OVERLAY_WORDS else "unknown"
-    return {"verdict": tech, "overlay": overlay, "call_ok": True}
-
-
-# 2026-10-29, measured on the server (calibrate_quality.py --blockiness): the 101 real photos of all past jobs score 1.03-1.436 (median 1.153,
-# p95 1.326); the six q3 damaged copies score 3.246-7.174 (lowest 3.246). 2.5 keeps a wide margin on both sides (real max 1.44 -> 74% below;
-# lowest damaged copy 3.25 -> 30% above). A photo at JPEG quality 50 scores about 1.6-1.9 and is NOT flagged; roughly quality 20 and below is.
-BLOCKINESS_MAX_DEFAULT = 2.5
-BLOCKINESS_CAP = 50.0
-
-
-def photo_blockiness_max() -> float:
-    """Score at or above which a photo counts as blocky without asking any model. PVS_BLOCKINESS_MAX overrides; 0 or less switches the check off."""
-    try:
-        return float(os.environ.get("PVS_BLOCKINESS_MAX", BLOCKINESS_MAX_DEFAULT))
-    except ValueError:
-        return BLOCKINESS_MAX_DEFAULT
-
-
-def blockiness_score(content: bytes):
-    """Free pixel check for JPEG blocking, no model involved: how much stronger the brightness jumps are ACROSS the 8-pixel block borders than
-    inside the blocks, for rows and columns, at the best of the 8 possible grid offsets. About 1.0 = no block grid (also for blurred photos);
-    a normal photo is roughly 1.0-1.5, heavy compression grows it (quality 50 about 1.6-1.9, 20 about 2-5, 10 and below 5 or much more).
-    Capped at BLOCKINESS_CAP. None when the image cannot be read."""
-    try:
-        import io
-        import numpy as np
-        from PIL import Image
-        a = np.asarray(Image.open(io.BytesIO(content)).convert("L"), dtype=np.float32)
-        if a.shape[0] < 32 or a.shape[1] < 32:
-            return None
-        dh = np.abs(np.diff(a, axis=1)); dv = np.abs(np.diff(a, axis=0))
-        ch = np.arange(dh.shape[1]) % 8; cv = np.arange(dv.shape[0]) % 8
-        best = 0.0
-        for phase in range(8):
-            ih = ch == ((phase - 1) % 8); iv = cv == ((phase - 1) % 8)
-            r_h = dh[:, ih].mean() / max(float(dh[:, ~ih].mean()), 1e-6)
-            r_v = dv[iv, :].mean() / max(float(dv[~iv, :].mean()), 1e-6)
-            best = max(best, (r_h + r_v) / 2)
-        return round(min(float(best), BLOCKINESS_CAP), 3)
-    except Exception:
-        return None
-
-
-def assess_photo_quality(content: bytes, label: str = "", models: tuple = None) -> dict:
-    """{"verdict": ok|soft|blocky|unknown, "overlay": none|portal|agency|unknown, "call_ok": bool, "by_model": {judge: verdict}, "blockiness": float|None}
-    Every judge model looks at the photo, and so does the free pixel check (blockiness_score against photo_blockiness_max, listed in
-    by_model as "blockiness"). The photo is poor when ANY of them says soft or blocky (the first model that does decides the word, the
-    pixel check says "blocky"), ok when at least one model says ok and nothing a problem, otherwise unknown. A model whose call fails is
-    ignored (one broken judge does not stop the others). "unknown" is never treated as a problem."""
-    try:
-        images = [_image_b64_for_vision(content), _native_crop_b64(content)]
-    except Exception as e:
-        log.warning(f"[Scraper] Photo quality: could not prepare {label}: {e}")
-        return {"verdict": "unknown", "call_ok": False}
-    results = [(m, _assess_with_model(images, m, label)) for m in (models or photo_quality_models())]
-    worked = [(m, r) for m, r in results if r["call_ok"]]
-    score = blockiness_score(content)
-    limit = photo_blockiness_max()
-    pixel_poor = score is not None and limit > 0 and score >= limit
-    if not worked and not pixel_poor:
-        return {"verdict": "unknown", "call_ok": False, "blockiness": score}
-    poor = next((r["verdict"] for m, r in worked if r["verdict"] in PHOTO_QUALITY_POOR), None)
-    if poor is None and pixel_poor:
-        poor = "blocky"
-    verdict = poor or ("ok" if any(r["verdict"] == "ok" for m, r in worked) else "unknown")
-    overlay = next((r["overlay"] for m, r in worked if r["overlay"] != "unknown"), "unknown")
-    by_model = {m: r["verdict"] for m, r in worked}
-    if score is not None and limit > 0:
-        by_model["blockiness"] = "blocky" if pixel_poor else "ok"
-    return {"verdict": verdict, "overlay": overlay, "call_ok": True, "by_model": by_model, "blockiness": score}
-
-
-def photo_quality_check_enabled() -> bool:
-    return os.environ.get("PVS_QUALITY_CHECK", "1").strip().lower() not in ("0", "false", "no", "off")
-
-
-def photo_quality_enforce_enabled() -> bool:
-    """On by default (Michele 2026-10-29: the discard happens in the selection, so a blurred photo is never chosen). PVS_QUALITY_ENFORCE=0
-    keeps only the measurement (verdicts saved in the selection report, nothing removed)."""
-    return os.environ.get("PVS_QUALITY_ENFORCE", "1").strip().lower() not in ("0", "false", "no", "off")
-
-
-def filter_poor_quality_candidates(by_category: dict, assess=None, enforce=None) -> dict:
-    """The photo-quality filter of the SELECTION (one place, shared by the standard and the premium selection through
-    _categorize_and_rank_photos, so both the URL path and the Relinx path get it). Runs on the best-ranked candidates of each category
-    (QUALITY_JUDGE_PER_CATEGORY): downloads each, asks Claude vision for the verdict (whole photo + crop at real pixels), tags the
-    photo p["quality"], and, when enforcing, removes the soft / blocky ones from the pool (p["quality_rejected"] = True),
-    so the selection simply takes the next candidate. When too few photos are left the selection reports a gap and the job fails with
-    a reason (see _quality_gap_note). Never raises; a failed call is "unknown" and keeps the photo."""
-    if not photo_quality_check_enabled():
-        return {"enabled": False}
-    assess = assess or assess_photo_quality
-    enforce = photo_quality_enforce_enabled() if enforce is None else bool(enforce)
-    try:
-        items = [(cat, p) for cat, plist in by_category.items() for p in plist[:QUALITY_JUDGE_PER_CATEGORY]]
-
-        def one(item):
-            cat, p = item
-            try:
-                fetched = fetch_photo_bytes(p.get("url"), p.get("original_url"), timeout=15)
-                if not fetched["ok"]:
-                    return {"verdict": "unknown", "call_ok": False}
-                r = dict(assess(fetched["content"], label=f"{cat}"))
-                try:
-                    import photo_metrics
-                    r["sharp"] = photo_metrics.sharpness_of_bytes(fetched["content"])     # 2026-11-04: measured next to the judge's verdict (no decision taken on it)
-                except Exception:
-                    r["sharp"] = {}
-                return r
-            except Exception as e:
-                log.warning(f"[Scraper] Photo quality failed for {cat}: {e}")
-                return {"verdict": "unknown", "call_ok": False}
-        from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=CLASSIFY_WORKERS) as ex:
-            results = list(ex.map(one, items))
-        poor = 0
-        for (cat, p), r in zip(items, results):
-            p["quality"] = r["verdict"]
-            p["sharp"] = r.get("sharp") or None
-            p["overlay"] = r.get("overlay")
-            p["quality_by_model"] = r.get("by_model")
-            p["blockiness"] = r.get("blockiness")
-            if r["verdict"] in PHOTO_QUALITY_POOR:
-                poor += 1
-                p["quality_poor"] = True
-                if enforce:
-                    p["quality_rejected"] = True
-        if enforce:
-            for cat in by_category:
-                by_category[cat] = [p for p in by_category[cat] if not p.get("quality_rejected")]
-        summary = {"enabled": True, "enforced": enforce, "checked": len(items), "poor": poor,
-                   "unknown": sum(1 for r in results if r["verdict"] == "unknown")}
-        log.info(f"[Scraper] Photo quality (selection): {summary}")
-        return summary
-    except Exception as e:
-        log.warning(f"[Scraper] Photo quality filter failed as a whole: {e}")
-        return {"enabled": True, "error": str(e)[:160]}
-
-
-# Phrase inside the gap text that marks "photos were thrown away for quality"; api_server reads it to pick the partner failure code.
-QUALITY_GAP_MARKER = "discarded for insufficient image quality"
-
-
-def _quality_gap_note(photos: list) -> str:
-    """Sentence added to a "not enough photos" gap when photos were discarded for quality, so the operator and the customer get the reason."""
-    n = len({id(p) for p in photos if p.get("quality_rejected")})
-    if not n:
-        return ""
-    return (f" {n} photo(s) of the listing were {QUALITY_GAP_MARKER} "
-            f"(blurred or pixelated).")
-
-
-# 2026-10-27: a photo the listing page labels "living" is sometimes the entrance hall, a corridor or a staircase (villa job
-# e1dccbd4: the only "living" photo was a corridor). A separate, narrow question on purpose: the general classifier says "other"
-# for a lounge with no sofa, which would wrongly throw away EMPTY apartments' living rooms.
-_VISION_HALL_PROMPT = (
-    "Look at this real estate photo. Does it mainly show an ENTRANCE HALL, a CORRIDOR, a hallway, a staircase or stairs landing, "
-    "or a lobby (a passage, not a room you stay in)? An empty or unfurnished living room, lounge or open-plan room is NOT a hall.\n"
-    "Answer with ONLY one word: hall or room."
-)
-
-
-def _is_hall_photo(image_url: str, fallback_url: str = None) -> tuple:
-    """(is_hall, ok). ok False = the call failed, callers keep the page label."""
-    word, ok = _vision_one_word(image_url, fallback_url, _VISION_HALL_PROMPT)
-    return word == "hall", ok
-
-
-# 2026-11-02 (Michele): only REAL photos go in the video, and no aerial view unless the agency says it shows the property.
-#   - job 4c34217d: a drone / aerial photo labelled "exterior" became the opening scene and the video model invented a street-level zoom; aerial views
-#     also often show a local landmark (Teatro Marcello) instead of the property.
-#   - job 50472245 (GIAL 1272, new building): scenes 0 and 1 were ILLUSTRATIONS / renders; animated they turned into cartoons, and scene 0 hallucinated.
-# ONE question per photo (one extra Claude call): photo | aerial | illustration.
-_VISION_SOURCE_PROMPT = (
-    "Look at this real estate image. What kind of picture is it?\n"
-    "- photo: a real photograph taken by a person on the ground, inside, on a balcony or at a window.\n"
-    "- aerial: a real photograph taken FROM THE AIR (drone or aerial view looking down on roofs, streets or land from high above), a satellite image or a map; ALSO a photo taken from a high point (upper-floor balcony, roof, terrace edge, hill) that looks clearly DOWNWARDS so that streets, roofs, gardens or cars below fill much of the picture. A view that looks straight out at the horizon from a balcony is NOT aerial.\n"
-    "- illustration: a drawing, an architectural render, a CGI image, a 3D visualisation or a sketch (even if it looks realistic, with perfect colours, "
-    "people drawn as silhouettes or a computer-generated sky and plants).\n"
-    "Answer with ONLY one word: photo, aerial or illustration."
-)
-AERIAL_PROPERTY_CAPTION_WORDS = ("facciata", "prospetto", "immobile", "la proprieta", "la proprietà", "l'edificio", "palazzina", "villa", "la casa")
-MAX_SOURCE_CHECK = 60
-
-
-def aerial_filter_enabled() -> bool:
-    """PVS_AERIAL_FILTER=0 turns the aerial / illustration exclusion off (default on)."""
-    return os.getenv("PVS_AERIAL_FILTER", "1").strip().lower() not in ("0", "false", "no", "off")
-
-
-INTERIOR_CATEGORIES = ("living", "kitchen", "bedrooms", "bathrooms")
-
-
-def accept_renders_enabled() -> bool:
-    """PVS_ACCEPT_RENDERS=1: a listing with no real photo may use renders of interior rooms (default off)."""
-    return os.getenv("PVS_ACCEPT_RENDERS", "0").strip().lower() in ("1", "true", "yes", "on")
-
-
-def _photo_source(image_url: str, fallback_url: str = None) -> tuple:
-    """(word, ok): word is photo | aerial | illustration (anything else counts as photo). ok False = the call failed, callers keep the photo."""
-    word, ok = _vision_one_word(image_url, fallback_url, _VISION_SOURCE_PROMPT)
-    return (word if word in ("photo", "aerial", "illustration") else "photo"), ok
-
-
-def caption_ties_to_property(label: str) -> bool:
-    low = str(label or "").lower()
-    return any(w in low for w in AERIAL_PROPERTY_CAPTION_WORDS)
-
-
-def classify_uncategorized_photo(image_url: str, fallback_url: str = None) -> str:
-    """Room type of one photo via Claude vision (see _classify_photo_vision). Never raises; "uncategorized" if unsure.
-    Limited to the 6 PRIORITY_ORDER categories on purpose (a value outside it would vanish in selection)."""
-    return _classify_photo_vision(image_url, fallback_url)[0]
-
-
-MAX_PHOTOS_TO_REFINE = 12
-MAX_LIVING_TO_CHECK = 8     # 2026-10-27: first living-labelled photos checked for hall / corridor / stairs (ranking only compares 6 anyway)
-CLASSIFY_WORKERS = 4
-
-
-def refine_exterior_outdoor_with_vision(photos: list, max_photos: int = MAX_PHOTOS_TO_REFINE) -> dict:
-    """2026-10-12 (A+): ONE shared check for the URL path and the Relinx path. Interior categories (living, kitchen,
-    bedrooms, bathrooms) keep the label that came with the photo (listing page or CRM). Only photos labelled exterior or
-    outdoor are looked at by Claude vision, because that is where labels are wrong: an entrance hall or corridor read as
-    facade, a shared portico or condominium courtyard read as balcony.
-      vision says exterior/outdoor -> that category (exterior and outdoor may swap)
-      vision says anything else    -> category "uncategorized" (photo leaves the selection; interiors are never assigned here)
-      vision call failed           -> label kept (p["category_source"] = "page_fallback")
-    Photos already classified by vision (p["category_source"] == "vision", i.e. resolved from "uncategorized") are skipped.
-    Returns a summary dict stored in the job's selection_report."""
-    from concurrent.futures import ThreadPoolExecutor
-    cands = [p for p in photos if p.get("category") in ("exterior", "outdoor") and p.get("category_source") != "vision" and p.get("url")]
-    todo, over = cands[:max_photos], cands[max_photos:]
-    def work(p):
-        return _classify_photo_vision(p["url"], p.get("original_url"))
-    with ThreadPoolExecutor(max_workers=CLASSIFY_WORKERS) as ex:
-        results = list(ex.map(work, todo))
-    confirmed = swapped = excluded = fallback = 0
-    for p, (cat, ok) in zip(todo, results):
-        p["category_page"] = p.get("category")
-        if not ok:
-            p["category_source"] = "page_fallback"; fallback += 1
-        elif cat in ("exterior", "outdoor"):
-            p["category_source"] = "vision_refine"
-            if cat == p["category"]:
-                confirmed += 1
-            else:
-                swapped += 1
-            p["category"] = cat
-        else:
-            p["category_source"] = "vision_refine"; p["category"] = "uncategorized"; excluded += 1
-    for p in over:
-        p["category_page"] = p.get("category"); p["category_source"] = "page_not_checked"
-    # 2026-11-02: only real photos: illustrations / renders leave the selection (any category); aerial views leave it too unless the agency caption ties
-    # them to the property (see _VISION_SOURCE_PROMPT). A failed call keeps the photo.
-    src_check = [p for p in photos if p.get("category") in CATEGORIES and p.get("url")][:MAX_SOURCE_CHECK] if aerial_filter_enabled() else []
-    with ThreadPoolExecutor(max_workers=CLASSIFY_WORKERS) as ex:
-        src_results = list(ex.map(lambda p: _photo_source(p["url"], p.get("original_url")), src_check))
-    aerials = illustrations = renders_kept = 0
-    # 2026-11-06 (PVS_ACCEPT_RENDERS, default off; Michele: "fammi vedere come viene" for new-build listings such as 1327): when the listing has NO real
-    # photo at all, renders of INTERIOR rooms stay in the selection (marked render_accepted); exterior / aerial renders and everything else still leave it.
-    real_n = sum(1 for (w, ok_) in src_results if ok_ and w == "photo")
-    keep_renders = accept_renders_enabled() and real_n == 0
-    for p, (word, ok) in zip(src_check, src_results):
-        if not ok:
-            continue
-        if word == "illustration" and keep_renders and p.get("category") in INTERIOR_CATEGORIES:
-            p["render_accepted"] = True; renders_kept += 1
-            continue
-        if word == "illustration":
-            p["category_before_source"] = p.get("category"); p["category"] = "uncategorized"; p["category_source"] = "vision_illustration"; illustrations += 1
-        elif word == "aerial" and p.get("category") in ("exterior", "outdoor") and not caption_ties_to_property(p.get("label_it")):
-            p["category_before_source"] = p.get("category"); p["category"] = "uncategorized"; p["category_source"] = "vision_aerial"; aerials += 1
-    # 2026-10-27: photos labelled "living" are checked for the entrance hall / corridor / stairs mix-up (see _VISION_HALL_PROMPT).
-    # A hall leaves the selection (category "uncategorized"); anything else keeps the page label. Standard video only has the
-    # six rooms; a premium "entrance" scene is a separate backlog item.
-    # 2026-10-28 (Michele): the agency label comes FIRST, Claude vision only when there is no label. A living photo that has a caption on the page keeps it
-    # (an empty flat reads as a corridor to vision but its caption says living room); only a living photo WITHOUT a caption is checked for the hall mix-up.
-    living = [p for p in photos if p.get("category") == "living" and p.get("category_source") is None and p.get("url")
-              and not str(p.get("label_it") or "").strip()][:MAX_LIVING_TO_CHECK]
-    with ThreadPoolExecutor(max_workers=CLASSIFY_WORKERS) as ex:
-        hall_results = list(ex.map(lambda p: _is_hall_photo(p["url"], p.get("original_url")), living))
-    halls = 0
-    for p, (is_hall, ok) in zip(living, hall_results):
-        p["category_page"] = p.get("category")
-        if ok and is_hall:
-            p["category"] = "uncategorized"; p["category_source"] = "vision_hall"; halls += 1
-        else:
-            p["category_source"] = "page_label_checked" if ok else "page_fallback"
-    summary = {"method": "exterior_outdoor_check", "checked": len(todo), "confirmed": confirmed, "living_checked": len(living), "halls_removed_from_living": halls,
-               "swapped_exterior_outdoor": swapped, "excluded_as_other": excluded,
-               "kept_page_label_after_failure": fallback, "not_checked_over_cap": len(over), "aerial_removed": aerials, "illustrations_removed": illustrations, "renders_accepted": renders_kept}
-    log.info(f"[Scraper] Exterior/outdoor check: {summary}")
-    return summary
-
-
-# 2026-11-03: the classifier answers "other" for entrance halls, corridors, stairs, shared areas, floor plans and details. For the per-photo audit (Michele: keep the
-# reasons of the selection) one more cheap question says WHICH of them it is, only for the photos that ended up "uncategorized".
-OTHER_KINDS_IT = {"hall": "ingresso o corridoio", "stairs": "scale", "floorplan": "piantina", "shared": "parti comuni dell'edificio", "detail": "dettaglio ravvicinato"}
-_VISION_OTHER_PROMPT = (
-    "Look at this real estate photo. What does it mainly show?\n"
-    "- hall: entrance hall, corridor, hallway or landing inside the home.\n"
-    "- stairs: a staircase.\n"
-    "- floorplan: a floor plan, drawing or map of the layout.\n"
-    "- shared: shared building areas (courtyard, portico, lobby, lift, communal garden, parking, street).\n"
-    "- detail: a close-up of a detail, an object, a plant, a door or a wall.\n"
-    "- other: anything else.\n"
-    "Answer with ONLY one word: hall, stairs, floorplan, shared, detail or other."
-)
-
-
-def _other_kind(image_url: str, fallback_url: str = None) -> str:
-    word, ok = _vision_one_word(image_url, fallback_url, _VISION_OTHER_PROMPT)
-    return word if ok and word in OTHER_KINDS_IT else ""
-
-
-def resolve_uncategorized_photos(photos: list) -> list:
-    """Runs the vision-QC fallback on every 'uncategorized' photo, in place. A photo the classifier calls "other" gets p["other_kind"] (audit only)."""
-    for p in photos:
-        if p.get("category") == "uncategorized":
-            p["category"] = classify_uncategorized_photo(p["url"], p.get("original_url"))
-            p["category_source"] = "vision"
-            if p["category"] == "uncategorized":
-                kind = _other_kind(p["url"], p.get("original_url"))
-                if kind:
-                    p["other_kind"] = kind
-    return photos
-
-
-# ── Download selected photos ──────────────────────────────────────────────
-# CHANGED July 10 2026: previously ran watermark removal eagerly during
-# scraping itself. Simplified per feedback — since scraped scenes already
-# pass through the standard scene-review UI before generation (same as
-# manual uploads), there's no need to spend fal.ai cost removing watermarks
-# during the scrape, especially if a scene gets swapped/rejected before
-# generation ever happens. Now just downloads the raw image; the existing
-# per-scene "remove_watermark" toggle (already built into the standard
-# pipeline) is pre-checked instead — see build_standard_video_scenes_config
-# — so actual removal happens at generation time via the same one existing
-# mechanism manual uploads already use, not a separate eager pass here.
-
-DOWNLOAD_ATTEMPTS = 3
-
-# 2026-10-29: a photo whose long side is under this is not a usable start frame for the video model. The video is 1920 px wide, so a
-# photo of this size is enlarged by 1920 / MIN = 1.9x. Measured on the 360 photos of every job we have (block 212): the real photos of
-# the listings are 1024 px or more (1024, 1195, 1200, 1350, 1440, 1575, 1600), the rubbish is far below (a 486x273 thumbnail in 14 jobs,
-# 4x2 pixel files in bd3f0f77). Nothing was seen between 486 and 1024, so any value in that gap separates the two groups; 1000 keeps every
-# real photo seen so far. The check is on the pixels of the downloaded file, not on the size the page declares.
-MIN_PHOTO_LONG_SIDE = 1000
-
-
-def photo_usability(content: bytes) -> dict:
-    """{"ok", "width", "height", "reason"}: ok when the bytes open as an image and the long side is at least MIN_PHOTO_LONG_SIDE."""
-    import io
-    try:
-        from PIL import Image
-        with Image.open(io.BytesIO(content)) as im:
-            w, h = im.size
-    except Exception as e:
-        return {"ok": False, "width": None, "height": None, "reason": f"file non leggibile come immagine ({type(e).__name__})"}
-    if max(w, h) < MIN_PHOTO_LONG_SIDE:
-        return {"ok": False, "width": w, "height": h, "reason": f"foto troppo piccola: {w}x{h} px (lato lungo minimo {MIN_PHOTO_LONG_SIDE} px)"}
-    return {"ok": True, "width": w, "height": h, "reason": None}
-
-
-def download_photo(photo_url: str, output_dir: Path, filename_stem: str, fallback_url: str = None) -> dict:
-    """
-    Downloads one scraped photo. Returns:
-      {"ok": bool, "path": str | None, "error": str | None, "url_used": str | None, "used_fallback": bool}
-    2026-10-12: transient failures (timeouts, connection errors, HTTP 429/5xx) are retried
-    with a short backoff; permanent ones (other 4xx, e.g. 404) are not. If the (possibly
-    upgraded) URL fails, fallback_url (the original one) is tried -- see fetch_photo_bytes().
-    """
-    output_dir.mkdir(parents=True, exist_ok=True)
-    dest_path = output_dir / f"{filename_stem}.jpg"
-    fetched = fetch_photo_bytes(photo_url, fallback_url, timeout=20, attempts=DOWNLOAD_ATTEMPTS)
-    if not fetched["ok"]:
-        return {"ok": False, "path": None, "error": fetched["error"], "url_used": None, "used_fallback": False}
-    use = photo_usability(fetched["content"])
-    if not use["ok"]:     # permanent: downloading again gives the same file, so the retry rounds skip it ("unusable")
-        return {"ok": False, "path": None, "error": use["reason"], "url_used": fetched["url_used"],
-                "used_fallback": fetched["used_fallback"], "unusable": True}
-    dest_path.write_bytes(fetched["content"])
-    return {"ok": True, "path": str(dest_path), "error": None,
-            "url_used": fetched["url_used"], "used_fallback": fetched["used_fallback"]}
-
-
-DOWNLOAD_RETRY_WAITS = (8, 20)   # 2026-10-27: extra rounds for photos that still failed (a source CDN throttling bursts is transient)
-
-
-def download_selected_photos(selection: dict, output_dir: Path) -> dict:
-    """
-    Downloads every photo in a select_photos() result - only the selected subset, not the full scraped list.
-    Watermark removal is NOT done here (see module note above) - it's handled at generation time via the existing per-scene toggle.
-
-    Returns the same {"selected": {...}, "gaps": [...]} structure, with each selected photo dict augmented with "local_path".
-    2026-10-27: photos that still fail after download_photo's own retries are tried again in DOWNLOAD_RETRY_WAITS rounds (the
-    first live golden-set run lost a whole draft because 6 of 6 downloads failed at the same moment). Order inside each category is
-    kept. Photos that fail every round are dropped and reported in "download_failures" with the real error, and each is logged.
-    This one function serves BOTH the from-url and the partner-payload preparation, so the retry is in one place only.
-    """
-    todo = [(cat, i, p) for cat, photos in selection["selected"].items() for i, p in enumerate(photos)]
-    got, errors, unusable = {}, {}, []
-    for rnd in range(len(DOWNLOAD_RETRY_WAITS) + 1):
-        if rnd:
-            log.warning(f"[Scraper] {len(todo)} photo(s) failed to download, retry round {rnd} in {DOWNLOAD_RETRY_WAITS[rnd - 1]}s")
-            time.sleep(DOWNLOAD_RETRY_WAITS[rnd - 1])
-        still = []
-        for cat, i, p in todo:
-            result = download_photo(p["url"], output_dir, f"{cat}_{i:02d}", p.get("original_url"))
-            if result["ok"]:
-                p["local_path"] = result["path"]
-                p["url_used"] = result["url_used"]
-                p["used_fallback"] = result["used_fallback"]
-                got[(cat, i)] = p
-            elif result.get("unusable"):
-                errors[(cat, i)] = result["error"]
-                unusable.append((cat, i, p))      # never retried: the file itself is the problem
-            else:
-                errors[(cat, i)] = result["error"]
-                still.append((cat, i, p))
-        todo = still
-        if not todo:
-            break
-    download_failures = []
-    for cat, i, p in unusable:
-        download_failures.append({"category": cat, "url": p["url"], "error": errors[(cat, i)], "unusable": True})
-        log.warning(f"[Scraper] photo dropped, not usable: {cat}[{i}] {p['url'][:90]} -> {errors[(cat, i)]}")
-    for cat, i, p in todo:
-        download_failures.append({"category": cat, "url": p["url"], "error": errors[(cat, i)]})
-        log.warning(f"[Scraper] photo dropped after {len(DOWNLOAD_RETRY_WAITS) + 1} rounds: {cat}[{i}] {p['url'][:90]} -> {errors[(cat, i)]}")
-    for cat, photos in selection["selected"].items():
-        selection["selected"][cat] = [got[(cat, i)] for i in range(len(photos)) if (cat, i) in got]
-    selection["download_failures"] = download_failures
-    return selection
-
-
-# ── Selection report (2026-10-12, 3A) ───────────────────────────────────────
-# Saved in every job built from a listing/partner payload (job["selection_report"]) so it is
-# possible to say AFTER the fact which photos existed, which were chosen, why a category was
-# not used, whether the quality ranking really ran, and which downloads failed and why.
-
-def build_selection_report(photos: list, selection: dict, scene_count_requested=None, premium: bool = False) -> dict:
-    from datetime import datetime
-    candidates = {}
-    seen = set()
-    for p in photos:
-        u = p.get("url")
-        if u in seen:
-            continue
-        seen.add(u)
-        candidates.setdefault(p.get("category") or "uncategorized", []).append(u)
-
-    selected = {}
-    for cat, plist in selection.get("selected", {}).items():
-        selected[cat] = [{
-            "url": p.get("url"), "original_url": p.get("original_url"),
-            "url_used": p.get("url_used"), "used_fallback": bool(p.get("used_fallback", False)),
-            "resolution_upgraded": p.get("resolution_upgraded"),
-            "rank_position": p.get("rank_position"), "rank_status": p.get("rank_status"),
-            "quality": p.get("quality"), "overlay": p.get("overlay"), "quality_by_model": p.get("quality_by_model"),
-            "blockiness": p.get("blockiness"),
-        } for p in plist]
-
-    used = {("outdoor" if c in ("outdoor_early", "outdoor_late") else c)
-            for c, plist in selection.get("selected", {}).items() if plist}
-    available = [c for c in PRIORITY_ORDER if candidates.get(c)]
-    ranking = {}
-    for p in photos:
-        c = p.get("category")
-        if c and p.get("rank_status") and c not in ranking:
-            ranking[c] = p["rank_status"]
-
-    report = {
-        "generated_at": datetime.utcnow().isoformat(),
-        "premium": bool(premium),
-        "scene_count_requested": scene_count_requested,
-        "photos_total": len(seen),
-        "candidates_by_category": {c: len(v) for c, v in candidates.items()},
-        "candidate_urls": candidates,
-        "categories_available": available,
-        "categories_used": [c for c in available if c in used],
-        "categories_available_not_used": [c for c in available if c not in used],
-        "selected": selected,
-        "total_selected": selection.get("total_selected"),
-        "ranking_by_category": ranking,
-        "resolution_upgraded_count": sum(1 for p in photos if p.get("resolution_upgraded")),
-        "fallback_used_count": sum(1 for lst in selected.values() for s in lst if s["used_fallback"]),
-        "gaps": list(selection.get("gaps", [])),
-        "download_failures": list(selection.get("download_failures", [])),
-        # 2026-10-29: photo-quality filter of the selection (Claude vision): how many got a verdict and which were discarded
-        "quality_checked": len({id(p) for p in photos if p.get("quality")}),
-        "quality_rejected": [{"category": p.get("category"), "url": p.get("url"), "verdict": p.get("quality")}
-                             for p in photos if p.get("quality_rejected")],
-        "photo_audit": build_photo_audit(photos),          # 2026-11-03: every photo with the source of its category and the reason it was excluded
-        "excluded_counts": exclusion_counts(photos),
+# PVS_JOBS_DIR lets a test instance use its own jobs folder. Unset = unchanged
+# production behaviour. A fake-providers instance MUST NOT share the real jobs/.
+JOBS_DIR = Path(os.getenv("PVS_JOBS_DIR") or (BASE_DIR / "jobs"))
+
+
+def default_upscale_images() -> bool:
+    """2026-10-29: whether jobs created from a URL or by a partner get the fal aura-sr 4x photo upscale. ONE place for the default
+    (job creation AND the cost estimate read it; generation and rework then read the job's own upscale_images flag).
+    Luma renders every clip at 1920x1080 whatever the input, so the upscale may add nothing: PVS_UPSCALE_DEFAULT=0 turns it off for a
+    test instance without touching the code. Unset = on, exactly as before."""
+    return os.getenv("PVS_UPSCALE_DEFAULT", "1").strip().lower() not in ("0", "false", "no", "off")
+if fake_providers.ENABLED and JOBS_DIR.resolve() == (BASE_DIR / "jobs").resolve():
+    raise RuntimeError("PVS_FAKE_PROVIDERS=1 requires PVS_JOBS_DIR pointing to a separate folder "
+                       "(refusing to run fake providers on the real jobs/ folder)")
+JOBS_DIR.mkdir(parents=True, exist_ok=True)
+import cost_model as _cost_model_guard
+if fake_providers.ENABLED and _cost_model_guard.DATA_DIR.resolve() == BASE_DIR.resolve():
+    raise RuntimeError("PVS_FAKE_PROVIDERS=1 requires PVS_DATA_DIR pointing to a separate folder "
+                       "(refusing to run fake providers on the real agencies, sales and partner files)")
+
+
+JOBS: dict = {}
+
+
+# ── Job locks — prevent concurrent modification of the same job ───────────────
+# Solves the "parallel processing corrupted things" issue: any operation that
+# modifies a job (redo scene, add scene, initial generation) must hold this
+# lock. A second request for the same job while locked gets a clear 409 error
+# instead of racing against the first and corrupting shared files.
+_JOB_LOCKS: dict = {}   # job_id -> {"locked": bool, "since": iso timestamp, "operation": str}
+
+
+def _acquire_job_lock(job_id: str, operation: str) -> bool:
+    """Returns True if lock acquired, False if job is already locked."""
+    existing = _JOB_LOCKS.get(job_id)
+    if existing and existing.get("locked"):
+        return False
+    _JOB_LOCKS[job_id] = {
+        "locked": True,
+        "since": datetime.utcnow().isoformat(),
+        "operation": operation,
     }
-    log.info(f"[Scraper] selection report: scenes_requested={scene_count_requested} "
-             f"candidates={report['candidates_by_category']} used={report['categories_used']} "
-             f"not_used={report['categories_available_not_used']} ranking={ranking} "
-             f"fallback_used={report['fallback_used_count']} download_failures={len(report['download_failures'])}")
-    for f in report["download_failures"]:
-        log.warning(f"[Scraper] photo download failed ({f.get('category')}): {f.get('url')} -> {f.get('error')}")
-    return report
+    return True
 
 
-# ── Narration/caption auto-generation from scraped description ─────────────
-# Per the agreed decision: auto-generate narration/captions from the scraped
-# listing text rather than leaving it fully manual. Plain text generation —
-# no web_fetch tool/beta header needed here, since the description text is
-# already in hand from extract_listing().
-
-NARRATION_PROMPT = """You are writing a short, natural-sounding Italian voiceover script for a real estate property video, based on this listing description:
-
----
-{description}
----
-
-Property details: {address}, {price}{agency_instruction}
-
-Write a single continuous narration script (in Italian) covering this property naturally and completely. Should flow as ONE continuous piece, no headers, no scene labels. {opening_instruction}
-
-The description above may also include promotional or biographical text about the real estate agency itself (e.g. company history, founding year, mission statement, values) that has nothing to do with THIS specific property — ignore any such agency-about-us content entirely; describe only the property itself.
-
-{feature_scope_instruction}
-
-{scene_order_instruction}
-
-STAY OBJECTIVE AND FACTUAL — this is important, not a minor style note:
-- Do NOT add subjective or promotional adjectives that aren't grounded in the description (e.g. don't call a location "prestigious," "esclusivo," "meraviglioso," or similar, unless the description itself uses language like that). A small town is not automatically "prestigious" just because it's in a real estate video.
-- Describe features plainly and factually (size, room count, what's present) rather than editorializing about how impressive they are.
-- If the description itself is promotional in tone, you may reflect that tone — but do not ADD MORE embellishment than what's actually there. When in doubt, favor the more neutral, factual phrasing.
-- A calm, clear, informative tone is the goal — not a marketing voiceover.
-
-DO NOT include phone numbers or the price in the spoken narration — phone numbers are not pronounced intelligibly by text-to-speech and neither is needed in the voiceover itself.
-
-AVOID legal/administrative real estate jargon that means nothing to a general viewer or sounds jarring when spoken aloud — for example, do not say "nuda proprietà" (a specific bare-ownership legal structure) or generic filler like "appartamento di proprietà" (just say "appartamento") unless that jargon is actually essential to understanding the listing. Use natural, plain descriptive language a real person would use when showing someone a property.
-
-IMPORTANT: clearly state whether the property is FOR SALE or FOR RENT ("in vendita" or "in affitto") near the beginning of the narration, based on what the listing description actually says — do not leave this ambiguous or assume one over the other.
-
-Include one brief sentence about the property's location and accessibility (e.g. proximity to services, central position) if the description supports it.
-
-{closing_instruction}
-
-Return ONLY the narration text (no JSON, no markdown, no preamble, no quotation marks around it).
-
-Base everything on the actual property description above — don't invent details, features, or qualities not mentioned there.
-"""
-
-CAPTIONS_PROMPT = """Based on this property description:
----
-{description}
----
-
-Write a short on-screen caption (3-6 words, in Italian) for each of these scenes/categories: {categories}
-
-Stay objective and factual — describe what's actually in the description plainly, don't add promotional or subjective adjectives (e.g. "moderna," "stupendo," "esclusivo") unless the description itself uses that language. A caption like "Cucina abitabile" is better than "Cucina abitabile moderna" if "moderna" isn't actually stated anywhere in the description.
-
-Return ONLY a JSON object (no other text, no markdown fences): {{"category_name": "caption", ...}}
-Base captions on the actual description — don't invent details or qualities not mentioned there.
-"""
-
-EXTEND_PROMPT = """The narration below was measured at {actual_secs:.1f} seconds of spoken audio, but should be closer to {target_secs:.0f} seconds. Extend it by about {extra_words} more words, using ONLY additional real detail from the original property description below — do not invent any facts, features, or details not present in the description, and do not add subjective/promotional adjectives (e.g. "prestigioso," "esclusivo") that aren't grounded in the description's own language. Stay factual and objective. Do not include phone numbers or price in the narration.
-
-The property description may also include promotional or biographical text about the real estate agency itself (company history, founding year, mission, values) — do not pull any such agency-about-us content into the narration.
-
-Preserve the narration's existing opening sentence (the agency introduction, if present) and closing sentence (the invitation to contact the agency, if present) essentially unchanged — add the extra detail to the descriptive portion in between, not by altering the opening/closing.
-
-Original property description:
----
-{description}
----
-
-Current narration to extend:
----
-{narration}
----
-
-Return ONLY the full extended narration text (no JSON, no markdown, no preamble)."""
-
-SHORTEN_PROMPT = """The narration below was measured at {actual_secs:.1f} seconds of spoken audio, but needs to fit within {target_secs:.0f} seconds — it MUST be shorter than that, not just close to it. Rewrite it at no more than {target_words} words. This is a hard ceiling — err on the side of cutting too much rather than too little.
-
-Keep the most important property details (location, size, standout features) and drop secondary ones first. Always preserve the narration's existing opening sentence (the agency introduction, if present) and closing sentence (the invitation to contact the agency, if present) essentially unchanged — cut length from the descriptive middle portion, not from these bookends. Keep it flowing naturally. Stay factual and objective — don't add subjective or promotional adjectives that weren't already justified by the source material.
-
-Current narration to shorten:
----
-{narration}
----
-
-Return ONLY the shortened narration text (no JSON, no markdown, no preamble)."""
+def _release_job_lock(job_id: str):
+    if job_id in _JOB_LOCKS:
+        _JOB_LOCKS[job_id]["locked"] = False
 
 
-TTS_MEASURE_ATTEMPTS = 3
+def _job_lock_status(job_id: str) -> dict:
+    return _JOB_LOCKS.get(job_id, {"locked": False})
 
 
-def _retry_tts(once, attempts: int = TTS_MEASURE_ATTEMPTS) -> dict:
-    """2026-10-24 (Patch Q): the ONE retry-with-backoff wrapper for the TTS steps (backoff 2 s, 4 s). `once` is a function with no
-    arguments that returns a dict with "ok"; the last result is returned."""
-    last = {"ok": False, "duration_secs": None, "audio_path": None}
-    for n in range(attempts):
-        last = once()
-        if last.get("ok"):
-            return last
-        log.warning(f"[Scraper] TTS measurement attempt {n + 1}/{attempts} failed")
-        if n < attempts - 1:
-            time.sleep(2 * (n + 1))
-    return last
 
 
-def _measure_tts_duration(text: str, voice_id: str = None, attempts: int = TTS_MEASURE_ATTEMPTS, scene_secs: list = None) -> dict:
-    """2026-10-12: retries the real TTS measurement on transient failure (backoff 2 s, 4 s).
-    A single provider hiccup used to fail the whole job ("TTS measurement failed on initial narration").
-    2026-10-15: scene_secs (fixed scene lengths) makes the audio come out already synchronised with the scenes."""
-    return _retry_tts(lambda: _measure_tts_duration_once(text, voice_id, scene_secs), attempts)
+# ── Stable scene IDs ────────────────────────────────────────────────────────────
+# Scenes are identified by a permanent short ID, never by array position.
+# This means "redo this scene" always means the same scene regardless of how
+# many times the property has been edited, reordered, or had scenes added.
+def _new_scene_id() -> str:
+    return "sc_" + uuid.uuid4().hex[:8]
 
 
-def _measure_tts_duration_once(text: str, voice_id: str = None, scene_secs: list = None) -> dict:
-    """Generates the real narration audio and measures its actual duration -- the
-    only reliable way to know how long narration text will actually take
-    to speak. Never estimated from word/character count for any decision
-    that matters.
-
-    2026-10-15 (Michele): this used to make ONE TTS call on the whole text, a different
-    mechanism from the manual workflow (no pauses between sentences, no scene sync). It now
-    goes through the single shared narration path (narration.synthesize_sentences /
-    assemble_narration), so both workflows produce the same kind of audio. The sentence clips
-    are returned so a different scene count can be applied later without paying for TTS again."""
-    import tempfile
-    from narration import synthesize_sentences, assemble_narration
-
-    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-        tmp_path = f.name
-    try:
-        syn = synthesize_sentences(text, voice_id)
-        if not syn["ok"]:
-            return {"ok": False, "duration_secs": None, "audio_path": None, "error": syn.get("error")}
-        res = assemble_narration(syn["sentences"], syn["clips"], tmp_path, scene_secs=scene_secs)
-        if not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
-            return {"ok": False, "duration_secs": None, "audio_path": None}
-        return {"ok": True, "duration_secs": res["duration_secs"], "audio_path": tmp_path,
-                "sync": res.get("sync"), "sentences": syn["sentences"], "clips": syn["clips"]}
-    except Exception as e:
-        log.error(f"[Scraper] TTS measurement failed: {e}")
-        return {"ok": False, "duration_secs": None, "audio_path": None, "error": str(e)}
+def _ensure_scene_ids(scenes_config: list) -> list:
+    """Assigns a stable scene_id to any scene that doesn't have one yet.
+    Called on job creation and whenever scenes_config is saved, so old
+    jobs migrate forward automatically the next time they're touched."""
+    for scene in scenes_config:
+        if "scene_id" not in scene or not scene["scene_id"]:
+            scene["scene_id"] = _new_scene_id()
+    return scenes_config
 
 
-def _resync_measurement(measurement: dict, scene_count: int):
-    """Re-assembles the already generated sentence clips for a given scene count (no TTS call).
-    Returns (audio_path, duration_secs, sync) or None when the clips are not available."""
-    import tempfile
-    from narration import assemble_narration
-    if not measurement.get("clips"):
-        return None
-    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-        tmp_path = f.name
-    res = assemble_narration(measurement["sentences"], measurement["clips"], tmp_path,
-                             scene_secs=[SCENE_CLIP_SECS] * scene_count)
-    return tmp_path, res["duration_secs"], res.get("sync")
 
 
-def _fade_out_and_trim(audio_path: str, target_secs: float, search_window_secs: float = 4.0) -> str:
+def _get_rolling_monthly_job_count() -> int:
     """
-    Trims audio at or before target_secs. CHANGED July 9 2026: previously
-    always cut at the exact millisecond mark and applied an 800ms fade —
-    but since that fade lands on ACTUAL SPOKEN WORDS (not silence), it made
-    the last words unintelligible, confirmed by direct listening.
-
-    Now searches for a real pause (detected silence gap) at or shortly
-    before target_secs and cuts there instead — a trim landing IN a
-    natural gap between sentences needs no audible fade at all. Only
-    falls back to a hard cut + short fade if no suitable gap is found
-    nearby, which should now be rare.
+    Counts actual completed jobs (status=done) from the last 30 days,
+    based on JOBS in-memory data and job_meta.json files on disk. Used to
+    calculate a REAL infrastructure cost per video, rather than a static
+    guess — adapts automatically as production volume changes.
     """
-    from pydub import AudioSegment
-    from pydub.silence import detect_silence
-
-    audio = AudioSegment.from_file(audio_path)
-    target_ms = int(target_secs * 1000)
-    if len(audio) <= target_ms:
-        return audio_path
-
-    window_start_ms = max(0, target_ms - int(search_window_secs * 1000))
-    search_region = audio[window_start_ms:target_ms + 500]
-    silence_thresh = audio.dBFS - 16  # quieter than average speech level, relative not absolute
-
-    try:
-        silences = detect_silence(search_region, min_silence_len=200, silence_thresh=silence_thresh)
-    except Exception:
-        silences = []
-
-    if silences:
-        # cut at the MIDDLE of the last detected gap at or before target —
-        # a real pause, so no fade is needed to avoid clipping a word
-        last_gap_start, last_gap_end = silences[-1]
-        cut_point = window_start_ms + (last_gap_start + last_gap_end) // 2
-        cut_point = min(cut_point, target_ms + 500)
-        trimmed = audio[:cut_point]
-        log.info(f"[Scraper] Trimmed at a natural pause ({cut_point / 1000:.1f}s) instead of "
-                 f"mid-speech — no fade needed.")
-    else:
-        # no natural gap found nearby — fall back to a hard cut with a
-        # short fade (worse case, but rarer now that phone/price were
-        # removed from narration, which also shortened it overall)
-        trimmed = audio[:target_ms].fade_out(400)
-        log.warning(f"[Scraper] No natural pause found near {target_secs}s — used a hard cut + short fade.")
-
-    trimmed.export(audio_path, format="mp3")
-    return audio_path
-
-
-# 2026-10-12 (Michele): no on-screen/scene captions for URL jobs until the graphics are improved.
-# One switch, used by both scene builders and by the caption generator (which then skips its Claude call).
-SCENE_CAPTIONS_ENABLED = False
-
-
-def _scene_caption(captions: dict, category: str) -> str:
-    return captions.get(category, category) if SCENE_CAPTIONS_ENABLED else ""
-
-
-def generate_captions_for_categories(description: str, categories: list) -> dict:
-    """Generates short on-screen captions for exactly the given categories —
-    called AFTER scene count/category selection is known (see
-    generate_narration_and_derive_scenes), not before, since which
-    categories end up selected depends on the real narration length."""
-    if not SCENE_CAPTIONS_ENABLED:
-        return {}
-    prompt = CAPTIONS_PROMPT.format(description=description, categories=", ".join(categories))
-    try:
-        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-        response = _track_claude(client.messages.create(model=MODEL, max_tokens=1024,
-                                             messages=[{"role": "user", "content": prompt}]))
-        raw = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
-        json_str = raw
-        fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
-        if fence_match:
-            json_str = fence_match.group(1)
-        else:
-            brace_match = re.search(r"\{.*\}", raw, re.DOTALL)
-            if brace_match:
-                json_str = brace_match.group(0)
-        return json.loads(json_str)
-    except Exception as e:
-        log.warning(f"[Scraper] Caption generation failed, using category names as fallback: {e}")
-        return {cat: cat for cat in categories}
-
-
-# ── Narration-first scene count derivation ──────────────────────────────────
-# Redesigned July 9 2026 per explicit guidance: do NOT estimate timing from
-# word/character count and force-fit narration into a pre-fixed video
-# length. Instead — write one natural narration, measure it ONCE with real
-# TTS, then DERIVE how many fixed-length scenes the video needs to contain
-# it. This is simpler, cheaper (usually just 1 TTS call, at most 2), and
-# avoids ever needing to awkwardly trim or pad narration to fit an
-# arbitrary pre-decided box.
-
-SCENE_CLIP_SECS = 5        # Luma Ray 2's native duration — zero snapping distortion
-
-# 2026-07-21 unification (architecture assessment item 6): these now ALIAS
-# the single shared source of truth in narration.py, instead of being an
-# independent hardcoded pair. This file previously baked its own lead/trail
-# silence directly into the narration audio (build_final_audio_track()),
-# and assembly's _overlay_narration_audio() then added its OWN separate
-# lead/trail blank-video padding on top -- confirmed real double-padding
-# on every scraped job. Real padding now only ever applies ONCE, at
-# assembly time, for both manual and scraped jobs (see create_job_from_url()
-# in api_server.py). Kept as aliases, not removed, so every calculation
-# below and build_final_audio_track() (now only used by this file's own
-# standalone __main__ test block, not the live pipeline) keep working
-# unchanged -- only the VALUES are now shared, not independently redefined.
-from narration import LEAD_SECS, TRAIL_SECS, MAX_OVERFLOW_SECS, TOO_SHORT_THRESHOLD_SECS
-LEAD_SILENCE_SECS  = LEAD_SECS    # was an independent 1.0 -- now the same 1.0 as narration.py
-TRAIL_SILENCE_SECS = TRAIL_SECS   # was an independent 2.0 -- now the same 1.0 (the WhatsApp-trim evidence behind narration.py's value applies equally to scraped videos)
-MIN_SCENES = 5             # 25s
-MAX_SCENES = 7             # 35s -- stay "roughly 30s", not drift as wide as 20-40s
-TARGET_SCENES = 6          # 30s -- the anchor; derived scene count should land here in the common case
-
-# 2026-10-15 (Michele): the lead/trail blank frames are added AROUND the scenes at assembly time
-# (api_server._overlay_narration_audio), they are not carved out of the scene time. So the speech has to fit
-# scenes*5 s, may be at most TOO_SHORT_THRESHOLD_SECS shorter, and may run MAX_OVERFLOW_SECS past the last
-# scene (absorbed by the trailing blank). Same two numbers narration.py uses for the manual workflow.
-def _speech_band(scenes: int):
-    return (scenes * SCENE_CLIP_SECS - TOO_SHORT_THRESHOLD_SECS, scenes * SCENE_CLIP_SECS + MAX_OVERFLOW_SECS)
-
-MIN_SPEECH_SECS_FOR_RANGE, MAX_SPEECH_SECS_FOR_RANGE = _speech_band(MIN_SCENES)[0], _speech_band(MAX_SCENES)[1]
-
-# 2026-10-12 (3B, Michele's decision): the STANDARD video is always exactly 6 scenes = 30 s (facade, living,
-# kitchen, bedroom, bathroom, balcony/garden). 2026-10-15: speech band 26-32 s (was 24-28 with the buffers counted twice).
-# Premium keeps its own wider band.
-STANDARD_SCENES = TARGET_SCENES
-STANDARD_MIN_SPEECH_SECS, STANDARD_MAX_SPEECH_SECS = _speech_band(STANDARD_SCENES)
-
-# 2026-07-24 (backlog item 35): premium ~1-minute template. Same
-# tightened-band mechanism as the standard format, just a wider target --
-# a manual per-job toggle, URL-scrape only per explicit product decision.
-MIN_SCENES_PREMIUM = 11    # ~55s
-MAX_SCENES_PREMIUM = 13    # ~65s
-MIN_SPEECH_SECS_FOR_RANGE_PREMIUM = _speech_band(MIN_SCENES_PREMIUM)[0]
-MAX_SPEECH_SECS_FOR_RANGE_PREMIUM = _speech_band(MAX_SCENES_PREMIUM)[1]
-
-# Premium sequence: outdoor appears twice -- once right after the facade,
-# once again at the closing, per explicit product decision. Represented
-# as two distinct pseudo-category keys (outdoor_early/outdoor_late) rather
-# than a single "outdoor" entry, since build_standard_video_scenes_config()'s
-# existing pattern groups ALL of one category's photos together and has
-# no way to split them across two sequence positions -- this reuses that
-# same "iterate an ordered category list, group by key" pattern rather
-# than inventing a parallel one, just with outdoor pre-split into two keys.
-PREMIUM_PRIORITY_ORDER = [
-    "exterior", "outdoor_early", "living", "kitchen", "bedrooms",
-    "bathrooms", "laundry", "office", "garage", "outdoor_late",
-]
-# Categories eligible for "expand instances" (fallback tier 1) --
-# prioritizes outdoor and large rooms per explicit product decision.
-_PREMIUM_EXPAND_PRIORITY = ["outdoor_early", "outdoor_late", "bedrooms", "living", "bathrooms", "kitchen"]
-# New-to-the-template categories (fallback tier 2) -- only used if the
-# listing actually has photos in them.
-_PREMIUM_EXTRA_CATEGORIES = ["laundry", "office", "garage"]
-
-
-def _claude_text_reply(client, prompt: str, max_tokens: int = 1024) -> str:
-    response = _track_claude(client.messages.create(model=MODEL, max_tokens=max_tokens,
-                                                    messages=[{"role": "user", "content": prompt}]))
-    return "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
-
-
-_IT_SPELL = None
-
-
-def _italian_unknown_words():
-    """The Italian dictionary lookup for italian_check (pyspellchecker): function(list of lowercase words) -> set of the unknown ones,
-    or None when the package is not installed (italian_check then proofreads the whole text, which finds far fewer typos)."""
-    global _IT_SPELL
-    if _IT_SPELL is None:
+    from datetime import datetime, timedelta
+    cutoff = datetime.utcnow() - timedelta(days=30)
+    count = 0
+    for job in JOBS.values():
+        if job.get("status") != "done":
+            continue
+        created_str = job.get("created_at", "")
         try:
-            from spellchecker import SpellChecker
-            _IT_SPELL = SpellChecker(language="it")
+            created = datetime.fromisoformat(created_str)
+            if created >= cutoff:
+                count += 1
+        except (ValueError, TypeError):
+            continue
+    return count
+
+
+
+
+def _overlay_narration_audio(video_path: str, narration_path: str, transition_style: str = "fade"):
+    """
+    Overlays the continuous narration track onto the assembled video, with
+    blank (black/white) padding at the start and end, and fades between the
+    padding and the real footage.
+
+    The padding absorbs any narration OVERFLOW: if the TTS runs longer than
+    the video, the extra time is covered by blank padding rather than
+    truncating the audio (which silently cut off the final sentences) or
+    freezing on a dead final frame. When there is no overflow, the padding
+    collapses to a minimal, nearly invisible amount.
+
+    Narration starts just after the opening fade and ends shortly before the
+    closing fade, so it sits snugly rather than floating in dead air.
+
+    Padding colour follows the job's transition_style (white if the style
+    mentions white, otherwise black).
+    """
+    from moviepy import VideoFileClip, AudioFileClip, ColorClip, CompositeAudioClip, concatenate_videoclips
+    from moviepy.video.fx import FadeIn, FadeOut
+    from narration import LEAD_SECS, TRAIL_SECS  # 2026-07-17: single source of
+    # truth shared with calculate_scene_durations()'s target_total math --
+    # was two independent hardcoded values (1.5s here vs 2.5s there) that
+    # could silently drift apart. See narration.py for detail.
+
+    FADE_SECS  = 0.5    # fade into / out of the blank padding
+
+    pad_colour = (255, 255, 255) if "white" in (transition_style or "").lower() else (0, 0, 0)
+
+    video = VideoFileClip(video_path)
+    narration = AudioFileClip(narration_path)
+    fps = video.fps or 24
+
+    # 2026-10-15: the lead/trail blank frames are concatenated AROUND the video,
+    # so only speech that runs past the END OF THE VIDEO needs extra trailing
+    # padding (it used to compare lead + speech + trail against the video
+    # length, counting the buffers a second time and adding ~2 s of dead air).
+    overflow = max(0.0, narration.duration - video.duration)
+
+    lead_pad  = LEAD_SECS
+    trail_pad = TRAIL_SECS + overflow   # trailing padding absorbs the overflow
+
+    lead_clip  = ColorClip(size=video.size, color=pad_colour, duration=lead_pad).with_fps(fps)
+    trail_clip = ColorClip(size=video.size, color=pad_colour, duration=trail_pad).with_fps(fps)
+
+    faded = video.with_effects([FadeIn(FADE_SECS), FadeOut(FADE_SECS)])
+    padded = concatenate_videoclips([lead_clip, faded, trail_clip])
+
+    narration = narration.with_start(lead_pad)
+
+    log.info(
+        f"[Narration] video={video.duration:.1f}s narration={narration.duration:.1f}s "
+        f"lead={lead_pad:.2f}s trail={trail_pad:.2f}s overflow_absorbed={overflow:.2f}s "
+        f"pad={'white' if pad_colour == (255,255,255) else 'black'} "
+        f"final={padded.duration:.1f}s"
+    )
+
+    # 2026-07-23: .with_audio() ignores an audio clip's own .start offset
+    # unless that clip is wrapped in a CompositeAudioClip -- confirmed via
+    # an isolated moviepy test (a shifted clip attached directly played
+    # from t=0, completely ignoring with_start()). This was a REAL bug:
+    # the lead/trail buffer above was computed correctly and logged
+    # correctly, but never actually took effect in the rendered file.
+    final = padded.with_audio(CompositeAudioClip([narration]))
+    tmp_output = video_path + ".narration_tmp.mp4"
+    final.write_videofile(
+        tmp_output,
+        codec="libx264",
+        audio_codec="aac",
+        bitrate="4000k",
+        audio_bitrate="128k",
+        preset="medium",
+        fps=video.fps or 24,
+        logger=None,
+    )
+    video.close()
+    narration.close()
+    final.close()
+    os.replace(tmp_output, video_path)
+
+
+
+
+from video_generation import DEFAULT_INTENSITY
+
+app = FastAPI(title="Real Estate Video Generator", version="3.0.0")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+# ── Generation pause / kill-switch ────────────────────────────────────────────
+# Persisted to disk so an accidental restart can't silently unpause and let
+# jobs sneak through before deliberately resumed. Visible in the UI as a
+# banner + toggle, not a hidden admin-only mechanism - the point is that
+# anyone using the app can SEE generation is paused, not be confused by
+# what would otherwise look like a broken submit button.
+GENERATION_PAUSE_FILE = BASE_DIR / "generation_pause.json"
+
+def _get_generation_pause_state() -> dict:
+    if GENERATION_PAUSE_FILE.exists():
+        try:
+            return json.loads(GENERATION_PAUSE_FILE.read_text())
+        except Exception:
+            pass
+    return {"paused": False, "message": "", "paused_at": None}
+
+def _set_generation_pause_state(paused: bool, message: str = "") -> dict:
+    state = {
+        "paused": paused,
+        "message": message,
+        "paused_at": datetime.utcnow().isoformat() if paused else None,
+    }
+    GENERATION_PAUSE_FILE.write_text(json.dumps(state, indent=2))
+    return state
+
+def _raise_if_generation_paused():
+    state = _get_generation_pause_state()
+    if state.get("paused"):
+        raise HTTPException(
+            status_code=423,
+            detail=f"Generazione video in pausa: {state.get('message') or 'manutenzione in corso'}. Riprova più tardi.",
+        )
+
+@app.get("/admin/generation-status")
+async def get_generation_status():
+    state = _get_generation_pause_state()
+    active_count = sum(1 for j in JOBS.values() if j.get("status") in ("running", "queued"))
+    return {**state, "active_jobs": active_count}
+
+@app.post("/admin/pause-generation")
+async def pause_generation(message: str = Form("Manutenzione in corso")):
+    state = _set_generation_pause_state(True, message)
+    log.info(f"[Admin] Generation PAUSED: {message}")
+    return state
+
+@app.post("/admin/resume-generation")
+async def resume_generation():
+    state = _set_generation_pause_state(False)
+    log.info("[Admin] Generation RESUMED")
+    return state
+
+
+# ── Rate limiting ──────────────────────────────────────────────────────────────
+# ── Cost reporting endpoints ──────────────────────────────────────────────────
+import cost_model
+
+def _jobs_with_ids():
+    out = []
+    for jid, j in JOBS.items():
+        d = dict(j); d['job_id'] = jid; out.append(d)
+    return out
+
+@app.get('/agencies')
+async def list_agencies_ep():
+    return {'agencies': cost_model.list_agencies()}
+
+@app.post('/agencies')
+async def create_agency_ep(name: str = Form(...), notes: str = Form('')):
+    return cost_model.create_agency(name, notes)
+
+@app.post('/agencies/{agency_id}')
+async def update_agency_ep(agency_id: str, name: str = Form(None), notes: str = Form(None)):
+    if not cost_model.get_agency(agency_id):
+        raise HTTPException(status_code=404, detail='Agency not found')
+    return cost_model.update_agency(agency_id, name=name, notes=notes)
+
+@app.get('/sales')
+async def list_sales_ep():
+    return {'sales': cost_model.list_sales(), 'agencies': cost_model.list_agencies()}
+
+@app.post('/sales')
+async def create_sale_ep(agency_id: str = Form(...), videos_sold: int = Form(...), price_eur: float = Form(...), description: str = Form('')):
+    return cost_model.create_sale(agency_id, videos_sold, price_eur, description)
+
+@app.delete('/sales/{sale_id}')
+async def delete_sale_ep(sale_id: str):
+    cost_model.delete_sale(sale_id)
+    return {'deleted': sale_id}
+
+@app.post('/sales/{sale_id}')
+async def update_sale_ep(sale_id: str, videos_sold: int = Form(None), price_eur: float = Form(None), description: str = Form(None)):
+    updated = cost_model.update_sale(sale_id, videos_sold=videos_sold, price_eur=price_eur, description=description)
+    if updated is None:
+        raise HTTPException(status_code=404, detail='Sale not found')
+    return updated
+
+@app.get('/reports/enterprise')
+async def report_enterprise_ep():
+    return cost_model.enterprise_report(_jobs_with_ids())
+
+
+@app.get('/investment')
+async def get_investment_ep():
+    return cost_model.get_investment()
+
+
+@app.post('/investment')
+async def add_investment_entry_ep(note: str = Form(...), amount_eur: float = Form(...)):
+    return cost_model.add_investment_entry(note, amount_eur)
+
+
+@app.delete('/investment/{index}')
+async def delete_investment_entry_ep(index: int):
+    return cost_model.delete_investment_entry(index)
+
+@app.get('/reports/agencies')
+async def report_agencies_ep():
+    return {'agencies': cost_model.agency_report(_jobs_with_ids())}
+
+@app.get('/reports/jobs')
+async def report_jobs_ep():
+    jobs = _jobs_with_ids()
+    fins = [cost_model.job_financials(j) for j in jobs]
+    by_id = {j['job_id']: j for j in jobs}
+    for f in fins:
+        j = by_id.get(f['job_id'], {})
+        f['property_name'] = j.get('property_name','')
+        f['status'] = j.get('status','')
+        f['created_at'] = j.get('created_at','')
+    fins.sort(key=lambda f: f.get('created_at',''), reverse=True)
+    return {'jobs': fins}
+
+@app.post('/jobs/{job_id}/commercial')
+async def set_job_commercial_ep(job_id: str, classification: str = Form(...), agency_id: str = Form(None), property_name: str = Form(None)):
+    """2026-07-22 (backlog item 39): also accepts an optional property_name
+    to assign/reassign this job's Property link post-creation -- "assign at
+    creation, still editable after" per explicit product decision.
+    Idempotent create-or-match, same as at job creation."""
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail='Job not found')
+    if classification not in cost_model.JOB_CLASSIFICATIONS:
+        raise HTTPException(status_code=400, detail='bad classification')
+    JOBS[job_id]['classification'] = classification
+    JOBS[job_id]['agency_id'] = agency_id or None
+    if property_name:
+        prop = cost_model.create_property(property_name, agency_id=agency_id or None)
+        JOBS[job_id]['property_id'] = prop['property_id']
+    _save_job(job_id)
+    return {'job_id': job_id, 'classification': classification, 'agency_id': agency_id, 'property_id': JOBS[job_id].get('property_id')}
+
+
+@app.get('/properties')
+async def list_properties_ep():
+    return {'properties': cost_model.list_properties()}
+
+
+@app.post('/properties')
+async def create_property_ep(name: str = Form(...), agency_id: str = Form(None)):
+    return cost_model.create_property(name, agency_id)
+
+
+@app.get('/reports/properties')
+async def report_properties_ep():
+    return {'properties': cost_model.property_report(_jobs_with_ids())}
+
+
+@app.post('/agencies/{agency_id}/logo')
+async def upload_agency_logo_ep(agency_id: str, logo: UploadFile = File(...)):
+    """2026-07-22 (backlog item 7): uploads a logo for client-video
+    overlay. Requires an alpha channel (transparent background) --
+    rejected with a clear error otherwise, since this composites as a
+    subtle bottom-right brand mark, not an opaque box over the video."""
+    agency = cost_model.get_agency(agency_id)
+    if not agency:
+        raise HTTPException(status_code=404, detail='Agency not found')
+    content = await logo.read()
+    if not _validate_image_bytes(content):
+        raise HTTPException(status_code=400, detail='Invalid image file')
+    from PIL import Image
+    import io
+    img = Image.open(io.BytesIO(content))
+    if img.mode not in ('RGBA', 'LA') and 'transparency' not in img.info:
+        raise HTTPException(status_code=400, detail='Logo must have an alpha channel (transparent background) -- upload a PNG with transparency')
+    logos_dir = BASE_DIR / 'clients' / agency_id
+    logos_dir.mkdir(parents=True, exist_ok=True)
+    logo_path = logos_dir / 'logo.png'
+    img.convert('RGBA').save(logo_path, format='PNG')
+    cost_model.set_agency_logo(agency_id, str(logo_path))
+    return {'agency_id': agency_id, 'logo_path': str(logo_path)}
+
+
+_RATE_LIMIT_WINDOW = 3600   # 1 hour in seconds
+_RATE_LIMIT_MAX    = 5      # max job submissions per IP per hour
+_rate_tracker: dict = defaultdict(list)
+
+
+def _check_rate_limit(ip: str) -> bool:
+    """Returns True if the IP is within the rate limit."""
+    now = time.time()
+    _rate_tracker[ip] = [t for t in _rate_tracker[ip] if now - t < _RATE_LIMIT_WINDOW]
+    if len(_rate_tracker[ip]) >= _RATE_LIMIT_MAX:
+        return False
+    _rate_tracker[ip].append(now)
+    return True
+
+
+# ── File type validation (magic bytes) ────────────────────────────────────────
+_IMAGE_SIGNATURES = {
+    b'\xff\xd8\xff': 'image/jpeg',
+    b'\x89PNG':      'image/png',
+    b'RIFF':         'image/webp',
+    b'GIF8':         'image/gif',
+}
+
+
+def _get_image_dimensions(content: bytes):
+    from PIL import Image
+    import io
+    img = Image.open(io.BytesIO(content))
+    return img.size
+
+
+def _decide_job_format_from_bytes(contents: list) -> str:
+    """
+    Majority vote across a job's photos: 'landscape' or 'portrait'
+    (2026-07-17, per explicit product decision). Exactly two canonical
+    output formats -- not one-per-photo-ratio -- so a mixed-orientation
+    property still gets one consistent video canvas. Ties, or any photo
+    that fails to read, default to landscape.
+    """
+    landscape_count = 0
+    portrait_count = 0
+    for c in contents:
+        try:
+            w, h = _get_image_dimensions(c)
+            if w >= h:
+                landscape_count += 1
+            else:
+                portrait_count += 1
+        except Exception:
+            landscape_count += 1
+    return "portrait" if portrait_count > landscape_count else "landscape"
+
+
+def _normalize_photo_to_format(image_bytes: bytes, target_format: str) -> bytes:
+    """
+    Crops a photo to match the job's chosen canonical output format --
+    "landscape" (16:9) or "portrait" (9:16) -- so every photo in a job
+    ends up exactly the same shape before generation, and video_assembly.py
+    can use one fixed canvas per job matching that format (2026-07-17,
+    per explicit product decision after a real client portrait-photo
+    distortion issue -- forcing every clip through a hardcoded 16:9
+    canvas was stretching portrait footage).
+
+    Crop direction depends on which way the source differs from target:
+      - Source is taller/narrower than target (needs height cropped,
+        e.g. a portrait photo going into a landscape job): TOP-BIASED
+        crop, not centered -- confirmed via a real side-by-side test
+        against an actual client photo that starting the crop window
+        ~15% down from the top keeps more of the informative ceiling/
+        window content real estate portrait shots are usually framed
+        for, cropping more from the floor instead.
+      - Source is wider than target (needs width cropped, e.g. a
+        landscape photo going into a portrait job): plain CENTER crop --
+        no equivalent left/right framing bias for typical room photos.
+    """
+    from PIL import Image
+    import io
+    img = Image.open(io.BytesIO(image_bytes))
+    w, h = img.size
+    target_ratio = (16 / 9) if target_format == "landscape" else (9 / 16)
+    current_ratio = w / h
+
+    if abs(current_ratio - target_ratio) / target_ratio < 0.02:
+        return image_bytes  # already an effective match, don't bother cropping
+
+    if current_ratio < target_ratio:
+        new_h = min(int(w / target_ratio), h)
+        top = int((h - new_h) * 0.26)  # 2026-07-17: proportional to actual crop amount, not a fixed % of original height
+        top = max(0, min(top, h - new_h))
+        cropped = img.crop((0, top, w, top + new_h))
+    else:
+        new_w = min(int(h * target_ratio), w)
+        left = (w - new_w) // 2
+        cropped = img.crop((left, 0, left + new_w, h))
+
+    buf = io.BytesIO()
+    cropped.save(buf, format='JPEG', quality=95)
+    return buf.getvalue()
+
+
+def _validate_image_bytes(data: bytes) -> bool:
+    for sig in _IMAGE_SIGNATURES:
+        if data[:len(sig)] == sig:
+            return True
+    return False
+
+
+# ── Job persistence ────────────────────────────────────────────────────────────
+def _save_job(job_id: str):
+    try:
+        job = JOBS.get(job_id)
+        if not job:
+            return
+        meta_path = JOBS_DIR / job_id / "job_meta.json"
+        meta_path.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write_json(meta_path, job)
+    except Exception as e:
+        log.warning(f"[Jobs] Could not save job meta for {job_id}: {e}")
+
+
+def _load_jobs_from_disk():
+    loaded = 0
+    for job_dir in JOBS_DIR.iterdir():
+        if not job_dir.is_dir():
+            continue
+        meta_path = job_dir / "job_meta.json"
+        if not meta_path.exists():
+            continue
+        try:
+            with open(meta_path) as f:
+                meta = json.load(f)
+            job_id = job_dir.name
+            if job_id not in JOBS:
+                JOBS[job_id] = meta
+                loaded += 1
         except Exception as e:
-            log.warning(f"[Scraper] Italian dictionary not available (pip install pyspellchecker): {e}")
-            _IT_SPELL = False
-    return (lambda words: set(_IT_SPELL.unknown(words))) if _IT_SPELL else None
+            log.warning(f"[Jobs] Could not reload {job_dir.name}: {e}")
+    if loaded:
+        log.info(f"[Jobs] Restored {loaded} jobs from disk.")
 
 
-def _proofread(texts: list, description: str = "", address: str = "", agency_name: str = "") -> dict:
-    """2026-10-26: Italian spelling/grammar check of a narration (italian_check.py, ONE implementation for all narration paths).
-    A dictionary finds the unknown words, Claude judges only those (a whole-text proofreading missed "garantono" with both Haiku 4.5 and
-    Sonnet 5.5). Never raises. Returns italian_check.proofread()'s dict; checked=False when the Claude call did not work (the text goes on unchanged)."""
-    import italian_check as ic
+_load_jobs_from_disk()
+from job_recovery import recover_orphans as _recover_orphans, atomic_write_json as _atomic_write_json
+import job_recovery as _jr   # 2026-10-23 (Patch L): PrepError / run_preparation for the background draft preparation
+import rework_policy as _rwp
+import scene_rework as _sr  # 2026-10-22: the ONE rework engine (backlog 75)
+from job_recovery import clip_is_valid as _reusable_clip, audio_is_valid as _reusable_audio, image_is_valid as _reusable_image
+
+# 2026-10-08 (task 4): a job left running/queued by a restart has no thread
+# that will ever finish it. Classified once at startup (job_recovery.py);
+# the operator is notified from the startup hook below.
+_RECOVERED_ORPHANS = []   # filled by the startup hook below, NOT at import time
+
+
+@app.on_event("startup")
+async def _notify_recovered_orphans():
+    _RECOVERED_ORPHANS[:] = _recover_orphans(JOBS, JOBS_DIR, _save_job)
+    if not _RECOVERED_ORPHANS:
+        return
+    log.warning(f"[Jobs] Recovered {len(_RECOVERED_ORPHANS)} orphaned job(s) after restart: "
+                + ", ".join(f"{r['job_id']}:{r['old']}->{r['new']}" for r in _RECOVERED_ORPHANS))
     try:
-        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-        res = ic.proofread(texts, lambda prompt: _claude_text_reply(client, prompt, max_tokens=600),
-                           " ".join(x for x in (description, address, agency_name) if x), unknown_fn=_italian_unknown_words())
+        for r in _RECOVERED_ORPHANS:
+            if r["new"] == "failed" and r["has_callback"]:
+                await _send_partner_webhook(r["job_id"], "failed")
+        items = "".join(
+            f"<li>{r['property_name'] or r['job_id']}: {r['old']} -> {r['new']} ({r['job_id']})</li>"
+            for r in _RECOVERED_ORPHANS)
+        await _notify_operator(
+            _RECOVERED_ORPHANS[0]["job_id"], "Restart recovery",
+            subject=f"Riavvio: {len(_RECOVERED_ORPHANS)} job interrotti",
+            body_html=f"<p>Il server e' stato riavviato con job in corso.</p><ul>{items}</ul>",
+            push_message=f"Riavvio: {len(_RECOVERED_ORPHANS)} job interrotti, controlla la library",
+            tags=["warning"],
+        )
     except Exception as e:
-        log.warning(f"[Scraper] Italian check failed, text kept as it is: {e}")
-        return {"texts": list(texts), "fixed": [], "remaining": [], "checked": False}
-    if res["fixed"] or res["remaining"] or not res["checked"]:
-        log.info(f"[Scraper] Italian check: checked={res['checked']} fixed={res['fixed']} remaining={res['remaining']}")
-    return res
+        log.warning(f"[Jobs] Startup recovery notification failed (non-fatal): {e}")
 
 
-def _write_standard_scene_script(description: str, address: str, price: str, agency_name: str, sequence: list) -> dict:
-    """2026-10-22 (Patch B): one sentence per scene for the standard video (see scene_script.py). Up to 3 Claude
-    attempts (2026-10-22: was 2); each retry is told why the previous one was rejected by the fact check. Never raises.
-    Returns {"ok", "sentences", "attempts", "problems", "error"}; ok=False means 'use the single-text narration'."""
-    import scene_script as ss
-    from narration import split_into_sentences
-    labels = [CATEGORY_ITALIAN_LABELS.get(c, c) for c in sequence]
-    base_prompt = ss.build_prompt(description, address, agency_name, labels)
-    feedback, problems = "", []
-    try:
-        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-        for attempt in (1, 2, 3):
-            sentences = ss.parse(_claude_text_reply(client, base_prompt + feedback))
-            problems = (["the reply was not a JSON array of strings"] if sentences is None else
-                        ss.validate(sentences, description, agency_name, price, split_fn=split_into_sentences))
-            if not problems:
-                lc = _proofread(sentences, description, address, agency_name)   # 2026-10-26: Italian check, applied only if the fact check still passes
-                if lc["fixed"] and not lc["remaining"] and not ss.validate(lc["texts"], description, agency_name, price, split_fn=split_into_sentences):
-                    sentences = lc["texts"]
-                elif lc["fixed"] or lc["remaining"]:
-                    log.warning(f"[Scraper] Per-scene script: Italian corrections not used (remaining {lc['remaining']}), original kept")
-                return {"ok": True, "sentences": sentences, "attempts": attempt, "problems": [], "error": None}
-            log.warning(f"[Scraper] Per-scene script attempt {attempt} rejected: {problems} | sentences: {sentences}")
-            feedback = ("\n\nYour previous answer was REJECTED for these reasons. Fix all of them, return the full JSON array again:\n- "
-                        + "\n- ".join(problems))
-        return {"ok": False, "sentences": None, "attempts": 3, "problems": problems,
-                "error": "per-scene script rejected by the fact check 3 times"}
-    except Exception as e:
-        return {"ok": False, "sentences": None, "attempts": 0, "problems": problems, "error": f"per-scene script failed: {e}"}
 
-
-def _tighten_scene_script(sentences: list, bad: list, description: str, address: str, price: str, agency_name: str):
-    """One rewrite of ONLY the sentences that are spoken too long for their scene. Returns the new 6 sentences when
-    they pass the same fact check AND the untouched sentences are really unchanged; otherwise None."""
-    import scene_script as ss
-    from narration import split_into_sentences
-    try:
-        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-        revised = ss.parse(_claude_text_reply(client, ss.build_tighten_prompt(sentences, bad, description, agency_name)))
-    except Exception as e:
-        log.warning(f"[Scraper] Tighten pass failed, keeping the first script: {e}")
-        return None
-    if not revised or len(revised) != len(sentences):
-        log.warning(f"[Scraper] Tighten rewrite not used: the reply was not {len(sentences)} sentences ({revised})")
-        return None
-    changed = {i for i, _ in bad}
-    moved = [i + 1 for i in range(len(sentences)) if i not in changed and revised[i] != sentences[i]]
-    if moved:
-        log.warning(f"[Scraper] Tighten rewrite not used: it changed sentences that must stay as they are: {moved} ({revised})")
-        return None
-    problems = ss.validate(revised, description, agency_name, price, split_fn=split_into_sentences)
-    if problems:
-        log.warning(f"[Scraper] Tighten rewrite not used: it fails the fact check: {problems} ({revised})")
-        return None
-    return revised
-
-
-# ── Anchor-driven timeline (2026-10-23, backlog 82, Patch J) ────────────────────────────────────────────────
-# OFF by default: set PVS_ANCHORED_TIMELINE=1 in .env (and restart) to try it. When it is on and the standard 6-scene
-# sequence is known, the narration is a free text whose room phrases are timed on the real audio; every failure
-# (text rejected twice, no speech recogniser, plan outside the speed limits) falls back to the previous modes.
-ANCHORED_MAX_ATTEMPTS = 7      # 2026-10-23 (Patch N): total Claude calls (was 3 in Patch M, where the estimate used them all up before any voice was measured)
-ANCHORED_MAX_MEASURED = 3      # Patch N: texts that may be voiced and measured (each costs one TTS call + one speech recognition)
-ANCHORED_SOFT_RETRIES = 2      # Patch N: a text rejected ONLY on the estimate is rewritten at most this many times in a row, then the real voice decides
-ANCHORED_MIN_COVERAGE = 0.6      # share of the written words that must be found in the recorded audio
-
-
-def anchored_timeline_enabled() -> bool:
-    return os.environ.get("PVS_ANCHORED_TIMELINE", "0").strip().lower() in ("1", "true", "yes", "on")
-
-
-def _anchored_narration(description: str, address: str, price: str, voice_id: str, agency_name: str, scene_sequence: list) -> dict:
-    """Free narration + room anchors + real timing. Returns {"ok": True, "result": <dict in the shape of
-    generate_narration_and_derive_scenes>, "tts_calls": n} or {"ok": False, "reason": str, "tts_calls": n}. Never raises."""
-    import scene_script as ss
-    import scene_timing as st
-    import word_align as wa
-    import word_timing as wt
-    from narration import split_into_sentences
-    tts_calls = 0
-    labels = [CATEGORY_ITALIAN_LABELS.get(c, c) for c in scene_sequence]
-    n = len(scene_sequence)
-    base_prompt = ss.build_anchored_prompt(description, address, agency_name, labels)
-    feedback, reason = "", "not attempted"
-    measured, soft = 0, 0
-    try:
-        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-        for attempt in range(1, ANCHORED_MAX_ATTEMPTS + 1):
-            parsed = ss.parse_anchored(_claude_text_reply(client, base_prompt + feedback, max_tokens=1500))
-            if parsed is None:
-                reason = "the reply was not the expected JSON object"
-                feedback = "\n\nYour previous answer was not a JSON object with \"text\" and \"anchors\". Return exactly that object."
-                log.warning(f"[Scraper] Anchored narration attempt {attempt}: {reason}")
-                continue
-            text, anchors = parsed
-            problems = ss.validate_free_text(text, anchors, description, agency_name, price, split_fn=split_into_sentences, labels=labels)
-            if problems and all(x.startswith(ss.ESTIMATE_PREFIX) for x in problems) and (soft >= ANCHORED_SOFT_RETRIES or attempt == ANCHORED_MAX_ATTEMPTS):
-                # Patch N: only the ESTIMATE objects and it has had its tries: the measured audio is the real judge
-                log.info(f"[Scraper] Anchored narration attempt {attempt}: only the estimate objects ({problems}), sending the text to the real voice")
-                problems = []
-            elif problems and all(x.startswith(ss.ESTIMATE_PREFIX) for x in problems):
-                soft += 1
-            if problems:
-                reason = f"text rejected: {problems}"
-                feedback = (f"\n\nYour previous text was (edit THIS text, do not start from zero):\n{text}\n\n"
-                            "It was REJECTED for these reasons. Fix all of them, return the full JSON object again:\n- "
-                            + "\n- ".join(problems))
-                log.warning(f"[Scraper] Anchored narration attempt {attempt} rejected: {problems} | text: {text}")
-                continue
-            meas = _measure_tts_duration(text, voice_id)
-            tts_calls += 1
-            measured += 1
-            soft = 0       # after a real measurement the next text gets its own estimate tries
-            if not meas["ok"]:
-                return {"ok": False, "reason": "TTS measurement failed", "tts_calls": tts_calls}
-            recognised = wt.transcribe_words(meas["audio_path"])
-            if recognised is None:
-                return {"ok": False, "reason": "word timing (speech recogniser) not available", "tts_calls": tts_calls}
-            tk = wa.tokens(text)
-            al = wa.align(tk, recognised)
-            if al["coverage"] < ANCHORED_MIN_COVERAGE:
-                return {"ok": False, "reason": f"only {al['coverage']:.0%} of the text was found in the audio", "tts_calls": tts_calls}
-            anchor_times, infos = [None] * n, []
-            for a in anchors:
-                if a["scene"] - 1 >= n:
-                    continue
-                idx = wa.find_phrase(tk, a["phrase"])[0]
-                t = al["times"][idx][0]
-                anchor_times[a["scene"] - 1] = t
-                infos.append({"scene": a["scene"], "phrase": a["phrase"], "word_at": round(t, 3)})
-            speech_secs = max(float(meas["duration_secs"]), float(al["end"]))
-            plan = st.plan_from_anchors(anchor_times, speech_secs, [SCENE_CLIP_SECS] * n)
-            log.info(f"[Scraper] Anchored narration attempt {attempt}: {len(ss.words(text))} words, speech {speech_secs:.1f}s "
-                     f"({len(ss.words(text)) / max(speech_secs, 1.0):.2f} words/s), anchors {infos}, "
-                     f"ok={plan['ok']}, speeds {[c['speed'] for c in plan['clips']]} | text: {text}")
-            if plan["ok"]:
-                timeline = {"mode": "anchored", "targets": plan["targets"], "cuts": plan["cuts"], "speeds": [c["speed"] for c in plan["clips"]],
-                            "video_secs": plan["video_secs"], "anchors": infos, "anchor_offsets": plan["anchors"],
-                            "align_coverage": round(al["coverage"], 3), "speech_secs": round(speech_secs, 3)}
-                result = {
-                    "ok": True, "narration_text": text, "audio_path": meas["audio_path"], "speech_duration_secs": speech_secs,
-                    "scene_count": n, "video_duration_secs": plan["video_secs"], "tts_calls_used": tts_calls, "was_trimmed": False,
-                    "sync": None, "error": None, "narration_mode": "anchored", "script_attempts": attempt, "script_tightened": False,
-                    "script_fallback_reason": None, "timeline": timeline,
-                }
-                return {"ok": True, "result": result, "tts_calls": tts_calls}
-            wps = len(ss.words(text)) / max(speech_secs, 1.0)
-            reason = f"timing outside the speed limits: {plan['problems']}"
-            feedback = ss.build_anchor_feedback(plan["problems"], infos, labels, wps, previous_text=text, speech_secs=speech_secs)
-            if attempt == ANCHORED_MAX_ATTEMPTS or measured >= ANCHORED_MAX_MEASURED:
+def _pipeline_kwargs(job_id: str) -> dict:
+    """Single place that rebuilds run_pipeline()'s arguments from a saved job.
+    2026-10-08: was inlined in start_generation_for_draft(); the resume path
+    needs exactly the same arguments, so both now call this."""
+    job = JOBS[job_id]
+    job_dir = JOBS_DIR / job_id
+    scenes_config = job.get("scenes_config", [])
+    image_paths = []
+    for scene in scenes_config:
+        sid = scene.get("scene_id")
+        for ext in [".jpg", ".jpeg", ".png", ".webp"]:
+            candidate = job_dir / "images" / f"{sid}{ext}"
+            if candidate.exists():
+                image_paths.append(str(candidate))
                 break
-        return {"ok": False, "reason": reason, "tts_calls": tts_calls}
-    except Exception as e:
-        log.warning(f"[Scraper] Anchored narration failed: {e}")
-        return {"ok": False, "reason": f"error: {e}", "tts_calls": tts_calls}
-
-
-
-# ── Block narration (2026-10-24, Patch Q) ────────────────────────────────────────────────────────────────────
-# The video leads: 6 Luma clips of 5 s. The voice is written as 3 blocks of two scenes (scene_script.build_blocks_prompt), every block is
-# recorded on its own (the shared sentence-TTS path of narration.py), measured, and fitted to its slot with the pause between blocks and a
-# small tempo change (scene_timing.plan_blocks); the clip speeds / cut points come from the SAME solver as before (plan_from_anchors).
-BLOCK_MAX_ATTEMPTS = 6          # Claude calls (a block rewritten on facts, length, or measured duration each costs one)
-
-
-def _synthesize_block(text: str, voice_id: str = None) -> dict:
-    """One block (2 sentences) -> {"ok", "clips" (the 2 pydub segments), "sentence_secs"}; retried like every TTS step."""
-    from narration import synthesize_sentences
-
-    def once():
-        syn = synthesize_sentences(text, voice_id)
-        if not syn["ok"]:
-            return {"ok": False, "error": syn.get("error")}
-        clips = list(syn["clips"])
-        if len(clips) == 3:
-            # Patch R4: sentence 2 + the closing invitation (its own sentence) = ONE timing unit, with a real pause between them
-            import scene_timing as st
-            from narration import join_clips
-            clips = [clips[0], join_clips(clips[1:], pause_ms=int(round(st.CLOSING_PAUSE_SECS * 1000)))]
-        if len(clips) != 2:
-            return {"ok": False, "error": f"the block has {len(clips)} sentences, not 2"}
-        return {"ok": True, "clips": clips, "sentence_secs": [len(c) / 1000.0 for c in clips]}
-    return _retry_tts(once)
-
-
-def _block_segment(clips: list, rate: float, offset: float = None) -> object:
-    """The block as ONE segment at normal tempo, with the silence between its two sentences written so that, AFTER the tempo
-    change `rate`, the second sentence starts exactly SECOND_OFFSET s after the block starts (scene_timing.sentence_pause)."""
-    import scene_timing as st
-    from narration import join_clips
-    d1 = len(clips[0]) / 1000.0
-    kw = {} if offset is None else {"offset": offset}
-    return join_clips(clips, pause_ms=int(round(st.sentence_pause_pre(d1, rate, **kw) * 1000)))
-
-
-def _assemble_block_audio(segments: list, rates: list, starts: list) -> dict:
-    """Places the blocks (tempo + silence) in ONE audio file. Returns {"ok", "audio_path", "duration_secs", "starts_secs"}."""
-    import tempfile
-    from narration import assemble_blocks
-    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-        path = f.name
-    res = assemble_blocks(segments, rates, starts, path)
-    res["audio_path"] = path
-    return res
-
-
-def _block_narration(description: str, address: str, price: str, voice_id: str, agency_name: str, scene_sequence: list) -> dict:
-    """Narration in 3 blocks fitted to the fixed 5 s clips. Returns {"ok": True, "result": <dict in the shape of
-    generate_narration_and_derive_scenes>, "tts_calls": n} or {"ok": False, "reason": str, "tts_calls": n}. Never raises."""
-    import scene_script as ss
-    import scene_timing as st
-    from narration import split_into_sentences
-    n = len(scene_sequence)
-    labels = [CATEGORY_ITALIAN_LABELS.get(c, c) for c in scene_sequence]
-    base_prompt = ss.build_blocks_prompt(description, address, agency_name, labels, scene_sequence)
-    feedback, reason = "", "not attempted"
-    tts_calls, cache = 0, {}
-    try:
-        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-        for attempt in range(1, BLOCK_MAX_ATTEMPTS + 1):
-            raw_reply = _claude_text_reply(client, base_prompt + feedback, max_tokens=1200)
-            blocks = ss.parse_blocks(raw_reply)
-            if blocks is None:
-                reason = "the reply was not the expected JSON object"
-                # 2026-10-25 (Patch R3): the feedback of the previous attempt is KEPT (draft dd4d2b79: a lost feedback made attempt 6 start
-                # from zero and ignore the measured-duration corrections of attempts 2-4)
-                feedback = feedback + '\n\nYour previous answer was not a JSON object {"blocks": [3 strings]}. Return exactly that object, nothing else.'
-                log.warning(f"[Scraper] Block narration attempt {attempt}: {reason} | reply starts: {str(raw_reply)[:300]!r}")
-                continue
-            problems = ss.validate_blocks(blocks, description, agency_name, price, split_fn=split_into_sentences, scene_sequence=scene_sequence)
-            if problems:
-                reason = f"blocks rejected: {problems}"
-                feedback = ("\n\nYour previous blocks were:\n" + json.dumps({"blocks": blocks}, ensure_ascii=False)
-                            + "\n\nThey were REJECTED for these reasons. Fix all of them, return the full JSON object again:\n- " + "\n- ".join(problems))
-                log.warning(f"[Scraper] Block narration attempt {attempt} rejected: {problems} | blocks: {blocks}")
-                continue
-            # 2026-10-26: Italian spelling/grammar check BEFORE any voice is spent on the text (draft 7ff8ec4b: "garantono"). The corrections are word
-            # replacements; they are used only if the text still passes every check above. Anything left over goes back to the model as feedback.
-            lc = _proofread(blocks, description, address, agency_name)
-            if lc["fixed"] or lc["remaining"]:
-                fixed_ok = (not ss.validate_blocks(lc["texts"], description, agency_name, price, split_fn=split_into_sentences, scene_sequence=scene_sequence))
-                if lc["fixed"] and not lc["remaining"] and fixed_ok:
-                    log.info(f"[Scraper] Block narration attempt {attempt}: Italian corrections applied {lc['fixed']}")
-                    blocks = lc["texts"]
-                elif attempt < BLOCK_MAX_ATTEMPTS:
-                    import italian_check as _ic
-                    reason = f"Italian errors: {lc['fixed'] + lc['remaining']}"
-                    feedback = ("\n\nYour previous blocks were:\n" + json.dumps({"blocks": blocks}, ensure_ascii=False)
-                                + "\n\nThey were REJECTED because of language errors. Fix them, keep everything else, return the full JSON object again:\n- "
-                                + "\n- ".join(_ic.feedback_lines(lc["fixed"] + lc["remaining"])))
-                    log.warning(f"[Scraper] Block narration attempt {attempt} rejected: {reason} | blocks: {blocks}")
-                    continue
-                else:
-                    log.warning(f"[Scraper] Block narration: last attempt keeps its text, Italian errors left: {lc['fixed'] + lc['remaining']}")
-            syn_list = []
-            for bi, b in enumerate(blocks):
-                if b not in cache:
-                    # only the last block carries the closing invitation: spoken as its own sentence (Patch R4)
-                    syn = _synthesize_block(ss.closing_as_sentence(b, agency_name) if bi == len(blocks) - 1 else b, voice_id)
-                    tts_calls += 1
-                    if not syn["ok"]:
-                        return {"ok": False, "reason": "TTS failed on a narration block", "tts_calls": tts_calls}
-                    cache[b] = syn
-                syn_list.append(cache[b])
-            # Patch R5 (2026-10-25): ONE authority. The clip plan (speed limits) decides whether the blocks fit; tempo of each block and
-            # the silences between blocks are chosen by scene_timing.plan_blocks_joint (the old plan_blocks pre-judged with its own windows).
-            sent_secs = [c["sentence_secs"] for c in syn_list]
-            offs_nominal = st.second_sentence_offsets(n)
-            plan = st.plan_blocks_joint(sent_secs, n)
-            segs = [_block_segment(c["clips"], r, o) for c, r, o in zip(syn_list, plan["rates"], offs_nominal)]
-            durations = [len(sg) / 1000.0 for sg in segs]
-            log.info(f"[Scraper] Block narration attempt {attempt}: sentences {[['%.1f' % x for x in ss_] for ss_ in sent_secs]}, "
-                     f"blocks {['%.1f' % d for d in durations]}, starts {plan['starts']}, rates {plan['rates']}, gaps {plan['gaps']}, "
-                     f"speeds {[c['speed'] for c in plan['clip_plan']['clips']]}, ok={plan['ok']}, "
-                     f"problems {plan['problems']} | blocks: {blocks}")
-            if not plan["ok"]:
-                reason = f"sentences outside their scenes: {plan['problems']}"
-                if attempt < BLOCK_MAX_ATTEMPTS:
-                    feedback = ss.build_sync_feedback(plan["problems"], blocks)
-                    continue
-                # last attempt: do not throw the text away - the checks below try the block starts alone (less strict); only if the clip
-                # speeds still cannot follow, the narration falls back (reason recorded)
-                log.warning(f"[Scraper] Block narration: last attempt does not fit sentence by sentence ({plan['problems']}); trying block starts only")
-            audio = _assemble_block_audio(segs, plan["rates"], plan["starts"])
-            if not audio.get("ok"):
-                return {"ok": False, "reason": "block audio assembly failed", "tts_calls": tts_calls}
-            speech_secs = float(audio["duration_secs"])
-            per = n // len(blocks)
-            real_starts = [float(x) for x in audio["starts_secs"]]
-            second_offsets = [(sent_secs[b][0] + st.sentence_pause_pre(sent_secs[b][0], plan["rates"][b], offset=offs_nominal[b])) / plan["rates"][b]
-                              for b in range(len(blocks))]
-            full = st.sentence_anchor_times(real_starts, second_offsets, n, per)          # every scene tied to its own sentence
-            blocks_only = [None] * n
-            for b in range(1, len(blocks)):
-                blocks_only[b * per] = real_starts[b]
-            clip_plan = st.plan_from_anchors(full, speech_secs, [SCENE_CLIP_SECS] * n)
-            sentence_sync = clip_plan["ok"]
-            if not sentence_sync:
-                log.warning(f"[Scraper] Block narration attempt {attempt}: scenes cannot all follow their sentence: {clip_plan['problems']}")
-                if attempt < BLOCK_MAX_ATTEMPTS:
-                    reason = f"sentences outside their scenes: {clip_plan['problems']}"
-                    feedback = ss.build_sync_feedback(clip_plan["problems"], blocks)
-                    continue
-                clip_plan = st.plan_from_anchors(blocks_only, speech_secs, [SCENE_CLIP_SECS] * n)      # last try: block starts only
-                if not clip_plan["ok"]:
-                    reason = f"clip speeds outside the limits: {clip_plan['problems']}"
-                    log.warning(f"[Scraper] Block narration attempt {attempt}: {reason}")
-                    return {"ok": False, "reason": reason, "tts_calls": tts_calls}
-            # the check with the real audio: a room is only named while its picture is on screen (word timing of the final mp3)
-            word_check = {"checked": False, "violations": 0, "rooms": []}
-            if any(ss.named_rooms(x) for b_ in blocks for x in split_into_sentences(b_)):
-                import word_timing as wt
-                import word_align as wa
-                recognised = wt.transcribe_words(audio["audio_path"])
-                if recognised is None:
-                    word_check["note"] = "speech recogniser not available: room words NOT verified"
-                    log.warning(f"[Scraper] Block narration attempt {attempt}: {word_check['note']}")
-                else:
-                    al = wa.align(wa.tokens(" ".join(blocks)), recognised)
-                    if al["coverage"] < ANCHORED_MIN_COVERAGE:
-                        word_check["note"] = f"only {al['coverage']:.0%} of the text found in the audio: room words NOT verified"
-                        log.warning(f"[Scraper] Block narration attempt {attempt}: {word_check['note']}")
-                    else:
-                        rooms = ss.check_room_words(blocks, scene_sequence, al["times"], clip_plan["cuts"], split_into_sentences)
-                        bad = [r_ for r_ in rooms if not r_["ok"]]
-                        word_check = {"checked": True, "violations": len(bad), "rooms": rooms, "coverage": round(al["coverage"], 3)}
-                        log.info(f"[Scraper] Block narration attempt {attempt}: room words {rooms}")
-                        if bad and attempt < BLOCK_MAX_ATTEMPTS:
-                            reason = f"room words outside their pictures: {bad}"
-                            feedback = ss.build_word_check_feedback(bad, blocks)
-                            continue
-                        if bad:
-                            log.warning(f"[Scraper] Block narration: accepted on the last attempt WITH room words outside their pictures: {bad}")
-            used = full if sentence_sync else blocks_only
-            infos = []
-            for i_, t_ in enumerate(used):
-                if t_ is not None and i_ > 0:
-                    infos.append({"scene": i_ + 1, "phrase": f"(block {i_ // per + 1}, sentence {i_ % per + 1})", "word_at": round(float(t_), 3)})
-            timeline = {"mode": "anchored", "method": "blocks", "sentence_sync": sentence_sync, "targets": clip_plan["targets"],
-                        "cuts": clip_plan["cuts"], "speeds": [c["speed"] for c in clip_plan["clips"]], "video_secs": clip_plan["video_secs"],
-                        "anchors": infos, "anchor_offsets": clip_plan["anchors"], "speech_secs": round(speech_secs, 3),
-                        "word_check": word_check,
-                        "blocks": [{"text": b, "start": real_starts[i], "rate": plan["rates"][i], "secs": round(durations[i], 3),
-                                    "sentence_secs": [round(x, 3) for x in sent_secs[i]], "second_start": round(real_starts[i] + second_offsets[i], 3)}
-                                   for i, b in enumerate(blocks)]}
-            result = {
-                "ok": True, "narration_text": " ".join(blocks[:-1] + [ss.closing_as_sentence(blocks[-1], agency_name)]), "audio_path": audio["audio_path"], "speech_duration_secs": speech_secs,
-                "scene_count": n, "video_duration_secs": clip_plan["video_secs"], "tts_calls_used": tts_calls, "was_trimmed": False,
-                "sync": None, "error": None, "narration_mode": "anchored", "script_attempts": attempt, "script_tightened": False,
-                "script_fallback_reason": None, "timeline": timeline,
-            }
-            return {"ok": True, "result": result, "tts_calls": tts_calls}
-        return {"ok": False, "reason": reason, "tts_calls": tts_calls}
-    except Exception as e:
-        log.warning(f"[Scraper] Block narration failed: {e}")
-        return {"ok": False, "reason": f"error: {e}", "tts_calls": tts_calls}
-
-
-# ── Scene facts: what each of the 6 scenes plainly shows (2026-10-28, Michele option 1) ──
-# The voice writers only knew the listing text: a thin listing gave short sentences and room names heard over the wrong scene (draft 832cb4f4).
-# ONE vision call looks at the 6 selected photos. Its facts are appended to the listing text that BOTH the prompt and the validator read,
-# so every existing fact rule applies to them unchanged. Facts hold no digits, so the number checks still come from the listing alone.
-def scene_facts_enabled() -> bool:
-    return os.environ.get("PVS_SCENE_FACTS", "0").strip().lower() in ("1", "true", "yes", "on")
-
-
-SCENE_FACTS_PROMPT = (
-    "You see {n} photos of ONE property, in the order of the scenes of a short video: photo 1 is scene 1, and so on.\n"
-    "For each photo write ONE short Italian phrase (4 to 12 words) that says only what is PLAINLY VISIBLE: natural light, windows, "
-    "the colour of the floor and walls, the sense of space, a view. Rules:\n"
-    "- Describe only what you can clearly see. No numbers at all (say finestre, not due finestre). Give COLOURS, never materials "
-    "(say pavimento rosso, not terracotta or cotto; pareti chiare, not intonaco).\n"
-    "- Never name the room or its use (no cucina, bagno, stanza, camera) and never say it is empty: the scene already says which room it is.\n"
-    "- For a view, say what is seen (alberi, edifici, cielo), never what kind of place it is (no piazza, cortile, strada).\n"
-    "- No judgement of condition or value (new, renovated, luxury, recent), no price, no location.\n"
-    "- If the room is empty, do not mention furniture: speak of light, windows, floor and space.\n"
-    "- If you cannot say anything certain about a photo, write an empty string for it.\n"
-    "Answer with ONLY a JSON array of {n} strings, in the photo order."
-)
-_SCENE_FACT_VISIBLE_OK = ("piscin", "giardin", "terrazz", "balcon", "vista", "mare", "lago", "parco", "pergol", "portic", "veranda", "uliv", "cancell", "camin")
-_SCENE_FACT_WORDS = ("ristruttur", "recent", "lusso", "pregio", "€", "euro", "prezzo", "vuot", "terracott", "cotto", "ceramic", "legno",
-                     "stanza", "cucina", "bagno", "camera", "soggiorno", "salone",
-                     "piazz", "cortil", "strad", "cement", "pietra", "mattoni", "intonac", "metall", "ferro", "vetro", "granit", "graniglia", "plastic")
-
-
-def _scene_fact_banned() -> tuple:
-    # a fact is a place where a word becomes allowed in the voice, so it must not introduce a word a photo cannot prove: the promotional
-    # stems and the feature stems of the validator (scene_script) are read from there, except the few that a photo can show
-    import scene_script as ss
-    return _SCENE_FACT_WORDS + tuple(ss._PROMO_STEMS) + tuple(x for x in ss._FEATURE_STEMS if x not in _SCENE_FACT_VISIBLE_OK)
-
-
-def parse_scene_facts(raw: str, n: int):
-    # n short strings, or None when the reply is not usable. A phrase with a banned word, a digit or over 14 words becomes empty.
-    try:
-        data = json.loads(raw[raw.index("["):raw.rindex("]") + 1])
-    except Exception:
-        return None
-    if not isinstance(data, list) or len(data) != n or not all(isinstance(x, str) for x in data):
-        return None
-    facts, banned = [], _scene_fact_banned()
-    for x in data:
-        x = " ".join(x.split())
-        if len(x.split()) > 14 or any(c.isdigit() for c in x) or any(w in x.lower() for w in banned):
-            x = ""
-        facts.append(x)
-    return facts if any(facts) else None
-
-
-def describe_scenes_for_narration(scene_photos: list) -> dict:
-    # ONE vision call for the scene photos in scene order. Never raises: {"ok": True, "facts": [...]} or {"ok": False, "error": str}
-    n = len(scene_photos)
-    try:
-        content = [{"type": "text", "text": SCENE_FACTS_PROMPT.format(n=n)}]
-        for i, p in enumerate(scene_photos):
-            fetched = fetch_photo_bytes(p.get("url"), p.get("original_url"), timeout=15)
-            if not fetched["ok"]:
-                why = fetched.get("error")
-                return {"ok": False, "error": f"photo {i + 1} could not be downloaded: {why}"}
-            content.append({"type": "text", "text": f"Photo {i + 1}:"})
-            content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": _image_b64_for_vision(fetched["content"])}})
-        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-        response = _track_claude(client.messages.create(model=MODEL, max_tokens=700, messages=[{"role": "user", "content": content}]))
-        raw = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
-        facts = parse_scene_facts(raw, n)
-        if facts is None:
-            return {"ok": False, "error": "the reply was not a usable list of facts: " + raw[:200]}
-        return {"ok": True, "facts": facts}
-    except Exception as e:
-        return {"ok": False, "error": f"error: {e}"}
-
-
-def scene_facts_block(facts: list, scene_sequence: list) -> str:
-    # scene numbers are WORDS and there is no room label here: digits would weaken the number checks, and the labels hold words such as
-    # giardino and terrazza that the validator would then accept for every listing
-    words = ["one", "two", "three", "four", "five", "six", "seven", "eight"]
-    lines = [f"Scene {words[i]}: {fact}" for i, fact in enumerate(facts) if fact and i < len(words)]
-    return "WHAT THE PHOTOS PLAINLY SHOW (in the order of the video; true facts about this property, usable like the rest of the listing text):\n" + "\n".join(lines)
-
-
-def standard_scene_photos(selection: dict) -> list:
-    return [photo for _, photo in standard_scene_slots(selection)]
-
-
-def generate_narration_and_derive_scenes(
-    description: str, address: str = None, price: str = None, voice_id: str = None,
-    premium: bool = False, agency_name: str = None, scene_category_order: list = None,
-    scene_sequence: list = None, scene_photos: list = None,
-) -> dict:
-    # the ONE entry point of both workflows. With PVS_SCENE_FACTS on (standard 6-scene video only) the plainly visible facts of the scene
-    # photos are appended to the listing text, then the unchanged narration core runs. Any failure leaves the listing text as it was.
-    facts, facts_error = None, None
-    if (scene_photos and scene_facts_enabled() and (not premium) and scene_sequence
-            and len(scene_sequence) == STANDARD_SCENES and len(scene_photos) == STANDARD_SCENES):
-        info = describe_scenes_for_narration(scene_photos)
-        if info["ok"]:
-            facts = info["facts"]
-            description = (description or "") + "\n\n" + scene_facts_block(facts, scene_sequence)
         else:
-            facts_error = info["error"]
-            log.warning(f"[Scraper] Scene facts not used: {facts_error}")
-    result = _generate_narration_core(description, address, price, voice_id, premium, agency_name, scene_category_order, scene_sequence)
-    if isinstance(result, dict):
-        result["scene_facts"] = facts
-        result["scene_facts_error"] = facts_error
+            # Fallback to old index-based naming for the same scene
+            idx = scenes_config.index(scene)
+            for ext in [".jpg", ".jpeg", ".png", ".webp"]:
+                candidate = job_dir / "images" / f"scene_{idx:03d}{ext}"
+                if candidate.exists():
+                    image_paths.append(str(candidate))
+                    break
+    return dict(
+        job_id=job_id,
+        job_dir=job_dir,
+        image_paths=image_paths,
+        scenes_config=scenes_config,
+        property_name=job.get("property_name", "Property"),
+        voice_id=job.get("voice_id", ""),
+        do_lighting=job.get("enhance_images", True),
+        do_upscale=job.get("upscale_images", True),
+        transition_style=job.get("transition_style", "fade"),
+        enable_vision_qc=job.get("enable_vision_qc", True),
+        do_video_upscale=job.get("do_video_upscale", True),
+        model_tier=job.get("model_tier", "premium"),
+        lighting=job.get("lighting", "bright_natural"),
+        intensity=job.get("intensity", "natural_pace"),
+        output_format=job.get("output_format", "landscape"),
+    )
+
+
+@app.post("/jobs/{job_id}/resume-interrupted")
+async def resume_interrupted_job(job_id: str, background_tasks: BackgroundTasks):
+    """2026-10-08 (task 4, phase 2): restarts the pipeline of a job left
+    "interrupted" (server restart) or "stopped" (user stop), REUSING the
+    enhanced images, audio and clips already valid on disk, so only the
+    missing scenes are paid for again. Never automatic: spending money
+    again is always an explicit click."""
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    _raise_if_generation_paused()
+    job = JOBS[job_id]
+    if job.get("status") not in ("interrupted", "stopped"):
+        raise HTTPException(status_code=400,
+                            detail=f"Job is not interrupted or stopped (status: {job.get('status')})")
+    if not _acquire_job_lock(job_id, "resume generation"):
+        lock = _job_lock_status(job_id)
+        raise HTTPException(status_code=409, detail=f"Job is busy ({lock.get('operation')})")
+    try:
+        kwargs = _pipeline_kwargs(job_id)
+        if not kwargs["scenes_config"] or len(kwargs["image_paths"]) != len(kwargs["scenes_config"]):
+            raise HTTPException(status_code=400, detail="Foto mancanti: impossibile riprendere questo job")
+        job.pop("cancel_requested", None)   # /stop persisted it; it would stop the resumed run at scene 0
+        job["status"] = "queued"
+        job["message"] = "Ripresa generazione: riuso delle scene gia' pronte"
+        job["resumed_at"] = datetime.utcnow().isoformat()
+        _save_job(job_id)
+    finally:
+        _release_job_lock(job_id)
+    background_tasks.add_task(run_pipeline, resume=True, **kwargs)
+    return {"job_id": job_id, "status": "queued", "resume": True}
+
+
+# ── App ────────────────────────────────────────────────────────────────────────
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """Protect all non-static endpoints with access key when UI_ACCESS_KEY is set."""
+    path = request.url.path
+    # Always allow: root UI, health check, static assets, clip previews
+    # Clip previews need to be exempt because browsers can't send headers for <video src>
+    # 2026-09-30 (backlog item 48/Relinx): /v1/* has its own separate
+    # authentication (Bearer partner API key, see get_current_partner) --
+    # bypassing UI_ACCESS_KEY here does not disable auth for these routes,
+    # it just avoids a second, irrelevant check layered on top of the
+    # partner-key check that already protects them.
+    if (path in ("/", "", "/health", "/operator-page")
+            or path.startswith("/static")
+            or path.startswith("/test-scratch/")
+            or path.startswith("/v1/")
+            or "/clip/" in path
+            or path.endswith("/download")
+            or path.endswith("/preview")
+            or "/image/" in path):
+        return await call_next(request)
+    if not _check_access(request):
+        return Response(
+            content='{"detail":"Unauthorized — invalid access key"}',
+            status_code=403,
+            media_type="application/json"
+        )
+    return await call_next(request)
+
+
+if (BASE_DIR / "ui.html").exists():
+    @app.get("/", response_class=FileResponse)
+    def serve_ui():
+        return FileResponse(BASE_DIR / "ui.html", headers={"Cache-Control": "no-cache"})
+
+
+
+
+# ── Utility endpoints ──────────────────────────────────────────────────────────
+
+
+@app.get("/tts/voices")
+def list_tts_voices():
+    """Voice/language catalog for the UI menus. Source of truth: voice_generation.TTS_LANGUAGES."""
+    import voice_generation as _vg
+    from cost_tracker import tts_cost_per_char
+    return {
+        "provider": _vg.TTS_PROVIDER,
+        "cost_per_char_eur": tts_cost_per_char(),
+        "default_language": _vg.DEFAULT_LANGUAGE,
+        "default_voice": _vg.DEFAULT_VOICE_ID,
+        "languages": _vg.TTS_LANGUAGES if _vg.TTS_PROVIDER == "google" else {},
+    }
+
+
+@app.get("/cost/infra")
+def infra_cost_per_job_endpoint():
+    """Infrastructure share of ONE video = monthly VPS cost / done jobs of the last 30 days. Same count and same function as the draft estimates; the page reads it from here."""
+    from cost_tracker import get_infra_cost_per_job
+    n = _get_rolling_monthly_job_count()
+    return {"infra_cost_per_job_eur": get_infra_cost_per_job(n), "monthly_jobs": n}
+
+
+@app.get("/test-scratch/{filename}")
+def serve_test_scratch(filename: str):
+    """Serves files ONLY from jobs/_test_scratch/ — a dedicated directory
+    for depth-rendering (or any other) test output that is NEVER touched
+    by production job assembly code. This exists specifically so testing
+    can never again contaminate a real client job's clips folder, which
+    happened once already and corrupted a delivered video.
+    """
+    # Reject any path traversal attempt
+    if "/" in filename or ".." in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    test_path = JOBS_DIR / "_test_scratch" / filename
+    if not test_path.exists():
+        raise HTTPException(status_code=404, detail="Test file not found")
+
+    # Detect real content type by extension — this endpoint originally only
+    # served test video clips (hardcoded video/mp4), which silently broke
+    # when used for test images (the browser gets real JPEG bytes but a
+    # video/mp4 header, so it renders a blank video player instead).
+    ext = Path(filename).suffix.lower()
+    media_types = {
+        ".mp4": "video/mp4", ".mov": "video/quicktime",
+        ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".png": "image/png", ".webp": "image/webp",
+        ".mp3": "audio/mpeg", ".wav": "audio/wav",
+    }
+    media_type = media_types.get(ext, "application/octet-stream")
+    return FileResponse(str(test_path), media_type=media_type)
+
+
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "time": datetime.utcnow().isoformat(), "fake_providers": fake_providers.ENABLED}
+
+
+
+
+@app.get("/credits")
+def get_credits():
+    from credit_monitor import get_all_credits
+    return get_all_credits()
+
+
+
+
+@app.get("/diagnostics")
+def diagnostics():
+    """System health check, disk space, API reachability, auto-cleanup of old jobs."""
+    import shutil as _shutil
+    import requests as _requests
+
+
+    # Disk space
+    disk   = _shutil.disk_usage(str(BASE_DIR))
+    disk_free_gb = round(disk.free / (1024**3), 1)
+
+
+    # Job stats
+    total_jobs     = len(JOBS)
+    done_jobs      = sum(1 for j in JOBS.values() if j.get("status") == "done")
+    failed_jobs    = sum(1 for j in JOBS.values() if j.get("status") == "failed")
+    running_jobs   = sum(1 for j in JOBS.values() if j.get("status") == "running")
+
+
+    # Auto-cleanup under disk pressure only (see retention_policy.py; was: ALL job folders idle for 7 days).
+    # Cutoff is based on job_meta.json's own filesystem last-modified time,
+    # not the created_at field inside it — job_meta.json is rewritten by
+    # _save_job() on every meaningful state change (progress updates,
+    # narration steps, rework, etc.), so its mtime is an accurate "last
+    # touched" timestamp. This is safer than created_at for not deleting
+    # something that's old but was actually worked on recently.
+    # 2026-11-02: the 7-day cutoff is gone. retention_policy decides (ONE rule, shared with maintenance_scheduler): nothing is deleted
+    # while the disk is below its high-water mark; above it only the longest-idle, unprotected (no "keep", not busy, > MIN_AGE_DAYS) go.
+    import retention_policy as _rp
+    try:
+        _evict = set(_rp.select_for_eviction(JOBS_DIR, JOBS))
+    except Exception as _e:
+        _evict = set()
+        log.warning(f"[Cleanup] retention policy failed, nothing deleted this run: {_e}")
+    cleaned    = 0
+    freed_mb   = 0
+    for job_dir in JOBS_DIR.iterdir():
+        if not job_dir.is_dir() or job_dir.name == "_test_scratch":
+            continue
+        meta = job_dir / "job_meta.json"
+        # Prefer job_meta.json's own mtime (rewritten by _save_job() on
+        # every real state change). If no job_meta.json exists at all —
+        # an orphaned directory from a job creation that crashed before
+        # its first save — fall back to the directory's own mtime. Either
+        # way, no metadata + old age means it can never load into JOBS or
+        # appear in the UI regardless, so there's no reason to keep it.
+        try:
+            if meta.exists():
+                last_activity = datetime.utcfromtimestamp(meta.stat().st_mtime)
+            else:
+                last_activity = datetime.utcfromtimestamp(job_dir.stat().st_mtime)
+            if job_dir.name in _evict:
+                size_mb = sum(
+                    f.stat().st_size for f in job_dir.rglob("*") if f.is_file()
+                ) / (1024**2)
+                shutil.rmtree(str(job_dir), ignore_errors=True)
+                job_id = job_dir.name
+                JOBS.pop(job_id, None)
+                cleaned  += 1
+                freed_mb += size_mb
+            elif meta.exists():
+                # 2026-07-21 diagnostic (backlog item 32): a real incident
+                # (July 16 2026) found two jobs whose mtime-based
+                # last_activity looked suspiciously recent relative to
+                # their real age, delaying (not permanently blocking)
+                # cleanup. Root cause was never confirmed -- the original
+                # hypothesis (that _load_jobs_from_disk() resaves every
+                # job on startup) was checked directly and is FALSE, that
+                # function is read-only. Flags any job whose own
+                # created_at is meaningfully older than its file's mtime,
+                # so a recurrence leaves real evidence instead of having
+                # to be reconstructed after the fact.
+                try:
+                    with open(meta) as f:
+                        job_data = json.load(f)
+                    created_str = job_data.get("created_at", "")
+                    if created_str:
+                        created_at = datetime.fromisoformat(created_str)
+                        gap_days = (last_activity - created_at).total_seconds() / 86400
+                        age_days = (datetime.utcnow() - last_activity).total_seconds() / 86400
+                        if gap_days > 3 and age_days < 7:
+                            log.warning(
+                                f"[Cleanup] Job {job_dir.name}: created_at is {gap_days:.1f} days "
+                                f"before its file mtime, and mtime is only {age_days:.1f} days old -- "
+                                f"possible stale-mtime pattern (backlog item 32), watching for recurrence."
+                            )
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+
+    # API reachability
+    def _ping(url, headers=None, timeout=5):
+        try:
+            r = _requests.get(url, headers=headers, timeout=timeout)
+            return r.status_code < 500
+        except Exception:
+            return False
+
+
+    fal_key = os.getenv("FAL_KEY", "")
+    el_key  = os.getenv("ELEVENLABS_API_KEY", "")
+
+
+    fal_ok = _ping(
+        "https://api.fal.ai/billing/credits",
+        headers={"Authorization": f"Key {fal_key}"} if fal_key else None
+    )
+    el_ok = _ping(
+        "https://api.elevenlabs.io/v1/user/subscription",
+        headers={"xi-api-key": el_key} if el_key else None
+    )
+
+
+    return {
+        "server_time":      datetime.utcnow().isoformat(),
+        "disk_free_gb":     disk_free_gb,
+        "jobs_total":       total_jobs,
+        "jobs_done":        done_jobs,
+        "jobs_failed":      failed_jobs,
+        "jobs_running":     running_jobs,
+        "fal_reachable":    fal_ok,
+        "elevenlabs_reachable": el_ok,
+        "cleaned_jobs":     cleaned,
+        "freed_mb":         round(freed_mb, 1),
+    }
+
+
+
+
+# ── Maintenance scheduler endpoints ────────────────────────────────────────────
+# The actual checks run on a daily cron via maintenance_scheduler.py (standalone
+# script, not part of the request path). These endpoints just expose the latest
+# report and let the alert-recipient list be edited from the UI.
+
+
+@app.get("/maintenance/status")
+def get_maintenance_status():
+    """Returns the latest maintenance report for the UI panel."""
+    import maintenance_scheduler
+    if not maintenance_scheduler.STATUS_FILE.exists():
+        return {"timestamp": None, "checks": [], "cleanup": {}, "any_red": False,
+                "note": "No maintenance run has completed yet."}
+    return json.loads(maintenance_scheduler.STATUS_FILE.read_text())
+
+
+@app.get("/maintenance/alert-emails")
+def get_alert_emails():
+    import maintenance_scheduler
+    return {"emails": maintenance_scheduler.load_alert_emails()}
+
+
+@app.post("/maintenance/alert-emails")
+def set_alert_emails(payload: dict):
+    """Body: {"emails": ["a@x.com", "b@y.com"]}. Replaces the full list."""
+    import maintenance_scheduler
+    emails = payload.get("emails", [])
+    if not isinstance(emails, list) or not all(isinstance(e, str) for e in emails):
+        raise HTTPException(status_code=400, detail="emails must be a list of strings")
+    maintenance_scheduler.save_alert_emails(emails)
+    return {"emails": emails}
+
+
+@app.get("/maintenance/notification-topics")
+def get_notification_topics():
+    import maintenance_scheduler
+    return {"topics": maintenance_scheduler.load_ntfy_topics()}
+
+
+@app.post("/maintenance/notification-topics")
+def set_notification_topics(payload: dict):
+    import maintenance_scheduler
+    topics = payload.get("topics", [])
+    if not isinstance(topics, list) or not all(isinstance(t, str) for t in topics):
+        raise HTTPException(status_code=400, detail="topics must be a list of strings")
+    maintenance_scheduler.save_ntfy_topics(topics)
+    return {"topics": topics}
+
+
+
+
+# ── Vision analysis endpoint ───────────────────────────────────────────────────
+
+
+@app.post("/analyse-image")
+async def analyse_image(image: UploadFile = File(...)):
+    """
+    Analyses an uploaded image using Florence-2 via fal.ai.
+    Returns space type, depth, and recommended camera movement.
+    Called from the UI immediately after each photo is uploaded.
+    """
+    # Validate file size
+    MAX_SIZE = 20 * 1024 * 1024  # 20MB
+    content  = await image.read()
+    if len(content) > MAX_SIZE:
+        raise HTTPException(status_code=400, detail="Image too large (max 20MB)")
+
+
+    # Validate file type
+    if not _validate_image_bytes(content):
+        raise HTTPException(status_code=400, detail="Invalid image file")
+
+
+    # Save to temp file
+    tmp_path = str(JOBS_DIR / f"tmp_analyse_{uuid.uuid4().hex[:8]}.jpg")
+    try:
+        with open(tmp_path, "wb") as f:
+            f.write(content)
+
+
+        from vision_analysis import analyse_input
+        result = await asyncio.to_thread(analyse_input, tmp_path)
+        return result
+
+
+    finally:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+
+
+
+
+# ── Job submission ─────────────────────────────────────────────────────────────
+
+
+@app.post("/jobs/")
+async def create_job(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    images: list[UploadFile] = File(...),
+    config: str = Form(...),
+    property_name: str = Form("Property"),
+    voice_id: str = Form(""),
+    enhance_images: bool = Form(True),
+    upscale_images: bool = Form(True),
+    do_video_upscale: bool = Form(True),
+    transition_style: str = Form("fade"),
+    enable_vision_qc: bool = Form(True),
+    model_tier: str = Form("standard"),       # eco / standard / premium
+    lighting: str = Form("bright_natural"),   # property-level lighting
+    intensity: str = Form(DEFAULT_INTENSITY),    # property-level motion intensity
+    start_generation: bool = Form(True),      # False = draft mode, no video cost yet
+    output_format: str = Form(None),          # 2026-07-17: "landscape"/"portrait" override, or None to auto-detect
+    agency_id: str = Form(None),              # 2026-07-22: client this job belongs to (backlog item 39), optional
+):
+    # Rate limit check
+    client_ip = request.client.host if request.client else "unknown"
+    if not _check_rate_limit(client_ip):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many requests. Maximum 5 jobs per hour. Please wait before submitting again."
+        )
+
+    _raise_if_generation_paused()
+
+    # Max images check
+    if len(images) > 20:
+        raise HTTPException(status_code=400, detail="Maximum 20 images per job")
+
+
+    try:
+        scenes_config = json.loads(config)
+        if not isinstance(scenes_config, list):
+            raise ValueError("config must be a JSON array")
+        scenes_config = _ensure_scene_ids(scenes_config)  # assign permanent IDs
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid config JSON: {e}")
+
+
+    if len(images) != len(scenes_config):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Images ({len(images)}) must match scene configs ({len(scenes_config)})"
+        )
+
+
+    job_id  = str(uuid.uuid4())[:8]
+    job_dir = JOBS_DIR / job_id
+    img_dir = job_dir / "images"
+    img_dir.mkdir(parents=True)
+
+
+    # ── Pass 1: validate + read every photo, before deciding anything ────
+    validated = []
+    for i, upload in enumerate(images):
+        content = await upload.read()
+
+        if len(content) > 20 * 1024 * 1024:
+            shutil.rmtree(str(job_dir), ignore_errors=True)
+            raise HTTPException(status_code=400, detail=f"Image {i+1} exceeds 20MB limit")
+
+        if not _validate_image_bytes(content):
+            shutil.rmtree(str(job_dir), ignore_errors=True)
+            raise HTTPException(status_code=400, detail=f"Image {i+1} is not a valid image file")
+
+        ext = Path(upload.filename).suffix.lower() or ".jpg"
+        if upload.content_type == "image/jpeg": ext = ".jpg"
+        elif upload.content_type == "image/png":  ext = ".png"
+        elif upload.content_type == "image/webp": ext = ".webp"
+
+        validated.append((content, ext))
+
+    # ── Decide the job's canonical output format (2026-07-17): exactly
+    # two formats, landscape or portrait -- majority vote across the real
+    # photos, unless the caller explicitly overrode it. ──
+    if output_format in ("landscape", "portrait"):
+        job_format = output_format
+    else:
+        job_format = _decide_job_format_from_bytes([c for c, _ in validated])
+
+    # ── Pass 2: normalize every photo to match job_format, then save ─────
+    saved_images = []
+    for i, (content, ext) in enumerate(validated):
+        content = _normalize_photo_to_format(content, job_format)
+        dest = img_dir / f"scene_{i:03d}{ext}"
+        with open(dest, "wb") as f:
+            f.write(content)
+        saved_images.append(str(dest))
+
+
+    # Cost estimate — uses ACTUAL rolling 30-day job count for infra cost,
+    # not a static guess, so it adapts automatically as volume changes
+    from cost_tracker import estimate_job_cost, format_cost_display
+    rolling_jobs = _get_rolling_monthly_job_count()
+    cost_estimate = estimate_job_cost(
+        scenes_config,
+        do_upscale=upscale_images,
+        do_video_upscale=do_video_upscale,
+        do_vision_qc=enable_vision_qc,
+        model_tier=model_tier,
+        actual_monthly_jobs=rolling_jobs,
+    )
+
+
+    # 2026-07-22 (backlog item 39): link this job to a Property record --
+    # shared entity with cost reporting, single data model per the
+    # architecture-discipline principle (no separate "library-only"
+    # property concept). Reuses the SAME property_name value already
+    # captured above for display purposes, rather than adding a second,
+    # redundant form field. create_property() is idempotent per
+    # (name, agency_id), so repeated jobs for the same property+client
+    # correctly link to one shared record instead of duplicating it.
+    _prop = cost_model.create_property(property_name, agency_id=agency_id)
+
+    JOBS[job_id] = {
+        "status":           "draft" if not start_generation else "queued",
+        "progress":         0,
+        "message":          "Scene salvate — pronto per narrazione" if not start_generation else "Job queued",
+        "scenes":           [],
+        "scenes_config":    scenes_config,  # needed by narration endpoints even in draft mode
+        "output_path":      None,
+        "output_format":    job_format,
+        "created_at":       datetime.utcnow().isoformat(),
+        "property_name":    property_name,
+        "agency_id":        agency_id,
+        "property_id":      _prop["property_id"],
+        "total_scenes":     len(images),
+        "transition_style": transition_style,
+        "enable_vision_qc": enable_vision_qc,
+        "do_video_upscale": do_video_upscale,
+        "model_tier":       model_tier,
+        "lighting":         lighting,
+        "intensity":        intensity,
+        "voice_id":         voice_id,
+        "enhance_images":   enhance_images,
+        "upscale_images":   upscale_images,
+        "cost_estimate":    format_cost_display(cost_estimate),
+        "cost_actual":      None,
+        "reworks":          [],
+        "qc_results":       [],
+        "awaiting_scenes":  [],
+    }
+    _save_job(job_id)
+
+
+    if start_generation:
+        background_tasks.add_task(
+            run_pipeline,
+            job_id=job_id,
+            job_dir=job_dir,
+            image_paths=saved_images,
+            scenes_config=scenes_config,
+            property_name=property_name,
+            voice_id=voice_id,
+            do_lighting=enhance_images,
+            do_upscale=upscale_images,
+            transition_style=transition_style,
+            enable_vision_qc=enable_vision_qc,
+            do_video_upscale=do_video_upscale,
+            model_tier=model_tier,
+            lighting=lighting,
+            intensity=intensity,
+            output_format=job_format,  # 2026-07-27 URGENT FIX: run_pipeline() now needs this explicitly
+        )
+
+
+    return {
+        "job_id":       job_id,
+        "status":       JOBS[job_id]["status"],
+        "cost_estimate": format_cost_display(cost_estimate),
+    }
+
+
+
+
+@app.post("/jobs/{job_id}/start-generation")
+async def start_generation_for_draft(job_id: str, background_tasks: BackgroundTasks):
+    """
+    Triggers actual video generation for a job that was created in draft
+    mode (start_generation=False) — the second half of the narration-first
+    workflow: photos + scenes were saved with no cost, narration was
+    generated and durations confirmed, and NOW generation actually starts
+    with the correct, already-verified durations. No rework ever needed
+    purely for timing reasons.
+    """
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    _raise_if_generation_paused()
+    job = JOBS[job_id]
+    if job.get("status") != "draft":
+        raise HTTPException(status_code=400, detail=f"Job is not in draft state (status: {job.get('status')})")
+
+
+    if not _acquire_job_lock(job_id, "start generation"):
+        lock = _job_lock_status(job_id)
+        raise HTTPException(status_code=409, detail=f"Job is busy ({lock.get('operation')})")
+
+
+    job["status"]  = "queued"
+    job["message"] = "Generazione avviata"
+    _save_job(job_id)
+    _release_job_lock(job_id)  # run_pipeline manages its own lock internally via its update() calls
+
+    # 2026-10-08: arguments come from the single shared helper (also used by resume-interrupted)
+    background_tasks.add_task(run_pipeline, **_pipeline_kwargs(job_id))
+
+
+    return {"job_id": job_id, "status": "queued"}
+
+
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# NARRATION SYSTEM — single continuous voiceover, decoupled from video timing
+# ══════════════════════════════════════════════════════════════════════════════
+# Step A ("Genera voiceover") — cheap, TTS-only. Measures actual duration,
+# calculates required scene durations BEFORE any video generation.
+# Step B ("Genera video") — only runs once duration is confirmed correct.
+# This prevents ever paying for a wrongly-timed video clip.
+
+
+@app.post("/jobs/{job_id}/draft/resync")
+async def resync_draft(
+    job_id: str,
+    images: list[UploadFile] = File(...),
+    config: str = Form(...),
+):
+    """
+    Re-syncs an existing DRAFT job's scenes_config and images to match
+    whatever is currently in the browser -- needed because generateNarration()
+    only creates the draft job on the FIRST click; if the user adds/removes
+    scenes afterward and clicks "Genera voiceover" again, without this the
+    server-side scenes_config stays frozen at the original count while the
+    UI's live cost panel reflects the new count (2026-07-13 fix: this was the
+    exact cause of the cost panel showing 10 scenes while the narration
+    duration distribution still showed 5).
+
+    Only allowed while status == "draft" -- a job that has moved past draft
+    (generation started or completed) must never have its scenes_config
+    silently overwritten, since scenes/clips would then no longer line up
+    with scenes_config.
+    """
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+    if job.get("status") != "draft":
+        raise HTTPException(status_code=400, detail="Job is no longer in draft status -- cannot resync scenes")
+
+    if len(images) > 20:
+        raise HTTPException(status_code=400, detail="Maximum 20 images per job")
+
+    try:
+        scenes_config = json.loads(config)
+        if not isinstance(scenes_config, list):
+            raise ValueError("config must be a JSON array")
+        scenes_config = _ensure_scene_ids(scenes_config)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid config JSON: {e}")
+
+    if len(images) != len(scenes_config):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Images ({len(images)}) must match scene configs ({len(scenes_config)})"
+        )
+
+    job_dir = JOBS_DIR / job_id
+    img_dir = job_dir / "images"
+    # 2026-10-12 DATA-LOSS FIX: this used to wipe images/ BEFORE validating the
+    # new photos, so a single invalid photo ("Image 11 is not a valid image
+    # file") left the job with no photos at all. Now: validate everything
+    # first (Pass 1), write into a scratch dir (Pass 2), then swap; the
+    # previous photos are kept as images.prev.
+
+    # ── Pass 1: validate + read every photo ──────────────────────────────
+    validated = []
+    for i, upload in enumerate(images):
+        content = await upload.read()
+
+        if len(content) > 20 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail=f"Image {i+1} exceeds 20MB limit")
+
+        if not _validate_image_bytes(content):
+            raise HTTPException(status_code=400, detail=f"Image {i+1} is not a valid image file")
+
+        ext = Path(upload.filename).suffix.lower() or ".jpg"
+        if upload.content_type == "image/jpeg": ext = ".jpg"
+        elif upload.content_type == "image/png":  ext = ".png"
+        elif upload.content_type == "image/webp": ext = ".webp"
+
+        validated.append((content, ext))
+
+    # 2026-07-17: re-decide the job's format from the current full photo
+    # set -- this is still pre-generation, so re-voting is correct here
+    # (unlike add_scene/redo_scenes_batch, which inherit an already-locked
+    # format from a job that's already generated).
+    job_format = _decide_job_format_from_bytes([c for c, _ in validated])
+    job["output_format"] = job_format
+
+    # ── Pass 2: normalize + save into a scratch dir, then swap ───────────
+    from safe_fs import replace_dir_atomic
+    new_img_dir = job_dir / "images.new"
+    try:
+        if new_img_dir.exists():
+            shutil.rmtree(str(new_img_dir))  # leftover scratch of a failed earlier attempt, never the real photos
+        new_img_dir.mkdir(parents=True)
+        for i, (content, ext) in enumerate(validated):
+            content = _normalize_photo_to_format(content, job_format)
+            with open(new_img_dir / f"scene_{i:03d}{ext}", "wb") as f:
+                f.write(content)
+        replace_dir_atomic(new_img_dir, img_dir)
+    except Exception:
+        shutil.rmtree(str(new_img_dir), ignore_errors=True)
+        raise
+
+    from cost_tracker import estimate_job_cost, format_cost_display
+    rolling_jobs = _get_rolling_monthly_job_count()
+    cost_estimate = estimate_job_cost(
+        scenes_config,
+        do_upscale=job.get("upscale_images", True),
+        do_video_upscale=job.get("do_video_upscale", True),
+        do_vision_qc=job.get("enable_vision_qc", True),
+        model_tier=job.get("model_tier", "standard"),
+        actual_monthly_jobs=rolling_jobs,
+    )
+
+    job["scenes_config"] = scenes_config
+    job["total_scenes"]  = len(images)
+    job["cost_estimate"] = format_cost_display(cost_estimate)
+    job["message"] = "Scene aggiornate — pronto per narrazione"
+    _save_job(job_id)
+
+    return {"job_id": job_id, "scenes_config": scenes_config, "total_scenes": len(images)}
+
+
+
+
+@app.post("/jobs/{job_id}/narration")
+async def generate_narration(
+    job_id: str,
+    narration_text: str = Form(...),
+    voice_id: str = Form(""),
+    extra_secs_needed: float = Form(0),
+):
+    """
+    Step A: generates the narration audio ONLY (cheap — ElevenLabs cost
+    only, no Veo/Luma cost). Measures the actual duration and returns
+    the calculated scene duration distribution for the UI to display
+    BEFORE any video generation happens.
+    """
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+
+
+    if not _acquire_job_lock(job_id, "generate narration"):
+        lock = _job_lock_status(job_id)
+        raise HTTPException(status_code=409, detail=f"Job is busy ({lock.get('operation')})")
+
+
+    try:
+        job_dir = JOBS_DIR / job_id
+        narration_path = str(job_dir / "narration.mp3")
+
+
+        from narration import (generate_narration_audio, calculate_scene_durations, suggest_pause_padding,
+                               SENTENCE_PAUSE_MS, FIXED_SCENE_SECS_BY_TIER, evaluate_fixed_durations)
+
+        # Pause-padding persistence (2026-07-16 fix): "Aggiungi pause" used to
+        # just regenerate identical audio with the default pause, so the
+        # "too short" warning could never clear -- nothing connected the
+        # frontend's computed gap to the actual TTS call. Now a boosted
+        # pause value sticks on the job until the narration TEXT changes.
+        if job.get("narration_text") != narration_text:
+            job.pop("sentence_pause_ms", None)
+
+        base_pause_ms = job.get("sentence_pause_ms", SENTENCE_PAUSE_MS)
+        if extra_secs_needed and extra_secs_needed > 0:
+            sentence_pause_ms = suggest_pause_padding(
+                narration_text, extra_secs_needed, sentence_pause_ms=base_pause_ms
+            )
+        else:
+            sentence_pause_ms = base_pause_ms
+
+        # 2026-10-15 (Michele): tiers with ONE fixed scene length (Luma: 5 s, never 9 s)
+        # keep their durations and get the sentence/scene synchronisation instead of
+        # a duration redistribution. Other tiers keep the existing behaviour.
+        _tier = job.get("model_tier", "standard")
+        _fixed_secs = FIXED_SCENE_SECS_BY_TIER.get(_tier)
+        _scene_secs = [_fixed_secs] * len(job.get("scenes_config", [])) if _fixed_secs else None
+
+        result = await asyncio.to_thread(
+            generate_narration_audio, narration_text, narration_path,
+            voice_id or None, sentence_pause_ms, _scene_secs
+        )
+
+
+        if not result.get("ok"):
+            raise HTTPException(status_code=500, detail=result.get("error", "Narration generation failed"))
+
+
+        scenes_config = job.get("scenes_config", [])
+        n_scenes = len(scenes_config)
+        current_durations = [int(s.get("duration", 6)) for s in scenes_config] or [6] * n_scenes
+
+        # BUG FIXED: calculate_scene_durations() previously defaulted to a
+        # tier-blind union [4,5,6,8,9] of Veo+Luma valid values, so it could
+        # (and did) propose "4s" for a Luma job - invalid, Luma only accepts
+        # 5s/9s. Now mirrors the same tier logic already used for the UI
+        # sliders (getDurationRangeForTier in ui.html).
+        if _tier == "luma":
+            _valid_durations = [5]   # 2026-10-15: 9 s is not used (hallucination risk); not reached for Luma any more, see _fixed_secs above
+        elif _tier == "eco":
+            _valid_durations = [6, 8, 10, 12, 14, 16, 18, 20]
+        else:  # premium / premium_veo / standard (all Veo-backed)
+            _valid_durations = [4, 6, 8]
+
+        if _fixed_secs:
+            distribution = evaluate_fixed_durations(
+                result["duration_secs"], [_fixed_secs] * n_scenes, result["sync"]
+            )
+        else:
+            distribution = calculate_scene_durations(
+                narration_duration_secs=result["duration_secs"],
+                scene_count=n_scenes,
+                current_durations=current_durations,
+                valid_durations=_valid_durations,
+            )
+
+
+        job["narration_text"] = narration_text
+        job["narration_path"] = narration_path
+        job["narration_duration_secs"] = result["duration_secs"]
+        job["narration_sentence_timings"] = result.get("sentence_timings", [])
+        job["narration_sync"] = result.get("sync")   # 2026-10-15: per-sentence scene alignment (fixed-length tiers only)
+        job["timeline"] = None   # 2026-10-23 (Patch J): new audio -> any anchor-driven timeline calculated for the old audio is void
+        job["sentence_pause_ms"] = sentence_pause_ms
+
+        # 2026-07-24: real cost-tracking gap -- this endpoint makes a real,
+        # billable ElevenLabs TTS call every time it runs, but never
+        # recorded that cost anywhere. A rework that regenerated narration
+        # (a real, ongoing cost every time the user tweaks the text) showed
+        # no TTS cost at all in the job's cost_actual. Reuses the SAME
+        # rework-cost pattern (calculate_rework_cost + format_cost_display)
+        # already used for scene reworks and the audio-only-rework feature,
+        # rather than a separate, parallel cost calculation.
+        # 2026-10-22: the fold-into-cost_actual step now lives in scene_rework
+        # (one copy for scene reworks, audio-only reworks and this endpoint).
+        _sr.record_rework_cost(
+            job,
+            [{"duration": 0, "had_voiceover": True, "voiceover_chars": len(narration_text)}],
+            job.get("model_tier", "premium"),
+            redo_video=False,
+        )
+
+        _save_job(job_id)
+
+
+        return {
+            "job_id": job_id,
+            "narration_duration_secs": result["duration_secs"],
+            "sentence_count": result.get("sentence_count", 0),
+            **distribution,
+        }
+    finally:
+        _release_job_lock(job_id)
+
+
+
+
+@app.post("/jobs/{job_id}/narration/apply-durations")
+async def apply_narration_durations(job_id: str, new_durations: str = Form(...)):
+    """
+    Applies the calculated (or user-adjusted) scene durations to the job's
+    scenes_config BEFORE video generation — the final confirmation step
+    of the "calculate first, generate once" flow.
+    """
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+
+
+    try:
+        durations = json.loads(new_durations)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid durations: {e}")
+
+
+    scenes_config = job.get("scenes_config", [])
+    for i, d in enumerate(durations):
+        if i < len(scenes_config):
+            scenes_config[i]["duration"] = d
+    job["scenes_config"] = scenes_config
+    _save_job(job_id)
+
+
+    return {"job_id": job_id, "scenes_config": scenes_config}
+
+
+
+
+@app.post("/jobs/{job_id}/narration/reassemble")
+async def reassemble_with_narration(job_id: str, background_tasks: BackgroundTasks):
+    """
+    Cheap path for when narration text changed but scene durations did
+    NOT — no video regeneration needed, just re-run assembly with the
+    latest narration audio overlaid. Zero Veo/Luma cost, just re-encoding
+    the already-generated clips with new audio.
+    """
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+
+
+    if not job.get("narration_path"):
+        raise HTTPException(status_code=400, detail="No narration generated yet for this job")
+
+
+    if not _acquire_job_lock(job_id, "reassemble with narration"):
+        lock = _job_lock_status(job_id)
+        raise HTTPException(status_code=409, detail=f"Job is busy ({lock.get('operation')})")
+
+
+    job["status"] = "running"
+    job["message"] = "Riassemblaggio con nuova narrazione…"
+    _save_job(job_id)
+
+
+    background_tasks.add_task(run_reassemble_only, job_id)
+    return {"job_id": job_id, "status": "running"}
+
+
+
+
+# ── Automated URL-to-video workflow (Phase 1: human-in-the-loop) ──────────────
+# Runs the full scrape -> narration -> scene-count -> photo-selection chain
+# (listing_scraper.py) and creates a job in "draft" status with everything
+# pre-populated — narration text, scenes_config, downloaded+dewatermarked
+# images already in place in the job's own directory. Deliberately does NOT
+# trigger real video generation automatically — the agent reviews in the UI
+# and presses "Generate Video" manually via the EXISTING /start-generation
+# endpoint, same as any other draft job. Phase 2 (fully automatic, no
+# manual review step) is a later addition, not built yet.
+
+async def _apply_vision_analysis_to_scenes(scenes_config: list, scene_image_paths: list, log_prefix: str = "URL workflow") -> None:
+    """
+    Runs real per-photo vision analysis (analyse_input) to set each scene's
+    space_type/pov_movement from the actual photo, overriding the
+    category-based static defaults already on scenes_config. Mutates
+    scenes_config in place.
+
+    Extracted 2026-09-30 (backlog item 48/Relinx) from create_job_from_url(),
+    where this logic previously lived inline -- the Relinx adapter needs the
+    exact same analysis, and duplicating it would reintroduce the kind of
+    drift this project's architecture-discipline rule exists to prevent.
+    Behavior is unchanged from the original inline version; only the log
+    message's prefix is now a parameter instead of a hardcoded string.
+    """
+    from vision_analysis import analyse_input
+    _SPACE_TYPE_NORMALIZE = {
+        "large_interior": "large", "medium_interior": "medium", "small_interior": "small",
+        "ground_exterior": "outdoor",
+    }
+    for i, scene in enumerate(scenes_config):
+        dest_path = scene_image_paths[i]
+        if not dest_path or not dest_path.exists():
+            continue
+        try:
+            analysis = await asyncio.to_thread(analyse_input, str(dest_path))
+            raw_space = analysis.get("v7_space_type") or analysis.get("space_type")
+            if raw_space:
+                scene["space_type"] = _SPACE_TYPE_NORMALIZE.get(raw_space, raw_space)
+            raw_movement = analysis.get("suggested_movement") or analysis.get("pov_movement")
+            if raw_movement:
+                scene["pov_movement"] = raw_movement
+            if camera_plan.anchor_enabled() or os.environ.get("PVS_DIRECTOR", "0").strip().lower() in ("1", "true", "yes", "on"):
+                # 2026-10-27: camera direction (camera_plan). Same analysis call, stored with the scene so a re-generation or a redo
+                # uses the SAME anchor. Nothing is written when the switch is off: job_meta stays exactly as before.
+                scene["anchor"] = analysis.get("anchor") or ""
+                scene["anchor_side"] = analysis.get("anchor_side") or ""
+                scene["depth"] = analysis.get("depth") or ""
+        except Exception as e:
+            log.warning(f"[{log_prefix}] Vision analysis failed for scene {i}, "
+                        f"keeping category-based default: {e}")
+    # 2026-10-28 (P3): the facade approach is for the first facade only (one shared rule, both URL and partner paths come through here)
+    _demoted = camera_plan.keep_first_facade_approach(scenes_config)
+    if _demoted:
+        log.info(f"[{log_prefix}] facade approach kept for the first facade only: scenes {_demoted} changed to a minimal move")
+
+
+# 2026-10-23 (Patch M): draft preparations in progress or failed. NOT jobs: nothing is written under jobs/ and nothing shows
+# in the library until the draft is complete (a listing that is unreadable, not accepted or fails leaves no job and no
+# folder). GET /jobs/{id} answers from here while the id is not a job yet. Lost at a restart (the page then says so).
+INTAKES: dict = {}
+
+
+async def _prepare_url_draft_work(job_id, url, property_name, agency_id, voice_id, model_tier, premium):
+    """Everything that follows the quick checks of POST /jobs/from-url: reading the listing, photo classification, the
+    acceptance rule, narration, voice, word timing, photo download, captions, vision analysis. 2026-10-23 (Patch L/M):
+    runs in the background (the browser used to wait minutes and give up); run_preparation() turns any failure into
+    status prep_failed on the INTAKES ticket. The job is created only at the very end."""
+    import listing_scraper as scraper
+    scraper.reset_claude_usage()   # reset token counter for THIS job
+
+    # every one of these does real, slow, blocking I/O (web fetches, Claude API calls with images, TTS, fal.ai):
+    # wrapped in asyncio.to_thread so the event loop (health check, other pages) stays free.
+    extraction = await asyncio.to_thread(scraper.extract_listing, url)
+    if not extraction["ok"]:
+        raise _jr.PrepError(f"Could not read listing: {extraction['error']}")
+    # 2026-10-12 (A+): interiors keep the page labels; unlabeled photos get vision; facade/balcony candidates are verified
+    # by vision (same shared function as the Relinx path).
+    await asyncio.to_thread(scraper.resolve_uncategorized_photos, extraction["photos"])
+    classification_summary = await asyncio.to_thread(scraper.finish_photo_classification, extraction["photos"])   # 2026-11-06: facade/balcony check + duplicate pictures, shared by both workflows
+
+    # 2026-10-12 (3B): standard-video acceptance rule BEFORE narration/TTS is paid for. Premium is unchanged.
+    acceptance = None
+    if not premium:
+        acceptance = scraper.check_listing_scope(extraction["photos"])
+        if not acceptance["ok"]:
+            INTAKES[job_id]["code"] = acceptance.get("code")
+            INTAKES[job_id]["reason"] = acceptance
+            INTAKES[job_id]["refusal_report"] = scraper.refusal_report(extraction["photos"])
+            raise _jr.PrepError(acceptance["message"])
+
+    agency_name = None
+    if agency_id:
+        _agency = cost_model.get_agency(agency_id)
+        if _agency:
+            agency_name = _agency.get("name")
+    scene_category_order = scraper.derive_available_category_order(extraction["photos"])
+    property_name_final = property_name.strip() or extraction.get("address") or "Property"
+    INTAKES[job_id]["property_name"] = property_name_final
+
+    # 2026-10-22 (Patch B): the standard video is always 6 scenes, so its photos are selected FIRST and the narration
+    # is written per scene knowing which room each scene shows. The selection is reused below (no second selection).
+    pre_selection, scene_sequence = None, None
+    if not premium:
+        pre_selection = await asyncio.to_thread(
+            scraper.select_photos_for_scene_count, extraction["photos"], scraper.STANDARD_SCENES
+        )
+        scene_sequence = scraper.standard_scene_sequence(pre_selection)
+        # 2026-11-06 (single criterion): the selection above has now thrown away duplicates and poor-quality photos. The acceptance rule is checked
+        # again on the photos that are REALLY usable, and the voice is written from the rooms that survived (same function, same definition).
+        acceptance_final = scraper.check_listing_acceptance(extraction["photos"])
+        if not acceptance_final["ok"]:
+            INTAKES[job_id]["code"] = acceptance_final.get("code")
+            INTAKES[job_id]["reason"] = acceptance_final
+            INTAKES[job_id]["refusal_report"] = scraper.refusal_report(extraction["photos"])
+            raise _jr.PrepError(acceptance_final["message"])
+        scene_category_order = scraper.derive_available_category_order(extraction["photos"])
+
+    narration = await asyncio.to_thread(
+        scraper.generate_narration_and_derive_scenes,
+        extraction["description"], extraction["address"], extraction["price"], voice_id or None,
+        premium, agency_name, scene_category_order, scene_sequence,
+        scraper.standard_scene_photos(pre_selection) if pre_selection is not None else None,
+    )
+    if not narration["ok"]:
+        raise _jr.PrepError(f"Narration generation failed: {narration['error']}")
+
+    # 2026-07-24 (backlog item 35): premium uses a dedicated selection
+    # function (wider scene-count target, expanded taxonomy including
+    # laundry/office/garage, outdoor split across an early + closing
+    # slot) -- kept separate rather than branching deeply inside the
+    # existing one, since the sequencing logic is genuinely different,
+    # not just a wider number range.
+    if premium:
+        selection = await asyncio.to_thread(
+            scraper.select_photos_for_scene_count_premium, extraction["photos"], narration["scene_count"]
+        )
+    elif pre_selection is not None and narration["scene_count"] == scraper.STANDARD_SCENES:
+        selection = pre_selection
+    else:
+        selection = await asyncio.to_thread(
+            scraper.select_photos_for_scene_count, extraction["photos"], narration["scene_count"]
+        )
+
+    job_dir = JOBS_DIR / job_id          # 2026-10-23 (Patch M): the folder is created here, only once the listing is accepted
+    img_dir = job_dir / "images"
+    img_dir.mkdir(parents=True, exist_ok=True)
+
+    selection = await asyncio.to_thread(scraper.download_selected_photos, selection, img_dir)
+    selection_report = scraper.build_selection_report(extraction["photos"], selection, narration["scene_count"], premium=premium)
+    if acceptance is not None:
+        selection_report["acceptance"] = acceptance
+    selection_report["classification"] = classification_summary
+    # BUG FIXED: this check previously only looked at selection["gaps"],
+    # computed BEFORE the download attempt. Confirmed real case: a
+    # listing's entire photo CDN batch returned 404 during download -
+    # the pre-download gaps check passed silently and the job was
+    # created reporting "success" with 0 actual scenes.
+    total_downloaded = sum(len(photos) for photos in selection["selected"].values())
+    if selection["gaps"] or total_downloaded == 0:
+        # 2026-10-23 (Patch L/M): the folder is NOT removed any more (nothing under jobs/ is deleted by code); the
+        # preparation ticket is marked prep_failed with the same message as before and no job is registered.
+        if selection["gaps"]:
+            gap_desc = "; ".join(selection["gaps"])
+        else:
+            n_failed = len(selection.get("download_failures", []))
+            gap_desc = f"All {n_failed} selected photo(s) failed to download - source images may be temporarily unavailable"
+        # 2026-07-24: explicit product decision -- if premium's full
+        # 3-tier fallback still can't fill the sequence, suggest the
+        # concrete alternatives (standard format, or manual upload)
+        # rather than a bare failure message.
+        suggestion = (" This listing may not have enough photos for the premium template -- "
+                      "try the standard ~30s format, or upload manually."
+                      if premium else " Try again in a moment, or upload manually.")
+        raise _jr.PrepError(f"Not enough usable photos for this listing: {gap_desc}.{suggestion}")
+
+    # 2026-07-24: premium's selected dict has outdoor_early/outdoor_late
+    # pseudo-category keys (see select_photos_for_scene_count_premium),
+    # not real categories -- map back to "outdoor" before requesting
+    # captions, which are keyed by real category name.
+    if premium:
+        selected_categories = list({
+            ("outdoor" if cat in ("outdoor_early", "outdoor_late") else cat)
+            for cat, photos in selection["selected"].items() if photos
+        })
+    else:
+        selected_categories = [cat for cat, photos in selection["selected"].items() if photos]
+    captions = await asyncio.to_thread(
+        scraper.generate_captions_for_categories, extraction["description"], selected_categories
+    )
+
+    # 2026-07-21 unification fix (architecture assessment item 6): this
+    # used to bake lead/trail silence directly into the audio via
+    # scraper.build_final_audio_track(), and assembly's
+    # _overlay_narration_audio() then added its OWN separate lead/trail
+    # blank-video padding on top -- confirmed real double-padding on
+    # every scraped job. Now stores the bare narration audio, exactly
+    # like manual jobs, so the one shared assembly-time function applies
+    # padding once, uniformly, for both workflows.
+    job_narration_path = str(job_dir / "narration.mp3")
+    shutil.copy2(narration["audio_path"], job_narration_path)
+
+    if premium:
+        scenes_config = scraper.build_premium_video_scenes_config(selection, captions,
+                                                                    clip_duration_secs=scraper.SCENE_CLIP_SECS)
+    else:
+        scenes_config = scraper.build_standard_video_scenes_config(selection, captions,
+                                                                     clip_duration_secs=scraper.SCENE_CLIP_SECS)
+    scenes_config = _ensure_scene_ids(scenes_config)
+
+    # Rename downloaded images to the scene_NNN.ext convention — this is
+    # what /jobs/{id}/image/{i} (used by the UI's editJob() to populate the
+    # editable form) actually expects, and what /start-generation's fallback
+    # lookup also supports. NOT scene_id-based naming, which editJob's
+    # image-loading loop has no way to resolve (it fetches by index, not ID).
+    scene_image_paths = []
+    for i, scene in enumerate(scenes_config):
+        src = scene.pop("local_image_path", None)
+        dest_path = None
+        if src and os.path.exists(src):
+            src_path = Path(src)
+            dest_path = img_dir / f"scene_{i:03d}{src_path.suffix}"
+            shutil.move(src, str(dest_path))
+        scene_image_paths.append(dest_path)
+
+    # 2026-07-21 fix: apply the same landscape/portrait format detection
+    # and normalization that manually-uploaded jobs get via create_job() --
+    # this was a known architecture gap (assessment item 3): scraped jobs
+    # never went through _normalize_photo_to_format() at all, meaning a
+    # portrait source photo here would still hit the exact distortion
+    # issue manual uploads had before that fix was built.
+    valid_img_paths = [p for p in scene_image_paths if p and p.exists()]
+    if valid_img_paths:
+        job_format = _decide_job_format_from_bytes([p.read_bytes() for p in valid_img_paths])
+        for p in valid_img_paths:
+            p.write_bytes(_normalize_photo_to_format(p.read_bytes(), job_format))
+    else:
+        job_format = "landscape"
+
+    # 2026-09-30: extracted into _apply_vision_analysis_to_scenes() (backlog
+    # item 48/Relinx) -- shared with the new partner adapter instead of
+    # duplicating this logic a second time. Behavior unchanged.
+    await _apply_vision_analysis_to_scenes(scenes_config, scene_image_paths, log_prefix="URL workflow")
+
+    claude_usage = scraper.get_claude_cost()
+    log.info(f"[URL workflow] Claude API: {claude_usage['calls']} calls, "
+             f"{claude_usage['input_tokens']} in / {claude_usage['output_tokens']} out tokens, "
+             f"EUR {claude_usage['cost_eur']}")
+
+    # 2026-07-22 (backlog item 39): same Property-linking treatment as
+    # create_job() -- single shared data model, reusing property_name_final
+    # (already computed above) rather than a separate field.
+    _prop = cost_model.create_property(property_name_final, agency_id=agency_id)
+
+    # Cost estimate — was missing entirely before this fix, which is why
+    # the UI's cost box disappeared for jobs created this way. Matches the
+    # same computation every manually-created job already gets.
+    from cost_tracker import estimate_job_cost, format_cost_display
+    rolling_jobs = _get_rolling_monthly_job_count()
+    cost_estimate = estimate_job_cost(
+        scenes_config, do_upscale=default_upscale_images(), do_video_upscale=True, do_vision_qc=True,
+        model_tier=model_tier, actual_monthly_jobs=rolling_jobs,
+        claude_cost_eur=claude_usage.get("cost_eur", 0.0),
+        narration_chars=len(narration["narration_text"]),
+    )
+
+    JOBS[job_id] = {
+        "status": "draft",
+        "progress": 0,
+        "output_format": job_format,
+        "message": "Creato automaticamente da URL — rivedi e premi Genera Video",
+        "scenes": [],
+        "scenes_config": scenes_config,
+        "output_path": None,
+        "created_at": datetime.utcnow().isoformat(),
+        "property_name": property_name_final,
+        "agency_id": agency_id,
+        "is_premium": premium,   # 2026-07-24 (backlog item 35): premium ~1-min template flag, for classification/reporting
+        "property_id": _prop["property_id"],
+        "total_scenes": len(scenes_config),
+        "transition_style": "fade",
+        "enable_vision_qc": True,
+        "do_video_upscale": True,
+        "model_tier": model_tier,
+        "lighting": "bright_natural",
+        "intensity": DEFAULT_INTENSITY,
+        "voice_id": voice_id,
+        "enhance_images": True,
+        "upscale_images": default_upscale_images(),
+        "cost_estimate": format_cost_display(cost_estimate),
+        "cost_actual": None,
+        "claude_usage": claude_usage,
+        "reworks": [],
+        "qc_results": [],
+        "awaiting_scenes": [],
+        "narration_text": narration["narration_text"],
+        "narration_path": job_narration_path,
+        "narration_duration_secs": narration["speech_duration_secs"],   # 2026-10-15: was the VIDEO length, mislabelled
+        "narration_sync": narration.get("sync"),
+        "narration_mode": narration.get("narration_mode"),   # 2026-10-22 (Patch B): per_scene | single_text
+        "narration_script_fallback": narration.get("script_fallback_reason"),
+        "scene_facts": narration.get("scene_facts"),   # 2026-10-28: what the photos plainly showed, for review
+        "scene_facts_error": narration.get("scene_facts_error"),
+        "timeline": narration.get("timeline"),   # 2026-10-23 (Patch J): anchor-driven timeline (None = classic 5 s clips)
+        "timeline_fallback": narration.get("timeline_fallback_reason"),
+        "source_url": url,
+        "source_price": extraction.get("price"),
+        "source_address": extraction.get("address"),
+        "source_description": extraction.get("description"),   # 2026-10-12: original listing text, kept for audits
+        "selection_report": selection_report,
+    }
+    _save_job(job_id)
+    INTAKES[job_id]["status"] = "draft"      # the ticket is done; GET /jobs/{id} now answers from JOBS
+
+
+@app.post("/jobs/from-url")
+async def create_job_from_url(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    property_name: str = Form(""),
+    voice_id: str = Form(""),
+    model_tier: str = Form("luma"),
+    url: str = Form(...),
+    agency_id: str = Form(None),   # 2026-07-22: client this job belongs to (backlog item 39), optional
+    premium: bool = Form(False),   # 2026-07-24: premium ~1-min template (backlog item 35), URL-scrape only, manual per-job toggle
+):
+    client_ip = request.client.host if request.client else "unknown"
+    if not _check_rate_limit(client_ip):
+        raise HTTPException(status_code=429,
+                             detail="Too many requests. Maximum 5 jobs per hour. Please wait before submitting again.")
+
+    _raise_if_generation_paused()
+
+    # 2026-10-23 (Patch M): the request only registers a preparation ticket and answers at once; reading the listing (about
+    # 3 minutes on a real listing: the browser gave up) and everything after it run in the background. No job, no folder
+    # and no library entry exist until the draft is complete; a rejected or failed listing leaves nothing behind.
+    job_id = str(uuid.uuid4())[:8]
+    INTAKES[job_id] = {
+        "status": "preparing",
+        "message": "Preparazione della bozza in corso (lettura annuncio, narrazione, voce, foto)...",
+        "property_name": property_name.strip(),
+        "source_url": url,
+        "created_at": datetime.utcnow().isoformat(),
+        "is_intake": True,
+    }
+    background_tasks.add_task(_prepare_url_draft, job_id, url, property_name, agency_id, voice_id, model_tier, premium)
+    return {"job_id": job_id, "status": "preparing"}
+
+
+async def _prepare_url_draft(job_id, url, property_name, agency_id, voice_id, model_tier, premium):
+    await _jr.run_preparation(
+        job_id, INTAKES, lambda _jid: None,     # tickets live in memory only: nothing to save
+        lambda: _prepare_url_draft_work(job_id, url, property_name, agency_id, voice_id, model_tier, premium),
+        log=log)
+
+
+# ── Job status & download ──────────────────────────────────────────────────────
+
+
+# -- Partner API: CRM integration (backlog item 48, Relinx) -----------------
+# Thin adapter over the SAME job-creation building blocks create_job_from_url()
+# already uses -- narration, photo selection, captions, scene building, vision
+# analysis -- rather than a new parallel pipeline (architecture-discipline
+# rule, item 38). Only the photo SOURCE differs: structured partner data
+# instead of scraping a listing page.
+#
+# External status vocabulary agreed with Relinx (2026-09-30): queued,
+# processing, in_review, completed, failed -- distinct from our internal
+# job statuses. Mapping used here and to be reused by the future
+# GET /v1/videos/{id} and webhook: internal "draft" and "awaiting_approval"
+# both map to external "in_review" (human review is happening either way,
+# Relinx doesn't need to know which phase); "queued"/"running" -> "processing";
+# "done" -> "completed"; "failed" -> "failed".
+
+class RelinxPhoto(BaseModel):
+    url: str
+    category: str = "uncategorized"
+    order: int = 0
+
+class RelinxVideoRequest(BaseModel):
+    external_ref: str
+    agency_name: str
+    agency_external_id: str = None
+    property_name: str = "Property"
+    description: str
+    features: list = []
+    photos: list[RelinxPhoto]
+    voice_id: str = ""
+    output_format: str = None
+    callback_url: str
+    listing_url: str | None = None     # 2026-11-06 (optional): the original listing page, shown on the operator page to compare input and output
+
+
+def _map_internal_status_to_partner_status(internal_status: str, released: bool = False) -> str:
+    """
+    Backlog item 48: maps our internal job status vocabulary onto the
+    5-state external vocabulary agreed with Relinx (queued/processing/
+    in_review/completed/failed). Both "draft" (pre-generation human
+    review) and "awaiting_approval" (post-generation QC review) surface
+    as "in_review" -- the partner doesn't need to know which phase.
+    """
+    mapping = {
+        "draft": "in_review",
+        "awaiting_approval": "in_review",
+        "queued": "processing",
+        "running": "processing",
+        "done": "completed",
+        "failed": "failed",
+    }
+    if internal_status == "done":
+        return "completed" if released else "in_review"
+    return mapping.get(internal_status, "processing")
+
+
+# 2026-10-29: the partner used to get only "failed". failure_code is machine-readable, failure_message is a sentence safe to show
+# the agency (never an exception text). Set where the job fails (failure_code + failure_public_message on the job); a job that
+# failed anywhere else (assembly, orphan recovery after a restart) gets the generic pair. ONE place builds the response fields,
+# used by GET /v1/videos/{id}, GET /v1/videos?external_ref= and the "failed" webhook.
+PARTNER_FAILURE_GENERIC = ("generation_failed", "The video could not be produced. Our team has been notified.")
+
+
+def _partner_failure_fields(job: dict) -> dict:
+    if job.get("status") != "failed":
+        return {}
+    code = job.get("failure_code") or PARTNER_FAILURE_GENERIC[0]
+    msg = job.get("failure_public_message") or (PARTNER_FAILURE_GENERIC[1] if code == PARTNER_FAILURE_GENERIC[0] else None)
+    return {"failure_code": code, "failure_message": msg or PARTNER_FAILURE_GENERIC[1]}
+
+
+def _partner_status_payload(public_id: str, job: dict, download_id: str) -> dict:
+    """Body of the partner status responses (by id and by external_ref)."""
+    released = job.get("released", False)
+    result = {
+        "id": public_id,
+        "external_ref": job.get("external_ref"),
+        "status": _map_internal_status_to_partner_status(job.get("status"), released),
+    }
+    if job.get("status") == "done" and released:
+        result["video_url"] = f"https://api.propertyvideostudioai.com/v1/videos/{download_id}/download"
+    result.update(_partner_failure_fields(job))
     return result
 
 
-def _generate_narration_core(
-    description: str, address: str = None, price: str = None, voice_id: str = None,
-    premium: bool = False, agency_name: str = None, scene_category_order: list = None,
-    scene_sequence: list = None,
-) -> dict:
+# 2026-10-30: the partner limit "videos per agency per rolling 24h" was the number 2 written in the endpoint. It is now ONE setting
+# (PVS_PARTNER_AGENCY_LIMIT_24H in .env, default 2 = the value agreed with Relinx). Raised for the GIAL pilot, to be put back at launch;
+# it is to become a dashboard parameter (backlog: autonomous queue + dashboard). A missing, non-numeric or < 1 value gives the default.
+PARTNER_AGENCY_LIMIT_24H_DEFAULT = 2
+
+
+def partner_agency_limit_24h() -> int:
+    try:
+        v = int(os.getenv("PVS_PARTNER_AGENCY_LIMIT_24H", "").strip())
+    except ValueError:
+        return PARTNER_AGENCY_LIMIT_24H_DEFAULT
+    return v if v >= 1 else PARTNER_AGENCY_LIMIT_24H_DEFAULT
+
+
+@app.post("/v1/videos")
+async def create_video_from_partner(
+    payload: RelinxVideoRequest,
+    background_tasks: BackgroundTasks,
+    partner: dict = Depends(get_current_partner),
+):
     """
-    Writes ONE natural narration (no artificial length target), measures
-    it ONCE with real TTS, then derives how many fixed SCENE_CLIP_SECS
-    scenes the video needs (narration + lead + trail silence, rounded up).
+    Receives a video request from a CRM partner (Relinx), builds a job
+    exactly like create_job_from_url() does for a scraped listing, and
+    stops in "draft" status for human review -- generation is NOT started
+    here. Same workflow as every other job: reviewed and started manually
+    via /jobs/{id}/start-generation. Never auto-releases.
 
-    Keeps the result within a tightened band around 30s (MIN_SCENES=5 to
-    MAX_SCENES=7, i.e. 25-35s) rather than letting it drift freely — if the
-    natural narration falls outside MIN_SPEECH_SECS_FOR_RANGE /
-    MAX_SPEECH_SECS_FOR_RANGE, ONE correction pass is made (shorten if too
-    long, extend with real description content if too short), then
-    re-measured. This is symmetric: too-long and too-short are both
-    actively corrected toward the band, not just clamped afterward — a
-    silent clamp-only approach could otherwise leave several scenes near
-    the end playing with no narration if a listing's real content happens
-    to be sparse.
-
-    Bounded to at most 2 real TTS calls (1 initial + 1 correction pass). A
-    fade-out trim remains as an absolute last-resort safety net if a
-    single shorten pass still isn't enough.
-
-    Returns:
-      {"ok": bool, "narration_text": str, "audio_path": str | None (bare
-       narration, NOT yet padded with lead/trail — see
-       build_final_audio_track), "speech_duration_secs": float | None,
-       "scene_count": int | None, "video_duration_secs": int | None,
-       "tts_calls_used": int, "was_trimmed": bool, "error": str | None}
+    2026-10-02 (backlog item 48, URGENT): the actual job-building work
+    (narration generation, photo resolution/download, caption writing,
+    vision analysis) used to run synchronously inside this request and
+    could take well over Relinx's client timeout for a real listing --
+    confirmed live during their first integration test: nginx logged
+    their requests closing with 499 (client gave up) while our own
+    pipeline kept running in the background and actually succeeded a few
+    seconds later (job cc2aead8 completed fine, alert email sent, nothing
+    lost). This endpoint now does only the fast, synchronous checks
+    (agency resolution, rate limit) and returns immediately with
+    status="queued"; the rest of the work happens in
+    _build_relinx_job_in_background(), exactly like every other job's
+    generation pipeline already runs as a background task elsewhere in
+    this file.
     """
-    if agency_name:
-        agency_instruction = f"\nAgency: {agency_name}"
-        opening_instruction = f'Open the narration with the agency presenting the property, e.g. "{agency_name} presenta..." (adapt naturally to flow well).'
-        closing_instruction = (f'End the narration with a brief, natural closing line inviting the viewer to contact {agency_name} by name '
-                                f'for more information (e.g. "Contattate {agency_name} per maggiori informazioni") -- do NOT include a phone '
-                                f'number or email, just the agency name and a general invitation to get in touch.')
+    # 2026-10-02 (URGENT, found live): Relinx's client retried this
+    # request multiple times while our old synchronous endpoint was
+    # still timing out (see the async-background fix above) -- each
+    # retry created its own separate job for the identical external_ref,
+    # since nothing checked for an existing one first. Idempotency check:
+    # if a non-failed job already exists for this partner+external_ref,
+    # return it instead of creating a duplicate. A previously FAILED
+    # attempt is allowed to retry fresh (e.g. after a real photo-download
+    # failure gets fixed on Relinx's side).
+    existing_id, existing = next(
+        ((jid, j) for jid, j in JOBS.items()
+         if j.get("partner_id") == partner["partner_id"]
+         and j.get("external_ref") == payload.external_ref
+         and j.get("status") != "failed"),
+        (None, None),
+    )
+    if existing:
+        return {"id": existing_id, "status": _map_internal_status_to_partner_status(existing["status"], existing.get("released", False)),
+                **_partner_failure_fields(existing)}
+
+    # 2026-10-01 (backlog item 48): prefer the partner's own external
+    # agency id when given -- name-only matching risks merging two real,
+    # different agencies that happen to share a name. Falls back to
+    # name-only matching (today's behavior) if Relinx doesn't send one.
+    if payload.agency_external_id:
+        agency = cost_model.create_agency_for_partner(
+            payload.agency_name, partner["partner_id"], payload.agency_external_id
+        )
     else:
-        agency_instruction = ""
-        opening_instruction = ""
-        closing_instruction = ('End the narration with a brief, natural closing line inviting the viewer to contact the agency for more '
-                                'information (e.g. "Contattate l\'agenzia per maggiori informazioni" or similar) -- do NOT include a phone '
-                                'number or email in this closing line, just a general invitation to get in touch.')
+        agency = cost_model.create_agency(payload.agency_name)
 
-    feature_scope_instruction = (
-        "This is a longer-format video (~60 seconds) -- you may cover the property's features in fuller detail than a quick "
-        "highlight reel, while still avoiding an exhaustive room-by-room list."
-        if premium else
-        "This is a SHORT-format video (~30 seconds) -- mention only 2-3 standout features of the property rather than "
-        "describing every room; a brief highlight, not an exhaustive tour. The finished narration must take about 29 seconds "
-        "to speak aloud (roughly 68-78 Italian words in total, including the opening and the closing line)."
+    # 2026-10-01 (backlog item 48): rate limit -- max 2 videos per agency
+    # per rolling 24h, agreed with Relinx. Counts only jobs with
+    # source=="relinx" for this agency -- manual/scraper jobs an operator
+    # might separately create for the same agency don't count against it.
+    now = datetime.utcnow()
+    cutoff = now - timedelta(hours=24)
+    recent_relinx_jobs = sorted(
+        (j for j in JOBS.values()
+         if j.get("agency_id") == agency["agency_id"]
+         and j.get("source") == "relinx"
+         and j.get("created_at")
+         and datetime.fromisoformat(j["created_at"]) > cutoff),
+        key=lambda j: j["created_at"],
+    )
+    _limit = partner_agency_limit_24h()
+    if len(recent_relinx_jobs) >= _limit:
+        oldest = datetime.fromisoformat(recent_relinx_jobs[0]["created_at"])
+        retry_after_secs = max(1, int((oldest + timedelta(hours=24) - now).total_seconds()))
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded: max {_limit} videos per agency per 24h (agency: {payload.agency_name})",
+            headers={"Retry-After": str(retry_after_secs)},
+        )
+
+    job_id = str(uuid.uuid4())[:8]
+    JOBS[job_id] = {
+        "status": "queued",
+        "progress": 0,
+        "message": f"Ricevuto da Relinx (external_ref={payload.external_ref}) -- elaborazione in corso",
+        "scenes": [],
+        "scenes_config": [],
+        "output_path": None,
+        "created_at": datetime.utcnow().isoformat(),
+        "property_name": payload.property_name,
+        "agency_id": agency["agency_id"],
+        "cost_actual": None,
+        "reworks": [],
+        "qc_results": [],
+        "awaiting_scenes": [],
+        "source": "relinx",
+        "partner_id": partner["partner_id"],
+        "external_ref": payload.external_ref,
+        "callback_url": payload.callback_url,
+        "listing_url": payload.listing_url,
+    }
+    _save_job(job_id)
+
+    background_tasks.add_task(_build_relinx_job_in_background, job_id, payload, agency)
+
+    return {"id": job_id, "status": _map_internal_status_to_partner_status("queued")}
+
+
+async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoRequest, agency: dict):
+    """
+    Background counterpart of create_video_from_partner() (2026-10-02,
+    backlog item 48) -- does all the slow work (narration generation,
+    photo resolution/download, captions, vision QC) that used to block
+    the HTTP response. On any failure, marks the job 'failed' with a
+    clear message instead of raising, since there's no HTTP response
+    left to raise into.
+    """
+    import listing_scraper as scraper
+    try:
+        scraper.reset_claude_usage()
+        description_full = payload.description
+        if payload.features:
+            description_full += "\n\nCaratteristiche: " + ", ".join(payload.features)
+
+        photos_for_selection = []
+        for p in payload.photos:
+            cat = p.category if p.category in scraper.CATEGORIES else "uncategorized"
+            photos_for_selection.append({"url": p.url, "category": cat})
+        photos_for_selection = await asyncio.to_thread(scraper.resolve_uncategorized_photos, photos_for_selection)
+        classification_summary = await asyncio.to_thread(scraper.finish_photo_classification, photos_for_selection)   # 2026-11-06: shared with the URL workflow
+
+        # 2026-10-12 (3B): standard-video acceptance rule BEFORE narration/TTS is paid for.
+        acceptance = scraper.check_listing_scope(photos_for_selection)
+        if not acceptance["ok"]:
+            JOBS[job_id].update({"status": "failed", "message": acceptance["message"],
+                                 "failure_code": acceptance["code"], "failure_reason": acceptance,
+                                 "failure_public_message": acceptance["message"],
+                                 'selection_report': scraper.refusal_report(photos_for_selection)})
+            _save_job(job_id)
+            await _send_partner_webhook(job_id, "failed")
+            await _notify_operator(job_id, "Relinx job failed",
+                subject=f"Job Relinx rifiutato: {payload.property_name}",
+                body_html=f"<p><b>{payload.property_name}</b> - {acceptance['message']}</p>"
+                          f"<p>Job ID: {job_id}, external_ref: {payload.external_ref}</p>",
+                push_message=f"{payload.property_name} - rifiutato ({scraper.acceptance_short_reason(acceptance)})", tags=["x"])
+            return
+
+        scene_category_order = scraper.derive_available_category_order(photos_for_selection)
+
+        # 2026-10-22 (Patch B): same as the URL workflow -- standard photos are selected first (6 scenes), the
+        # narration is written per scene for the rooms those scenes show, and the selection is reused below.
+        pre_selection = await asyncio.to_thread(
+            scraper.select_photos_for_scene_count, photos_for_selection, scraper.STANDARD_SCENES
+        )
+        scene_sequence = scraper.standard_scene_sequence(pre_selection)
+
+        # 2026-11-06 (single criterion): acceptance checked again on the photos that survived duplicates and the quality filter; voice from the survivors.
+        acceptance_final = scraper.check_listing_acceptance(photos_for_selection)
+        if not acceptance_final["ok"]:
+            JOBS[job_id].update({"status": "failed", "message": acceptance_final["message"],
+                                 "failure_code": acceptance_final["code"], "failure_reason": acceptance_final,
+                                 "failure_public_message": acceptance_final["message"],
+                                 'selection_report': scraper.refusal_report(photos_for_selection)})
+            _save_job(job_id)
+            await _send_partner_webhook(job_id, "failed")
+            await _notify_operator(job_id, "Relinx job failed",
+                subject=f"Job Relinx rifiutato: {payload.property_name}",
+                body_html=f"<p><b>{payload.property_name}</b> - {acceptance_final['message']}</p>"
+                          f"<p>Job ID: {job_id}, external_ref: {payload.external_ref}</p>",
+                push_message=f"{payload.property_name} - rifiutato ({scraper.acceptance_short_reason(acceptance_final)})", tags=["x"])
+            return
+        scene_category_order = scraper.derive_available_category_order(photos_for_selection)
+
+        narration = await asyncio.to_thread(
+            scraper.generate_narration_and_derive_scenes,
+            description_full, (None if (payload.property_name or "").strip() in ("", "Property") else payload.property_name.strip()), None, payload.voice_id or None, False,
+            agency.get("name"), scene_category_order, scene_sequence,
+            scraper.standard_scene_photos(pre_selection),
+        )
+        if not narration["ok"]:
+            JOBS[job_id].update({"status": "failed", "message": f"Narration generation failed: {narration['error']}",
+                                 "failure_code": "narration_failed",
+                                 "failure_public_message": "The narration for this listing could not be generated."})
+            _save_job(job_id)
+            await _send_partner_webhook(job_id, "failed")
+            await _notify_operator(job_id, "Relinx job failed",
+                subject=f"Job Relinx fallito: {payload.property_name}",
+                body_html=f"<p><b>{payload.property_name}</b> - narrazione fallita: {narration['error']}</p>"
+                          f"<p>Job ID: {job_id}, external_ref: {payload.external_ref}</p>",
+                push_message=f"{payload.property_name} - fallito (narrazione)", tags=["x"])
+            return
+
+        if narration["scene_count"] == scraper.STANDARD_SCENES:
+            selection = pre_selection
+        else:
+            selection = scraper.select_photos_for_scene_count(photos_for_selection, narration["scene_count"])
+
+        job_dir = JOBS_DIR / job_id
+        img_dir = job_dir / "images"
+        img_dir.mkdir(parents=True, exist_ok=True)
+
+        selection = await asyncio.to_thread(scraper.download_selected_photos, selection, img_dir)
+        selection_report = scraper.build_selection_report(photos_for_selection, selection, narration["scene_count"])
+        selection_report["acceptance"] = acceptance
+        selection_report["classification"] = classification_summary
+        total_downloaded = sum(len(ps) for ps in selection["selected"].values())
+        if selection["gaps"] or total_downloaded == 0:
+            shutil.rmtree(str(job_dir), ignore_errors=True)
+            if selection["gaps"]:
+                gap_desc = "; ".join(selection["gaps"])
+            else:
+                n_failed = len(selection.get("download_failures", []))
+                gap_desc = f"All {n_failed} selected photo(s) failed to download"
+            JOBS[job_id].update({"status": "failed", "message": f"Not enough usable photos for this listing: {gap_desc}",
+                                 "failure_code": ("insufficient_photo_quality" if scraper.QUALITY_GAP_MARKER in gap_desc
+                                                  else "insufficient_photos"),
+                                 "failure_public_message": f"Not enough usable photos for this listing: {gap_desc}"})
+            _save_job(job_id)
+            await _send_partner_webhook(job_id, "failed")
+            await _notify_operator(job_id, "Relinx job failed",
+                subject=f"Job Relinx fallito: {payload.property_name}",
+                body_html=f"<p><b>{payload.property_name}</b> - foto insufficienti: {gap_desc}</p>"
+                          f"<p>Job ID: {job_id}, external_ref: {payload.external_ref}</p>",
+                push_message=f"{payload.property_name} - fallito (foto insufficienti)", tags=["x"])
+            return
+
+        selected_categories = [cat for cat, photos in selection["selected"].items() if photos]
+        captions = await asyncio.to_thread(
+            scraper.generate_captions_for_categories, description_full, selected_categories
+        )
+
+        job_narration_path = str(job_dir / "narration.mp3")
+        shutil.copy2(narration["audio_path"], job_narration_path)
+
+        # 2026-10-29: a partner (API) job never asks for watermark removal: the photos are the agency's originals
+        scenes_config = scraper.build_standard_video_scenes_config(
+            selection, captions, clip_duration_secs=scraper.SCENE_CLIP_SECS, remove_watermark=False
+        )
+        scenes_config = _ensure_scene_ids(scenes_config)
+
+        scene_image_paths = []
+        for i, scene in enumerate(scenes_config):
+            src = scene.pop("local_image_path", None)
+            dest_path = None
+            if src and os.path.exists(src):
+                src_path = Path(src)
+                dest_path = img_dir / f"scene_{i:03d}{src_path.suffix}"
+                shutil.move(src, str(dest_path))
+            scene_image_paths.append(dest_path)
+
+        valid_img_paths = [p for p in scene_image_paths if p and p.exists()]
+        if payload.output_format in ("landscape", "portrait"):
+            job_format = payload.output_format
+        elif valid_img_paths:
+            job_format = _decide_job_format_from_bytes([p.read_bytes() for p in valid_img_paths])
+            for p in valid_img_paths:
+                p.write_bytes(_normalize_photo_to_format(p.read_bytes(), job_format))
+        else:
+            job_format = "landscape"
+
+        await _apply_vision_analysis_to_scenes(scenes_config, scene_image_paths, log_prefix="Relinx")
+
+        claude_usage = scraper.get_claude_cost()
+        _prop = cost_model.create_property(payload.property_name, agency_id=agency["agency_id"])
+
+        from cost_tracker import estimate_job_cost, format_cost_display
+        rolling_jobs = _get_rolling_monthly_job_count()
+        cost_estimate = estimate_job_cost(
+            scenes_config, do_upscale=default_upscale_images(), do_video_upscale=True, do_vision_qc=True,
+            model_tier="luma", actual_monthly_jobs=rolling_jobs,
+            claude_cost_eur=claude_usage.get("cost_eur", 0.0),
+            narration_chars=len(narration["narration_text"]),
+        )
+
+        JOBS[job_id].update({
+            "status": "draft",
+            "output_format": job_format,
+            "message": f"Ricevuto da Relinx (external_ref={payload.external_ref}) -- rivedi e premi Genera Video",
+            "scenes_config": scenes_config,
+            "property_id": _prop["property_id"],
+            "total_scenes": len(scenes_config),
+            "transition_style": "fade",
+            "enable_vision_qc": True,
+            "do_video_upscale": True,
+            "model_tier": "luma",
+            "lighting": "bright_natural",
+            "intensity": DEFAULT_INTENSITY,
+            "voice_id": payload.voice_id,
+            "enhance_images": True,
+            "upscale_images": default_upscale_images(),
+            "cost_estimate": format_cost_display(cost_estimate),
+            "claude_usage": claude_usage,
+            "narration_text": narration["narration_text"],
+            "narration_path": job_narration_path,
+            "narration_duration_secs": narration["speech_duration_secs"],   # 2026-10-15: was the VIDEO length, mislabelled
+            "narration_sync": narration.get("sync"),
+            "narration_mode": narration.get("narration_mode"),   # 2026-10-22 (Patch B): per_scene | single_text
+            "narration_script_fallback": narration.get("script_fallback_reason"),
+            "scene_facts": narration.get("scene_facts"),   # 2026-10-28: what the photos plainly showed, for review
+            "scene_facts_error": narration.get("scene_facts_error"),
+            "timeline": narration.get("timeline"),   # 2026-10-23 (Patch J)
+            "timeline_fallback": narration.get("timeline_fallback_reason"),
+            "source_description": description_full,
+            "selection_report": selection_report,
+        })
+        _save_job(job_id)
+        await _send_new_partner_job_alert(job_id)
+    except Exception as e:
+        log.exception(f"[Relinx] Background job build failed for {job_id}")
+        if job_id in JOBS:
+            JOBS[job_id].update({"status": "failed", "message": f"Internal error building job: {e}",
+                                 "failure_code": "internal_error",
+                                 "failure_public_message": "An internal error occurred while preparing the video. Our team has been notified."})
+            _save_job(job_id)
+            await _send_partner_webhook(job_id, "failed")
+            await _notify_operator(job_id, "Relinx job failed",
+                subject=f"Job Relinx fallito: {payload.property_name}",
+                body_html=f"<p><b>{payload.property_name}</b> - errore interno: {e}</p>"
+                          f"<p>Job ID: {job_id}, external_ref: {payload.external_ref}</p>",
+                push_message=f"{payload.property_name} - fallito (errore interno)", tags=["x"])
+
+
+def _resolve_real_relinx_job(job_id: str, job: dict):
+    """
+    2026-10-03 (confirmed live, real partner impact): if `job` is a
+    labeled duplicate from a retry-storm incident (source starts with
+    'relinx_duplicate_retry'), find and return the REAL job sharing the
+    same partner_id + external_ref instead. A partner whose client ended
+    up storing one of the duplicate ids (as Relinx's did -- they stored
+    8ccdd462, created during the 2026-10-02 timeout/retry storm, while
+    the real completed job is cc2aead8) would otherwise see a permanently
+    stuck "draft" job instead of the real, completed one. Returns
+    (resolved_job_id, resolved_job_dict); falls back to the original
+    (job_id, job) if no real counterpart is found.
+    """
+    source = job.get("source", "")
+    if not source.startswith("relinx_duplicate_retry"):
+        return job_id, job
+    partner_id = job.get("partner_id")
+    external_ref = job.get("external_ref")
+    for other_id, other_job in JOBS.items():
+        if (other_job.get("partner_id") == partner_id
+                and other_job.get("external_ref") == external_ref
+                and other_job.get("source") == "relinx"):
+            return other_id, other_job
+    return job_id, job
+
+
+@app.get("/v1/videos/{job_id}")
+async def get_video_status_for_partner(job_id: str, partner: dict = Depends(get_current_partner)):
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+    if job.get("partner_id") != partner["partner_id"]:
+        raise HTTPException(status_code=403, detail="This job does not belong to your account")
+    real_id, job = _resolve_real_relinx_job(job_id, job)
+    return _partner_status_payload(job_id, job, real_id)
+
+
+@app.get("/v1/videos")
+async def find_video_by_external_ref(external_ref: str, partner: dict = Depends(get_current_partner)):
+    matches = [(jid, job) for jid, job in JOBS.items()
+               if job.get("partner_id") == partner["partner_id"] and job.get("external_ref") == external_ref]
+    if not matches:
+        raise HTTPException(status_code=404, detail="No video found with that external_ref")
+    # 2026-10-03 (confirmed live, real partner impact): with multiple jobs
+    # sharing one external_ref (a retry-storm duplicate situation), always
+    # prefer the REAL job (source == "relinx") over any labeled
+    # duplicate-retry job -- dict iteration order is not guaranteed to
+    # put the real one first, confirmed live: Relinx's own external_ref
+    # lookup was returning a stuck "draft" duplicate instead of the real,
+    # completed job.
+    real = next((m for m in matches if m[1].get("source") == "relinx"), None)
+    jid, job = real if real else matches[0]
+    return _partner_status_payload(jid, job, jid)
+
+
+@app.get("/v1/videos/{job_id}/download")
+async def download_video_for_partner(job_id: str, partner: dict = Depends(get_current_partner)):
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+    if job.get("partner_id") != partner["partner_id"]:
+        raise HTTPException(status_code=403, detail="This job does not belong to your account")
+    _, job = _resolve_real_relinx_job(job_id, job)
+    if job.get("status") != "done":
+        raise HTTPException(status_code=400, detail=f"Video not ready (status: {job.get('status')})")
+    output_path = job.get("output_path")
+    if not output_path or not Path(output_path).exists():
+        raise HTTPException(status_code=500, detail="Output file missing")
+    filename = f"{job.get('property_name','property').replace(' ','_')}_video.mp4"
+    return FileResponse(output_path, media_type="video/mp4", filename=filename)
+
+
+@app.get("/jobs/")
+def list_jobs():
+    """Returns all jobs sorted by creation date, newest first."""
+    jobs = []
+    for job_id, job in JOBS.items():
+        # Skip rework child jobs — show only parent jobs and completed reworks
+        is_rework = "_rw" in job_id
+        jobs.append({
+            "job_id":       job_id,
+            "is_rework":    is_rework,
+            "parent_job_id": job.get("parent_job_id"),
+            "property_name": job.get("property_name", "Property"),
+            "agency_id":    job.get("agency_id"),
+            "property_id":  job.get("property_id"),
+            "status":       job.get("status", "unknown"),
+            "progress":     job.get("progress", 0),
+            "total_scenes": job.get("total_scenes", 0),
+            "model_tier":   job.get("model_tier", "premium"),
+            "created_at":   job.get("created_at", ""),
+            "cost_estimate": job.get("cost_estimate"),
+            "needs_operator": job.get("needs_operator"),   # 2026-10-09 stage 4b
+            "review_pending": bool(job.get("review_pending")),   # 2026-11-05: scenes approved by the system, not yet seen by a person
+            "auto_approved":  len(job.get("auto_approved") or []),
+            "keep":         bool(job.get("keep")),          # 2026-11-02: protected from the automatic cleanup
+            "has_video":    bool(job.get("output_path") and Path(job["output_path"]).exists()),
+        })
+    jobs.sort(key=lambda j: j["created_at"], reverse=True)
+    return {"jobs": jobs, "total": len(jobs)}
+
+
+
+
+@app.get("/jobs/{job_id}")
+def get_job(job_id: str):
+    if job_id not in JOBS and job_id in INTAKES:       # 2026-10-23 (Patch M): draft still being prepared (or failed)
+        return dict(INTAKES[job_id])
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id].copy()
+    job.pop("output_path", None)
+    # 2026-10-15 (Patch A): which clips came from fal.ai instead of the direct Luma API,
+    # read from the per-clip sidecars; read-only, no job state is changed.
+    try:
+        import clip_provenance
+        job["fal_usage"] = clip_provenance.summarize(JOBS_DIR / job_id, job.get("scenes_config") or [])
+    except Exception as e:
+        log.warning(f"[Job {job_id}] fal_usage summary failed (non-fatal): {e}")
+        job["fal_usage"] = None
+    return job
+
+
+
+
+@app.get("/jobs/{job_id}/image/{scene_index}")
+def get_scene_image(job_id: str, scene_index: int):
+    """Serves the source image for a scene — used to rebuild scene cards
+    when loading a past job from the library. Must return the ORIGINAL
+    uploaded image, not the enhanced/upscaled version — the enhanced
+    version is 30-50MB after aura-sr upscaling and would exceed the
+    20MB upload limit when re-submitted as a fresh generation.
+    """
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job_dir = JOBS_DIR / job_id
+
+
+    # Original upload FIRST — enhanced version only as last-resort fallback
+    candidates = []
+    # 2026-10-09: current jobs store originals as images/<scene_id>.<ext>, not scene_NNN.<ext>
+    scenes_cfg = JOBS[job_id].get("scenes_config", [])
+    sid = scenes_cfg[scene_index].get("scene_id") if 0 <= scene_index < len(scenes_cfg) else None
+    if sid:
+        for ext in [".jpg", ".jpeg", ".png", ".webp"]:
+            candidates.append(job_dir / "images" / f"{sid}{ext}")
+    for ext in [".jpg", ".jpeg", ".png", ".webp"]:
+        candidates.append(job_dir / "images" / f"scene_{scene_index:03d}{ext}")
+    candidates.append(job_dir / "enhanced" / f"scene_{scene_index:03d}_enhanced.jpg")
+    candidates.append(job_dir / "enhanced" / f"scene_{scene_index:03d}_enhanced_lit.jpg")
+
+
+    for path in candidates:
+        if path.exists():
+            return FileResponse(
+                str(path),
+                media_type="image/jpeg",
+                headers={"Cache-Control": "no-store, no-cache, must-revalidate"}
+            )
+
+
+    raise HTTPException(status_code=404, detail="Image not found")
+
+
+
+
+def _resolve_clip_path(job_id: str, scene_index: int) -> Path:
+    """The ONE resolver of a scene's clip file (used by the clip and the clip-preview endpoints)."""
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    # 2026-10-15 (Patch A): after a rework the scene's clip lives under its NEW scene_id
+    # (sc_xxxx.mp4), not scene_NNN.mp4, so the preview kept showing the OLD clip. One shared
+    # resolver (same order as the reassemble step): scene_id file first, then legacy scene_NNN.
+    import clip_provenance
+    _cfg = JOBS[job_id].get("scenes_config") or []
+    _sid = (_cfg[scene_index].get("scene_id") if 0 <= scene_index < len(_cfg) else None)
+    clip_path = clip_provenance.clip_file_for_scene(JOBS_DIR / job_id, scene_index, _sid) \
+        or (JOBS_DIR / job_id / "clips" / f"scene_{scene_index:03d}.mp4")
+    if not clip_path.exists():
+        for job_dir in JOBS_DIR.glob(f"{job_id}*"):
+            candidate = job_dir / "clips" / f"scene_{scene_index:03d}.mp4"
+            if candidate.exists():
+                clip_path = candidate
+                break
+    if not clip_path.exists():
+        raise HTTPException(status_code=404, detail="Clip not found")
+    return clip_path
+
+
+def _warm_previews(job_id: str, include_final: bool = False) -> None:
+    """2026-10-27: starts building the light preview copies of this job's clips (and of the finished video) in the background, right
+    when they become available, so the preview/QC screens open at once. Fail-open: any problem is ignored."""
+    try:
+        import preview_proxy
+        job = JOBS.get(job_id) or {}
+        paths = []
+        for i in range(len(job.get("scenes_config") or [])):
+            try:
+                paths.append(_resolve_clip_path(job_id, i))
+            except Exception:
+                pass
+        if include_final and job.get("output_path"):
+            paths.append(Path(job["output_path"]))
+        preview_proxy.warm(paths, JOBS_DIR / job_id / "preview_cache")
+    except Exception as e:
+        log.warning(f"[Job {job_id}] preview warm-up not started: {e}")
+
+
+def _serve_mp4_file(file_path, request: Request, cache_control: str = "public, max-age=3600"):
+    """Serves an mp4 with HTTP Range support (browser can start playing at once). Used by the clip and the preview endpoints."""
+    import re
+    from fastapi.responses import StreamingResponse
+    file_path = str(file_path)
+    file_size = os.path.getsize(file_path)
+    range_header = request.headers.get("range")
+    if range_header:
+        match = re.match(r"bytes=(\d+)-(\d*)", range_header)
+        if match:
+            start = int(match.group(1))
+            end   = int(match.group(2)) if match.group(2) else file_size - 1
+            end   = min(end, file_size - 1)
+            chunk_size = end - start + 1
+
+            def iter_file(path, start, chunk):
+                with open(path, "rb") as f:
+                    f.seek(start)
+                    remaining = chunk
+                    while remaining > 0:
+                        data = f.read(min(65536, remaining))
+                        if not data:
+                            break
+                        remaining -= len(data)
+                        yield data
+
+            return StreamingResponse(
+                iter_file(file_path, start, chunk_size), status_code=206, media_type="video/mp4",
+                headers={"Content-Range": f"bytes {start}-{end}/{file_size}", "Accept-Ranges": "bytes",
+                         "Content-Length": str(chunk_size), "Cache-Control": cache_control})
+    return FileResponse(file_path, media_type="video/mp4",
+                        headers={"Cache-Control": cache_control, "Accept-Ranges": "bytes", "Content-Length": str(file_size)})
+
+
+@app.get("/jobs/{job_id}/clip/{scene_index}")
+async def get_clip(job_id: str, scene_index: int, request: Request):
+    """Serves a generated clip with range request support for fast browser preview (the original file)."""
+    return _serve_mp4_file(_resolve_clip_path(job_id, scene_index), request)
+
+
+@app.get("/jobs/{job_id}/clip/{scene_index}/preview")
+async def get_clip_preview(job_id: str, scene_index: int, request: Request):
+    """LIGHT viewing copy of a clip (built once, cached). Never used for download or assembly. Falls back to the original."""
+    import preview_proxy
+    clip_path = _resolve_clip_path(job_id, scene_index)
+    light = await asyncio.to_thread(preview_proxy.light_copy, clip_path, JOBS_DIR / job_id / "preview_cache")
+    return _serve_mp4_file(light, request)
+
+
+def _done_output_path(job_id: str) -> str:
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+    if job["status"] not in ["done"]:
+        raise HTTPException(status_code=400, detail=f"Job not ready (status: {job['status']})")
+    output_path = job.get("output_path")
+    if not output_path or not Path(output_path).exists():
+        raise HTTPException(status_code=500, detail="Output file missing")
+    return output_path
+
+
+@app.get("/jobs/{job_id}/preview")
+async def preview_job(job_id: str, request: Request):
+    """LIGHT viewing copy of the finished video. The full-quality file is ONLY /jobs/{id}/download (unchanged)."""
+    import preview_proxy
+    output_path = _done_output_path(job_id)
+    light = await asyncio.to_thread(preview_proxy.light_copy, output_path, JOBS_DIR / job_id / "preview_cache")
+    return _serve_mp4_file(light, request)
+
+
+@app.get("/jobs/{job_id}/video-info")
+async def video_info(job_id: str):
+    """What the person downloads: resolution and size of the ORIGINAL finished video, and of the light preview if it exists."""
+    import preview_proxy
+    output_path = _done_output_path(job_id)
+    out = {"original": await asyncio.to_thread(preview_proxy.info, output_path)}
+    cp = preview_proxy.cache_path(Path(output_path), JOBS_DIR / job_id / "preview_cache")
+    if cp.exists():
+        out["preview"] = await asyncio.to_thread(preview_proxy.info, cp)
+    return out
+
+
+@app.post("/jobs/{job_id}/stop")
+def stop_job(job_id: str):
+    """Marks a job as cancelled. The pipeline checks this flag between scenes
+    and stops before starting the next one — already-generated clips are kept.
+    Cannot interrupt a Veo API call already in progress for the current scene.
+    """
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    JOBS[job_id]["cancel_requested"] = True
+    _save_job(job_id)
+    return {
+        "job_id": job_id,
+        "message": "Cancellazione richiesta — si fermerà dopo la scena corrente."
+    }
+
+
+
+
+@app.get("/jobs/{job_id}/download")
+async def download_job(job_id: str, request: Request):
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+    if job["status"] not in ["done"]:
+        raise HTTPException(status_code=400, detail=f"Job not ready (status: {job['status']})")
+    output_path = job.get("output_path")
+    if not output_path or not Path(output_path).exists():
+        raise HTTPException(status_code=500, detail="Output file missing")
+    filename = f"{job.get('property_name','property').replace(' ','_')}_video.mp4"
+
+
+    file_size = Path(output_path).stat().st_size
+    range_header = request.headers.get("range")
+
+
+    if range_header:
+        import re as _re
+        from fastapi.responses import StreamingResponse
+        match = _re.match(r"bytes=(\d+)-(\d*)", range_header)
+        if match:
+            start = int(match.group(1))
+            end   = int(match.group(2)) if match.group(2) else file_size - 1
+            end   = min(end, file_size - 1)
+            chunk_size = end - start + 1
+
+
+            def _iter(path, s, c):
+                with open(path, "rb") as f:
+                    f.seek(s)
+                    remaining = c
+                    while remaining > 0:
+                        data = f.read(min(65536, remaining))
+                        if not data:
+                            break
+                        remaining -= len(data)
+                        yield data
+
+
+            return StreamingResponse(
+                _iter(output_path, start, chunk_size),
+                status_code=206,
+                media_type="video/mp4",
+                headers={
+                    "Content-Range":  f"bytes {start}-{end}/{file_size}",
+                    "Accept-Ranges":  "bytes",
+                    "Content-Length": str(chunk_size),
+                    "Content-Disposition": f'attachment; filename="{filename}"',
+                }
+            )
+
+
+    return FileResponse(
+        output_path,
+        media_type="video/mp4",
+        filename=filename,
+        headers={"Accept-Ranges": "bytes", "Content-Length": str(file_size)}
     )
 
-    if scene_category_order:
-        labels = [CATEGORY_ITALIAN_LABELS.get(c, c) for c in scene_category_order]
-        scene_order_instruction = (
-            "The video will show the property in this exact order: " + ", poi ".join(labels) + ". "
-            "Describe the property's features roughly following this same order, so the narration matches what's "
-            "visible on screen at each point -- don't jump back to an earlier room after moving on."
-        )
-    else:
-        scene_order_instruction = ""
 
-    # 2026-10-22 (Patch B, Michele): the STANDARD video gets one sentence per scene, written knowing which room each
-    # scene shows (scene_script.py). Used only when the caller passes the 6-scene sequence; anything else (premium,
-    # no sequence, a script the fact check rejects twice) keeps the single-text path below, unchanged.
-    # 2026-10-23 (Patch J): the anchor-driven timeline is tried first when it is switched on; any failure falls through
-    # to the modes below, unchanged. The TTS calls it spent are added to the count.
-    anchored_calls, anchored_fallback = 0, None
-    if anchored_timeline_enabled() and (not premium) and scene_sequence and len(scene_sequence) == STANDARD_SCENES:
-        _an = _block_narration(description, address, price, voice_id, agency_name, scene_sequence)   # 2026-10-24 (Patch Q): blocks replace the free anchored text
-        anchored_calls = _an["tts_calls"]
-        if _an["ok"]:
-            return _an["result"]
-        anchored_fallback = _an["reason"]
-        log.warning(f"[Scraper] Anchored timeline not used, falling back to the previous narration modes: {anchored_fallback}")
 
-    per_scene = False
-    script_info = None
-    narration_text = None
-    if (not premium) and scene_sequence and len(scene_sequence) == STANDARD_SCENES:
-        script_info = _write_standard_scene_script(description, address, price, agency_name, scene_sequence)
-        if script_info["ok"]:
-            narration_text = " ".join(script_info["sentences"])
-            per_scene = True
-        else:
-            log.warning(f"[Scraper] Per-scene script not used, falling back to the single-text narration: "
-                        f"{script_info.get('error')} {script_info.get('problems')}")
 
-    client = None
-    if not per_scene:
-        prompt = NARRATION_PROMPT.format(
-            description=description, address=address or "non specificato", price=price or "non specificato",
-            agency_instruction=agency_instruction, opening_instruction=opening_instruction,
-            feature_scope_instruction=feature_scope_instruction, closing_instruction=closing_instruction,
-            scene_order_instruction=scene_order_instruction,
-        )
-        try:
-            client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-            response = _track_claude(client.messages.create(model=MODEL, max_tokens=2048,
-                                                 messages=[{"role": "user", "content": prompt}]))
-            narration_text = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
-        except Exception as e:
-            return {"ok": False, "narration_text": "", "audio_path": None, "speech_duration_secs": None,
-                    "scene_count": None, "video_duration_secs": None, "tts_calls_used": 0,
-                    "was_trimmed": False, "error": f"initial narration generation failed: {e}"}
+# ── QC approval gate ───────────────────────────────────────────────────────────
 
-    if not narration_text:
-        return {"ok": False, "narration_text": "", "audio_path": None, "speech_duration_secs": None,
-                "scene_count": None, "video_duration_secs": None, "tts_calls_used": 0,
-                "was_trimmed": False, "error": "empty narration returned"}
 
-    if not per_scene:
-        _lc = _proofread([narration_text], description, address, agency_name)   # 2026-10-26: Italian check of the single text (replacements only)
-        if _lc["fixed"] and not _lc["remaining"]:
-            narration_text = _lc["texts"][0]
-
-    # 2026-10-15: the standard video has a FIXED scene count, so the audio is built already synchronised with it.
-    # Premium derives its scene count from the speech, so it is measured plain first and synchronised afterwards.
-    _fixed_scene_secs = None if premium else [SCENE_CLIP_SECS] * STANDARD_SCENES
-    measurement = _measure_tts_duration(narration_text, voice_id, scene_secs=_fixed_scene_secs)
-    tts_calls_used = 1 + anchored_calls
-    if not measurement["ok"]:
-        return {"ok": False, "narration_text": narration_text, "audio_path": None,
-                "speech_duration_secs": None, "scene_count": None, "video_duration_secs": None,
-                "tts_calls_used": tts_calls_used, "was_trimmed": False,
-                "error": "TTS measurement failed on initial narration"}
-
-    speech_secs = measurement["duration_secs"]
-    audio_path = measurement["audio_path"]
-    sync = measurement.get("sync")
-    was_trimmed = False
-
-    # Per-scene mode: sentences 1-5 must be spoken within their own scene. If the real TTS shows some are too long,
-    # ONE rewrite pass shortens only those sentences (the others stay unchanged), then the audio is measured again.
-    # Adopted only if it is valid and no worse; otherwise the first version stays. Same two-TTS-call budget as before.
-    scene_script_sentences = script_info["sentences"] if per_scene else None
-    script_tightened = False
-    if per_scene:
-        import scene_script as _ss
-        bad = _ss.spill_problems(sync, STANDARD_SCENES)
-        if bad and (tts_calls_used - anchored_calls) < 2:
-            revised_sents = _tighten_scene_script(scene_script_sentences, bad, description, address, price, agency_name)
-            log.info(f"[Scraper] Tighten pass: sentences too long {bad} -> rewrite {'received' if revised_sents else 'not usable'}")
-            if revised_sents:
-                remeasure = _measure_tts_duration(" ".join(revised_sents), voice_id, scene_secs=_fixed_scene_secs)
-                tts_calls_used += 1
-                if remeasure["ok"] and len(_ss.spill_problems(remeasure.get("sync"), STANDARD_SCENES)) <= len(bad):
-                    scene_script_sentences = revised_sents
-                    narration_text = " ".join(revised_sents)
-                    speech_secs, audio_path = remeasure["duration_secs"], remeasure["audio_path"]
-                    measurement, sync = remeasure, remeasure.get("sync")
-                    script_tightened = True
-                else:
-                    log.info(f"[Scraper] Tighten pass: rewrite measured but not better (remaining too long: {_ss.spill_problems(remeasure.get('sync'), STANDARD_SCENES)}), first script kept")
-
-    # Single correction pass if outside the tightened band — symmetric:
-    # both directions are actively corrected, not just clamped.
-    if premium:
-        _min_speech, _max_speech = MIN_SPEECH_SECS_FOR_RANGE_PREMIUM, MAX_SPEECH_SECS_FOR_RANGE_PREMIUM
-        _min_scenes, _max_scenes = MIN_SCENES_PREMIUM, MAX_SCENES_PREMIUM
-    else:
-        _min_speech, _max_speech = STANDARD_MIN_SPEECH_SECS, STANDARD_MAX_SPEECH_SECS
-        _min_scenes = _max_scenes = STANDARD_SCENES
-
-    if speech_secs > _max_speech:
-        target_speech = _max_speech - 2.0  # margin under the ceiling, not right at the edge
-        naive_target_words = len(narration_text.split()) * (target_speech / speech_secs)
-        target_words = max(15, int(naive_target_words * 0.85))  # models tend to undershoot cuts
-        if not per_scene:   # per-scene mode never rewrites the whole text (it would break one-sentence-per-scene)
-            try:
-                shorten_prompt = SHORTEN_PROMPT.format(actual_secs=speech_secs, target_secs=target_speech,
-                                                         target_words=target_words, narration=narration_text)
-                response = _track_claude(client.messages.create(model=MODEL, max_tokens=2048,
-                                                     messages=[{"role": "user", "content": shorten_prompt}]))
-                revised = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
-                if revised:
-                    remeasure = _measure_tts_duration(revised, voice_id, scene_secs=_fixed_scene_secs)
-                    tts_calls_used += 1
-                    if remeasure["ok"]:
-                        narration_text, speech_secs, audio_path = revised, remeasure["duration_secs"], remeasure["audio_path"]
-                        measurement, sync = remeasure, remeasure.get("sync")
-            except Exception as e:
-                log.warning(f"[Scraper] Shorten pass failed, proceeding as-is: {e}")
-
-        if speech_secs > _max_speech and audio_path:
-            # still over after one pass — hard cap and fade-trim rather
-            # than build an ever-longer video
-            audio_path = _fade_out_and_trim(audio_path, _max_speech)
-            speech_secs = _max_speech
-            was_trimmed = True
-            sync = None   # the audio was cut after the sync plan was made: the plan no longer describes it
-
-    elif speech_secs < _min_speech and not per_scene:
-        target_speech = _min_speech + 3.0  # margin above the floor
-        words_per_second = len(narration_text.split()) / speech_secs  # measured from this narration, not a hardcoded estimate -- 2026-10-02 fix: WORDS_PER_SECOND_ESTIMATE was referenced but never defined anywhere, crashing with NameError (500 on /v1/videos) any time narration landed below the minimum speech length
-        extra_words = int((target_speech - speech_secs) * words_per_second)
-        try:
-            extend_prompt = EXTEND_PROMPT.format(actual_secs=speech_secs, target_secs=target_speech,
-                                                   extra_words=extra_words, description=description,
-                                                   narration=narration_text)
-            response = _track_claude(client.messages.create(model=MODEL, max_tokens=2048,
-                                                 messages=[{"role": "user", "content": extend_prompt}]))
-            revised = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
-            if revised:
-                remeasure = _measure_tts_duration(revised, voice_id, scene_secs=_fixed_scene_secs)
-                tts_calls_used += 1
-                if remeasure["ok"]:
-                    narration_text, speech_secs, audio_path = revised, remeasure["duration_secs"], remeasure["audio_path"]
-                    measurement, sync = remeasure, remeasure.get("sync")
-        except Exception as e:
-            log.warning(f"[Scraper] Extend pass failed, proceeding as-is "
-                        f"(may result in a shorter-than-usual video — acceptable if the listing "
-                        f"genuinely has little content, not silently forced): {e}")
-        # NOTE: if still short after one extend attempt (e.g. genuinely
-        # sparse listing), we deliberately do NOT loop further or invent
-        # content — scene_count will just land at MIN_SCENES with a bit
-        # more trailing silence than usual, which is preferable to padding
-        # with unsupported claims.
-
-    # 2026-10-15: the lead/trail blank frames are added around the scenes, so the scenes only need to cover the speech
-    # (minus the MAX_OVERFLOW_SECS the trailing blank absorbs). It used to add 2 s here, counting the buffers twice.
-    needed_secs = max(0.0, speech_secs - MAX_OVERFLOW_SECS)
-    scene_count = math.ceil(needed_secs / SCENE_CLIP_SECS)
-    scene_count = max(_min_scenes, min(_max_scenes, scene_count))
-
-    # Always prefer the TIGHTEST-fitting scene count, not just whatever
-    # ceil() lands on — rounding up can otherwise leave far more than
-    # TRAIL_SILENCE_SECS of dead air (e.g. 28.4s speech needing 31.4s
-    # total rounds all the way up to 35s, leaving 5.6s trailing instead of
-    # ~2-3s). Since scene_count is already a ceiling, the trim needed to
-    # drop to one fewer scene is mathematically always LESS than one full
-    # SCENE_CLIP_SECS (i.e. under 5s) — a small, safe edit, not a big cut.
-    # Only kept at the higher scene count if the lower one would be
-    # unreachable (i.e. already at MIN_SCENES).
-    if scene_count > _min_scenes and audio_path:
-        lower_scene_count = scene_count - 1
-        max_speech_for_lower = _speech_band(lower_scene_count)[1]
-        if speech_secs > max_speech_for_lower:
-            trim_amount = speech_secs - max_speech_for_lower
-            audio_path = _fade_out_and_trim(audio_path, max_speech_for_lower)
-            speech_secs = max_speech_for_lower
-            scene_count = lower_scene_count
-            was_trimmed = True
-            sync = None
-            log.info(f"[Scraper] Trimmed {trim_amount:.1f}s to fit {lower_scene_count} scenes "
-                     f"instead of {lower_scene_count + 1} (avoids excess trailing silence)")
-
-    if premium and not was_trimmed:
-        for _ in range(3):   # pauses added by the sync can push the speech past the last scene: add a scene (11 -> 13 at most) and re-assemble
-            resynced = _resync_measurement(measurement, scene_count)
-            if not resynced:
-                break
-            audio_path, speech_secs, sync = resynced
-            wanted = max(_min_scenes, min(_max_scenes, math.ceil(max(0.0, speech_secs - MAX_OVERFLOW_SECS) / SCENE_CLIP_SECS)))
-            if wanted <= scene_count:
-                break
-            scene_count = wanted
-
-    video_duration_secs = scene_count * SCENE_CLIP_SECS
-
-    return {
-        "ok": True,
-        "narration_text": narration_text,
-        "audio_path": audio_path,
-        "speech_duration_secs": speech_secs,
-        "scene_count": scene_count,
-        "video_duration_secs": video_duration_secs,
-        "tts_calls_used": tts_calls_used,
-        "was_trimmed": was_trimmed,
-        "sync": sync,
-        "error": None,
-        # 2026-10-22 (Patch B): how the text was produced. "per_scene" = one sentence per scene, fact-checked;
-        # "single_text" = the previous one-text path (premium, or the per-scene script was rejected / unavailable).
-        "narration_mode": "per_scene" if per_scene else "single_text",
-        "script_attempts": (script_info or {}).get("attempts"),
-        "script_tightened": script_tightened,
-        "script_fallback_reason": ((script_info or {}).get("error") if (script_info and not per_scene) else None),
-        "timeline": None,
-        "timeline_fallback_reason": anchored_fallback,   # 2026-10-23 (Patch J): why the anchor-driven timeline was not used (None = not tried)
+@app.post("/jobs/{job_id}/approve")
+async def approve_job(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    approval: str = Form(...),
+):
+    """
+    Called when user approves flagged scenes in the QC review panel.
+    approval is a JSON object:
+    {
+      "approved_scenes": [0, 2],    <- scene indices user approved
+      "redo_scenes":     [1],       <- scene indices user wants to redo
     }
-
-
-
-def build_final_audio_track(audio_path: str, video_duration_secs: int) -> str:
-    """Builds the COMPLETE audio track: lead silence + narration + trailing
-    silence, padded to exactly video_duration_secs — ready to overlay
-    directly onto the video. Called once scene_count (and therefore real
-    video_duration_secs) is known."""
-    from pydub import AudioSegment
-    narration_audio = AudioSegment.from_file(audio_path)
-    lead_silence = AudioSegment.silent(duration=int(LEAD_SILENCE_SECS * 1000))
-    track_so_far_ms = len(lead_silence) + len(narration_audio)
-    target_ms = int(video_duration_secs * 1000)
-    trail_ms = max(int(TRAIL_SILENCE_SECS * 1000), target_ms - track_so_far_ms)
-    trail_silence = AudioSegment.silent(duration=trail_ms)
-    full_track = lead_silence + narration_audio + trail_silence
-    final_path = audio_path.replace(".mp3", "_full_track.mp3")
-    full_track.export(final_path, format="mp3")
-    return final_path
-
-
-
-# ── Build scenes_config for the standard automated video ───────────────────
-# Converts a selection into the exact format api_server.py's job pipeline
-# expects. Uses a single continuous narration track (applied separately at
-# assembly time, same mechanism as the existing narration-first workflow),
-# so each scene's own "voiceover" is left empty rather than duplicating audio.
-#
-# ASSUMPTION FLAGGED: space_type mapping below (exterior/outdoor/living/
-# kitchen -> "large", bedrooms/bathrooms -> "small") is a reasonable default,
-# not independently re-verified against the full set of valid space_type
-# values in this session — check against real video_generation.py behavior
-# before trusting on a real generation run.
-
-_CATEGORY_TO_SPACE_TYPE = {
-    "exterior": "large", "outdoor": "large", "living": "large", "kitchen": "large",
-    "bedrooms": "small", "bathrooms": "small",
-}
-
-# 2026-10-26: the table lives in camera_plan.CATEGORY_MOVEMENT (ONE source; the two outside categories are derived from camera_plan.ROOM_MOVEMENT).
-# History: July 10 2026 the table used invented movement names that matched no real option of the UI, so the dropdown always showed its
-# first option; every value in camera_plan is checked by test_camera_plan.py against the UI list and the Luma prompt tokens.
-_CATEGORY_TO_POV_MOVEMENT = camera_plan.CATEGORY_MOVEMENT
-
-
-def build_standard_video_scenes_config(selection: dict, captions: dict, clip_duration_secs: int = 5, remove_watermark: bool = True) -> list:
+    Only called when job status is "awaiting_approval".
     """
-    Returns a scenes_config list in PRIORITY_ORDER, ONE SCENE PER SELECTED
-    PHOTO (not one scene per category — a category can have more than one
-    selected photo when scene_count > 6, e.g. exterior getting 2 photos).
-    Each scene: {caption, voiceover, space_type, pov_movement, duration,
-    local_image_path, category}.
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+    if job["status"] != "awaiting_approval":
+        raise HTTPException(status_code=400, detail="Job is not awaiting approval")
 
-    BUG FIXED July 9 2026: this previously only ever took photos[0] per
-    category, silently dropping any additional photos a category received
-    from select_photos_for_scene_count() when scene_count > 6 — confirmed
-    via a live test where 7 photos were selected but only 6 scenes were
-    built, silently losing the second exterior photo.
-
-    CHANGED July 10 2026: "remove_watermark" is pre-set to True on every
-    scene — scraped photos almost certainly carry the source portal's
-    watermark, and this reuses the SAME existing per-scene toggle manual
-    uploads already have, rather than a separate eager removal pass during
-    scraping (see download_selected_photos).
-
-    2026-10-29: remove_watermark is the value every scene gets: True (the default) for a listing scraped from a portal, whose
-    photos carry the portal's watermark; the partner API passes False, because the photos a partner sends are the agency's own
-    originals and our removal only smears the area it paints over (job cc33f8af, the tree).
-    """
-    scenes = []
-    for category, photo in standard_scene_slots(selection):
-        scenes.append({
-            "caption": _scene_caption(captions, category),
-            "voiceover": "",  # continuous narration track applied separately, not per-scene
-            "space_type": _CATEGORY_TO_SPACE_TYPE.get(category, "large"),
-            "pov_movement": _CATEGORY_TO_POV_MOVEMENT.get(category, camera_plan.DEFAULT_MOVEMENT),
-            "duration": clip_duration_secs,
-            "local_image_path": photo.get("local_path"),
-            "category": category,
-            "remove_watermark": bool(remove_watermark),
-        })
-    return scenes
-
-
-def standard_scene_slots(selection: dict) -> list:
-    """2026-10-22 (Patch B): the ONE place that says which scene shows which category, in video order:
-    (category, photo) per selected photo, walking PRIORITY_ORDER. Both build_standard_video_scenes_config()
-    and the per-scene narration (generate_narration_and_derive_scenes) read it, so the sentence written for
-    scene N is about the room scene N really shows."""
-    slots = []
-    for category in PRIORITY_ORDER:
-        for photo in selection["selected"].get(category, []):
-            slots.append((category, photo))
-    return slots
-
-
-def standard_scene_sequence(selection: dict) -> list:
-    """Just the categories of standard_scene_slots(), e.g. ['exterior','living','kitchen','bedrooms','bathrooms','outdoor']."""
-    return [category for category, _ in standard_scene_slots(selection)]
-
-
-# ── Photo selection: priority order + gap detection ─────────────────────────
-
-def _categorize_and_rank_photos(photos: list, categories: list) -> dict:
-    """
-    Shared setup step used by every photo-selection function: groups
-    photos by category (deduplicating by URL as a hard safeguard against
-    the same photo ever being selected twice), then ranks each
-    category's candidates by real quality via rank_photos_by_quality().
-
-    Extracted 2026-07-24 -- this exact categorize+rank logic was
-    duplicated identically between select_photos_for_scene_count() and
-    select_photos_for_scene_count_premium(); this is the one shared
-    place it lives now.
-    """
-    by_category = {cat: [] for cat in categories}
-    seen_urls = set()
-    for p in photos:
-        cat = p.get("category")
-        url = p.get("url")
-        if cat in by_category and url not in seen_urls and not p.get("duplicate_of"):   # 2026-11-06: an identical picture is never a second candidate
-            by_category[cat].append(p)
-            seen_urls.add(url)
-
-    # Rank each category's candidates by real quality (no people, key room
-    # elements present, natural light, spacious framing) BEFORE selecting —
-    # only categories with more than one candidate incur the extra vision
-    # call, and rank_photos_by_quality() itself skips the work for len<=1.
-    for cat in by_category:
-        by_category[cat] = rank_photos_by_quality(cat, by_category[cat])
-
-    # 2026-10-29: the technical-quality filter (blurred / pixelated; watermark and agency logo are only labelled) acts HERE, on the ranked pool, so a
-    # bad photo is never selected and the next candidate takes its place
-    filter_poor_quality_candidates(by_category)
-
-    return by_category
-
-
-QUALITY_RANKING_PROMPT = """You are selecting the best photo(s) of a "{category}" for a real estate video. You'll see {n} candidate photos, labeled Photo 1 through Photo {n}.
-
-Rank them from best to worst based on:
-- NO people visible in the photo — this is a significant penalty, avoid photos with people
-- NO cars or other vehicles visible in the shot — same penalty as people; prefer a clean, uncluttered view of the property itself
-- Clearly shows the defining features of a {category} (e.g. a visible bed for a bedroom, sink/counter/appliances for a kitchen, toilet/shower/sink for a bathroom, a clear building facade for exterior)
-- The defining feature must be DIRECTLY visible, never only as a reflection: a bedroom photo where the bed shows up just in a mirror does NOT show the bed. If the room is empty (no furniture), judge by the page description given with each photo and by what the room clearly is (windows, fittings, layout).
-- Mirrors, mirrored wardrobes and large glass surfaces dominating the frame are a penalty: reflections make the AI video model drift and invent things. A photo with the same room and no big reflective surface is better.
-- A clear, fixed point of interest FAR from the camera in the middle of the frame (a window with a view, the far end of the room, a balcony opening) is a plus: it gives the video camera a safe, natural place to move toward. A photo whose centre is a near object, a blank wall close up, or a door is weaker.
-- Natural light present, well-lit rather than dark or harshly artificial
-- Technical quality of the picture itself: sharp and clean is better. Clearly visible blur, pixelation, blocky JPEG compression, heavy noise, or a large semi-transparent watermark, text or logo across the main subject (a portal's stamp over the room or the building) are a significant penalty: the video model builds the whole clip from this one picture and cannot repair them. An ordinary phone photo with normal sharpness is fine, only clearly visible problems count.
-- The room/space is shown fully and spaciously in frame, not a cramped or heavily cropped angle — a fuller, more complete view is better. This also matters practically: a fuller frame gives the AI video-generation model more real visual information to work with, which reduces the risk of it inventing or distorting details in an ambiguous or heavily-cropped area.
-
-Return ONLY a JSON array of integers, the photo numbers ordered best to worst, e.g. [3, 1, 2]. No other text.
-"""
-
-
-def _tag_rank(photos: list, status: str) -> list:
-    """Records on each photo dict how it was ordered (shown later in selection_report)."""
-    for i, p in enumerate(photos):
-        p["rank_status"] = status
-        p["rank_position"] = i + 1
-    return photos
-
-
-def rank_photos_by_quality(category: str, candidates: list, max_to_compare: int = 6) -> list:
-    """
-    Ranks candidate photos for a category by real visual quality, per the
-    agreed criteria above — replaces the previous behavior of just taking
-    whichever photo was listed first with no quality judgment at all.
-
-    Caps the comparison pool at max_to_compare (default 6) to bound cost
-    and time — for categories with many candidates (e.g. 24 outdoor
-    photos on a large villa), only the first max_to_compare are actually
-    compared. This is a deliberate cost/quality tradeoff, not exhaustive
-    optimization across every candidate.
-
-    Returns the candidates list REORDERED best-first. Falls back to the
-    original, unranked order if the vision call fails for any reason —
-    this is a quality improvement, not something that should block
-    selection if it errors.
-    """
-    if len(candidates) <= 1:
-        return _tag_rank(candidates, "single_candidate")
-
-    pool = candidates[:max_to_compare]
-    remainder = candidates[max_to_compare:]
 
     try:
-        import base64
-        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-        content = [{"type": "text", "text": QUALITY_RANKING_PROMPT.format(category=category, n=len(pool))}]
-        for i, photo in enumerate(pool):
-            fetched = fetch_photo_bytes(photo["url"], photo.get("original_url"), timeout=15)
-            if not fetched["ok"]:
-                raise RuntimeError(fetched["error"])
-            b64 = base64.b64encode(fetched["content"]).decode("utf-8")
-            lab = str(photo.get("label_it") or "").strip()[:80]
-            content.append({"type": "text", "text": f"Photo {i + 1}:" + (f" (page description: {lab})" if lab else "")})
-            content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}})
-
-        response = _track_claude(client.messages.create(model=MODEL, max_tokens=200,
-                                             messages=[{"role": "user", "content": content}]))
-        raw = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
-        order_match = re.search(r"\[[\d,\s]+\]", raw)
-        if not order_match:
-            return _tag_rank(candidates, "fallback_original_order: unparseable model reply")
-        order = json.loads(order_match.group(0))
-        ranked = [pool[i - 1] for i in order if 1 <= i <= len(pool)]
-        ranked_ids = {id(p) for p in ranked}
-        for p in pool:
-            if id(p) not in ranked_ids:
-                ranked.append(p)  # safety: include anything the model's ranking missed
-        result = ranked + remainder
-        for i, p in enumerate(result):
-            p["rank_status"] = "ranked" if i < len(ranked) else "not_compared"
-            p["rank_position"] = i + 1
-        return result
+        data = json.loads(approval)
     except Exception as e:
-        log.warning(f"[Scraper] Quality ranking failed for {category}, using original order: {e}")
-        return _tag_rank(candidates, "fallback_original_order: " + str(e)[:160])
+        raise HTTPException(status_code=400, detail=f"Invalid approval JSON: {e}")
 
 
-def select_photos_for_scene_count(photos: list, scene_count: int) -> dict:
-    """
-    Selects exactly scene_count photos across PRIORITY_ORDER categories —
-    this is what answers the "how many photos per category" question that
-    was previously just a fixed placeholder: the answer is now derived
-    from how much the property's real narration actually needs to say.
+    redo_scenes     = data.get("redo_scenes", [])
+    approved_scenes = data.get("approved_scenes", [])
 
-    FLEXIBLE CATEGORY HANDLING: if a category has zero candidates, its slot
-    is backfilled from OTHER categories that have surplus photos rather
-    than left as a gap. A real, reported gap only happens if there simply
-    aren't enough USABLE photos across ALL categories combined.
+    # 2026-10-28 (P1): a scene without a clip cannot be approved, only redone.
+    _still_missing = [i for i in _missing_clip_scenes(job_id) if i not in redo_scenes]
+    if _still_missing:
+        raise HTTPException(status_code=400,
+                            detail=f"Scene senza clip: {_still_missing}. Vanno rifatte, non approvate.")
 
-    BUG FIXED July 10 2026 — when scene_count < 6, this previously took
-    PRIORITY_ORDER[:scene_count] (the first N categories BY LIST POSITION),
-    which meant "outdoor" (last in the list) was silently excluded EVERY
-    time scene_count came in under 6 — regardless of how many good photos
-    it had. Confirmed via real testing: outdoor had 20+ strong candidates
-    and still got dropped entirely. Now drops whichever category has the
-    FEWEST available photos first, using list position only as a tiebreak
-    — availability decides what gets cut, not raw position in the list.
 
-    Also deduplicates candidates by URL before selection, as a hard
-    safeguard against the same photo ever being selected twice (confirmed
-    via testing that this happened at least once — deduplicating at the
-    source removes any possibility of it, regardless of exact cause).
+    # Update qc_verdict for manually approved scenes so the library
+    # preview reflects the accurate final status, not the stale AI verdict
+    if approved_scenes:
+        scenes = JOBS[job_id].get("scenes", [])
+        for s in scenes:
+            if s.get("index") in approved_scenes:
+                s["qc_verdict"] = "approved"  # was reject/flag, now human-approved
+        JOBS[job_id]["scenes"] = scenes
 
-    Returns the same {"selected": {...}, "gaps": [...]} shape as before,
-    plus "scene_count_requested" for confirmation.
-    """
-    by_category = _categorize_and_rank_photos(photos, PRIORITY_ORDER)
 
-    if scene_count >= len(PRIORITY_ORDER):
-        base_categories = list(PRIORITY_ORDER)
+    if redo_scenes:
+        # 2026-07-21 migration: this was the ONE remaining live call into
+        # the legacy run_rework() (sibling-directory model) -- and it's hit
+        # by ordinary, common usage (any first-time generation where QC
+        # flags a scene), meaning every such job was silently missing this
+        # session's cost tracking, locking, and single-directory-model
+        # guarantees, without anyone realizing it. Now uses the same batch
+        # redo mechanism as the manual "Rifai questa scena" button.
+        scenes_config_now = job.get("scenes_config", [])
+        redo_scene_ids = []
+        for idx in redo_scenes:
+            if 0 <= idx < len(scenes_config_now):
+                sid = scenes_config_now[idx].get("scene_id")
+                if sid:
+                    redo_scene_ids.append(sid)
+
+        await _rework_gate(job_id, redo_scene_ids)
+        if not _acquire_job_lock(job_id, f"QC redo {len(redo_scene_ids)} scene(s)"):
+            lock = _job_lock_status(job_id)
+            raise HTTPException(
+                status_code=409,
+                detail=f"Job is currently being modified ({lock.get('operation')}) — please wait and try again."
+            )
+
+        JOBS[job_id]["status"]  = "running"
+        JOBS[job_id]["message"] = f"Rework: rigenerazione di {len(redo_scene_ids)} scena/e in corso…"
+        background_tasks.add_task(run_redo_scenes_batch, job_id=job_id, scene_ids=redo_scene_ids)
     else:
-        # Drop (len(PRIORITY_ORDER) - scene_count) categories — whichever
-        # have the FEWEST available photos, using later list position only
-        # as a tiebreak when counts are equal. This is what stops a
-        # photo-rich category (e.g. outdoor) from being dropped just
-        # because of where it sits in the priority list.
-        num_to_drop = len(PRIORITY_ORDER) - scene_count
-        drop_order = sorted(PRIORITY_ORDER, key=lambda cat: (len(by_category[cat]), -PRIORITY_ORDER.index(cat)))
-        dropped = set(drop_order[:num_to_drop])
-        base_categories = [cat for cat in PRIORITY_ORDER if cat not in dropped]
+        # All approved — proceed to assembly
+        # 2026-07-21 consolidation: was run_assembly(), now the single
+        # unified assembly implementation (see run_pipeline for detail).
+        JOBS[job_id]["status"]  = "running"
+        JOBS[job_id]["message"] = "Assembling final video…"
+        background_tasks.add_task(run_reassemble_only, job_id=job_id)
 
-    selected = {cat: [] for cat in PRIORITY_ORDER}
-    remaining = scene_count
 
-    # Pass 1: one photo per base category, wherever available
-    for cat in base_categories:
-        if by_category[cat]:
-            selected[cat].append(by_category[cat][0])
-            remaining -= 1
+    _save_job(job_id)
+    return {"job_id": job_id, "status": JOBS[job_id]["status"]}
 
-    # Pass 2: backfill remaining slots (missing categories' slots, AND any
-    # extra slots when scene_count > 6) from whichever categories have
-    # surplus, in priority order — this is the actual "double up" behavior.
-    while remaining > 0:
-        progress = False
-        for cat in PRIORITY_ORDER:
-            if remaining <= 0:
-                break
-            already = len(selected[cat])
-            available = by_category[cat]
-            if len(available) > already:
-                selected[cat].append(available[already])
-                remaining -= 1
-                progress = True
-        if not progress:
-            break  # truly no more photos available anywhere
 
-    total_selected = sum(len(v) for v in selected.values())
-    gaps = []
-    if total_selected < scene_count:
-        gaps.append(f"Only {total_selected} usable photo(s) found across all categories combined, "
-                    f"needed {scene_count} — this listing may need manual photo upload." + _quality_gap_note(photos))
 
-    return {
-        "selected": {cat: photos_list for cat, photos_list in selected.items() if photos_list},
-        "gaps": gaps,
-        "total_selected": total_selected,
-        "scene_count_requested": scene_count,
+
+# ── Rework endpoint ────────────────────────────────────────────────────────────
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# NEW SOLID JOB MODEL — single directory per property, stable scene IDs, locking
+# ══════════════════════════════════════════════════════════════════════════════
+# This replaces the old sibling-directory rework model (kept below for any
+# in-flight old jobs). All NEW edits should use these endpoints.
+#
+# Key guarantees:
+#   - One job = one directory, forever. No more "_rw1234" siblings.
+#   - Scenes identified by permanent scene_id, never by array index.
+#   - Job lock prevents two operations touching the same job at once.
+#   - Every operation either fully succeeds (job_meta.json updated) or fully
+#     fails (job_meta.json untouched) — no partial/corrupted states.
+
+
+@app.get("/jobs/{job_id}/lock-status")
+def get_lock_status(job_id: str):
+    return _job_lock_status(job_id)
+
+
+
+
+# 2026-07-21: the dedicated /jobs/{id}/scenes/{scene_id}/redo endpoint was
+# removed here -- confirmed via direct grep zero remaining callers in
+# ui.html. Its underlying function run_redo_scene() stays (add_scene()
+# below still genuinely depends on it internally).
+@app.post("/jobs/{job_id}/scenes")
+async def add_scene(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    image: UploadFile = File(...),
+    scene_config: str = Form(...),   # JSON: {caption, voiceover, space_type, pov_movement, duration}
+):
+    """Adds one new scene to an existing job, in place. Saves the image
+    directly into this job's own images/ folder — no ambiguity about
+    where the source photo lives, ever.
+    """
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+
+
+    if not _acquire_job_lock(job_id, "add scene"):
+        lock = _job_lock_status(job_id)
+        raise HTTPException(
+            status_code=409,
+            detail=f"Job is currently being modified ({lock.get('operation')}) — please wait and try again."
+        )
+
+
+    try:
+        cfg = json.loads(scene_config)
+    except Exception as e:
+        _release_job_lock(job_id)
+        raise HTTPException(status_code=400, detail=f"Invalid scene_config: {e}")
+
+
+    content = await image.read()
+    if len(content) > 20 * 1024 * 1024:
+        _release_job_lock(job_id)
+        raise HTTPException(status_code=400, detail="Image exceeds 20MB limit")
+    if not _validate_image_bytes(content):
+        _release_job_lock(job_id)
+        raise HTTPException(status_code=400, detail="Invalid image file")
+
+    # 2026-07-17: normalize to the job's already-established output_format
+    # -- inherit, don't re-vote, since this job's canvas is already locked in
+    content = _normalize_photo_to_format(content, job.get("output_format", "landscape"))
+
+    scene_id = _new_scene_id()
+    new_scene = {
+        "scene_id":     scene_id,
+        "caption":      cfg.get("caption", ""),
+        "voiceover":    cfg.get("voiceover", ""),
+        "space_type":   cfg.get("space_type", "large"),
+        "pov_movement": cfg.get("pov_movement", "walk_in_explore"),
+        "duration":     cfg.get("duration", 8),
     }
 
 
-def select_photos_for_scene_count_premium(photos: list, scene_count: int) -> dict:
+    job_dir = JOBS_DIR / job_id
+    img_dir = job_dir / "images"
+    img_dir.mkdir(parents=True, exist_ok=True)
+
+
+    ext = ".jpg"
+    if image.content_type == "image/png":  ext = ".png"
+    elif image.content_type == "image/webp": ext = ".webp"
+    dest = img_dir / f"{scene_id}{ext}"
+    with open(dest, "wb") as f:
+        f.write(content)
+    log.info(f"[AddScene] Saved new scene image: {dest}")
+
+
+    scenes_config = job.get("scenes_config", [])
+    scenes_config.append(new_scene)
+    job["scenes_config"]  = scenes_config
+    job["total_scenes"]   = len(scenes_config)
+    job["status"] = "running"
+    job["message"] = "Generazione nuova scena in corso…"
+    _save_job(job_id)
+
+
+    background_tasks.add_task(run_redo_scene, job_id=job_id, scene_id=scene_id)
+    return {"job_id": job_id, "scene_id": scene_id, "status": "running"}
+
+
+
+
+@app.delete("/jobs/{job_id}/scenes/{scene_id}")
+async def delete_scene(job_id: str, background_tasks: BackgroundTasks):
+    """Removes a scene from the job and re-assembles, in place."""
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+
+
+    if not _acquire_job_lock(job_id, "delete scene"):
+        lock = _job_lock_status(job_id)
+        raise HTTPException(status_code=409, detail=f"Job is currently being modified ({lock.get('operation')})")
+
+
+    scenes_config = job.get("scenes_config", [])
+    scenes_config = [s for s in scenes_config if s.get("scene_id") != scene_id]
+    job["scenes_config"] = scenes_config
+    job["total_scenes"]  = len(scenes_config)
+    job["status"] = "running"
+    job["message"] = "Riassemblaggio dopo rimozione scena…"
+    _save_job(job_id)
+
+
+    background_tasks.add_task(run_reassemble_only, job_id=job_id)
+    return {"job_id": job_id, "status": "running"}
+
+
+
+
+# ── 2026-11-06: automatic start of partner drafts (auto_start.py) + operator status page ─────────────────
+_AUTO_START_CHECKED = {}   # job_id -> draft_check results (a draft does not change while it waits)
+
+
+# ── 2026-11-06: release mode (Michele): "manual" = the partner sees "completed" only after the operator releases the job (the default,
+# and what POST /jobs/{id}/release always did); "auto" = the system releases a finished partner job by itself. Switched from the operator page.
+RELEASE_MODE_FILE = JOBS_DIR / "_release_mode.json"
+
+
+def _release_mode() -> str:
+    try:
+        m = json.loads(RELEASE_MODE_FILE.read_text()).get("mode")
+        return m if m in ("manual", "auto") else "manual"
+    except Exception:
+        return "manual"
+
+
+@app.post("/operator/release-mode")
+async def set_release_mode(mode: str = Form(...)):
+    if mode not in ("manual", "auto"):
+        raise HTTPException(status_code=400, detail="mode must be manual or auto")
+    RELEASE_MODE_FILE.write_text(json.dumps({"mode": mode, "changed_at": datetime.utcnow().isoformat()}))
+    log.info(f"[Release] mode set to {mode}")
+    return {"mode": mode}
+
+
+async def _auto_release_tick():
+    if _release_mode() != "auto":
+        return
+    for jid, j in list(JOBS.items()):
+        if (j.get("source") == "relinx" and j.get("status") == "done" and not j.get("released")
+                and not j.get("needs_operator")
+                and not (any((j.get("awaiting_scenes") or {}).get(k) for k in ("rejected", "flagged", "failed"))
+                         if isinstance(j.get("awaiting_scenes"), dict) else j.get("awaiting_scenes"))):
+            try:
+                await release_job(jid)           # the SAME path as the operator's release button
+                log.info(f"[Job {jid}] released automatically (release mode auto)")
+            except Exception as e:
+                log.warning(f"[Job {jid}] automatic release failed (non-fatal): {e}")
+
+
+async def _auto_start_tick():
+    import auto_start
+    import draft_check
+    from pathlib import Path as _P
+
+    def _check(jid):
+        if jid not in _AUTO_START_CHECKED:
+            _AUTO_START_CHECKED[jid] = draft_check.check_job(jid, _P(JOBS_DIR))["results"]
+        res = list(_AUTO_START_CHECKED[jid])
+        try:   # the SAME duplicate rule as gial_start.py (about 17 EUR were lost to regenerated listings on 2026-11-05)
+            import gial_start
+            dup = gial_start.same_listing_done(jid, _P(JOBS_DIR))
+            if dup:
+                res.append(("FAIL", "DUP", f"the same listing already has a finished video ({', '.join(dup)})"))
+        except Exception as e:
+            log.warning(f"[AutoStart] duplicate check failed (non-fatal): {e}")
+        return res
+
+    actions = await asyncio.to_thread(auto_start.decide, dict(JOBS), datetime.utcnow(), _check) if auto_start.enabled() else []
+    await _auto_release_tick()
+    for a in actions:
+        jid, job = a["job_id"], JOBS.get(a["job_id"])
+        if not job or job.get("status") != "draft":
+            continue
+        now_iso = datetime.utcnow().isoformat()
+        prev = (job.get("auto_start") or {})
+        if a["action"] == "wait":
+            if prev.get("state") != "waiting" or prev.get("reason") != a["reason"]:
+                job["auto_start"] = {"state": "waiting", "reason": a["reason"], "at": now_iso}
+                _save_job(jid)
+        elif a["action"] == "refuse":
+            job["auto_start"] = {"state": "refused", "reason": a["reason"], "at": now_iso}
+            _save_job(jid)
+            log.warning(f"[Job {jid}] auto-start refused: {a['reason']}")
+            await _notify_operator(
+                jid, "Auto-start refused",
+                subject=f"Bozza non idonea, non avviata: {job.get('property_name') or jid}",
+                body_html=f"<p>La bozza {job.get('property_name') or jid} non supera il controllo ed e' rimasta in bozza.</p><p>{a['reason']}</p><p>Job ID: {jid}</p>",
+                push_message=f"Bozza {job.get('property_name') or jid} non avviata: controlla", tags=["warning"])
+        elif a["action"] == "start":
+            job["auto_start"] = {"state": "started", "reason": a["reason"], "at": now_iso}
+            _save_job(jid)
+            try:
+                bt = BackgroundTasks()
+                await start_generation_for_draft(jid, bt)     # the SAME path as the "Genera Video" button / gial_start
+                asyncio.create_task(bt())
+                log.info(f"[Job {jid}] auto-started ({a['reason']})")
+            except Exception as e:
+                job["auto_start"] = {"state": "waiting", "reason": f"start failed, will retry: {e}", "at": now_iso}
+                _save_job(jid)
+                log.warning(f"[Job {jid}] auto-start could not start the job: {e}")
+
+
+async def _auto_start_loop():
+    while True:
+        try:
+            await _auto_start_tick()
+        except Exception as e:
+            log.warning(f"[AutoStart] tick failed (non-fatal): {e}")
+        await asyncio.sleep(60)
+
+
+@app.on_event("startup")
+async def _auto_start_boot():
+    import auto_start
+    if auto_start.enabled():
+        log.info(f"[AutoStart] ON: cap {auto_start.cap_eur():.0f} EUR / 24h, max {auto_start.max_active()} jobs at once")
+    else:
+        log.info("[AutoStart] start off (PVS_AUTO_START not set)")
+    log.info(f"[Release] mode: {_release_mode()} (manual = the agency gets nothing until the operator releases the job)")
+    asyncio.create_task(_auto_start_loop())      # one loop: the automatic start (if on) and the automatic release (if the mode is auto)
+
+
+@app.get("/operator/status")
+async def operator_status():
+    """Everything the operator page shows: the switches, the money committed, and one row per recent job."""
+    import auto_start
+    now = datetime.utcnow()
+    rows = []
+    for jid, j in JOBS.items():
+        try:
+            created = datetime.fromisoformat(j.get("created_at") or "")
+        except ValueError:
+            continue
+        if now - created > timedelta(hours=72) and j.get("status") == "done" and not j.get("review_pending"):
+            continue
+        det, aw = [], (j.get("awaiting_scenes") if isinstance(j.get("awaiting_scenes"), dict) else {})
+        for kind in ("rejected", "flagged", "failed"):
+            for i in aw.get(kind) or []:
+                q = next((x for x in (j.get("qc_results") or []) if x.get("scene") == i and x.get("type") == "video"), {}) or {}
+                det.append({"scene": i, "kind": kind, "severity": q.get("severity"), "issues": [str(x)[:220] for x in (q.get("issues") or [])][:3]})
+        rows.append({"job_id": jid, "name": j.get("property_name"), "source": j.get("source"), "status": j.get("status"),
+                     "progress": j.get("progress"), "message": str(j.get("message") or "")[:140], "created_at": j.get("created_at"),
+                     "cost_eur": auto_start.job_cost_eur(j), "auto_start": j.get("auto_start"),
+                     "auto_reworked": len(j.get("auto_reworked") or []), "auto_approved": j.get("auto_approved") or [],
+                     "review_pending": bool(j.get("review_pending")), "released": bool(j.get("released")), "stops": len(det), "stops_detail": det,
+                     "auto_approved_scenes": [a.get("scene") for a in (j.get("auto_approved") or [])],
+                     "needs_operator": bool(j.get("needs_operator"))})
+    rows.sort(key=lambda r: r["created_at"] or "", reverse=True)
+    on = lambda n: os.getenv(n, "0").strip().lower() in ("1", "true", "yes", "on")
+    return {"now": now.isoformat(), "active": auto_start.active_count(JOBS), "max_active": auto_start.max_active(),
+            "spent_24h_eur": round(auto_start.spent_24h(JOBS, now), 2), "cap_eur": auto_start.cap_eur(),
+            "switches": {"auto_start": on("PVS_AUTO_START"), "auto_rework": on("PVS_AUTO_REWORK"),
+                         "auto_approve_flags": on("PVS_AUTO_APPROVE_FLAGS"), "standard_enforce": on("PVS_STANDARD_ENFORCE"),
+                         "luma_resolution": os.getenv("PVS_LUMA_RESOLUTION", "1080p")},
+            "release_mode": _release_mode(), "jobs": rows[:80]}
+
+
+@app.get("/operator/job/{job_id}/input")
+async def operator_job_input(job_id: str):
+    """What the tool was given and what it made of it, for the operator page: original listing link and text, every photo with its
+    verdict (used / excluded and why), the scene facts and the narration."""
+    j = JOBS.get(job_id)
+    if not j:
+        raise HTTPException(status_code=404, detail="Job not found")
+    rep = j.get('selection_report') or {}   # single quotes on purpose: test_selection_report W1 counts the double-quoted keys of the job builders
+    audit = [{"n": a.get("n"), "url": a.get("url"), "label": a.get("label"), "category": a.get("category"), "excluded": a.get("excluded"),
+              "render": bool(a.get("render_accepted"))} for a in (rep.get("photo_audit") or [])][:80]
+    return {"job_id": job_id, "name": j.get("property_name"), "listing_url": j.get("listing_url") or j.get("source_url"),
+            "description": j.get('source_description'), "photo_audit": audit, "excluded_counts": rep.get("excluded_counts") or {},
+            "photos_total": rep.get("photos_total"), "scene_facts": j.get("scene_facts"), "narration_text": j.get("narration_text"),
+            "scenes": [{"i": i, "category": (c or {}).get("category")} for i, c in enumerate(j.get("scenes_config") or [])],
+            "message": j.get("message")}
+
+
+@app.get("/operator-page", response_class=FileResponse)
+def operator_page():
+    return FileResponse(BASE_DIR / "operator_page.html", headers={"Cache-Control": "no-cache"})
+
+
+async def _apply_auto_approval(job_id: str, idxs: list, qc_results: list, notify: bool = True):
+    """2026-11-05 (PVS_AUTO_APPROVE_FLAGS): scenes the system approved by itself are marked, listed for a LATER human review
+    (job['auto_approved'], review_pending) and the operator is told once. Never touches rejected / failed scenes."""
+    import auto_rework as _ar
+    job = JOBS[job_id]
+    for s_ in job.get("scenes", []) or []:
+        if s_.get("index") in idxs:
+            s_["qc_verdict"] = "approved"
+            s_["auto_approved"] = True
+    _prev = [r for r in (job.get("auto_approved") or []) if r.get("scene") not in idxs]
+    job["auto_approved"] = _prev + _ar.review_record(qc_results, idxs)
+    job["review_pending"] = True
+    _save_job(job_id)
+    log.info(f"[Job {job_id}] flags auto-approved: {idxs}")
+    if notify:
+        prop_name = job.get("property_name", "Property")
+        try:
+            await _notify_operator(
+                job_id, "Auto-approved flags",
+                subject=f"Scene auto-approvate da rivedere: {prop_name}",
+                body_html=(f"<p><b>{prop_name}</b> - {len(idxs)} scene segnalate (difetto lieve) approvate in automatico, il video prosegue. "
+                           f"Da rivedere quando puoi; se non vanno usa Rifai.</p><p>Job ID: {job_id}</p>"),
+                push_message=f"{prop_name} - {len(idxs)} scene auto-approvate da rivedere",
+                tags=["eyes"],
+            )
+        except Exception as e:
+            log.warning(f"[Job {job_id}] auto-approval notification failed (non-fatal): {e}")
+
+
+@app.get("/operator/review-queue")
+async def review_queue():
+    """Jobs with scenes approved by the system that a person has not looked at yet (newest first)."""
+    rows = [{"job_id": jid, "property_name": j.get("property_name"), "status": j.get("status"),
+             "created_at": j.get("created_at", ""), "scenes": j.get("auto_approved") or []}
+            for jid, j in JOBS.items() if j.get("review_pending")]
+    rows.sort(key=lambda r: r["created_at"], reverse=True)
+    return {"total": len(rows), "jobs": rows}
+
+
+@app.post("/jobs/{job_id}/review-done")
+async def review_done(job_id: str):
+    """Operator action: the auto-approved scenes of this job were looked at."""
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    JOBS[job_id]["review_pending"] = False
+    _save_job(job_id)
+    return {"job_id": job_id, "review_pending": False}
+
+
+async def _rework_gate(job_id: str, scene_ids: list, force: bool = False):
+    """2026-10-09 (stage 4): the ONE check every paid rework entry point calls
+    before taking the job lock. Limits live in rework_policy. If a limit is
+    hit: the job gets a needs_operator flag, the operator is notified ONCE,
+    and the request is refused with 429. force=True is the operator's
+    explicit decision: budget is reset (and recorded) and the rework goes on."""
+    job = JOBS[job_id]
+    if force:
+        _rwp.reset_budget(job, "forzato dall'operatore")
+        _save_job(job_id)
+        return
+    res = _rwp.evaluate(job, scene_ids)
+    if res["allowed"]:
+        return
+    reason = "; ".join(res["reasons"])
+    if _rwp.flag(job, reason, "rework_cap"):
+        _save_job(job_id)
+        try:
+            await _notify_operator(
+                job_id, "Rework cap",
+                subject=f"Rework bloccato: {job.get('property_name') or job_id}",
+                body_html=f"<p>Rework fermato dal tetto di sicurezza: {reason}.</p>"
+                          f"<p>Job {job_id}. Decide l'operatore: reset del budget o chiusura cosi' com'e'.</p>",
+                push_message=f"Rework bloccato ({reason}) - serve l'operatore",
+                tags=["warning"],
+            )
+        except Exception as e:
+            log.warning(f"[Job {job_id}] Rework-cap notification failed (non-fatal): {e}")
+    raise HTTPException(
+        status_code=429,
+        detail=f"Rework bloccato: {reason}. Serve una decisione dell'operatore "
+               f"(POST /jobs/{job_id}/rework-budget/reset oppure force_rework=1).")
+
+
+class _MissingClips(Exception):
+    """2026-10-28 (P1): the assembly was asked to run while some scenes have no clip.
+    A video is never assembled with scenes silently left out: the job stops in review."""
+    def __init__(self, scenes):
+        super().__init__(f"clip mancanti per le scene {scenes}")
+        self.scenes = list(scenes)
+
+
+def _awaiting_payload(rejected, flagged, failed):
+    """The ONE shape of job['awaiting_scenes'] (QC gate in the pipeline AND the safety net at assembly)."""
+    return {"rejected": list(rejected), "flagged": list(flagged), "failed": list(failed)}
+
+
+def _missing_clip_scenes(job_id: str) -> list:
+    """Indexes of the job's scenes that have no clip file (same resolver as the assembly)."""
+    import clip_provenance
+    job_dir = JOBS_DIR / job_id
+    return [i for i, sc in enumerate(JOBS[job_id].get("scenes_config", []) or [])
+            if clip_provenance.clip_file_for_scene(job_dir, i, (sc or {}).get("scene_id")) is None]
+
+
+async def _rework_after(job_id: str, failed_ids: list):
+    """After a batch rework: scenes whose regeneration failed silently kept
+    their OLD clip. The job must not look like a clean success."""
+    job = JOBS.get(job_id)
+    if not job:
+        return
+    if not failed_ids:
+        if job.pop("rework_failed_scenes", None) is not None:
+            _save_job(job_id)
+        return
+    job["rework_failed_scenes"] = list(failed_ids)
+    reason = ("Rework incompleto: rigenerazione fallita per " + ", ".join(failed_ids)
+              + " (resta la versione precedente)")
+    if _rwp.flag(job, reason, "rework_failed"):
+        _save_job(job_id)
+        try:
+            await _notify_operator(
+                job_id, "Rework failed",
+                subject=f"Rework incompleto: {job.get('property_name') or job_id}",
+                body_html=f"<p>{reason}.</p><p>Job {job_id}.</p>",
+                push_message=reason, tags=["warning"],
+            )
+        except Exception as e:
+            log.warning(f"[Job {job_id}] Rework-failed notification failed (non-fatal): {e}")
+    else:
+        _save_job(job_id)
+
+
+@app.post("/jobs/{job_id}/rework-budget/reset")
+async def reset_rework_budget(job_id: str, note: str = Form("")):
+    """Operator action: fresh rework budget for this job and clears needs_operator."""
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    _rwp.reset_budget(JOBS[job_id], note)
+    _save_job(job_id)
+    return {"job_id": job_id, "rework_counts": {}, "rework_rounds": 0, "needs_operator": None}
+
+
+@app.post("/jobs/{job_id}/keep")
+async def set_job_keep(job_id: str, keep: bool = Form(True)):
+    """2026-11-02: operator flag "tieni": a kept job is never deleted by the automatic cleanup (retention_policy.is_protected)."""
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    JOBS[job_id]["keep"] = bool(keep)
+    _save_job(job_id)
+    return {"job_id": job_id, "keep": bool(keep)}
+
+
+def _redo_deps(job_id: str):
+    """The real outside world for scene_rework.redo_scenes (tests inject fakes)."""
+    import types as _types
+    from voice_generation import generate_speech as _gen_speech
+
+    def progress(pct, message):
+        JOBS[job_id].update({"status": "running", "progress": pct, "message": message})
+        _save_job(job_id)
+        log.info(f"[Job {job_id}] {pct}% — {message}")
+
+    def audio_seconds(path):
+        try:
+            from pydub import AudioSegment
+            return len(AudioSegment.from_file(path)) / 1000.0
+        except Exception as e:
+            log.warning(f"[Job {job_id}] Could not measure audio {path}: {e}")
+            return None
+
+    def enhance(src, dst, do_lighting, do_upscale):
+        # 2026-10-29: the flags come from the job through scene_rework.enhance_flags (the same ones the first generation uses);
+        # this used to be a hard-coded (True, True)
+        from image_enhance import enhance_image
+        return enhance_image(src, dst, do_lighting, do_upscale)
+
+    def remove_watermark(src, dst):
+        from watermark_removal import remove_watermark as _rm
+        return _rm(src, dst)
+
+    def generate_video(*args, **kwargs):
+        from video_generation import generate_video_single
+        ok = generate_video_single(*args, **kwargs)
+        try:   # 2026-11-02: the REAL Claude cost of the described last view (described_view) goes into the job, as the clip QC's does
+            import described_view as _dv
+            _out = args[2] if len(args) > 2 else kwargs.get("output_path")
+            if _out:
+                _dv.merge_usage_into_job(JOBS.get(job_id), _out)
+                import movement_director as _md
+                _md.merge_into_job(JOBS.get(job_id), _out, Path(_out).stem)
+        except Exception as _e:
+            log.warning(f"[Job {job_id}] could not add the described-view cost: {_e}")
+        return ok
+
+    return _types.SimpleNamespace(
+        generate_speech=_gen_speech, audio_seconds=audio_seconds, enhance=enhance, remove_watermark=remove_watermark,
+        generate_video=generate_video, to_thread=asyncio.to_thread,
+        save=lambda: _save_job(job_id), progress=progress, log=log,
+    )
+
+
+def _rework_qc_enabled(job) -> bool:
+    """The clip QC of reworked clips follows the job's own QC switch (default on) and PVS_REWORK_QC=0 turns it off."""
+    return bool(job.get("enable_vision_qc", True)) and os.getenv("PVS_REWORK_QC", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+async def _rework_qc_gate(job_id: str, job_dir, result: dict) -> bool:
+    """Runs scene_rework.qc_redone on the clips just made. True = the job was PARKED at awaiting_approval (no reassembly); False = go on."""
+    job = JOBS[job_id]
+    from vision_analysis import analyse_output
+    deps = _redo_deps(job_id)
+    deps.analyse_clip = analyse_output
+    JOBS[job_id].update({"status": "running", "progress": 90, "message": "QC dei clip rigenerati…"})
+    qc = await asyncio.to_thread(_sr.qc_redone, job, job_dir, result["redone"], deps)
+    _save_job(job_id)
+    if not (qc["rejected"] or qc["flagged"]):
+        return False
+    # 2026-11-06 (PVS_AUTO_APPROVE_FLAGS): after a rework only minor flags left -> approved by the system, listed for a later review, job goes on
+    if not qc["rejected"] and qc["flagged"]:
+        try:
+            import auto_rework as _arq
+            _clr = _arq.approvable_flags(job.get("qc_results") or [], qc["flagged"])
+        except Exception as _e:
+            log.warning(f"[Job {job_id}] auto-approve after rework failed (non-fatal): {_e}")
+            _clr = []
+        if _clr:
+            await _apply_auto_approval(job_id, _clr, job.get("qc_results") or [])
+            return False
+    job["awaiting_scenes"] = _awaiting_payload(qc["rejected"], qc["flagged"], [])
+    msg = (f"QC dopo rework: {len(qc['rejected'])} rifiutate, {len(qc['flagged'])} segnalate. "
+           f"Il video non e' stato riassemblato: rivedi le scene e decidi.")
+    job.update({"status": "awaiting_approval", "progress": 75, "message": msg})
+    # no budget left for a scene that failed again: tell the operator it needs a person (a new rework is refused by the gate anyway)
+    stuck = [s for s in ((job.get("scenes_config") or [])[i].get("scene_id") for i in qc["rejected"] + qc["flagged"])
+             if not _rwp.evaluate(job, [s])["allowed"]]
+    if stuck and _rwp.flag(job, f"QC dopo rework fallito e budget di rework esaurito per {', '.join(stuck)}", "rework_qc_failed"):
+        log.warning(f"[Job {job_id}] rework QC failed and budget exhausted for {stuck}")
+    _save_job(job_id)
+    _warm_previews(job_id)
+    prop_name = job.get("property_name", "Property")
+    try:
+        await _notify_operator(
+            job_id, "Rework QC",
+            subject=f"QC dopo rework da rivedere: {prop_name}",
+            body_html=(f"<p><b>{prop_name}</b> - dopo il rework: {len(qc['rejected'])} scene rifiutate, {len(qc['flagged'])} segnalate. "
+                       f"Il video non e' stato riassemblato.</p><p>Job ID: {job_id}</p>"),
+            push_message=f"{prop_name} - QC dopo rework: {len(qc['rejected'])} rifiutate, {len(qc['flagged'])} segnalate",
+            tags=["warning"],
+        )
+    except Exception as e:
+        log.warning(f"[Job {job_id}] Rework-QC notification failed (non-fatal): {e}")
+    return True
+
+
+async def _run_redo(job_id: str, scene_ids: list, *, video: bool, strict: bool,
+                    policy: bool, label: str):
+    """2026-10-22 (backlog 75, architecture discipline): the ONE runner behind
+    every rework entry point. The per-scene work (voiceover, clip length,
+    photo, clip, scene status) is scene_rework.redo_scenes; this adds what only
+    the server can do: rework budget bookkeeping (policy), cost record, the
+    single reassembly, the failure notice and the job lock.
+      run_redo_scene       video=True  strict=True  policy=False  (a scene being ADDED)
+      run_redo_scenes_batch video=True  strict=False policy=True   (QC redo + "Rifai")
+      run_redo_audio_only  video=False strict=False policy=True   (voice only, no video cost)
     """
-    2026-07-24 (backlog item 35): premium ~1-minute template selection.
+    try:
+        job = JOBS[job_id]
+        job_dir = JOBS_DIR / job_id
+        if policy:
+            if video:
+                _rwp.count(job, scene_ids)
+            _rwp.begin(job, scene_ids, "video" if video else "audio")
+            _save_job(job_id)
 
-    Explicit product decisions this implements:
-    - Sequence includes a taxonomy of "main" + expanded instances per room
-      type (e.g. multiple bedrooms/bathrooms/outdoor spaces), not just one
-      photo per category -- built by reusing rank_photos_by_quality()'s
-      existing best-first ordering: the first selected photo in a
-      category is implicitly "main", any additional ones are "small"/
-      "small_2" etc (no new quality mechanism needed -- that ranking
-      already combines visual quality with content representativeness,
-      e.g. "clearly shows a visible bed for a bedroom").
-    - Outdoor appears both early (right after the facade) and again at
-      the closing, via the two pseudo-category keys defined in
-      PREMIUM_PRIORITY_ORDER.
-    - Three-tier fallback when a category is sparse, in this exact
-      order: (1) expand instances in OTHER large-room/outdoor categories
-      that do have surplus, (2) add categories not in the base template
-      (laundry/office/garage) if the listing has them, (3) last resort --
-      reuse additional photos of the SAME room/space, same as the
-      standard format's existing backfill.
+        result = await _sr.redo_scenes(job, job_dir, scene_ids, _redo_deps(job_id),
+                                       video=video, strict=strict, label=label)
+        _sr.record_rework_cost(job, result["redone"], job.get("model_tier", "premium"), video, job_dir=job_dir)
+        if result.get("watermark_failed"):
+            log.warning(f"[Job {job_id}] rework: watermark removal failed for {result['watermark_failed']}, original photo used")
+        # 2026-10-28 (P2): a rework that gave no clip but left a billed generation behind is still money spent
+        if video:
+            _lost = _sr.lost_generations(job_dir, result["failed"])
+            if _lost:
+                log.warning(f"[Job {job_id}] rework: {len(_lost)} billed generation(s) without a clip counted in the cost: "
+                            f"{[x['lost_generation'] for x in _lost]}")
+                _sr.record_rework_cost(job, _lost, job.get("model_tier", "premium"), True, job_dir=job_dir)
+        _save_job(job_id)
+
+        # 2026-11-02: the reworked clips are judged by the SAME clip QC as the first generation BEFORE anything is reassembled; a rejected or
+        # flagged one goes back to the operator (awaiting_approval) instead of silently into the final video.
+        if video and result["redone"] and _rework_qc_enabled(job):
+            gate = await _rework_qc_gate(job_id, job_dir, result)
+            if gate:
+                if policy:
+                    _rwp.end(JOBS[job_id])
+                    _save_job(job_id)
+                    await _rework_after(job_id, result["failed"])
+                return
+
+        await run_reassemble_only(job_id)
+        if policy:
+            _rwp.end(JOBS[job_id])
+            _save_job(job_id)
+            if video:
+                await _rework_after(job_id, result["failed"])
+
+    except Exception as e:
+        log.error(f"[Job {job_id}] redo (video={video}) failed: {e}", exc_info=True)
+        JOBS[job_id].update({"status": "failed", "message": f"Errore: {str(e)[:200]}"})
+        _save_job(job_id)
+    finally:
+        try:
+            if _rwp.end(JOBS.get(job_id)):
+                _save_job(job_id)
+        except Exception:
+            pass
+        _release_job_lock(job_id)
+
+
+async def run_redo_scene(job_id: str, scene_id: str):
+    """Regenerates ONE scene in place (used when a scene is added), then
+    reassembles the whole job. Thin wrapper: see _run_redo()."""
+    await _run_redo(job_id, [scene_id], video=True, strict=True, policy=False, label="Rework")
+
+
+
+
+async def _send_partner_webhook(job_id: str, event: str):
     """
-    real_categories = ["exterior", "outdoor", "living", "kitchen", "bedrooms", "bathrooms"] + _PREMIUM_EXTRA_CATEGORIES
-    by_category = _categorize_and_rank_photos(photos, real_categories)
+    Backlog item 48 (Relinx): notifies a partner's callback_url when a job
+    reaches a state they care about. No-op for any job without a
+    callback_url -- every manual/URL-scraped job never has one, so this is
+    safe to call unconditionally from shared completion/failure paths.
+    Best-effort: never raises, a failed or slow webhook must never break
+    the assembly pipeline that calls this.
 
-    # Split outdoor's ranked list into two pseudo-categories up front --
-    # the best-ranked photo goes early (right after the facade), the
-    # second-best (if it exists) is reserved for the closing.
-    outdoor_ranked = by_category.pop("outdoor")
-    by_category["outdoor_early"] = outdoor_ranked[:1]
-    by_category["outdoor_late"] = outdoor_ranked[1:2]
-    _outdoor_overflow = outdoor_ranked[2:]  # any additional outdoor photos beyond the two reserved slots
+    Signing is deliberately optional for now -- if WEBHOOK_SIGNING_SECRET
+    is not set in .env, sends unsigned (logs a warning) rather than
+    inventing a scheme Relinx hasn't confirmed how to verify yet.
 
-    selected = {cat: [] for cat in PREMIUM_PRIORITY_ORDER}
-    remaining = scene_count
-
-    # Pass 1: one slot each for the six core categories (outdoor's two
-    # slots both count as "core" here, not fallback expansion).
-    for cat in ["exterior", "outdoor_early", "living", "kitchen", "bedrooms", "bathrooms", "outdoor_late"]:
-        if by_category.get(cat) and remaining > 0:
-            selected[cat].append(by_category[cat][0])
-            remaining -= 1
-
-    # Pass 2 (Tier 1 -- expand instances, prioritizing large rooms/outdoor).
-    # Includes the outdoor overflow pool so a photo-rich outdoor category
-    # can still contribute a 3rd/4th shot here, not just its two reserved
-    # early/late slots.
-    _expand_pool = dict(by_category)
-    _expand_pool["outdoor_early"] = by_category["outdoor_early"] + _outdoor_overflow
-    while remaining > 0:
-        progress = False
-        for cat in _PREMIUM_EXPAND_PRIORITY:
-            if remaining <= 0:
-                break
-            already = len(selected[cat])
-            available = _expand_pool.get(cat, [])
-            if len(available) > already:
-                selected[cat].append(available[already])
-                remaining -= 1
-                progress = True
-        if not progress:
-            break
-
-    # Pass 3 (Tier 2 -- add categories not in the base template, only if
-    # the listing actually has photos there).
-    for cat in _PREMIUM_EXTRA_CATEGORIES:
-        if remaining <= 0:
-            break
-        if by_category.get(cat):
-            selected[cat].append(by_category[cat][0])
-            remaining -= 1
-
-    # Pass 4 (Tier 3 -- last resort: reuse any remaining surplus photo,
-    # anywhere, same room shown from a different angle).
-    while remaining > 0:
-        progress = False
-        for cat in PREMIUM_PRIORITY_ORDER:
-            if remaining <= 0:
-                break
-            already = len(selected[cat])
-            available = _expand_pool.get(cat, by_category.get(cat, []))
-            if len(available) > already:
-                selected[cat].append(available[already])
-                remaining -= 1
-                progress = True
-        if not progress:
-            break  # truly no more photos available anywhere
-
-    total_selected = sum(len(v) for v in selected.values())
-    gaps = []
-    if total_selected < scene_count:
-        gaps.append(f"Only {total_selected} usable premium photo(s) found across all categories combined, "
-                    f"needed {scene_count} -- this listing may not have enough photos for the premium template." + _quality_gap_note(photos))
-
-    return {
-        "selected": {cat: v for cat, v in selected.items() if v},
-        "gaps": gaps,
-        "total_selected": total_selected,
-        "scene_count_requested": scene_count,
-    }
-
-
-def build_premium_video_scenes_config(selection: dict, captions: dict, clip_duration_secs: int = 5, remove_watermark: bool = True) -> list:
+    video_url currently points at the existing /jobs/{id}/download
+    endpoint, which is protected by UI_ACCESS_KEY -- NOT actually
+    downloadable by an external partner yet. A dedicated, partner-key
+    authenticated download endpoint under /v1/ is still needed before
+    this is real for Relinx (see backlog item 48 "not yet built").
     """
-    Premium counterpart to build_standard_video_scenes_config() -- same
-    "one scene per selected photo" pattern, but iterates
-    PREMIUM_PRIORITY_ORDER (which includes the outdoor_early/outdoor_late
-    split) instead of PRIORITY_ORDER, mapping both back to the real
-    "outdoor" category for caption/space_type/pov_movement lookups, since
-    captions and the category-lookup tables are keyed by real category
-    names, not the pseudo-split ones.
+    job = JOBS.get(job_id)
+    if not job or not job.get("callback_url"):
+        return
+    try:
+        import requests, hmac, hashlib, json as _json
+        payload = {
+            "id": job_id,
+            "external_ref": job.get("external_ref"),
+            "status": event,
+        }
+        if event == "completed":
+            payload["video_url"] = f"https://api.propertyvideostudioai.com/v1/videos/{job_id}/download"
+        if event == "failed":
+            payload.update(_partner_failure_fields({**job, "status": "failed"}))
+
+        body = _json.dumps(payload)
+        headers = {"Content-Type": "application/json"}
+        secret = os.getenv("WEBHOOK_SIGNING_SECRET", "")
+        if secret:
+            signature = hmac.new(secret.encode(), body.encode(), hashlib.sha256).hexdigest()
+            headers["X-Signature"] = signature
+        else:
+            log.warning(f"[Job {job_id}] WEBHOOK_SIGNING_SECRET not set -- sending unsigned webhook")
+
+        def _post():
+            return requests.post(job["callback_url"], data=body, headers=headers, timeout=10)
+
+        resp = await asyncio.to_thread(_post)
+        cb_url = job["callback_url"]
+        log.info(f"[Job {job_id}] Partner webhook ({event}) sent to {cb_url}: HTTP {resp.status_code}")
+    except Exception as e:
+        log.warning(f"[Job {job_id}] Partner webhook ({event}) failed (non-fatal): {e}")
+
+
+async def _notify_operator(job_id: str, event: str, subject: str, body_html: str,
+                            push_message: str, priority: str = "default", tags: list = None):
+    try:
+        import maintenance_scheduler
+        result = await asyncio.to_thread(
+            maintenance_scheduler.send_notification,
+            subject, body_html, push_message=push_message, priority=priority, tags=tags,
+        )
+        if result["email"] or result["push"]:
+            log.info(f"[Job {job_id}] {event} alert sent (email={result['email']}, push={result['push']})")
+        else:
+            log.warning(f"[Job {job_id}] {event} alert NOT sent on either channel")
+    except Exception as e:
+        log.warning(f"[Job {job_id}] {event} alert failed (non-fatal): {e}")
+
+
+async def _send_new_partner_job_alert(job_id: str):
     """
-    scenes = []
-    for pseudo_category in PREMIUM_PRIORITY_ORDER:
-        real_category = "outdoor" if pseudo_category in ("outdoor_early", "outdoor_late") else pseudo_category
-        photos = selection["selected"].get(pseudo_category, [])
-        for photo in photos:
-            scenes.append({
-                "caption": _scene_caption(captions, real_category),
-                "voiceover": "",  # continuous narration track applied separately, not per-scene
-                "space_type": _CATEGORY_TO_SPACE_TYPE.get(real_category, "large"),
-                "pov_movement": _CATEGORY_TO_POV_MOVEMENT.get(real_category, camera_plan.DEFAULT_MOVEMENT),
-                "duration": clip_duration_secs,
-                "local_image_path": photo.get("local_path"),
-                "category": real_category,
-                "remove_watermark": bool(remove_watermark),
+    Backlog item 48: alerts the operator by email when a new job arrives
+    from a CRM partner, so there's no need to poll the job list manually.
+    Reuses communication.py's generic send_custom_email() -- NOT
+    maintenance_scheduler.send_maintenance_alert(), whose cooldown logic
+    exists to suppress repeated maintenance errors, the wrong semantics
+    for "alert me on every new job". Reuses the SAME recipient list as
+    maintenance alerts (load_alert_emails()) rather than a separate
+    config mechanism. Best-effort: never raises, a failed alert email
+    must not break job creation.
+    """
+    job = JOBS.get(job_id)
+    if not job:
+        return
+    try:
+        import maintenance_scheduler
+        subject = f"Nuovo job da {job.get('source', 'partner')}: {job.get('property_name', 'Property')}"
+        body_html = (
+            f"<p>È arrivato un nuovo job da {job.get('source', 'partner')}.</p>"
+            f"<p><b>Immobile:</b> {job.get('property_name', 'Property')}<br>"
+            f"<b>External ref:</b> {job.get('external_ref', 'N/A')}<br>"
+            f"<b>Job ID:</b> {job_id}</p>"
+            f"<p>Apri l'app per rivedere scene e narrazione prima di generare il video.</p>"
+        )
+        push_message = f"{job.get('property_name', 'Property')} - in attesa di revisione"
+        result = await asyncio.to_thread(maintenance_scheduler.send_notification, subject, body_html,
+                                          push_message=push_message, tags=["inbox_tray"])
+        if result["email"] or result["push"]:
+            log.info(f"[Job {job_id}] New-job alert sent (email={result['email']}, push={result['push']})")
+        else:
+            log.warning(f"[Job {job_id}] New-job alert NOT sent on either channel")
+    except Exception as e:
+        log.warning(f"[Job {job_id}] New-job alert failed (non-fatal): {e}")
+
+
+async def run_reassemble_only(job_id: str):
+    """Reassembles the final video from whatever clips currently exist for
+    this job's scenes_config, in order. Does not regenerate anything —
+    pure assembly step, using each scene's stable scene_id to find its clip.
+    """
+    def update(status, progress, message):
+        JOBS[job_id].update({"status": status, "progress": progress, "message": message})
+        _save_job(job_id)
+        log.info(f"[Job {job_id}] {progress}% — {message}")
+
+
+    try:
+        job = JOBS[job_id]
+        job_dir = JOBS_DIR / job_id
+        scenes_config = job.get("scenes_config", [])
+
+
+        update("running", 85, "Riassemblaggio video finale…")
+
+
+        clip_paths  = []
+        audio_paths = []
+        missing_clips = []
+        for scene_idx, scene in enumerate(scenes_config):
+            sid = scene.get("scene_id")
+            clip_path  = job_dir / "clips" / f"{sid}.mp4"
+            audio_path = job_dir / "audio" / f"{sid}.mp3"
+
+
+            # FALLBACK: some jobs predate the scene_id architecture and
+            # only have legacy scene_NNN.mp4 / scene_NNN.mp3 files. If the
+            # scene_id-named file isn't found, fall back to the legacy
+            # index-based name — and self-heal by copying it to the new
+            # scene_id name, so this fallback is never needed again for
+            # this job on future reassembly calls.
+            if not clip_path.exists():
+                legacy_clip = job_dir / "clips" / f"scene_{scene_idx:03d}.mp4"
+                if legacy_clip.exists():
+                    shutil.copy2(str(legacy_clip), str(clip_path))
+                    log.info(f"[Job {job_id}] Migrated legacy clip scene_{scene_idx:03d}.mp4 → {sid}.mp4")
+
+
+            if not audio_path.exists():
+                legacy_audio = job_dir / "audio" / f"scene_{scene_idx:03d}.mp3"
+                if legacy_audio.exists():
+                    shutil.copy2(str(legacy_audio), str(audio_path))
+                    log.info(f"[Job {job_id}] Migrated legacy audio scene_{scene_idx:03d}.mp3 → {sid}.mp3")
+
+
+            if not clip_path.exists():
+                # 2026-10-28 (P1): the old code dropped the scene silently: it vanished from the video while the voice kept
+                # talking about it (job cc33f8af). Now collected and the job stops below.
+                log.warning(f"[Job {job_id}] Missing clip for scene {sid} (index {scene_idx}) — assembly will not run")
+                missing_clips.append(scene_idx)
+                continue
+            clip_paths.append(str(clip_path))
+            audio_paths.append(str(audio_path) if audio_path.exists() else None)
+
+
+        if missing_clips:
+            raise _MissingClips(missing_clips)
+        if not clip_paths:
+            raise RuntimeError("Nessuna clip disponibile per l'assemblaggio")
+
+
+        # 2026-10-23 (Patch J, backlog 82): anchor-driven timeline. Only when the job carries one, every scene has its clip
+        # (a missing clip would shift the targets) and the scene count is the one the timeline was calculated for.
+        _targets = None
+        _tl = job.get("timeline")
+        if _tl and _tl.get("mode") == "anchored":
+            _t = _tl.get("targets") or []
+            if len(_t) == len(scenes_config) == len(clip_paths):
+                _targets = [float(x) for x in _t]
+                log.info(f"[Job {job_id}] Anchor-driven timeline: clip targets {_targets}")
+            else:
+                log.warning(f"[Job {job_id}] Anchor-driven timeline NOT applied: {len(_t)} targets, {len(scenes_config)} scenes, "
+                            f"{len(clip_paths)} clips -> normal assembly")
+
+        output_path = str(job_dir / f"{job.get('property_name','Property').replace(' ','_')}_final.mp4")
+        # 2026-07-22 (backlog item 7): resolve this job's client logo, if
+        # any, from the shared agency record -- reads job["agency_id"]
+        # (already set at creation, see backlog item 39), no separate
+        # per-job logo field needed.
+        _logo_path = None
+        _job_agency_id = job.get("agency_id")
+        if _job_agency_id:
+            _agency = cost_model.get_agency(_job_agency_id)
+            # 2026-11-02: agency flag logo_hidden = no logo on the video (file stays)
+            if _agency and _agency.get("logo_path") and not _agency.get("logo_hidden") and os.path.exists(_agency["logo_path"]):
+                _logo_path = _agency["logo_path"]
+        from video_assembly import assemble_property_video
+        ok = await asyncio.to_thread(
+            assemble_property_video,
+            scenes_config=scenes_config,
+            video_clip_paths=clip_paths,
+            audio_paths=audio_paths,
+            image_paths=clip_paths,
+            output_path=output_path,
+            property_name=job.get("property_name", "Property"),
+            transition_style=job.get("transition_style", "fade"),
+            output_format=job.get("output_format", "landscape"),
+            logo_path=_logo_path,
+            show_captions=job.get("show_captions", False),  # 2026-10-08: default OFF
+            scene_target_secs=_targets,   # 2026-10-23 (Patch J): None for every job without an anchor-driven timeline
+        )
+        if not ok:
+            raise RuntimeError("Assemblaggio fallito")
+
+
+        # Apply narration audio if this job has a single continuous
+        # narration track — this is what makes "narration changed but
+        # video durations unchanged" work correctly: reassembly still
+        # runs and picks up the LATEST narration file every time.
+        narration_path = job.get("narration_path")
+        if narration_path and os.path.exists(narration_path):
+            update("running", 95, "Applying narration audio…")
+            await asyncio.to_thread(_overlay_narration_audio, output_path, narration_path, job.get("transition_style", "fade"))
+            log.info(f"[Job {job_id}] Narration audio applied: {narration_path}")
+
+
+        job["output_path"] = output_path
+        job["awaiting_scenes"] = []  # 2026-10-08: clear QC-wait data once the job is finished (was never cleared, left stale on done jobs)
+        update("done", 100, "Video pronto per il download")
+        _warm_previews(job_id, include_final=True)   # 2026-10-27: light copies ready before anybody opens them
+        # 2026-10-02: webhook "completed" spostato su /jobs/{id}/release
+
+
+    except _MissingClips as mc:
+        job = JOBS[job_id]
+        job["awaiting_scenes"] = _awaiting_payload([], [], mc.scenes)
+        update("awaiting_approval", 75,
+               f"Assemblaggio non eseguito: clip mancante per le scene {mc.scenes}. Rifai queste scene dalla revisione.")
+        try:
+            await _notify_operator(
+                job_id, "Clip missing",
+                subject=f"Clip mancanti: {job.get('property_name') or job_id}",
+                body_html=f"<p>Assemblaggio fermato: nessuna clip per le scene {mc.scenes}.</p><p>Job {job_id}.</p>",
+                push_message=f"{job.get('property_name') or job_id} - clip mancanti {mc.scenes}", tags=["warning"],
+            )
+        except Exception as e2:
+            log.warning(f"[Job {job_id}] Missing-clips notification failed (non-fatal): {e2}")
+    except Exception as e:
+        log.error(f"[Job {job_id}] reassembly failed: {e}", exc_info=True)
+        JOBS[job_id].update({"status": "failed", "message": f"Errore assemblaggio: {str(e)[:200]}"})
+        _save_job(job_id)
+        await _send_partner_webhook(job_id, "failed")
+    finally:
+        _release_job_lock(job_id)
+
+
+@app.post("/jobs/{job_id}/release")
+async def release_job(job_id: str):
+    """2026-10-02: operatore conferma che il video e pronto -- per ogni job;
+    per uno Relinx, questo e il momento in cui parte il webhook al partner."""
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+    if job["status"] != "done":
+        raise HTTPException(status_code=400, detail=f"Job not ready to release (status: {job['status']})")
+    if job.get("released"):
+        raise HTTPException(status_code=400, detail="Job already released")
+    job["released"] = True
+    _save_job(job_id)
+    if job.get("source") == "relinx":
+        await _send_partner_webhook(job_id, "completed")
+    return {"job_id": job_id, "released": True, "partner_notified": job.get("source") == "relinx"}
+
+
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Batch redo (NEW SOLID JOB MODEL) — multiple scenes, one locked operation,
+# one reassembly. Replaces the legacy /rework endpoint below for the main
+# "Genera video" button's rework path (2026-07-16 migration). Until 2026-10-22
+# this duplicated run_redo_scene's per-scene steps; all three redo runners now
+# share ONE engine (scene_rework.redo_scenes via _run_redo).
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@app.post("/jobs/{job_id}/scenes/redo-audio-only")
+async def redo_audio_only(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    scene_ids: str = Form(...),
+):
+    """2026-07-23: regenerates ONLY the TTS audio for the given scenes,
+    reusing their existing video clips untouched -- no Luma/Veo cost at
+    all, just the cheap ElevenLabs charge. Built for fixing or testing
+    audio timing (e.g. the lead/trail buffer) without paying to
+    regenerate video that was already fine."""
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+
+    if job.get("status") not in ("done", "failed", "awaiting_approval"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job must be completed before an audio-only rework (current status: {job.get('status')})"
+        )
+
+    try:
+        ids = json.loads(scene_ids)
+        if not isinstance(ids, list):
+            raise ValueError("scene_ids must be a JSON array")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid payload: {e}")
+
+    if not _acquire_job_lock(job_id, f"audio-only redo {len(ids)} scene(s)"):
+        lock = _job_lock_status(job_id)
+        raise HTTPException(
+            status_code=409,
+            detail=f"Job is currently being modified ({lock.get('operation')}) -- please wait and try again."
+        )
+
+    job["status"]  = "running"
+    job["message"] = f"Rework audio: rigenerazione di {len(ids)} scena/e in corso..."
+    _save_job(job_id)
+
+    background_tasks.add_task(run_redo_audio_only, job_id=job_id, scene_ids=ids)
+    return {"job_id": job_id, "status": "running", "scenes_to_redo": ids}
+
+
+@app.post("/jobs/{job_id}/scenes/redo-batch")
+async def redo_scenes_batch(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    scenes_config: str = Form(...),
+    redo_scene_ids: str = Form(...),
+    new_images: list[UploadFile] = File(default=[]),
+    new_image_indices: list[str] = Form(default=[]),
+    transition_style: str = Form(None),
+    force_rework: str = Form(None),
+):
+    """
+    Batches multiple scene redos into ONE locked operation with ONE final
+    reassembly, and persists the FULL current scene list (captions/voiceover
+    for every scene, not just the ones being redone) -- matching what the
+    legacy endpoint did, but in-place in this job's own directory with no
+    sibling job ever created.
+    """
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+
+    # SAFETY NET (2026-07-17 fix): the frontend has a known pre-existing gap
+    # where a freshly-created draft job's currentJobStatus can incorrectly
+    # read as not-draft, misrouting a narration-triggered duration change
+    # into a rework call for a job that was never actually generated. The
+    # legacy /rework endpoint always caught this with a clear error; this
+    # endpoint didn't, and would silently misprocess a draft job as if it
+    # were a rework. Restoring that same guard here.
+    if job.get("status") not in ("done", "failed", "awaiting_approval"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job must be completed before rework (current status: {job.get('status')})"
+        )
+
+    try:
+        new_scenes_config = json.loads(scenes_config)
+        redo_ids = json.loads(redo_scene_ids)
+        if not isinstance(new_scenes_config, list) or not isinstance(redo_ids, list):
+            raise ValueError("scenes_config and redo_scene_ids must be JSON arrays")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid payload: {e}")
+
+    if not _acquire_job_lock(job_id, f"batch redo {len(redo_ids)} scene(s)"):
+        lock = _job_lock_status(job_id)
+        raise HTTPException(
+            status_code=409,
+            detail=f"Job is currently being modified ({lock.get('operation')}) — please wait and try again."
+        )
+
+    try:
+        new_scenes_config = _ensure_scene_ids(new_scenes_config)
+
+        job_dir = JOBS_DIR / job_id
+        img_dir = job_dir / "images"
+        img_dir.mkdir(parents=True, exist_ok=True)
+
+        for upload, idx_str in zip(new_images, new_image_indices):
+            try:
+                idx = int(idx_str)
+                if idx >= len(new_scenes_config):
+                    continue
+                content = await upload.read()
+                if len(content) > 20 * 1024 * 1024:
+                    log.warning(f"[BatchRedo] New image at index {idx} exceeds 20MB, skipping")
+                    continue
+                if not _validate_image_bytes(content):
+                    log.warning(f"[BatchRedo] New image at index {idx} failed validation, skipping")
+                    continue
+                # 2026-07-17: normalize to the job's already-established
+                # output_format -- inherit, don't re-vote, since this job
+                # already has generated scenes locked to a specific canvas
+                content = _normalize_photo_to_format(content, job.get("output_format", "landscape"))
+                new_scene_id = new_scenes_config[idx]["scene_id"]
+                ext = Path(upload.filename).suffix.lower() or ".jpg"
+                if upload.content_type == "image/jpeg": ext = ".jpg"
+                elif upload.content_type == "image/png":  ext = ".png"
+                elif upload.content_type == "image/webp": ext = ".webp"
+                dest = img_dir / f"{new_scene_id}{ext}"
+                with open(dest, "wb") as f:
+                    f.write(content)
+                if new_scene_id not in redo_ids:
+                    redo_ids.append(new_scene_id)
+            except Exception as e:
+                log.error(f"[BatchRedo] Failed to save new image at index {idx_str}: {e}")
+
+        valid_ids = {s.get("scene_id") for s in new_scenes_config}
+        redo_ids = [rid for rid in redo_ids if rid in valid_ids]
+        await _rework_gate(job_id, redo_ids, force=str(force_rework or "").strip().lower() in ("1", "true", "yes"))
+
+        if transition_style:
+            job["transition_style"] = transition_style
+
+        job["scenes_config"] = new_scenes_config
+        job["total_scenes"]  = len(new_scenes_config)
+        job["status"]  = "running"
+        job["message"] = f"Rework: rigenerazione di {len(redo_ids)} scena/e in corso…"
+        _save_job(job_id)
+    except Exception:
+        _release_job_lock(job_id)
+        raise
+
+    background_tasks.add_task(run_redo_scenes_batch, job_id=job_id, scene_ids=redo_ids)
+    return {"job_id": job_id, "status": "running", "scenes_to_redo": redo_ids}
+
+
+async def run_redo_scenes_batch(job_id: str, scene_ids: list):
+    """Regenerates MULTIPLE scenes in one locked operation, then reassembles
+    once at the end. See redo_scenes_batch() above for context. Thin wrapper:
+    see _run_redo()."""
+    await _run_redo(job_id, scene_ids, video=True, strict=False, policy=True, label="Rework")
+
+
+async def run_redo_audio_only(job_id: str, scene_ids: list):
+    """2026-07-23: regenerates ONLY the TTS audio for the given scenes, reusing
+    their EXISTING video clips untouched -- no Luma/Veo cost, just the cheap
+    ElevenLabs charge. Thin wrapper: see _run_redo() (2026-10-22)."""
+    await _run_redo(job_id, scene_ids, video=False, strict=False, policy=True, label="Rework audio")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LEGACY sibling-directory rework model — kept only for any old in-flight jobs.
+# Do not build new features on this. Use the endpoints above instead.
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+# 2026-07-21: the legacy /jobs/{id}/rework endpoint (sibling-directory
+# model) was removed here, along with run_rework() (see the end of this
+# file) -- confirmed via direct grep zero remaining callers in ui.html.
+# Fully superseded by /jobs/{id}/scenes/redo-batch.
+# ── Pipeline runner ────────────────────────────────────────────────────────────
+
+
+def _record_actual_cost(job_id, scenes_config, models_used, audio_chars,
+                        do_upscale, enable_vision_qc, model_tier):
+    """Single place that computes and stores a job's actual generation cost
+    (2026-10-09). Called when the pipeline pauses at the QC gate AND when it
+    finishes without one -- before this, only the second path recorded it."""
+    claude_cost_eur = JOBS[job_id].get("claude_usage", {}).get("cost_eur", 0.0)
+    from cost_tracker import calculate_actual_cost, format_cost_display
+    import clip_provenance
+    # 2026-10-26: price each clip by the model that REALLY made it (sidecar), not by the tier name
+    used_models = [clip_provenance.used_model_of(clip_provenance.clip_file_for_scene(JOBS_DIR / job_id, i, (sc or {}).get("scene_id")))
+                   for i, sc in enumerate(scenes_config or [])]
+    actual = calculate_actual_cost(
+        scenes_config, models_used, audio_chars,
+        do_upscale=do_upscale, do_vision_qc=enable_vision_qc,
+        model_tier=model_tier, claude_cost_eur=claude_cost_eur,
+        used_models=used_models,
+    )
+    JOBS[job_id]["cost_actual_raw"] = actual
+    JOBS[job_id]["cost_actual"] = format_cost_display(actual, previous_reworks=JOBS[job_id].get("reworks", []))
+
+
+async def run_pipeline(
+    job_id:           str,
+    job_dir:          Path,
+    image_paths:      list,
+    scenes_config:    list,
+    property_name:    str,
+    voice_id:         str,
+    do_lighting:      bool,
+    do_upscale:       bool,
+    transition_style: str  = "fade",
+    enable_vision_qc: bool = True,
+    do_video_upscale: bool = True,
+    model_tier:       str  = "standard",
+    lighting:         str  = "bright_natural",
+    intensity:        str  = DEFAULT_INTENSITY,
+    output_format:    str  = "landscape",  # 2026-07-27 URGENT FIX: was incorrectly job.get(...) with no local job variable
+    resume:           bool = False,  # 2026-10-08: reuse valid images/audio/clips already on disk
+):
+    def update(status, progress, message):
+        JOBS[job_id].update({"status": status, "progress": progress, "message": message})
+        log.info(f"[Job {job_id}] {progress}% — {message}")
+
+
+    # Store scenes_config for approval step
+    JOBS[job_id]["scenes_config"] = scenes_config
+
+
+    try:
+        update("running", 2, "Starting pipeline…")
+
+
+        from credit_monitor import check_and_alert
+        credit_status = check_and_alert(job_id=job_id, property_name=property_name)
+        JOBS[job_id]["credits"] = credit_status
+
+
+        enhanced_dir    = job_dir / "enhanced"
+        audio_dir       = job_dir / "audio"
+        video_clips_dir = job_dir / "clips"
+        for d in [enhanced_dir, audio_dir, video_clips_dir]:
+            d.mkdir(exist_ok=True)
+
+
+        n              = len(image_paths)
+        enhanced_paths = []
+        audio_paths    = []
+        video_clip_paths = []
+        scene_statuses = []
+        qc_results     = []
+        models_used    = []
+        audio_chars    = []
+
+
+        # ── Stage 1: Watermark removal (explicit per-scene, AI-driven) ────
+        # Only runs for scenes where the user explicitly checked the
+        # "remove watermark" toggle — never automatic. If removal fails,
+        # we fall back to the original image and flag it as a QC issue
+        # rather than silently using a possibly-botched result.
+        from watermark_removal import remove_watermark
+        watermark_qc_issues = []
+        working_image_paths = list(image_paths)  # may get swapped per-scene below
+
+
+        for i, scene in enumerate(scenes_config):
+            if not scene.get("remove_watermark"):
+                continue
+            update("running", int(2 + (i/n)*3), f"Rimozione watermark scena {i}…")
+            wm_out = str(enhanced_dir / f"scene_{i:03d}_dewatermarked.jpg")
+            if resume and _reusable_image(wm_out):
+                wm_result = {"ok": True}
+            else:
+                wm_result = await asyncio.to_thread(remove_watermark, image_paths[i], wm_out)
+            if wm_result.get("ok"):
+                working_image_paths[i] = wm_out
+                log.info(f"[Job {job_id}] Watermark removed for scene {i}")
+            else:
+                watermark_qc_issues.append(i)
+                log.warning(f"[Job {job_id}] Watermark removal failed for scene {i} — "
+                            f"using original image, flagged for QC review")
+
+
+        # ── Stage 2: Image enhancement ────────────────────────────────────
+        from image_enhance import enhance_image
+        for i, img_path in enumerate(working_image_paths):
+            update("running", int(5 + (i/n)*15), f"Enhancing image {i} of {n-1} (scene_{i:03d})…")
+            out    = str(enhanced_dir / f"scene_{i:03d}_enhanced.jpg")
+            # 2026-10-09: with do_lighting the final file is "<out>_lit.jpg" (image_enhance.py),
+            # not <out> itself, so the reuse check must look for it too
+            _prev = [out.replace(".jpg", "_lit.jpg"), out] if do_lighting else [out]
+            _prev_ok = next((c for c in _prev if _reusable_image(c)), None) if resume else None
+            if _prev_ok:
+                result = _prev_ok
+            else:
+                result = await asyncio.to_thread(enhance_image, img_path, out, do_lighting, do_upscale)
+            enhanced_paths.append(result)
+
+
+        # Surface any watermark removal failures as QC issues now that
+        # enhancement is done and qc_results exists to append into
+        for i in watermark_qc_issues:
+            qc_results.append({
+                "scene": i, "type": "watermark",
+                "verdict": "flag",
+                "issues": ["Rimozione watermark non riuscita — immagine originale usata, watermark ancora presente"],
             })
-    return scenes
 
 
-if __name__ == "__main__":
-    import sys
-    if len(sys.argv) < 2:
-        print("Usage: python3 listing_scraper.py <listing_url>")
-        sys.exit(1)
+        # ── Stage 3: TTS audio + TTS QC → sets actual clip duration ──────
+        from voice_generation import generate_speech as generate_voice
+        from vision_analysis  import analyse_tts
 
-    result = extract_listing(sys.argv[1])
-    if not result["ok"]:
-        print(json.dumps(result, indent=2, ensure_ascii=False))
-        sys.exit(1)
 
-    print(f"--- Extraction: {len(result['photos'])} photos found ---")
-    by_cat = {}
-    upgraded_count = 0
-    for p in result["photos"]:
-        by_cat.setdefault(p["category"], 0)
-        by_cat[p["category"]] += 1
-        if p.get("resolution_upgraded"):
-            upgraded_count += 1
-    for cat, count in by_cat.items():
-        print(f"  {cat}: {count}")
-    print(f"  Resolution upgrade: {upgraded_count}/{len(result['photos'])} photos got a higher-res URL")
+        actual_durations = []   # per scene — set from audio or user slider
+        # 2026-07-27: real bug -- a TTS failure here (e.g. an invalid
+        # voice ID) previously fell through to the exact same audio_paths
+        # None as a scene with NO voiceover text at all, silently, with
+        # no log warning and no way for the UI to distinguish "nothing to
+        # say" from "tried to generate audio and it failed" -- both
+        # showed as "skipped". This list tracks the real failures so both
+        # get labeled correctly and surfaced.
+        tts_failed_scenes = []
 
-    print("\n--- Resolving uncategorized photos via vision QC fallback ---")
-    result["photos"] = resolve_uncategorized_photos(result["photos"])
-    by_cat = {}
-    for p in result["photos"]:
-        by_cat.setdefault(p["category"], 0)
-        by_cat[p["category"]] += 1
-    for cat, count in by_cat.items():
-        print(f"  {cat}: {count}")
 
-    print(f"\nDescription: {result['description'][:100]}...")
-    print(f"Price: {result['price']}")
-    print(f"Address: {result['address']}")
+        for i, (scene, img) in enumerate(zip(scenes_config, enhanced_paths)):
+            voiceover     = scene.get("voiceover", "").strip()
+            audio_out     = str(audio_dir / f"scene_{i:03d}.mp3")
+            user_duration = int(scene.get("duration", 10))
+            update("running", int(20 + (i/n)*15), f"Generating audio {i} of {n-1} (scene_{i:03d})…")
 
-    # NEW ORDER: narration is generated and measured FIRST — scene count
-    # (and therefore how many photos to select) is DERIVED from the real
-    # measured narration length, not decided upfront.
-    print("\n--- Generating natural narration and measuring real TTS duration ---")
-    narration = generate_narration_and_derive_scenes(result["description"], result["address"], result["price"])
-    if not narration["ok"]:
-        print(f"NARRATION GENERATION FAILED: {narration['error']}")
-        sys.exit(1)
 
-    print(f"\nNarration ({narration['tts_calls_used']} TTS call(s) used, "
-          f"speech duration: {narration['speech_duration_secs']:.1f}s"
-          f"{', TRIMMED via fade-out safety net' if narration['was_trimmed'] else ''}):\n")
-    print(narration["narration_text"])
-    print(f"\n--> Derived scene count: {narration['scene_count']} scenes x {SCENE_CLIP_SECS}s "
-          f"= {narration['video_duration_secs']}s video")
+            if voiceover:
+                if resume and _reusable_audio(audio_out):
+                    ok = True
+                else:
+                    ok = await asyncio.to_thread(
+                        generate_voice, voiceover, audio_out,
+                        voice_id=voice_id or None
+                    )
+                if ok:
+                    # TTS QC — also measures actual duration
+                    tts_qc = await asyncio.to_thread(analyse_tts, audio_out, voiceover)
+                    log.info(f"[Job {job_id}] TTS QC scene {i}: {tts_qc['verdict']}")
 
-    print(f"\n--- Selecting {narration['scene_count']} photos across categories (priority order) ---")
-    selection = select_photos_for_scene_count(result["photos"], narration["scene_count"])
-    for cat, photos in selection["selected"].items():
-        print(f"  {cat}: {len(photos)} selected")
-    if selection["gaps"]:
-        print("\n  GAPS DETECTED — manual upload needed for:")
-        for gap in selection["gaps"]:
-            print(f"    {gap}")
-    else:
-        print("\n  No gaps — all categories satisfied.")
 
-    print("\n--- Downloading selected photos + removing watermarks (default ON for scraped photos) ---")
-    test_scratch_dir = BASE_DIR / "jobs" / "_test_scratch" / "scraper_test"
-    selection = download_selected_photos(selection, test_scratch_dir)
-    for cat, photos in selection["selected"].items():
-        for p in photos:
-            print(f"  {cat}: {p.get('local_path')} (watermark removal deferred to generation-time toggle)")
-    if selection["download_failures"]:
-        print("\n  DOWNLOAD FAILURES:")
-        for f in selection["download_failures"]:
-            print(f"    {f['category']}: {f['error']}")
+                    if tts_qc["verdict"] == "reject":
+                        log.warning(f"[Job {job_id}] TTS rejected scene {i}: {tts_qc['issues']}")
+                        audio_paths.append(None)
+                        actual_durations.append(user_duration)
+                    else:
+                        audio_paths.append(audio_out)
+                        # Set clip duration = actual audio duration + 2s buffer
+                        # Snap to nearest valid duration, minimum 6s
+                        audio_secs   = tts_qc.get("duration_seconds", 0)
+                        if audio_secs > 0:
+                            # 2026-10-22: the rule lives in scene_rework (one definition,
+                            # also used by every rework): +2 s, even, min 6, max 20.
+                            snapped  = _sr.clip_seconds_for_audio(audio_secs, user_duration)
+                            log.info(
+                                f"[Job {job_id}] Scene {i}: audio={audio_secs:.1f}s "
+                                f"→ clip duration={snapped}s"
+                            )
+                            actual_durations.append(snapped)
+                        else:
+                            actual_durations.append(user_duration)
 
-    print("\n--- Generating on-screen captions for selected categories ---")
-    selected_categories = [cat for cat, photos in selection["selected"].items() if photos]
-    if selected_categories:
-        captions = generate_captions_for_categories(result["description"], selected_categories)
-    else:
-        captions = {}
-        print("\n--- Skipping caption generation - no photos selected ---")
-    for cat, caption in captions.items():
-        print(f"  {cat}: {caption}")
 
-    print("\n--- Building final audio track (lead silence + narration + trailing silence) ---")
-    final_audio_path = build_final_audio_track(narration["audio_path"], narration["video_duration_secs"])
-    print(f"Full audio track, exactly {narration['video_duration_secs']}s total: {final_audio_path}")
-    print("Listen to this one — it's the exact track that would overlay onto the video.")
+                    qc_results.append({"scene": i, "type": "tts", **tts_qc})
+                else:
+                    log.warning(f"[Job {job_id}] TTS generation FAILED for scene {i} "
+                                f"(voiceover: {voiceover[:60]!r}) -- audio will be missing for this scene")
+                    tts_failed_scenes.append(i)
+                    audio_paths.append(None)
+                    actual_durations.append(user_duration)
+                audio_chars.append({"chars": len(voiceover)})
+            else:
+                audio_paths.append(None)
+                audio_chars.append({"chars": 0})
+                actual_durations.append(user_duration)
 
-    scenes_config = build_standard_video_scenes_config(selection, captions, clip_duration_secs=SCENE_CLIP_SECS)
-    print(f"\n--- scenes_config ready for job creation ({len(scenes_config)} scenes) ---")
-    for s in scenes_config:
-        print(f"  {s['category']}: {s['duration']}s, space_type={s['space_type']}, image={s['local_image_path']}")
 
-    # ── Copy artifacts to STABLE, predictable filenames for browser viewing ──
-    # Every run overwrites the same fixed names in jobs/_test_scratch/ (the
-    # project's existing test-isolation directory), rather than leaving
-    # random-named /tmp files that need fragile glob-matching in a separate
-    # shell command to find. Always accessible at:
-    #   http://<server>:8000/test-scratch/test_narration.mp3
-    #   http://<server>:8000/test-scratch/test_<category>_<NN>.jpg
-    import shutil as _shutil
-    scratch_root = BASE_DIR / "jobs" / "_test_scratch"
-    scratch_root.mkdir(parents=True, exist_ok=True)
+        # ── Stage 3: Video generation + Vision QC ─────────────────────────
+        from video_generation  import generate_video_single
+        from vision_analysis   import analyse_output
 
-    if final_audio_path and os.path.exists(final_audio_path):
-        dest_audio = scratch_root / "test_narration.mp3"
-        _shutil.copy2(final_audio_path, dest_audio)
-        print(f"\nCopied narration to stable path: {dest_audio}")
 
-    for s in scenes_config:
-        src = s.get("local_image_path")
-        if src and os.path.exists(src):
-            dest = scratch_root / f"test_{Path(src).name}"
-            _shutil.copy2(src, dest)
+        flagged_scenes  = []
+        rejected_scenes = []
+        failed_scenes   = []   # 2026-10-28 (P1): clip not generated at all
 
-    print(f"\n--- Browser-viewable URLs (server must be running) ---")
-    print(f"  Narration: http://<your-server-ip>:8000/test-scratch/test_narration.mp3")
-    for s in scenes_config:
-        src = s.get("local_image_path")
-        if src:
-            print(f"  {s['category']}: http://<your-server-ip>:8000/test-scratch/test_{Path(src).name}")
 
+        for i, (scene, img) in enumerate(zip(scenes_config, enhanced_paths)):
+            # Check for cancellation request between scenes
+            if JOBS.get(job_id, {}).get("cancel_requested"):
+                log.info(f"[Job {job_id}] Cancellation requested — stopping before scene {i}")
+                update("stopped", int(35 + (i/n)*40),
+                       f"Fermato dall'utente — {i} di {n} scene completate. "
+                       f"Puoi riassemblare con le scene già pronte, o riavviare la generazione.")
+                return
+
+
+            clip_out     = str(video_clips_dir / f"scene_{i:03d}.mp4")
+            # Use actual audio duration if available, fall back to user setting
+            duration     = actual_durations[i] if i < len(actual_durations) else int(scene.get("duration", 10))
+            caption      = scene.get("caption", "")
+            space_type   = scene.get("space_type",   "large")
+            pov_movement = scene.get("pov_movement", "walk_in_explore")
+            update("running", int(35 + (i/n)*40), f"Generating video clip {i} of {n-1} (scene_{i:03d}, {duration}s)…")
+
+
+            if resume and _reusable_clip(clip_out):
+                ok = True
+                log.info(f"[Job {job_id}] Resume: reusing existing clip for scene {i}")
+            else:
+                ok = await asyncio.to_thread(
+                    generate_video_single,
+                    img, duration, clip_out,
+                    space_type=space_type,
+                    pov_movement=pov_movement,
+                    lighting=lighting,
+                    intensity=intensity,
+                    model_tier=model_tier,
+                    output_format=output_format,  # 2026-07-27 URGENT FIX: use the local parameter, not a nonexistent job dict
+                    do_video_upscale=do_video_upscale,
+                    **camera_plan.intent_kwargs(scene),   # 2026-10-27: {} unless PVS_ANCHOR=1 and the scene has a safe anchor
+                )
+
+
+            try:   # 2026-11-02: REAL Claude cost of the described last view (described_view) into the job, as the clip QC's (Patch X)
+                import described_view as _dv
+                _dv.merge_usage_into_job(JOBS[job_id], clip_out)
+                import movement_director as _md
+                _md.merge_into_job(JOBS[job_id], clip_out, scene.get("scene_id") or f"scene_{i:03d}")
+            except Exception as _e:
+                log.warning(f"[Job {job_id}] could not add the described-view / director cost: {_e}")
+
+            model = model_tier
+
+
+            models_used.append(model)
+            video_clip_paths.append(clip_out if ok else None)
+
+
+            # Vision QC
+            video_verdict = "pass"
+            if ok and enable_vision_qc and Path(clip_out).exists():
+                update("running", int(35 + (i/n)*40), f"QC check on clip {i} of {n-1} (scene_{i:03d})…")
+                original_img = image_paths[i]
+                vid_qc = await asyncio.to_thread(analyse_output, clip_out, original_img, space_type)
+                video_verdict = vid_qc["verdict"]
+                # Patch X (2026-10-25): the clip QC is billed by Claude: its REAL usage is added to the job's claude_usage (which
+                # _record_actual_cost / cost_model already read), never estimated and never left in the process-wide counter
+                import listing_scraper as _ls_qc
+                JOBS[job_id]["claude_usage"] = _ls_qc.merge_claude_usage(JOBS[job_id].get("claude_usage"), vid_qc.get("claude_usage"))
+                log.info(f"[Job {job_id}] Video QC scene {i}: {video_verdict}")
+                qc_results.append({"scene": i, "type": "video", **vid_qc})
+                # 2026-11-04: shadow-mode scene risk registry (records only; never raises, never changes the verdict)
+                try:
+                    import scene_risk as _scene_risk
+                    _scene_risk.record(job_id, scene.get("scene_id") or f"scene_{i:03d}", scene, video_verdict, stage="first", movement=pov_movement, tier=model_tier)
+                except Exception:
+                    pass
+
+
+                if video_verdict == "reject":
+                    rejected_scenes.append(i)
+                elif video_verdict == "flag":
+                    flagged_scenes.append(i)
+            elif not ok:
+                video_verdict = "failed"
+                failed_scenes.append(i)
+                try:
+                    import scene_risk as _scene_risk
+                    _scene_risk.record(job_id, scene.get("scene_id") or f"scene_{i:03d}", scene, "failed", stage="first", movement=pov_movement, tier=model_tier)
+                except Exception:
+                    pass
+
+
+            scene_statuses.append({
+                "index":           i,
+                "caption":         caption,
+                "space_type":      space_type,
+                "pov_movement":    pov_movement,
+                "duration_used":   duration,
+                "video":           "ok" if ok else "failed",
+                "audio":           "ok" if audio_paths[i] else ("failed" if i in tts_failed_scenes else "skipped"),
+                "qc_verdict":      video_verdict,
+            })
+
+
+        JOBS[job_id]["scenes"]     = scene_statuses
+        JOBS[job_id]["qc_results"] = qc_results
+        if tts_failed_scenes:
+            JOBS[job_id]["tts_failures"] = tts_failed_scenes
+        _save_job(job_id)
+
+
+        # ── QC gate: pause if any scenes rejected or flagged ──────────────
+        # 2026-11-05 (PVS_AUTO_APPROVE_FLAGS, default off): minor flags are approved by the system and listed for a later review.
+        # With no reject / failed scene left, the stop disappears and the pipeline goes on to assembly.
+        _cleared = []
+        try:
+            import auto_rework as _ar0
+            if not failed_scenes:
+                _cleared = _ar0.approvable_flags(qc_results, flagged_scenes)
+        except Exception as _e:
+            log.warning(f"[Job {job_id}] auto-approve check failed (non-fatal): {_e}")
+        if _cleared and not rejected_scenes:
+            await _apply_auto_approval(job_id, _cleared, qc_results)
+            flagged_scenes = []
+        if rejected_scenes or flagged_scenes or failed_scenes:
+            awaiting = _awaiting_payload(rejected_scenes, flagged_scenes, failed_scenes)
+            JOBS[job_id]["awaiting_scenes"]  = awaiting
+            JOBS[job_id]["video_clip_paths"] = video_clip_paths
+            JOBS[job_id]["audio_paths"]      = audio_paths
+            JOBS[job_id]["enhanced_paths"]   = enhanced_paths
+            # 2026-11-05: first automatic rework (PVS_AUTO_REWORK, default off) when the WHOLE stop is measured rejects.
+            # Same runner as "Rifai" (_run_redo); a still-rejected result parks the job for the operator there.
+            try:
+                import auto_rework as _ar
+                _ap = _ar.plan(JOBS[job_id], qc_results, rejected_scenes, ([] if _cleared else flagged_scenes), failed_scenes, scenes_config, _rwp.evaluate)
+            except Exception as _e:
+                log.warning(f"[Job {job_id}] auto-rework plan failed (non-fatal): {_e}")
+                _ap = {"scene_ids": []}
+            if _ap["scene_ids"] and _acquire_job_lock(job_id, f"Auto rework {len(_ap['scene_ids'])} scene(s)"):
+                if _cleared:
+                    await _apply_auto_approval(job_id, _cleared, qc_results)
+                JOBS[job_id].setdefault("auto_reworked", []).extend(_ap["scene_ids"])
+                JOBS[job_id].update({"status": "running", "progress": 76,
+                                     "message": f"Rework automatico (misura): {', '.join(_ap['scene_ids'])}"})
+                _save_job(job_id)
+                try:
+                    _record_actual_cost(job_id, scenes_config, models_used, audio_chars,
+                                        do_upscale, enable_vision_qc, model_tier)
+                except Exception as e:
+                    log.warning(f"[Job {job_id}] Could not record cost before auto rework (non-fatal): {e}")
+                log.info(f"[Job {job_id}] auto rework on measured reject: {_ap['scene_ids']}")
+                await _run_redo(job_id, _ap["scene_ids"], video=True, strict=False, policy=True, label="Rework automatico")
+                return
+            update(
+                "awaiting_approval", 75,
+                f"QC review needed: {len(rejected_scenes)} rejected, "
+                f"{len(flagged_scenes)} flagged, {len(failed_scenes)} clip not generated. Please review before assembly."
+            )
+            _save_job(job_id)
+            _warm_previews(job_id)   # 2026-10-27: the QC screen opens the clip previews: build them now, in the background
+            prop_name = JOBS[job_id].get("property_name", "Property")
+            await _notify_operator(
+                job_id, "QC flagged",
+                subject=f"QC da rivedere: {prop_name}",
+                body_html=(f"<p><b>{prop_name}</b> - QC ha fermato il job: "
+                           f"{len(rejected_scenes)} scene rifiutate, {len(flagged_scenes)} segnalate, {len(failed_scenes)} clip non generate.</p>"
+                           f"<p>Job ID: {job_id}</p>"),
+                push_message=f"{prop_name} - QC: {len(rejected_scenes)} rifiutate, {len(flagged_scenes)} segnalate, {len(failed_scenes)} non generate",
+                tags=["warning"],
+            )
+            # 2026-10-09: the money is already spent here (clips generated). Cost used to be
+            # recorded only on the no-QC-flag path, so every job that paused here and was then
+            # approved ended 'done' with NO cost recorded at all.
+            try:
+                _record_actual_cost(job_id, scenes_config, models_used, audio_chars,
+                                    do_upscale, enable_vision_qc, model_tier)
+                _save_job(job_id)
+            except Exception as e:
+                log.warning(f"[Job {job_id}] Could not record cost at the QC gate (non-fatal): {e}")
+            return   # pipeline pauses here — resumed by /approve endpoint
+
+
+        # ── Stage 4: Assembly ─────────────────────────────────────────────
+        JOBS[job_id]["video_clip_paths"] = video_clip_paths
+        JOBS[job_id]["audio_paths"]      = audio_paths
+        JOBS[job_id]["enhanced_paths"]   = enhanced_paths
+        # 2026-07-21 consolidation: run_assembly() and run_reassemble_only()
+        # were near-duplicate "assemble the final video" implementations --
+        # this one lacked the legacy-clip self-heal fallback the other had.
+        # Now uses the single, more robust implementation everywhere.
+        await run_reassemble_only(job_id)
+
+
+        # ── Actual cost ───────────────────────────────────────────────────
+        # 2026-07-21 fix (architecture assessment item 31): fold in real
+        # Claude API cost for scraped jobs (stored on the job dict at
+        # creation time by create_job_from_url) -- was captured but never
+        # actually counted in the displayed total. Absent/0 for manual
+        # jobs, which never call Claude at all.
+        _record_actual_cost(job_id, scenes_config, models_used, audio_chars,
+                            do_upscale, enable_vision_qc, model_tier)
+        _save_job(job_id)
+
+
+        check_and_alert(job_id=job_id, property_name=property_name)
+
+
+    except Exception as e:
+        log.error(f"[Job {job_id}] Pipeline failed: {e}", exc_info=True)
+        JOBS[job_id].update({"status": "failed", "message": f"Error: {str(e)}"})
+        _save_job(job_id)
+
+
+
+
+# ── Assembly: run_assembly() removed 2026-07-21 -- was a near-duplicate of
+# run_reassemble_only() (see that function, above run_pipeline), which is
+# now the single implementation used by run_pipeline, /approve, and every
+# redo/rework path. Removed rather than left unused, per an explicit
+# decision to keep the architecture simple -- no duplicate paths unless
+# strictly necessary, and this one wasn't. Rollback: git revert to commit
+# af826498c462729d0b5b1e31c8a3661ad5145b62 if this causes a real problem.
+
+
+# ── Rework runner: run_rework() removed 2026-07-21 -- along with the
+# /jobs/{id}/rework endpoint that called it (confirmed via direct grep:
+# zero references anywhere in ui.html). This was the legacy sibling-
+# directory rework model, fully superseded by run_redo_scenes_batch()
+# and the single-directory job model. Removed rather than left unused,
+# per the same architecture-discipline decision as run_assembly()'s
+# removal earlier the same day.
