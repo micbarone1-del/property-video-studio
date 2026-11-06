@@ -728,7 +728,7 @@ async def auth_middleware(request: Request, call_next):
     # bypassing UI_ACCESS_KEY here does not disable auth for these routes,
     # it just avoids a second, irrelevant check layered on top of the
     # partner-key check that already protects them.
-    if (path in ("/", "", "/health")
+    if (path in ("/", "", "/health", "/operator-page")
             or path.startswith("/static")
             or path.startswith("/test-scratch/")
             or path.startswith("/v1/")
@@ -2944,6 +2944,115 @@ async def delete_scene(job_id: str, background_tasks: BackgroundTasks):
     return {"job_id": job_id, "status": "running"}
 
 
+
+
+# ── 2026-11-06: automatic start of partner drafts (auto_start.py) + operator status page ─────────────────
+_AUTO_START_CHECKED = {}   # job_id -> draft_check results (a draft does not change while it waits)
+
+
+async def _auto_start_tick():
+    import auto_start
+    import draft_check
+    from pathlib import Path as _P
+
+    def _check(jid):
+        if jid not in _AUTO_START_CHECKED:
+            _AUTO_START_CHECKED[jid] = draft_check.check_job(jid, _P(JOBS_DIR))["results"]
+        res = list(_AUTO_START_CHECKED[jid])
+        try:   # the SAME duplicate rule as gial_start.py (about 17 EUR were lost to regenerated listings on 2026-11-05)
+            import gial_start
+            dup = gial_start.same_listing_done(jid, _P(JOBS_DIR))
+            if dup:
+                res.append(("FAIL", "DUP", f"the same listing already has a finished video ({', '.join(dup)})"))
+        except Exception as e:
+            log.warning(f"[AutoStart] duplicate check failed (non-fatal): {e}")
+        return res
+
+    actions = await asyncio.to_thread(auto_start.decide, dict(JOBS), datetime.utcnow(), _check)
+    for a in actions:
+        jid, job = a["job_id"], JOBS.get(a["job_id"])
+        if not job or job.get("status") != "draft":
+            continue
+        now_iso = datetime.utcnow().isoformat()
+        prev = (job.get("auto_start") or {})
+        if a["action"] == "wait":
+            if prev.get("state") != "waiting" or prev.get("reason") != a["reason"]:
+                job["auto_start"] = {"state": "waiting", "reason": a["reason"], "at": now_iso}
+                _save_job(jid)
+        elif a["action"] == "refuse":
+            job["auto_start"] = {"state": "refused", "reason": a["reason"], "at": now_iso}
+            _save_job(jid)
+            log.warning(f"[Job {jid}] auto-start refused: {a['reason']}")
+            await _notify_operator(
+                jid, "Auto-start refused",
+                subject=f"Bozza non idonea, non avviata: {job.get('property_name') or jid}",
+                body_html=f"<p>La bozza {job.get('property_name') or jid} non supera il controllo ed e' rimasta in bozza.</p><p>{a['reason']}</p><p>Job ID: {jid}</p>",
+                push_message=f"Bozza {job.get('property_name') or jid} non avviata: controlla", tags=["warning"])
+        elif a["action"] == "start":
+            job["auto_start"] = {"state": "started", "reason": a["reason"], "at": now_iso}
+            _save_job(jid)
+            try:
+                bt = BackgroundTasks()
+                await start_generation_for_draft(jid, bt)     # the SAME path as the "Genera Video" button / gial_start
+                asyncio.create_task(bt())
+                log.info(f"[Job {jid}] auto-started ({a['reason']})")
+            except Exception as e:
+                job["auto_start"] = {"state": "waiting", "reason": f"start failed, will retry: {e}", "at": now_iso}
+                _save_job(jid)
+                log.warning(f"[Job {jid}] auto-start could not start the job: {e}")
+
+
+async def _auto_start_loop():
+    while True:
+        try:
+            await _auto_start_tick()
+        except Exception as e:
+            log.warning(f"[AutoStart] tick failed (non-fatal): {e}")
+        await asyncio.sleep(60)
+
+
+@app.on_event("startup")
+async def _auto_start_boot():
+    import auto_start
+    if auto_start.enabled():
+        log.info(f"[AutoStart] ON: cap {auto_start.cap_eur():.0f} EUR / 24h, max {auto_start.max_active()} jobs at once")
+        asyncio.create_task(_auto_start_loop())
+    else:
+        log.info("[AutoStart] off (PVS_AUTO_START not set)")
+
+
+@app.get("/operator/status")
+async def operator_status():
+    """Everything the operator page shows: the switches, the money committed, and one row per recent job."""
+    import auto_start
+    now = datetime.utcnow()
+    rows = []
+    for jid, j in JOBS.items():
+        try:
+            created = datetime.fromisoformat(j.get("created_at") or "")
+        except ValueError:
+            continue
+        if now - created > timedelta(hours=72) and j.get("status") == "done" and not j.get("review_pending"):
+            continue
+        rows.append({"job_id": jid, "name": j.get("property_name"), "source": j.get("source"), "status": j.get("status"),
+                     "progress": j.get("progress"), "message": str(j.get("message") or "")[:140], "created_at": j.get("created_at"),
+                     "cost_eur": auto_start.job_cost_eur(j), "auto_start": j.get("auto_start"),
+                     "auto_reworked": len(j.get("auto_reworked") or []), "auto_approved": j.get("auto_approved") or [],
+                     "review_pending": bool(j.get("review_pending")), "stops": len(j.get("awaiting_scenes") or []),
+                     "needs_operator": bool(j.get("needs_operator"))})
+    rows.sort(key=lambda r: r["created_at"] or "", reverse=True)
+    on = lambda n: os.getenv(n, "0").strip().lower() in ("1", "true", "yes", "on")
+    return {"now": now.isoformat(), "active": auto_start.active_count(JOBS), "max_active": auto_start.max_active(),
+            "spent_24h_eur": round(auto_start.spent_24h(JOBS, now), 2), "cap_eur": auto_start.cap_eur(),
+            "switches": {"auto_start": on("PVS_AUTO_START"), "auto_rework": on("PVS_AUTO_REWORK"),
+                         "auto_approve_flags": on("PVS_AUTO_APPROVE_FLAGS"), "standard_enforce": on("PVS_STANDARD_ENFORCE"),
+                         "luma_resolution": os.getenv("PVS_LUMA_RESOLUTION", "1080p")},
+            "jobs": rows[:80]}
+
+
+@app.get("/operator-page", response_class=FileResponse)
+def operator_page():
+    return FileResponse(BASE_DIR / "operator_page.html", headers={"Cache-Control": "no-cache"})
 
 
 async def _apply_auto_approval(job_id: str, idxs: list, qc_results: list, notify: bool = True):
