@@ -4,6 +4,7 @@ READ-ONLY on jobs/: it only opens files, never writes, moves or deletes anything
   python3 calibrate_quality.py                      # DRY RUN (default): counts unique photos, shows the cost estimate, calls nothing
   python3 calibrate_quality.py --run --max 120      # real Claude calls (cents), stops by itself at --cap EUR
   python3 calibrate_quality.py --blockiness              # FREE (no Claude call): the pixel check for JPEG blocks on every real photo + on damaged copies
+  python3 calibrate_quality.py --objective              # FREE (no Claude call): scale-free sharpness/pixelation measures (photo_metrics.relative_quality) on real photos and damaged copies
   python3 calibrate_quality.py --degrade-test 6          # DRY RUN of the control test (see below)
   python3 calibrate_quality.py --degrade-test 6 --run    # control test: 6 photos x (original + 3 deliberately damaged copies) = 24 calls
 
@@ -193,6 +194,31 @@ def blockiness_report(photos, out_dir: Path, n_variants: int):
         print("  ", m)
 
 
+def objective_report(photos, n_variants: int):
+    """No API call. The measures of photo_metrics.relative_quality on every real photo (distribution) and on the damaged copies of n_variants photos, and for
+    each measure how many damaged copies lie beyond ALL real photos (that is the margin a threshold would have)."""
+    import photo_metrics as pm
+    real = [pm.relative_quality_of_bytes(p["path"].read_bytes()) for p in photos]
+    real = [r for r in real if r.get("fine_mid") is not None]
+    def stats(vals):
+        v = sorted(vals); q = lambda x: v[min(len(v) - 1, int(x * (len(v) - 1)))]
+        return f"min {v[0]}  p1 {q(.01)}  p5 {q(.05)}  median {q(.5)}  p95 {q(.95)}  p99 {q(.99)}  max {v[-1]}"
+    print(f"\nREAL photos measured: {len(real)}")
+    print("  fine_mid:", stats([r["fine_mid"] for r in real]), "   (low = blurred/enlarged)")
+    print("  period  :", stats([r["period"] for r in real]), "   (high = enlarged pixels)")
+    dam = {k: [] for k in VARIANTS}
+    for p in pick(photos, n_variants):
+        v = make_variants(p["path"].read_bytes())
+        for k in VARIANTS:
+            dam[k].append(pm.relative_quality_of_bytes(v[k]))
+    lo = min(r["fine_mid"] for r in real); hi = max(r["period"] for r in real)
+    print(f"\nDAMAGED copies ({n_variants} photos): variant  fine_mid / period(k)   [real min fine_mid {lo}, real max period {hi}]")
+    for k in VARIANTS:
+        print(f"  {k:11} " + "  ".join(f"{d.get('fine_mid')}/{d.get('period')}(k{d.get('period_k')})" for d in dam[k]))
+    for k in VARIANTS:
+        print(f"  {k:11} below every real fine_mid: {sum(1 for d in dam[k] if d.get('fine_mid') is not None and d['fine_mid'] < lo)}/{len(dam[k])}   above every real period: {sum(1 for d in dam[k] if d.get('period', 0) > hi)}/{len(dam[k])}")
+
+
 def sheets(results, out_dir: Path):
     from PIL import Image, ImageDraw
     groups = {}
@@ -227,12 +253,17 @@ def main():
     ap.add_argument("--cap", type=float, default=0.50, help="stop when the real Claude cost reaches this many EUR")
     ap.add_argument("--degrade-test", type=int, default=0, metavar="N", help="control test on N photos damaged on purpose (see top of file)")
     ap.add_argument("--blockiness", action="store_true", help="FREE: score every real photo with the pixel check for JPEG blocks (no Claude call) and compare with damaged copies")
+    ap.add_argument("--objective", action="store_true", help="FREE: scale-free sharpness/pixelation measures on real photos and damaged copies (no Claude call)")
     ap.add_argument("--model", default="", help="judge with this model (or 'a,b' for several) FOR THIS RUN ONLY, instead of the production judge models")
     a = ap.parse_args()
     if a.model:
         os.environ["PVS_QUALITY_MODELS"] = a.model   # this process only: ONE judge model for this run (or "a,b" for several)
 
     photos, stats = collect(Path(a.jobs_dir))
+    if a.objective:
+        print(f"unique usable photos: {len(photos)} | no Claude call is made")
+        objective_report(photos, 12)
+        return
     if a.blockiness:
         print(f"unique usable photos: {len(photos)} | no Claude call is made")
         blockiness_report(photos, Path(a.out), 6)
