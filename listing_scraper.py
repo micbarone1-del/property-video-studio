@@ -163,16 +163,19 @@ def derive_available_category_order(photos: list, priority_order: list = None) -
     scene sequence the video will show. Lightweight on purpose: only
     checks presence, no quality ranking, no API calls."""
     order = priority_order if priority_order is not None else PRIORITY_ORDER
-    present = {p.get("category") for p in photos}
+    present = {p.get("category") for p in photos if not photo_exclusion(p)}   # only photos that are really usable (2026-11-06)
     return [cat for cat in order if cat in present]
 
 # 2026-11-03 (Michele): "teniamo i motivi delle selezioni per capire se funziona e come". For every photo: where its category came from and why it left the selection.
 EXCLUSION_REASONS = {"vision_illustration": "illustrazioni o render", "vision_aerial": "viste aeree o dall'alto", "vision_hall": "ingressi o corridoi",
-                     "vision_refine": "esterni non confermati", "vision_quality": "scarsa qualit\u00e0"}
+                     "vision_refine": "esterni non confermati", "vision_quality": "scarsa qualit\u00e0", "duplicate": "foto duplicata"}
 
 
 def photo_exclusion(p: dict):
-    """The reason (Italian) why a photo is NOT usable, or None when it is."""
+    """The reason (Italian) why a photo is NOT usable, or None when it is. THE definition of "usable photo": the acceptance rule, the scene
+    category order, the selection and the dashboard audit all read it (2026-11-06: before, the acceptance counted photos the selection threw away)."""
+    if p.get("duplicate_of"):
+        return EXCLUSION_REASONS["duplicate"]
     if p.get("quality_rejected"):
         return EXCLUSION_REASONS["vision_quality"]
     cat = p.get("category")
@@ -197,6 +200,87 @@ def build_photo_audit(photos: list) -> list:
     return out
 
 
+# 2026-11-06 (Michele: two kitchen photos of the same picture were both selected): duplicates are recognised by the IMAGE, not only by the URL.
+# One 256-bit difference hash per candidate photo; two photos closer than DUPLICATE_MAX_BITS bits are the same picture (re-encoded or resized copies
+# differ by a few bits, different rooms by about half of them). The first photo in page order stays, the later ones get p["duplicate_of"]; photo_exclusion()
+# then reports "foto duplicata", so the acceptance rule, the selection, the scene order and the dashboard all agree. PVS_PHOTO_DEDUPE=0 switches it off.
+DUPLICATE_MAX_BITS = 8
+DUPLICATE_MAX_PHOTOS = 60
+
+
+def photo_dedupe_enabled() -> bool:
+    return os.environ.get("PVS_PHOTO_DEDUPE", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def photo_hash_of_bytes(content: bytes) -> int:
+    """Pure. 256-bit difference hash (16 rows of 16 left-right comparisons of a 17x16 grey thumbnail) of an image, as an integer."""
+    import io
+    from PIL import Image
+    im = Image.open(io.BytesIO(content)).convert("L").resize((17, 16), Image.LANCZOS)
+    px = list(im.getdata())
+    bits = 0
+    for row in range(16):
+        for col in range(16):
+            bits = (bits << 1) | (1 if px[row * 17 + col] > px[row * 17 + col + 1] else 0)
+    return bits
+
+
+def mark_duplicate_photos(photos: list, fetch=None) -> dict:
+    """Tags later copies of the same picture with p["duplicate_of"] = url of the one kept. Only photos with a real category are looked at (at most
+    DUPLICATE_MAX_PHOTOS). A photo that cannot be downloaded or read is simply kept. Never raises. Returns {"enabled", "checked", "duplicates"}."""
+    if not photo_dedupe_enabled():
+        return {"enabled": False}
+    try:
+        fetch = fetch or (lambda p: fetch_photo_bytes(p.get("url"), p.get("original_url"), timeout=20))
+        cands, seen = [], set()
+        for p in photos or []:
+            u = p.get("url")
+            if p.get("category") in CATEGORIES and u and u not in seen and not p.get("duplicate_of"):
+                seen.add(u)
+                cands.append(p)
+        cands = cands[:DUPLICATE_MAX_PHOTOS]
+
+        def one(p):
+            try:
+                r = fetch(p)
+                return photo_hash_of_bytes(r["content"]) if r.get("ok") else None
+            except Exception:
+                return None
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=CLASSIFY_WORKERS) as ex:
+            hashes = list(ex.map(one, cands))
+        kept, dups = [], 0
+        for p, h in zip(cands, hashes):
+            if h is None:
+                continue
+            p["photo_hash"] = format(h, "064x")
+            twin = next((q for qh, q in kept if bin(qh ^ h).count("1") <= DUPLICATE_MAX_BITS), None)
+            if twin is not None:
+                p["duplicate_of"] = twin.get("url")
+                dups += 1
+            else:
+                kept.append((h, p))
+        log.info(f"[Scraper] Photo duplicates: checked {len(cands)}, duplicates {dups}")
+        return {"enabled": True, "checked": len(cands), "duplicates": dups}
+    except Exception as e:
+        log.warning(f"[Scraper] Photo duplicate check failed as a whole: {e}")
+        return {"enabled": True, "error": str(e)[:160]}
+
+
+def finish_photo_classification(photos: list) -> dict:
+    """The ONE step both workflows (URL and Relinx) run after the categories are known: facade/balcony verified by vision, then duplicate pictures marked.
+    Returns the classification summary stored in the job's selection_report."""
+    summary = refine_exterior_outdoor_with_vision(photos)
+    summary["duplicates"] = mark_duplicate_photos(photos)
+    return summary
+
+
+def refusal_report(photos: list) -> dict:
+    """What the dashboard input panel shows for a listing that was REFUSED: the photo audit (every photo, its category and why it was excluded)."""
+    seen = {p.get("url") for p in photos or []}
+    return {"photo_audit": build_photo_audit(photos), "excluded_counts": exclusion_counts(photos), "photos_total": len(seen), "refused": True}
+
+
 def exclusion_counts(photos: list) -> dict:
     n, seen = {}, set()
     for p in photos or []:
@@ -211,7 +295,7 @@ def exclusion_counts(photos: list) -> dict:
 
 
 MIN_USABLE_PHOTOS = 5
-MIN_ENVIRONMENT_TYPES = 4
+MIN_ENVIRONMENT_TYPES = int(os.getenv("PVS_MIN_ENVIRONMENT_TYPES", "4"))   # 2026-11-06: default 4 = the rule; lowered ONLY by a deliberate test-instance switch (1327 forced trial)
 _STANDARD_TYPES_IT = "facciata, soggiorno, cucina, camera da letto, bagno, balcone/giardino"
 
 
@@ -223,7 +307,7 @@ def check_listing_acceptance(photos: list) -> dict:
     seen, by_cat = set(), {}
     for p in photos or []:
         cat, url = p.get("category"), p.get("url")
-        if cat in CATEGORIES and url and url not in seen:
+        if cat in CATEGORIES and url and url not in seen and not photo_exclusion(p):   # 2026-11-06: usable = photo_exclusion(p) is None (duplicates and quality rejects do not count)
             seen.add(url)
             by_cat[cat] = by_cat.get(cat, 0) + 1
     usable = sum(by_cat.values())
@@ -2459,7 +2543,7 @@ def _categorize_and_rank_photos(photos: list, categories: list) -> dict:
     for p in photos:
         cat = p.get("category")
         url = p.get("url")
-        if cat in by_category and url not in seen_urls:
+        if cat in by_category and url not in seen_urls and not p.get("duplicate_of"):   # 2026-11-06: an identical picture is never a second candidate
             by_category[cat].append(p)
             seen_urls.add(url)
 
