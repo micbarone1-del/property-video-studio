@@ -3034,11 +3034,17 @@ async def operator_status():
             continue
         if now - created > timedelta(hours=72) and j.get("status") == "done" and not j.get("review_pending"):
             continue
+        det, aw = [], (j.get("awaiting_scenes") if isinstance(j.get("awaiting_scenes"), dict) else {})
+        for kind in ("rejected", "flagged", "failed"):
+            for i in aw.get(kind) or []:
+                q = next((x for x in (j.get("qc_results") or []) if x.get("scene") == i and x.get("type") == "video"), {}) or {}
+                det.append({"scene": i, "kind": kind, "severity": q.get("severity"), "issues": [str(x)[:220] for x in (q.get("issues") or [])][:3]})
         rows.append({"job_id": jid, "name": j.get("property_name"), "source": j.get("source"), "status": j.get("status"),
                      "progress": j.get("progress"), "message": str(j.get("message") or "")[:140], "created_at": j.get("created_at"),
                      "cost_eur": auto_start.job_cost_eur(j), "auto_start": j.get("auto_start"),
                      "auto_reworked": len(j.get("auto_reworked") or []), "auto_approved": j.get("auto_approved") or [],
-                     "review_pending": bool(j.get("review_pending")), "stops": len(j.get("awaiting_scenes") or []),
+                     "review_pending": bool(j.get("review_pending")), "stops": len(det), "stops_detail": det,
+                     "auto_approved_scenes": [a.get("scene") for a in (j.get("auto_approved") or [])],
                      "needs_operator": bool(j.get("needs_operator"))})
     rows.sort(key=lambda r: r["created_at"] or "", reverse=True)
     on = lambda n: os.getenv(n, "0").strip().lower() in ("1", "true", "yes", "on")
