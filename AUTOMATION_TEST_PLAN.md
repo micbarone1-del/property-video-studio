@@ -572,3 +572,52 @@ test_photo_filters.py RESULT: ALL PASS (76/76)
 - Nuovi test automatici, tutti PASS in locale e sul server: `test_prompt_ab.py` (T1-T25b), `test_clip_speed_probe.py` (P1-P3), `test_movement_director.py` (MD77-MD79: near-target standard, `PVS_DIRECTOR_NEAR=0` = vecchio), `test_described_view.py` (DV-NM1/NM2, DV-N1/N2).
 - Rischio nuovo: "outlier di velocita' non rilevato prima del cliente". Controllo: misura di velocita' (AUC 0,96-0,98 sulle etichette di Michele a 360p). Stato: misurata a posteriori, NON ancora agganciata alla pipeline; soglie non calibrate su 1080p. Test 1080p: not run.
 - Rischio nuovo: cambio di default sul percorso principale (B+N). Punto di ritorno `d6ecccf`. Test end-to-end a 1080p con annunci completi: not run.
+
+## 2026-11-04 - Scene risk registry and clip-prompt findings (scores are PROPOSALS, not reviewed by Michele)
+
+**FMEA rows (proposed):**
+- Q5 (existing, QC misses a hallucination and the video is delivered, S9 O5 D8 = 360, ACT): new evidence: rotation, "backward" and invented rooms recur on the same scenes with any prompt, so the cause is partly scene-level and random. Control added: scene risk registry (shadow mode, records only; it does not reduce O or D until it is used). Keep 360 until a detector and registry are proven on real jobs.
+- R1 registry write breaks a job: S8 O2 D3 = 48. Control: record() never raises, every hook in try/except. Test S7, S13.
+- R2 registry polluted by test or fake data: S3 O4 D3 = 36 (happened once on 2026-11-04). Control: no recording from test_*.py or fake providers; the polluted file was moved to /tmp. Tests S6, S15b.
+- R3 detector false alarms cause unnecessary rework cost: S4 O5 D3 = 60 (about 40% on labelled clips). Control: rework budget limits; no auto-rework on the detector.
+- R4 registry biases selection (avoided scenes stop being observed): S5 O4 D6 = 120 ACT when selector use is built. Control to decide: exploration share. Accepted for now: nothing reads the registry.
+
+**Tests:**
+- PASS (output seen on the server 2026-11-04 22:26): test_scene_risk S1-S16 plus S15b, FAILS: 0; test_rework_qc 11; test_clip_qc 44; test_scene_rework 77 (run locally, same result expected on the server after the pull).
+- NOT RUN: a real production job end to end with B+N1+NEAR+EYE and the registry hooks; behaviour of the first-generation hook with a real QC "failed" clip; restart under load; the systemd "activating" state.
+- Four invariants (no job lost, no double cost, final state correct and visible, operator informed once): the registry adds no cost and no state; verified only by the unit tests above.
+
+## 2026-11-05 - Clip acceptance standard (shadow mode) and validation (scores are PROPOSALS, not reviewed by Michele)
+
+**FMEA rows (proposed):**
+- Q5 (existing, QC misses a hallucination, S9 O5 D8 = 360, ACT): new control in shadow mode (standard v0). In-sample it would reject 74% of bad clips at 12.5% false rejects. Do NOT lower O or D until the validation batch and a real enforced run exist. Keep 360.
+- S1 shadow hook breaks the existing QC or a job: S8 O2 D3 = 48. Control: hook in try/except inside analyse_output, evaluate() never raises, kill switch PVS_STANDARD_SHADOW=0, verdict code untouched. Tests S7, S17.
+- S2 judge cost not under control (a second Claude call per clip): S4 O4 D3 = 48. Control: usage merged into the job's claude_usage; measure the real cost per clip (NOT measured yet).
+- S3 false rejects once enforced (good clips rejected, retries cost money): S5 O4 D4 = 80 (in-sample 12.5%). Control: validation criteria before activation, one retry cap, 12 EUR per video cap. Not active yet.
+- S4 tracking lost, geometry silently not measured: S4 O4 D3 = 48. Control: recorded as geo_ok false and counted in summary(); never a reject alone. Test S8.
+- S5 shadow data polluted by tests or fake providers: S3 O3 D3 = 27. Control: never evaluated from test_*.py or with PVS_FAKE_PROVIDERS=1. Test S14.
+
+**Tests:**
+- PASS (output seen on the server 2026-11-05 about 15:45): test_clip_standard S1-S18 FAILS 0; test_exp_rotation FAILS 0; test_rework_qc ALL PASS; test_exp_validate FAILS 0 (V1-V7). The "could not evaluate missing.mp4" line is the expected message of test S7.
+- NOT RUN / UNKNOWN: a real production job end to end with the shadow hook (no `standard_shadow` seen in a real job yet); the validation batch result (running); enforcement and retry (not built); the rework path producing standard_shadow (same function, not observed).
+- Four invariants (no job lost, no double cost, final state correct and visible, operator informed once): the shadow adds one Claude call per clip (cost counted in claude_usage, amount not yet measured), no state, no verdict. Verified only by the unit tests above.
+- Scoreboard in section 8 not recomputed (manual).
+
+## 2026-11-05 evening - FMEA/test updates (scores are PROPOSALS, not reviewed by Michele)
+- NEW row A1 "Auto-rework spends money twice / loops": S6 O3 D3 -> RPN 54. Control: one per scene (auto_reworked), rework budget (rework_policy), still-reject -> operator. Tests A1-A15 PASS (unit + source wiring); real-job test NOT RUN.
+- NEW row A2 "Auto-rework bypasses a pending review": S7 O2 D3 -> RPN 42. Control: plan() refuses if any flagged/failed/non-measured reject. Test A4-A7 PASS.
+- NEW row A3 "Duplicate regeneration of an already-done listing (credit waste)": S5 O5 D2 -> RPN 50 (occurred: ~17.4 EUR). Control: gial_start duplicate guard. test_gial_start S10-S13 PASS.
+- NEW row A4 "Test depends on .env (false FAIL)": S2 O3 D2. Control: tests set switches explicitly. test_standard_enforce E1 PASS after fix (ed5960f).
+- Q-rows: judge-based false reject 17.9% / recall 52% (validation, 360p) -> judge not enforced; ACT row for undetected content hallucinations (S7, D8) - accepted risk until second view/3D, to be dated by Michele.
+- Four invariants for A1: no job lost (PASS unit), no double cost (not run on real job), final state correct/visible (not run), operator informed once (not run).
+- Scoreboard: tests added today 15 + 4 (gial) PASS, 0 FAIL; real-job tests of auto-rework NOT RUN.
+
+## 2026-11-06 - Automation rows and tests (scores are PROPOSALS, not reviewed by Michele; "not run" stays "not run")
+- NEW A5 "Flag auto-approval lets a real defect reach the client": S6 O4 D5 -> RPN 120 (ACT). Control: all-or-none, minor only, no person words, space_matches, review list + notification, delivery stays manual. Tests B1-B19 (test_auto_rework) PASS (unit). Real-job: approvals seen on the test instance; no production job yet.
+- NEW A6 "Auto-start spends over the cap or restarts a done listing": S6 O3 D3 -> 54. Control: 24 h cap, MAX_ACTIVE, NOT_BEFORE, duplicate guard. Tests S1-S24 PASS (server, 2026-11-06). Production run NOT RUN (switch off).
+- NEW A7 "Server restarted while a job generates": S6 O4 D4 -> 96. OCCURRED 2026-11-06 (1336). Control: resume-interrupted (only missing scenes paid); deploy blocks now stop when /operator/status shows active > 0. Live restart test T-A5 for partner jobs still open.
+- NEW A8 "Automatic release delivers a video without approval": S8 O2 D3 -> 48. Control: default manual; auto release only with no pending scenes. Test S22-S24 PASS (unit); real run NOT RUN.
+- NEW A9 "Updated file not on the server / older upload": S4 O5 D2 -> 40. OCCURRED twice 2026-11-06. Control: size check + grep + tests in the deploy block.
+- NEW A10 "Test-instance cost shown at 1080p price": S2 O6 D2 -> 24 (reporting only). Open.
+- Test added today: test_accept_renders.py R1-R11 PASS (server 2026-11-06 15:00); listing_url null bug found by the real 1327 run (R11 asserted the code, not null input) and fixed in 1b69b37.
+- Scoreboard today: tests PASS on the server: test_accept_renders, test_auto_start, test_auto_rework, test_selection_report 29/29, test_aerial_filter, test_photo_filters 76/76; real-job tests of auto-start in production and automatic release: NOT RUN.

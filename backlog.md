@@ -1047,3 +1047,83 @@ GIAL has 10 rentals (2 residential: 1251 Albano 170 mq, 1321 Marino 90 mq). The 
 - Decisioni gia' prese: bersaglio vicino del direttore (N) e clausola senza "moves" (B) come standard; `PVS_DIRECTOR_NEAR=0` / `PVS_LUMA_NOMOVE=0` come uscita di emergenza. Scartati: C, D, F, G (motivi in status.md).
 - Aperto: (1) giro 4: N1 (vista finale neutra) e N2 (regole corte) contro N; (2) giro completo a 1080p con 3 annunci (circa 12 EUR l'uno) con B+N accesi prima di dichiarare chiuso; (3) riavvio produzione a job fermi; (4) misura di velocita' come controllo prima del cliente, con rifacimento automatico: soglie da calibrare su piu' clip e su 1080p (le soglie di oggi sono su 360p); (5) mail a Luma: guida ufficiale per camera ferma/locked off, parametro per velocita', stabilita' dei keyframe, contatto Enterprise, esempio di allucinazione (ombrello blu); (6) verificare che 50472245 scena 0 (illustrazione) sia un residuo precedente a p38.
 - Domande aperte: tetto di spesa per i test di prompt (oggi 9 USD per il giro 4, poi da rivedere); se la casualita' residua di Luma e' accettabile come tasso (oggi: N circa 6% veloci su 18 clip) o se serve altro (clip piu' lunga? seed?).
+
+## 2026-11-04 - Scene risk registry (shadow mode built; use of it NOT built)
+**Requirement (Michele):** prevent, do not react. A dynamic file of risky scenes that learns on its own: when QC finds a problem that survives rework, it is recorded; the selector must know risky scenes and avoid them; when there is no alternative, use a minimal low-risk prompt; automatic rework is only the last resort. Michele wants to be detached from it as soon as possible. No weekly summary: the information goes into the report of the autonomous management of the Relinx API (the live operator dashboard, NEXT MILESTONE).
+**Done (shadow mode, 2026-11-04):** scene_risk.py records every clip-QC verdict (first generation and after rework, successes too) into scene_risk_events.jsonl; summary() gives counts by category, movement and both, and a "risky" flag (n>=10 scenes, >=3 reworked, persistent rate >=25%) that is informational only.
+**Not done / open:**
+1. Dashboard/report integration: expose summary() in the autonomous-management report (live dashboard item). Nothing reads the registry yet.
+2. Photo features: category and plan type do not predict risk (risk_table). Describe the 21 test photos with Claude vision on a fixed checklist (windows with sky, reflections, people, perspective, far background) and compare the 6 risky scenes with the rest; first check the existing foreground-risk feature in vision_analysis/movement_director to avoid a duplicate. Estimated under 0.5 USD; the script must print the cost and need --go.
+3. Selector use (prevention): prefer the lower-risk photo of the same room while keeping the acceptance rule (5 photos, 4 rooms); only after enough data and Michele's review of the report. Touches the main path: note the rollback commit first.
+4. Low-risk minimal prompt for risky scenes with no alternative: which prompt is safest is unknown; needs a test on the six risky scenes (about 3 USD, cost shown before launch). Candidate: our static micro-parallax prompt (2/2 ok on e7f516e3:4 with C0, but 0/2 with an identical prompt in C2, so noise is large).
+5. Operator approval of a flagged scene is a strong false-alarm signal and is not recorded yet; operator rejection likewise.
+6. Detector in production QC: the Claude judge plus motion measures run only in experiments; about 40% false alarms. Estimated judge cost about 0.005 USD per clip (0.5 USD for 96 clips, to be verified). Needed to feed the registry with motion problems the current QC does not see. Never auto-rework on it alone.
+7. Closed-loop bias: avoiding risky scenes stops data collection on them; keep a small exploration share (draft-tier tests).
+8. The registry file is not in the nightly backup (backup_jobs.sh covers jobs/ only): add it.
+9. Representativeness: risk learned at 360p draft may not hold at final resolution; ask Luma (see item below) and compare on a few scenes.
+
+## 2026-11-04 - Prompt policy after rounds 1-5
+Decisions: stop tuning wording (differences between reasonable prompts are smaller than Luma's randomness); keep the production prompt chain with B+N1+NEAR+EYE; do NOT adopt Luma's "Locked off camera" static phrase on current evidence (one scene); do not use camera-only prompts (rush). The 3 USD hold-out confirmation (C0 vs C2, new scenes) is not worth running: it cannot resolve a 2-clip difference.
+Open: static-plan problems (window/terrace views e7f516e3:3,4,5; bathroom mirror/person); facade lateral cases; narration length bug (1312); band detector false positives on 4096 px photos; OOM risk.
+Questions for Luma (Douglas) only after our tests: is 360p draft representative of 1080p behaviour, is there a seed, can people/cars be frozen, does "locked off" combine with a slow push-in, mid keyframe/end-frame test.
+
+## 2026-11-04 - Photo selection
+- Sharpness (lap/detail) is measured and stored; collect it over the GIAL population before choosing a threshold; compare soft vs sharp at 1080p (needs cost approval).
+- Replace the hard "soft" quality cut with a per-category ranking (plain-language confirmation and rollback commit first); the quality verdict was inconsistent on soft photos.
+- Facade photos are classified as "parti comuni dell'edificio" (hypothesis: _VISION_OTHER_PROMPT mentions shared street/courtyard).
+- Floor plans need their own sub-category.
+- Acceptance count (types counted before the quality filter) differs from the selection count.
+- Portrait photos mixed with landscape ones in a listing: no rule in the scraper; decide whether to discard them when at least 5 landscape photos over 4 rooms exist.
+- Open items kept: partner limit back to 2 at launch; GIAL videos kept for now (reuse decision later); gial_rename --apply not done.
+
+---
+
+## 2026-11-05 - Clip acceptance standard (QC) [SHADOW BUILT, VALIDATION RUNNING, REJECT NOT ACTIVE]
+**Requirement (Michele):** black and white reject on agreed, clear quality states; reports/flags are fine only during validation. Acceptable new content at the frame edge is measured as AREA of the frame outside the original field of view (not a count of objects, not a rotation angle), over sampled frames. Anything appearing/changing inside the already visible area is a reject.
+**Done:** clip_standard.py in production, shadow mode (see status.md). **Open:**
+1. Validation batch result (90 clips) and the go-live decision; threshold 0.20 and the judge rule are in-sample.
+2. Activate reject + one retry per scene (touches the main path: note the rollback commit first, plain-language confirmation first).
+3. Consolidate with the existing analyse_output Claude check (two Claude calls per clip today: duplicate cost) once the standard is trusted.
+4. Speed rule from measured thresholds (accel_last_over_first >= 11.8 or drift_y_std >= 4.5) is NOT in v0; decide after validation.
+5. Feed the measured number to the judge (PVS_STANDARD_FEED_NUMBER): needs its own validation.
+6. Measure the real judge cost per clip (estimate 0.04 USD).
+7. standard_shadow_events.jsonl is outside the nightly backup (backup_jobs.sh covers jobs/ only), same as scene_risk_events.jsonl.
+8. Identify risky environments from the validation data (needs >= 10 scenes per category) and feed scene selection (avoid scenes such as e7f516e3:4); keep an exploration share.
+
+## 2026-11-05 - Narration check that replaces nonsense sentences [REQUIRED, NOT BUILT]
+**Requirement (Michele):** an automatic check (Claude) that finds nonsense sentences in the narration and REPLACES them with specific facts from the listing or from the photo analysis; it does not remove them and the operator is not in the loop. Interesting results go to the dashboard notifications. Do NOT change the text-to-image pairing. Window descriptions that come from the photos are legitimate; a car space may be an internal garage.
+**Evidence:** job 1321 (Claude paraphrased a typo; misplaced "completano"). Chain: NARRATION_PROMPT (listing_scraper.py) then SHORTEN_PROMPT / EXTEND_PROMPT. **Before building:** search for the same logic in the manual-upload path and in the URL-scraper path (architecture discipline). Log a `narration_check` field.
+
+## 2026-11-05 - Other open items
+- Table of discarded photos per job, facades included (read-only); investigate duplicates and missing exteriors in 1339, 1294, 1321.
+- Dashboard corrections: 1305 is not part of the overnight batch; recompute spend and KPIs; add notifications for Luma auto-reload and narration checks.
+- Luma spend reconciliation (needs the earlier billing pages).
+- Auto-reload risk: the Luma balance can drain by 50 USD steps unattended; a spend alert is needed (see the provider spend cap item).
+- Sequence agreed with Michele: validate the QC standard, put the new workflow in production, then the automatic management of the whole pipeline (queue, approval levels, dashboard). 3D reconstruction only after reporting and automation.
+- Four flagged scenes of the overnight jobs not yet reworked.
+
+---
+
+## 2026-11-05 - Clip acceptance standard (QC) [MEASURED RULE ENFORCED; JUDGE SHADOW ONLY] (replaces the earlier entry's status)
+- Decision: enforce ONLY the geometry reject (limit 0.20). Why: validation showed v0 unreliable (52% caught / 17.9% false rejects). Judge and verification stay record-only.
+- Open: (1) 1080p judge behaviour; (2) recall of the standard (more labelled passes needed); (3) speed rule: zoom_rate limit 0.28 provisional, needs labelled fast clips + archive check; (4) content hallucinations at the edge not detectable with current measures; the only structural answer is a real second view or 3D (after reporting + automation).
+- Rule from Michele: do the detection myself, he checks only disputed clips; keep what works, no heavy new layers.
+
+## 2026-11-05 - Automatic first rework on measured reject [BUILT, OFF, NOT TESTED ON A REAL JOB]
+- Scope: only jobs whose whole stop is measured rejects; one auto rework per scene; then pause for the operator (option A). Switch PVS_AUTO_REWORK (default off).
+- Open decision: extend to MIXED jobs (also flagged scenes) - needs a "hold" parameter in the shared _run_redo/_rework_qc_gate so pending stops are kept and reassembly is blocked; higher risk (shared path used by every rework). Not done. Michele to choose after seeing real triggers.
+- To do: first real run with switch on; verify (a) message "Rework automatico", (b) rework cost in the total, (c) one notification only.
+
+## 2026-11-05 - Feature registry and promotion process [PROPOSED, NOT BUILT]
+- Michele: "parcheggiamo tante feature senza usarle". Proposal: features.json (name, switch, state off/shadow/on, owner metric, promote criterion, review date) + read-only status command; a feature moves shadow -> on only with measured evidence and a rollback commit. Review dates must come from Michele (19/11 was a 14-day default of mine, not a decision). Awaiting his OK.
+
+## 2026-11-05 - Other open items (carried)
+- Narration check that replaces nonsense sentences (spec above, not built); table of discarded photos incl. facades; scene-risk-based selection (needs data; registry in shadow); dashboard corrections (1305 not overnight, KPIs, Luma auto-reload and narration notifications); Luma older spend reconciliation; optional model switch for high-risk scenes; partner limit back to 2 at launch; 5th test listing not already done in production; speed archive check.
+
+## 2026-11-06 - Workflow automation (queue + operator dashboard) [BUILT, RUNNING ON TEST; PRODUCTION AUTO-START OFF]
+- Michele's decisions: delivery to the agency stays manual; "release mode" switch manual/automatic in the dashboard (default manual); auto-start cap 30 EUR/day and max 2 jobs generating; automatic first rework on any rejected scene; minor flagged scenes auto-approved with notification and review list; test instance reachable on port 8002 with the UI key.
+- To do before switching PVS_AUTO_START on in production: first real production run watched; set PVS_AUTO_START_NOT_BEFORE; confirm release stays manual; partner limit per agency (PVS_PARTNER_AGENCY_LIMIT_24H=40 now) back to 2 at launch.
+- To do: save the photo audit also for jobs refused at intake (dashboard input panel); show 360p test jobs at their real price; define the single voice-length criterion (minimum and maximum) from real data and use it in draft_check AND production; unify clip speed/buffer absorption notes; listing registry of Relinx/GIAL listings already tried (job id, outcome, cost) to avoid repeats; dashboard KPIs/trend/mobile (2026-11-05 request); Luma spend alert.
+- Renders decision (OPEN): trial on 1327 showed interior renders alone do not satisfy the 4-environment rule. Options: A keep excluding renders; B accept interior renders only when the listing has no real photos (needs the rule on environments reconsidered); C accept always. No new label for renders (Michele, 2026-11-06).
+- Narration still open: minimum acceptable voice length (candidate 22-32 s, no short-voice data yet); optional per-sentence Claude check only if filler still leaks; replace (not remove) unsupported sentences.
+- 3D (World Labs Atlas beta access obtained): only after automation and reporting.

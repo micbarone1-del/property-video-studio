@@ -83,3 +83,23 @@ Reviewers (decision 2026-10-09): internal phase with Relinx = Michele + Relinx's
 Must-have narration fields (Q21); length range (Q16); whether music is used and rules; people/plate rule (Q08); any Relinx legal requirement on the AI label (wording is fixed: "Generated with AI", English); player specs and URL lifetime (Q33); acceptance rubric thresholds after the first 30 videos. Decided 2026-10-09: reviewers, feedback channel, label style, language scope (see above).
 
 _Assumptions (2026-10-09): photos supplied by the CRM are the high-resolution originals with reliable order and categories; if tests show otherwise, log a finding. The Relinx contact (Michele) is the test referent. A shareable summary is in QUALITY_SPEC_FOR_RELINX.md._
+
+## 10. Clip acceptance standard v0 (PROPOSED 2026-11-05, shadow mode, not yet enforced)
+Applies to every generated clip, before assembly. Thresholds come from 126 labelled clips (in-sample) and must be re-checked on the validation batch.
+| ID | Rule | Method | Limit | Result |
+|---|---|---|---|---|
+| Q09 | New area: the share of any sampled frame (0.25 s steps) that lies outside the field of view of the first frame | A (tracking + composed transforms, clip_standard) | <= 20% of the frame | above = reject |
+| Q10 | Content inside the already visible area: nothing may appear, disappear, move, animate or deform (curtains, water, light patches, signs, people, vehicles) | A (Claude judge, 6 key frames) | judge verdict "fail" | = reject; "review" is reported only |
+| Q11 | Camera direction: not backward, not downward, not very fast | A (judge) | judge "fail" | = reject |
+If the tracking is lost the geometry is not measured and only the judge decides. Flags ("review") are for the validation phase only; the production rule is pass or reject. Q05 and Q06 above stay the human release checks until this standard is validated and enforced.
+
+---
+
+## 10 (update). Q09-Q11 status 2026-11-05 evening
+- Q09 (geometry limit 0.20): ENFORCED (measured, validated on 36 watched clips). Q10 (judge): SHADOW ONLY, not a pass/fail criterion. Q11 (speed, zoom_rate 0.28): PROVISIONAL, recorded only.
+- Michele's stage-level tolerance: flagged "structure" defects are acceptable (passable) at this stage; rejects (true errors) are not.
+
+## 11. 2026-11-06 - Automation tolerance
+- Flagged scenes with only minor findings and no person may be approved by the system (review list + notification); any reject gets ONE automatic rework, then the operator. Delivery to the agency remains manual.
+- Narration: no claims (sea, views, floor, light) that the listing text or the photos do not support; unsupported sentences are replaced, not left empty.
+- Voice length: one criterion for test and production, minimum and maximum still to be fixed from data.
