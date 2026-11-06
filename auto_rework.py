@@ -7,6 +7,7 @@ Flagged scenes are cleared first by auto_rework.approvable_flags (or keep the pa
 One automatic rework per scene (job['auto_reworked']); if the reworked clip is
 still rejected the shared rework QC gate parks the job for the operator."""
 import os
+import re
 
 
 def enabled():
@@ -15,6 +16,11 @@ def enabled():
 
 def approve_flags_enabled():
     return os.getenv("PVS_AUTO_APPROVE_FLAGS", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+# 2026-11-06 (battery 360p: 3 of 5 auto-approved flags said "possible unclear human figure"): a person in a video is not a minor defect
+# for an agency, so a flag whose own text speaks of a person / figure is never approved by the system, whatever the severity field says.
+PERSON_RE = re.compile(r"figura|person|umano|umana|uomo|donna|bambin|people|human", re.I)
 
 
 def approvable_flags(qc_results, flagged):
@@ -30,6 +36,8 @@ def approvable_flags(qc_results, flagged):
         if str(ent.get("severity", "none")).lower() not in ("none", "minor"):
             return []
         if ent.get("people_detected") or ent.get("space_matches") is False:
+            return []
+        if PERSON_RE.search(" ".join(str(x) for x in (ent.get("issues") or []))):
             return []
     return list(flagged)
 
