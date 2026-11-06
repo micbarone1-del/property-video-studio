@@ -52,6 +52,14 @@ chk("S16 wiring: startup only when the switch is on; page exempt from the key (d
     "if auto_start.enabled():" in src and '"/operator-page"' in src and '@app.get("/operator/status")' in src)
 html = open("operator_page.html", encoding="utf-8").read()
 chk("S17 page sends the access key and asks only on 403", "X-Access-Key" in html and "r.status === 403" in html)
+chk("S19 status carries the detail of the stops (not the number of dict keys)", '"stops": len(det)' in src and '"stops_detail": det' in src)
+chk("S20 page: approve posts the app's own approval JSON with the key; redo asks for confirmation", "approved_scenes: approved, redo_scenes: redo" in html and "/approve'" in html and "confirm(" in html)
+chk("S21 page: clip previews and download links use the existing endpoints", "/clip/' + s.scene + '/preview" in html and "/preview\"" in html and "/download\"" in html)
+chk("S22 release mode: default manual, switch endpoint, auto release uses the operator's own release path",
+    'RELEASE_MODE_FILE = JOBS_DIR / "_release_mode.json"' in src and '"/operator/release-mode"' in src and "await release_job(jid)" in src
+    and 'return m if m in ("manual", "auto") else "manual"' in src)
+chk("S23 auto release never touches a job that needs the operator or has stops (an empty stops dict is NOT a stop)", 'not j.get("needs_operator")' in src and 'for k in ("rejected", "flagged", "failed"))' in src)
+chk("S24 page: release switch and per-job release button with confirmation", "setRelease(" in html and "releaseJob(" in html and "Consegna all" in html)
 import py_compile; py_compile.compile("api_server.py", doraise=True)
 chk("S18 api_server compiles", True)
 print("FAILS", F)
