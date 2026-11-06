@@ -2436,6 +2436,8 @@ def list_jobs():
             "created_at":   job.get("created_at", ""),
             "cost_estimate": job.get("cost_estimate"),
             "needs_operator": job.get("needs_operator"),   # 2026-10-09 stage 4b
+            "review_pending": bool(job.get("review_pending")),   # 2026-11-05: scenes approved by the system, not yet seen by a person
+            "auto_approved":  len(job.get("auto_approved") or []),
             "keep":         bool(job.get("keep")),          # 2026-11-02: protected from the automatic cleanup
             "has_video":    bool(job.get("output_path") and Path(job["output_path"]).exists()),
         })
@@ -2942,6 +2944,54 @@ async def delete_scene(job_id: str, background_tasks: BackgroundTasks):
     return {"job_id": job_id, "status": "running"}
 
 
+
+
+async def _apply_auto_approval(job_id: str, idxs: list, qc_results: list, notify: bool = True):
+    """2026-11-05 (PVS_AUTO_APPROVE_FLAGS): scenes the system approved by itself are marked, listed for a LATER human review
+    (job['auto_approved'], review_pending) and the operator is told once. Never touches rejected / failed scenes."""
+    import auto_rework as _ar
+    job = JOBS[job_id]
+    for s_ in job.get("scenes", []) or []:
+        if s_.get("index") in idxs:
+            s_["qc_verdict"] = "approved"
+            s_["auto_approved"] = True
+    job["auto_approved"] = _ar.review_record(qc_results, idxs)
+    job["review_pending"] = True
+    _save_job(job_id)
+    log.info(f"[Job {job_id}] flags auto-approved: {idxs}")
+    if notify:
+        prop_name = job.get("property_name", "Property")
+        try:
+            await _notify_operator(
+                job_id, "Auto-approved flags",
+                subject=f"Scene auto-approvate da rivedere: {prop_name}",
+                body_html=(f"<p><b>{prop_name}</b> - {len(idxs)} scene segnalate (difetto lieve) approvate in automatico, il video prosegue. "
+                           f"Da rivedere quando puoi; se non vanno usa Rifai.</p><p>Job ID: {job_id}</p>"),
+                push_message=f"{prop_name} - {len(idxs)} scene auto-approvate da rivedere",
+                tags=["eyes"],
+            )
+        except Exception as e:
+            log.warning(f"[Job {job_id}] auto-approval notification failed (non-fatal): {e}")
+
+
+@app.get("/operator/review-queue")
+async def review_queue():
+    """Jobs with scenes approved by the system that a person has not looked at yet (newest first)."""
+    rows = [{"job_id": jid, "property_name": j.get("property_name"), "status": j.get("status"),
+             "created_at": j.get("created_at", ""), "scenes": j.get("auto_approved") or []}
+            for jid, j in JOBS.items() if j.get("review_pending")]
+    rows.sort(key=lambda r: r["created_at"], reverse=True)
+    return {"total": len(rows), "jobs": rows}
+
+
+@app.post("/jobs/{job_id}/review-done")
+async def review_done(job_id: str):
+    """Operator action: the auto-approved scenes of this job were looked at."""
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    JOBS[job_id]["review_pending"] = False
+    _save_job(job_id)
+    return {"job_id": job_id, "review_pending": False}
 
 
 async def _rework_gate(job_id: str, scene_ids: list, force: bool = False):
@@ -3989,6 +4039,18 @@ async def run_pipeline(
 
 
         # ── QC gate: pause if any scenes rejected or flagged ──────────────
+        # 2026-11-05 (PVS_AUTO_APPROVE_FLAGS, default off): minor flags are approved by the system and listed for a later review.
+        # With no reject / failed scene left, the stop disappears and the pipeline goes on to assembly.
+        _cleared = []
+        try:
+            import auto_rework as _ar0
+            if not failed_scenes:
+                _cleared = _ar0.approvable_flags(qc_results, flagged_scenes)
+        except Exception as _e:
+            log.warning(f"[Job {job_id}] auto-approve check failed (non-fatal): {_e}")
+        if _cleared and not rejected_scenes:
+            await _apply_auto_approval(job_id, _cleared, qc_results)
+            flagged_scenes = []
         if rejected_scenes or flagged_scenes or failed_scenes:
             awaiting = _awaiting_payload(rejected_scenes, flagged_scenes, failed_scenes)
             JOBS[job_id]["awaiting_scenes"]  = awaiting
@@ -3999,11 +4061,13 @@ async def run_pipeline(
             # Same runner as "Rifai" (_run_redo); a still-rejected result parks the job for the operator there.
             try:
                 import auto_rework as _ar
-                _ap = _ar.plan(JOBS[job_id], qc_results, rejected_scenes, flagged_scenes, failed_scenes, scenes_config, _rwp.evaluate)
+                _ap = _ar.plan(JOBS[job_id], qc_results, rejected_scenes, ([] if _cleared else flagged_scenes), failed_scenes, scenes_config, _rwp.evaluate)
             except Exception as _e:
                 log.warning(f"[Job {job_id}] auto-rework plan failed (non-fatal): {_e}")
                 _ap = {"scene_ids": []}
             if _ap["scene_ids"] and _acquire_job_lock(job_id, f"Auto rework {len(_ap['scene_ids'])} scene(s)"):
+                if _cleared:
+                    await _apply_auto_approval(job_id, _cleared, qc_results)
                 JOBS[job_id].setdefault("auto_reworked", []).extend(_ap["scene_ids"])
                 JOBS[job_id].update({"status": "running", "progress": 76,
                                      "message": f"Rework automatico (misura): {', '.join(_ap['scene_ids'])}"})
