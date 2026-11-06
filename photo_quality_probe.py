@@ -11,6 +11,7 @@ from PIL import Image
 
 import relinx_pilot_check as rp
 import listing_scraper as ls
+import photo_metrics as pm
 
 MAX_PHOTOS = 14
 
@@ -28,7 +29,8 @@ def main(url):
         im.save(buf, format="JPEG", quality=95)
         r = ls.assess_photo_quality(buf.getvalue(), f"probe {L['id']} #{pos}")
         poor += r["verdict"] in ls.PHOTO_QUALITY_POOR
-        print(f"  #{pos:02d} page {imgs[pos].size} -> kept {im.size} | verdict {r['verdict']} | judges {r.get('by_model')} | blockiness {r.get('blockiness')}")
+        rq = pm.relative_quality_of_bytes(buf.getvalue())     # 2026-11-06: scale-free measures next to the verdicts (measurement only)
+        print(f"  #{pos:02d} page {imgs[pos].size} -> kept {im.size} | verdict {r['verdict']} | judges {r.get('by_model')} | blockiness {r.get('blockiness')} | fine_mid {rq.get('fine_mid')} period {rq.get('period')}(k{rq.get('period_k')})")
     print(f"POOR: {poor} of {len(kept)}")
 
 
