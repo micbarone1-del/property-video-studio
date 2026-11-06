@@ -628,7 +628,9 @@ GENERIC_PHRASES = ("spazi architettonici", "architettonici interessanti", "ben p
                    "proporzioni accoglienti", "ben definit", "illuminazione diffusa", "luce diffusa", "luce naturale dalle finestre", "spazio luminoso",
                    # 2026-11-06 (Michele, jobs 4417c1c5 / 3844bb19): filler that sounds like a fact and says nothing (and was wrong for a one-level flat)
                    "ben organizzat", "ben strutturat", "ben suddivis", "ben curat", "su questo livello", "livello della casa", "domina la",
-                   "verso l'orizzonte", "verso l\u2019orizzonte")
+                   "verso l'orizzonte", "verso l\u2019orizzonte",
+                   # battery 360p 2026-11-06: filler that survived ("angolo cottura funzionale e accogliente", "pratico e funzionale")
+                   "funzionale e accogliente", "pratico e funzionale", "e accogliente")
 
 
 LIGHT_RE = re.compile(r"\bluc[ei]\b|luminos|illumin|soleggiat|solare|chiarezza", re.I)
