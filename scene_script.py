@@ -491,6 +491,7 @@ def validate_free_text(text: str, anchors: list, description: str, agency_name: 
         return ["no sentences found in the text"]
     for i, sent in enumerate(sentences):
         problems.extend(_fact_problems(sent, f"sentence {i + 1}", _norm(sent), desc, desc_numbers, price_numbers))
+    problems.extend(view_problems(text, description))   # 2026-11-06: ONE place, every narration path that uses this check
     first, last = _norm(sentences[0]), _norm(sentences[-1])
     problems.extend(sale_rent_problems(first, desc, "the first sentence"))
     if agency_n:
@@ -624,7 +625,10 @@ def block_scene_groups(scene_sequence: list, per_block: int = 2) -> list:
 GENERIC_PHRASES = ("spazi architettonici", "architettonici interessanti", "ben posizionat", "ben distribuit", "servizi igienici", "funzionali e",
                    "spazi funzionali", "ambienti funzionali", "ambienti interessanti", "spazi interessanti", "soluzione ideale", "ideale per",
                    "per ogni esigenza", "ogni comfort", "tutti i comfort", "ambiente accogliente", "atmosfera accogliente", "dettagli di pregio",
-                   "proporzioni accoglienti", "ben definit", "illuminazione diffusa", "luce diffusa", "luce naturale dalle finestre", "spazio luminoso")
+                   "proporzioni accoglienti", "ben definit", "illuminazione diffusa", "luce diffusa", "luce naturale dalle finestre", "spazio luminoso",
+                   # 2026-11-06 (Michele, jobs 4417c1c5 / 3844bb19): filler that sounds like a fact and says nothing (and was wrong for a one-level flat)
+                   "ben organizzat", "ben strutturat", "ben suddivis", "ben curat", "su questo livello", "livello della casa", "domina la",
+                   "verso l'orizzonte", "verso l\u2019orizzonte")
 
 
 LIGHT_RE = re.compile(r"\bluc[ei]\b|luminos|illumin|soleggiat|solare|chiarezza", re.I)
@@ -644,6 +648,27 @@ def light_problems(blocks: list, split_fn=None) -> list:
         out.append(f"{len(hits)} sentences talk about light or brightness ({'; '.join(hits)}): at most {MAX_LIGHT_SENTENCES} sentence may, keep the one that fits best "
                    f"and rewrite the others with a different concrete fact from the listing (layout, size, number of rooms, floor, outdoor space, renovation, view)")
     return out
+
+
+# 2026-11-06 (Michele, job 3844bb19: "affaccia verso il mare" in Albano Laziale; the claim was in the AGENCY's text, not invented by the model):
+# a statement about what can be SEEN from the property (sea, lake, mountains, hills, horizon) is spoken only if the PHOTO ANALYSIS of this video
+# confirms it. The listing text alone is not enough for these terms. Everything else in the listing text stays usable as before.
+PHOTO_FACTS_MARK = "WHAT THE PHOTOS PLAINLY SHOW"
+VIEW_RE = re.compile(r"\b(mare|marin\w*|lago|lacustr\w*|mont[ei]|montagn\w*|collin\w*|orizzonte|skyline)\b", re.I)
+
+
+def view_problems(text: str, description: str) -> list:
+    """Problems for view claims (sea, lake, mountains, hills, horizon) that the photo facts do not confirm (empty = none)."""
+    desc = str(description or "")
+    i = desc.find(PHOTO_FACTS_MARK)
+    photo_part = desc[i:] if i >= 0 else ""
+    confirmed = {m.group(0).lower() for m in VIEW_RE.finditer(photo_part)}
+    said = [m.group(0).lower() for m in VIEW_RE.finditer(str(text or ""))]
+    bad = sorted({w for w in said if w not in confirmed})
+    if not bad:
+        return []
+    return [f"the narration speaks of {', '.join(repr(w) for w in bad)} as seen from the property, but the photos of THIS video do not show it: do not say it "
+            f"(not even if the listing text does); use another concrete fact about the property instead (floor, size, rooms, outdoor space, renovation, period building)"]
 
 
 def generic_problems(blocks: list) -> list:
