@@ -118,6 +118,7 @@ FakeClient.answer = "[2, 1]"
 FakeClient.answer = "kitchen"
 calls = install_get({"U": [Resp(403)], "O": [Resp(200)]})
 check("C1 classify falls back to original URL", ls.classify_uncategorized_photo("U", "O") == "kitchen" and calls == ["U", "O"])
+ls._describe_cache.clear()
 calls = install_get({"U": [Resp(403)], "O": [Resp(403)]})
 check("C2 classify returns uncategorized when both fail", ls.classify_uncategorized_photo("U", "O") == "uncategorized")
 calls = install_get({"U": [Resp(200)]})
