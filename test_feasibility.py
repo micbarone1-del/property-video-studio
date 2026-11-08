@@ -27,31 +27,30 @@ au = ls.build_photo_audit(photos)
 check("F2 audit has one row per photo with source and reason", len(au) == 7 and au[0]["excluded"] == "illustrazioni o render" and au[3]["excluded"] is None and au[3]["source"] == "partner_or_page", au[:4])
 r = ls.check_listing_acceptance([ph(1, "uncategorized", "vision_illustration")] * 1 + [ph(i, "uncategorized", "vision_illustration") for i in range(2, 10)] + [ph(20, "living"), ph(21, "kitchen")])
 check("F3 a listing of renders is rejected and the message says how many renders", (not r["ok"]) and "9 illustrazioni o render" in r["message"] and r["code"] == "insufficient_photos", r["message"])
-# F4-F7 unlabeled empty rooms
-unl = [ph(1, "living", "vision"), ph(2, "bedrooms", "vision"), ph(3, "kitchen", "vision"), ph(4, "bathrooms", "vision"), ph(5, "outdoor", "vision")]
-rr = ls.check_listing_scope(unl, ask=EMPTY)
-check("F4 empty rooms whose category came from the classifier (no label) are stopped, even with enforcement off", (not rr["ok"]) and rr["code"] == "unlabeled_empty_rooms", rr)
+# F4-F8 (2026-11-08): there is no separate "furnished" check any more; an empty room is a photo like any other
+ls._describe_cache.clear()
+def fw(url, fb, prompt, words=1):
+    return ({"e1": "emptyroom photo", "e2": "emptyroom photo", "e3": "emptyroom photo", "e4": "emptyroom photo"}.get(url, "living photo"), True)
+ls._vision_one_word = fw
+unl = [ph(i, "uncategorized") for i in (1, 2)]
+res = ls.resolve_uncategorized_photos([{"url": "e1", "category": "uncategorized"}, {"url": "u9", "category": "uncategorized"}])
+check("F4 an unlabeled empty room is excluded as 'stanza vuota senza etichetta' (one answer, no second check)", res[0]["category"] == "uncategorized" and res[0].get("other_kind") == "emptyroom" and ls.photo_exclusion(res[0]) == "stanza vuota senza etichetta" and res[1]["category"] == "living", res)
 lab = [ph(1, "living"), ph(2, "bedrooms"), ph(3, "kitchen"), ph(4, "bathrooms"), ph(5, "outdoor")]
-rr = ls.check_listing_scope(lab, ask=EMPTY)
-check("F5 empty rooms WITH labels from the page/partner stay feasible", rr["ok"] and rr["furnished_status"] == "unfurnished", rr)
-rr = ls.check_listing_scope(unl, ask=FURN)
-check("F6 furnished rooms without labels are fine", rr["ok"])
-lab2 = [ph(1, "living", "vision", label="Soggiorno"), ph(2, "bedrooms", "vision", label="Camera"), ph(3, "kitchen"), ph(4, "bathrooms"), ph(5, "outdoor")]
-rr = ls.check_listing_scope(lab2, ask=EMPTY)
-check("F7 a page caption counts as a label even if the category passed through the classifier", rr["ok"], rr)
-check("F8 short reason for notifications", ls.acceptance_short_reason({"code": "unlabeled_empty_rooms"}) == "stanze vuote senza etichette")
+rr = ls.check_listing_scope(lab)
+check("F5 empty rooms WITH labels stay usable and the gate is the photo rule only", rr["ok"] and "furnished_status" not in rr, rr)
+check("F6 the furnished functions are gone (no second description of the same photos)", not hasattr(ls, "check_listing_furnished") and not hasattr(ls, "_VISION_FURNISHED_PROMPT") and not hasattr(ls, "furnished_enforced"))
+rr2 = ls.check_listing_scope([ph(1, "living")])
+check("F7 the scope gate is the acceptance rule (same result)", (not rr2["ok"]) and rr2["code"] == "insufficient_photos")
+check("F8 short reason for notifications", ls.acceptance_short_reason({"code": "insufficient_photos"}) == "foto insufficienti" and ls.acceptance_short_reason({"code": "x"}) == "non idoneo")
 rep = ls.build_selection_report(photos, {"selected": {}, "total_selected": 0}, 6)
 check("F9 selection report carries photo_audit and excluded_counts", len(rep["photo_audit"]) == 7 and rep["excluded_counts"] == ex)
 check("F10 the illustration check covers up to 60 photos", ls.MAX_SOURCE_CHECK == 60)
 ex2 = ls.exclusion_counts([ph(1, "uncategorized", "vision", other_kind="floorplan"), ph(2, "uncategorized", "vision", other_kind="hall"), ph(3, "uncategorized", "vision")])
 check("F11 'other' photos are counted by what they are (piantina / ingresso) when known", ex2 == {"piantina": 1, "ingresso o corridoio": 1, "ambiente non riconosciuto": 1}, ex2)
-def fake_word(url, fb, prompt):
-    if prompt == ls._VISION_CLASSIFY_PROMPT:
-        return ("other", True)
-    if prompt == ls._VISION_OTHER_PROMPT:
-        return (("floorplan" if url == "p1" else "banana"), True)
-    return ("x", True)
+def fake_word(url, fb, prompt, words=1):
+    return ({"p1": "floorplan photo", "p2": "banana photo"}.get(url, "living photo"), True)
 ls._vision_one_word = fake_word
+ls._describe_cache.clear()
 res = ls.resolve_uncategorized_photos([{"url": "p1", "category": "uncategorized"}, {"url": "p2", "category": "uncategorized"}, {"url": "k", "category": "living"}])
 check("F12 resolve_uncategorized_photos records the kind of an 'other' photo and ignores an unknown word", res[0].get("other_kind") == "floorplan" and "other_kind" not in res[1] and res[2]["category"] == "living", res)
 print("ALL PASS" if not fails else f"{fails} FAIL"); sys.exit(1 if fails else 0)
