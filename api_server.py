@@ -3028,7 +3028,7 @@ async def _auto_start_tick():
         res = list(_AUTO_START_CHECKED[jid])
         try:   # the SAME duplicate rule as gial_start.py (about 17 EUR were lost to regenerated listings on 2026-11-05)
             import gial_start
-            dup = gial_start.same_listing_done(jid, _P(JOBS_DIR))
+            dup = gial_start.same_listing_done(jid, None, os.getenv("PVS_LUMA_RESOLUTION", "1080p"))
             if dup:
                 res.append(("FAIL", "DUP", f"the same listing already has a finished video ({', '.join(dup)})"))
         except Exception as e:
