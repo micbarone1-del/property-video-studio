@@ -3090,6 +3090,13 @@ async def _auto_start_boot():
     asyncio.create_task(_auto_start_loop())      # one loop: the automatic start (if on) and the automatic release (if the mode is auto)
 
 
+def _listing_number(j, jid):
+    """2026-11-08: the Relinx listing number (T-<n>-...) shown on the operator page, read by the ONE reader gial_consolidate.listing_ref; None when the job has none."""
+    import gial_consolidate as _gc
+    ref = _gc.listing_ref(j, jid)
+    return None if ref == jid[:8] else ref
+
+
 @app.get("/operator/status")
 async def operator_status():
     """Everything the operator page shows: the switches, the money committed, and one row per recent job."""
@@ -3114,7 +3121,7 @@ async def operator_status():
                      "auto_reworked": len(j.get("auto_reworked") or []), "auto_approved": j.get("auto_approved") or [],
                      "review_pending": bool(j.get("review_pending")), "released": bool(j.get("released")), "stops": len(det), "stops_detail": det,
                      "auto_approved_scenes": [a.get("scene") for a in (j.get("auto_approved") or [])],
-                     "needs_operator": bool(j.get("needs_operator"))})
+                     "needs_operator": bool(j.get("needs_operator")), "listing": _listing_number(j, jid)})
     rows.sort(key=lambda r: r["created_at"] or "", reverse=True)
     on = lambda n: os.getenv(n, "0").strip().lower() in ("1", "true", "yes", "on")
     return {"now": now.isoformat(), "active": auto_start.active_count(JOBS), "max_active": auto_start.max_active(),
