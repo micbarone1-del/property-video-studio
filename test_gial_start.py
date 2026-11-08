@@ -42,7 +42,8 @@ jd = Path(tempfile.mkdtemp())
 def mk(name, status, ref):
     (jd / name).mkdir(); (jd / name / "job_meta.json").write_text(json.dumps({"status": status, "external_ref": f"T-{ref}-abc123"}))
 mk("old11860", "done", "1186"); mk("new11860", "draft", "1186"); mk("other123", "draft", "1237"); mk("old1237x", "failed", "1237")
-check("S10 done_listings reads only finished videos, by listing number", gs.done_listings(jd) == {"1186": ["old11860"]})
+import listing_registry as lr
+check("S10 the registry reads only finished videos, by listing number", sorted((r["listing"], r["job_id"]) for r in lr.scan([("given", jd)]) if r["status"] == "done") == [("1186", "old11860")])
 check("S11 same_listing_done: a draft whose listing already has a finished video", gs.same_listing_done("new11860", jd) == ["old11860"] and gs.same_listing_done("other123", jd) == [] and gs.same_listing_done("old11860", jd) == [])
 f2 = Fake({"new11860": ["running", "done"], "other123": ["running", "done"]})
 logs = []
