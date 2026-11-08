@@ -13,14 +13,17 @@ def check(n, c, info=""):
 
 AERIAL_URLS = {"u_aerial", "u_aerial_cap"}
 ILLUS_URLS = {"u_render", "u_render_living"}
-def fake_word(url, fb, prompt):
-    if prompt == ls._VISION_SOURCE_PROMPT:
-        if url == "u_fail": return ("failed", False)
-        if url in ILLUS_URLS: return ("illustration", True)
-        return (("aerial" if url in AERIAL_URLS else "photo"), True)
-    return ("exterior", True)          # room question: every exterior/outdoor photo confirmed as exterior
+def fake_word(url, fb, prompt, words=1):
+    # the ONE question: "<what> <photo|render>"
+    assert prompt == ls._VISION_DESCRIBE_PROMPT and words == 2
+    if url == "u_fail": return ("", False)
+    if url == "u_render_living": return ("living render", True)
+    if url in ILLUS_URLS: return ("exterior render", True)
+    if url == "u_living": return ("living photo", True)
+    return (("aerial photo" if url in AERIAL_URLS else "exterior photo"), True)
 ls._vision_one_word = fake_word
 def photos():
+    ls._describe_cache.clear()
     return [{"url": "u_aerial", "category": "exterior"}, {"url": "u_ground", "category": "exterior"},
             {"url": "u_aerial_cap", "category": "exterior", "label_it": "Facciata dell'immobile"}, {"url": "u_fail", "category": "outdoor"},
             {"url": "u_living", "category": "living"},
@@ -40,9 +43,9 @@ os.environ.pop("PVS_AERIAL_FILTER", None)
 ps = photos(); r = ls.refine_exterior_outdoor_with_vision(ps); by = {p["url"]: p for p in ps}
 check("AF8 an illustration / render labelled exterior is removed", by["u_render"]["category"] == "uncategorized" and by["u_render"]["category_source"] == "vision_illustration" and r["illustrations_removed"] == 2, (by["u_render"], r))
 check("AF9 an illustration labelled as an interior room is removed too", by["u_render_living"]["category"] == "uncategorized")
-check("AF10 prompt asks for photo | aerial | illustration", all(w in ls._VISION_SOURCE_PROMPT for w in ("photo", "aerial", "illustration")))
+check("AF10 the one prompt asks for aerial and photo | render", all(w in ls._VISION_DESCRIBE_PROMPT for w in ("- aerial:", "photo", "render")))
 os.environ["PVS_AERIAL_FILTER"] = "0"
 ps = photos(); r = ls.refine_exterior_outdoor_with_vision(ps)
 check("AF11 switch off also keeps illustrations", r["illustrations_removed"] == 0 and {p["url"]: p for p in ps}["u_render"]["category"] == "exterior")
-check("AF12 the question also covers high viewpoints looking down (Michele 2026-11-03, job 3fcff5a9 scene 5)", "looks clearly DOWNWARDS" in ls._VISION_SOURCE_PROMPT and "NOT aerial" in ls._VISION_SOURCE_PROMPT)
+check("AF12 the question also covers high viewpoints looking down (Michele 2026-11-03, job 3fcff5a9 scene 5)", "looks clearly DOWNWARDS" in ls._VISION_DESCRIBE_PROMPT and "NOT aerial" in ls._VISION_DESCRIBE_PROMPT)
 print("ALL PASS" if not fails else f"{fails} FAIL"); sys.exit(1 if fails else 0)
