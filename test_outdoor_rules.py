@@ -33,11 +33,11 @@ check("O9 the rule is applied in the ONE shared function of both URL and partner
 # ---- P4 prompts
 import listing_scraper as ls
 import vision_analysis as va
-p = ls._VISION_CLASSIFY_PROMPT
-check("O10 classifier: aerial / drone / satellite are NOT exterior or outdoor -> other", "AERIAL" in p and "DRONE" in p and "answer other" in p.split("AERIAL")[1])
+p = ls._VISION_DESCRIBE_PROMPT
+check("O10 classifier: aerial / drone / satellite are NOT exterior or outdoor -> other", "- aerial:" in p and "drone" in p.lower() and "NOT aerial" in p)
 check("O11 classifier: landmark or monument from outside the property is excluded", "landmark or monument" in p)
 check("O12 classifier: the view from the home's OWN window / balcony is still allowed", "view FROM A WINDOW of this home" in p and "this home's own balcony, terrace or window" in p)
-check("O13 classifier still ends with the one-word answer line", p.rstrip().endswith("exterior, living, kitchen, bedrooms, bathrooms, outdoor or other."))
+check("O13 classifier still ends with the two-word answer line", p.rstrip().endswith("Answer with ONLY two words, for example: kitchen photo"))
 check("O14 room prompt: an aerial photo is other_exterior, not building_exterior", "aerial or drone photo" in va.ROOM_PROMPT and "other_exterior" in va.ROOM_PROMPT.split("aerial or drone photo")[1][:120])
 print(f"\nRESULT: {'ALL PASS' if not fails else 'FAILURES'} ({total - len(fails)}/{total})")
 sys.exit(1 if fails else 0)
