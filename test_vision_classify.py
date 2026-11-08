@@ -39,7 +39,10 @@ class FakeClient:
 ls.anthropic.Anthropic = FakeClient
 
 # per-URL answers: replace the low-level call with a deterministic map but keep the real parsing
-real = ls._classify_photo_vision
+real0 = ls._classify_photo_vision
+def real(url, fallback=None):
+    ls._describe_cache.clear()
+    return real0(url, fallback)
 def with_answer(url_map):
     def f(url, fallback=None):
         ANSWERS["__text__"] = url_map[url]
@@ -47,7 +50,7 @@ def with_answer(url_map):
     return f
 
 # 1. parsing of the model reply through the real function
-for txt, exp in (("kitchen", "kitchen"), ("Kitchen.", "kitchen"), ("bedrooms\n", "bedrooms"), ("other", "uncategorized"), ("a bathroom", "uncategorized"), ("", "uncategorized")):
+for txt, exp in (("kitchen photo", "kitchen"), ("Kitchen photo.", "kitchen"), ("bedrooms\n", "bedrooms"), ("other photo", "uncategorized"), ("a bathroom", "uncategorized"), ("", "uncategorized"), ("hall render", "uncategorized"), ("emptyroom photo", "uncategorized")):
     ANSWERS.clear(); ANSWERS["__text__"] = txt
     check(f"P1 reply {txt!r} -> {exp}", real("u", None) == (exp, True), real("u", None))
 ANSWERS.clear(); ANSWERS["__raise__"] = True
@@ -63,7 +66,7 @@ import base64
 im = Image.open(io.BytesIO(base64.b64decode(SENT[0])))
 check("P4 image sent is downscaled to <= 768 px", max(im.size) <= 768, im.size)
 check("P5 prompt asks about PRIVATE outdoor spaces and 'other' for entrance/corridor/shared areas",
-      "PRIVATE outdoor" in ls._VISION_CLASSIFY_PROMPT and "entrance hall" in ls._VISION_CLASSIFY_PROMPT and "portico" in ls._VISION_CLASSIFY_PROMPT)
+      "PRIVATE outdoor" in ls._VISION_DESCRIBE_PROMPT and "entrance hall" in ls._VISION_DESCRIBE_PROMPT and "portico" in ls._VISION_DESCRIBE_PROMPT)
 
 # 3. A+ : only exterior/outdoor candidates are checked, interiors untouched
 urls = {"e1": "exterior", "e2": "other", "o1": "outdoor", "o2": "other", "o3": "living", "e3": "outdoor"}
@@ -114,6 +117,8 @@ ls.resolve_uncategorized_photos(ph)
 check("C2 resolve_uncategorized_photos only touches uncategorized photos", ph[0]["category"] == "bathrooms" and ph[1]["category"] == "living")
 check("C3 resolved photo is marked as vision", ph[0].get("category_source") == "vision" and "category_source" not in ph[1])
 
+real_describe = ls._describe_photo
+ls._describe_photo = lambda url, fb=None: ("living", "photo", True)   # the label check is tested in section 5c
 # 5b. 2026-10-27: a "living" photo that is really the entrance hall / corridor leaves the selection; empty living rooms stay
 real_hall = ls._is_hall_photo
 HALLS = {"h1": (True, True), "l_ok": (False, True), "l_fail": (False, False)}
@@ -127,26 +132,62 @@ ph = [{"url": f"l_ok", "category": "living"} for _ in range(12)]
 s = ls.refine_exterior_outdoor_with_vision(ph)
 check("H3 at most MAX_LIVING_TO_CHECK living photos are checked", s["living_checked"] == ls.MAX_LIVING_TO_CHECK == 8)
 ls._is_hall_photo = real_hall
-HP = ls._VISION_HALL_PROMPT
-check("H4 hall question: an empty / unfurnished living room is NOT a hall", "unfurnished living room" in HP and "hall or room" in HP)
+ls._describe_photo = real_describe
+HP = ls._VISION_DESCRIBE_PROMPT
+check("H4 one question: an empty / unfurnished living room is emptyroom, NOT a hall", "emptyroom, NOT hall" in HP)
 sent = {}
-ls._vision_one_word = lambda u, fb, prompt: (sent.update(p=prompt) or ("hall", True))
-check("H5 _is_hall_photo uses the shared one-word helper", ls._is_hall_photo("u")[0] is True and sent["p"] == HP)
+def _hw(ans):
+    ls._describe_cache.clear()
+    ls._vision_one_word = lambda u, fb, prompt, words=1: (sent.update(p=prompt, w=words) or (ans, True))
+_hw("hall photo")
+check("H5 _is_hall_photo reads the one answer (same prompt, two words)", ls._is_hall_photo("u")[0] is True and sent["p"] == HP and sent["w"] == 2)
+_hw("emptyroom photo")
+check("H5b an unlabeled empty room / stairs is not a living room either", ls._is_hall_photo("u")[0] is True)
+_hw("living photo")
+check("H5c a living room is not a hall", ls._is_hall_photo("u")[0] is False)
+
+# 5c. 2026-11-08: partner labels are VERIFIED with the same answer; a clear disagreement excludes the photo, an empty room with a label is used
+check("L0 label_conflict: clear disagreements only", ls.label_conflict("kitchen", "bathrooms") and ls.label_conflict("living", "floorplan") and ls.label_conflict("bedrooms", "parking")
+      and not ls.label_conflict("living", "kitchen") and not ls.label_conflict("kitchen", "living") and not ls.label_conflict("bedrooms", "emptyroom") and not ls.label_conflict("living", "hall")
+      and not ls.label_conflict("kitchen", "kitchen") and not ls.label_conflict("outdoor", "exterior"))
+ANSW = {"m_ok": "kitchen photo", "m_bath": "bathrooms photo", "m_plan": "floorplan photo", "m_empty": "emptyroom photo", "m_open": "living photo", "m_fail": None, "m_ext": "exterior photo"}
+def _wm(u, fb, prompt, words=1):
+    a = ANSW[u]
+    return ("", False) if a is None else (a, True)
+ls._describe_cache.clear(); ls._vision_one_word = _wm
+ls._classify_photo_vision = lambda url, fb=None: ("exterior", True)
+ph = [{"url": "m_ok", "category": "kitchen"}, {"url": "m_bath", "category": "kitchen"}, {"url": "m_plan", "category": "living", "label_it": "Soggiorno"},
+      {"url": "m_empty", "category": "bedrooms", "label_it": "Camera"}, {"url": "m_open", "category": "kitchen"}, {"url": "m_fail", "category": "bathrooms"},
+      {"url": "m_ext", "category": "bedrooms"}]
+s = ls.refine_exterior_outdoor_with_vision(ph)
+c = [p["category"] for p in ph]
+check("L1 a label that matches stays; open-plan living/kitchen stays; empty room WITH label stays; failed call keeps the label", c[0] == "kitchen" and c[3] == "bedrooms" and c[4] == "kitchen" and c[5] == "bathrooms", c)
+check("L2 clear disagreements are excluded and recorded with both words", c[1] == "uncategorized" and ph[1]["category_source"] == "vision_label_mismatch" and ph[1]["label_conflict"] == {"partner": "kitchen", "vision": "bathrooms"}
+      and ph[2]["category"] == "uncategorized" and ph[2]["label_conflict"]["vision"] == "floorplan" and ph[6]["category"] == "uncategorized", ph)
+check("L3 the audit reason names both (partner label and what the photo shows)", "cucina" in ls.photo_exclusion(ph[1]) and "bagno" in ls.photo_exclusion(ph[1]) and ls.build_photo_audit(ph)[1]["label_conflict"]["vision"] == "bathrooms", ls.photo_exclusion(ph[1]))
+check("L4 summary counts the mismatches", s["label_mismatch_removed"] == 3, s)
+CALLS2 = []
+ls._describe_cache.clear()
+ls._vision_one_word = lambda u, fb, prompt, words=1: (CALLS2.append(u) or ("kitchen photo", True))
+ls._classify_photo_vision = real0
+ph = [{"url": "n1", "category": "uncategorized"}, {"url": "n2", "category": "kitchen"}, {"url": "n3", "category": "exterior"}]
+ls.resolve_uncategorized_photos(ph); ls.refine_exterior_outdoor_with_vision(ph)
+check("L5 ONE vision call per photo across resolve + classify + source + label check", sorted(CALLS2) == ["n1", "n2", "n3"], CALLS2)
 
 # 6. wiring (static): one shared function, both paths, before the acceptance rule
 api = open("api_server.py", encoding="utf-8").read()
 url_part = api.split("async def _prepare_url_draft_work")[1].split("async def ")[0]   # Patch M: the URL path now runs in this background worker
 rel_part = api.split("async def _build_relinx_job_in_background")[1].split("\ndef ")[0]
-check("W1 URL path: resolve unlabeled, then refine exterior/outdoor, then acceptance", url_part.index("resolve_uncategorized_photos") < url_part.index("refine_exterior_outdoor_with_vision") < url_part.index("check_listing_scope"))
-check("W2 Relinx path: same two shared functions, before acceptance", rel_part.index("resolve_uncategorized_photos") < rel_part.index("refine_exterior_outdoor_with_vision") < rel_part.index("check_listing_scope"))
+check("W1 URL path: resolve unlabeled, then refine exterior/outdoor, then acceptance", url_part.index("resolve_uncategorized_photos") < url_part.index("finish_photo_classification") < url_part.index("check_listing_scope"))
+check("W2 Relinx path: same two shared functions, before acceptance", rel_part.index("resolve_uncategorized_photos") < rel_part.index("finish_photo_classification") < rel_part.index("check_listing_scope"))
 check("W3 summary saved in selection_report in both paths", api.count('selection_report["classification"] = classification_summary') == 2)
 check("W5 old whole-listing reclassification is gone (no duplicate implementation)", not hasattr(ls, "reclassify_photos_with_vision") and "reclassify_photos_with_vision" not in api)
 check("W4 usage counter is thread safe", hasattr(ls, "_claude_lock"))
 
-P = ls._VISION_CLASSIFY_PROMPT
+P = ls._VISION_DESCRIBE_PROMPT
 check("P6 prompt v2: kitchen wins when cabinets/hob/sink are the main subject (open-plan)", "choose kitchen whenever cabinets" in P)
 check("P7 prompt v2: living only with sofa/lounge/dining table; facade also from inner courtyard", "only when a sofa" in P and "inner courtyard" in P)
-check("P8 prompt v3: shared/condominium spaces and a single tree close up are 'other', not outdoor", "condominium space" in P and "a single tree or plant close up" in P)
+check("P8 prompt v3: shared/condominium spaces and a single tree close up are 'other', not outdoor", "condominium space" in P and "a single tree or plant" in P)
 check("P9 prompt v3 (2026-10-27): the view FROM A WINDOW of the home is outdoor (usable as the closing view), no longer 'other'", "view FROM A WINDOW" in P and "view from a window, a tree" not in P)
 print(f"RESULT: {'ALL PASS' if not fails else 'FAIL'} ({total - len(fails)}/{total})")
 sys.exit(1 if fails else 0)
