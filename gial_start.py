@@ -23,36 +23,26 @@ PARKED_OK = ("done", "awaiting_approval")
 BUSY = ("queued", "running")
 
 
-def done_listings(jobs_dir=None) -> dict:
-    """{listing number: [finished job ids]} of every job with a finished video, read from the jobs folder (read only). Reuses gial_consolidate.listing_ref: one reader of the listing number."""
-    from pathlib import Path
-    import json
-    import gial_consolidate as gc
-    root = Path(jobs_dir) if jobs_dir else Path(os.path.dirname(os.path.abspath(__file__))) / "jobs"
-    out = {}
-    for p in sorted(root.glob("*/job_meta.json")):
-        try:
-            m = json.loads(p.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        if m.get("status") == "done":
-            ref = gc.listing_ref(m, p.parent.name)
-            out.setdefault(ref, []).append(p.parent.name)
-    return out
-
-
-def same_listing_done(job_id, jobs_dir=None):
-    """Finished videos of the SAME listing as this draft (never the draft itself); [] if none. (2026-11-05: 1186 and 1280 were generated a second time: about 17 EUR.)"""
-    from pathlib import Path
-    import json
-    import gial_consolidate as gc
-    root = Path(jobs_dir) if jobs_dir else Path(os.path.dirname(os.path.abspath(__file__))) / "jobs"
+def target_resolution(s) -> str:
+    """The Luma resolution of the instance this launcher talks to (the switch shown on the operator page); 1080p when it cannot be read."""
     try:
-        m = json.loads((root / job_id / "job_meta.json").read_text(encoding="utf-8"))
+        return str(s.get(f"{BASE}/operator/status", timeout=30).json()["switches"]["luma_resolution"])
     except Exception:
+        return "1080p"
+
+
+def same_listing_done(job_id, jobs_dir=None, target_res=None):
+    """Finished videos of the SAME listing as this draft (never the draft itself); [] if none. ONE rule for this launcher AND the server's auto-start.
+    2026-11-08: reads production AND test folders through listing_registry (the old version looked only in one folder and let 1337 run twice), and a finished video
+    blocks only when its resolution is the same or higher than this run's (a 360p test video does not block a 1080p production run).
+    (2026-11-05: 1186 and 1280 were generated a second time: about 17 EUR.)"""
+    import listing_registry as lr
+    recs = lr.scan([("given", jobs_dir)] if jobs_dir else None)
+    me = next((r for r in recs if r["job_id"] == job_id), None)
+    if not me:
         return []
-    ref = gc.listing_ref(m, job_id)
-    return [j for j in done_listings(root).get(ref, []) if j != job_id]
+    res = target_res or os.environ.get("PVS_LUMA_RESOLUTION", "1080p")
+    return [r["job_id"] for r in lr.finished_blocking(me["listing"], res, recs, exclude_job=job_id)]
 
 
 def session():
@@ -85,7 +75,7 @@ def run(job_ids, s=None, sleep=time.sleep, out=_say, poll=POLL_SECS, max_wait=MA
         if st != "draft":
             out(f"{jid}: status is '{st}', not 'draft': skipped (never started twice)")
             result[jid] = f"skipped:{st}"; continue
-        dup = [] if again else same_listing_done(jid, jobs_dir)
+        dup = [] if again else same_listing_done(jid, jobs_dir, target_resolution(s))
         if dup:
             out(f"{jid}: the SAME listing already has a finished video ({', '.join(dup)}): skipped, no money spent (use --again to generate it anyway)")
             result[jid] = f"skipped:duplicate:{dup[0]}"; continue
