@@ -90,7 +90,7 @@ function nameCell(j) {
   if (j.status === 'done') links.push('<a href="/jobs/' + j.job_id + '/preview" target="_blank">Guarda</a>', '<a href="/jobs/' + j.job_id + '/download" target="_blank">Scarica</a>');
   const open = ((j.stops_detail && j.stops_detail.length) || (j.review_pending && j.auto_approved_scenes && j.auto_approved_scenes.length));
   links.push('<a href="#" onclick="toggle(\'' + j.job_id + '\');return false;">' + (open ? 'Rivedi scene' : 'Dettagli') + '</a>');
-  return '<b>' + esc(j.name || j.job_id) + '</b><div class="mute">' + esc(j.job_id) + ' - ' + esc(j.source || 'manuale') + ' - ' + esc((j.created_at || '').replace('T', ' ').slice(0, 16)) + '</div><div class="mute">' + links.join(' - ') + '</div><div id="rev-' + j.job_id + '"></div>';
+  return '<b>' + esc(j.name || j.job_id) + '</b>' + (j.listing ? ' <span class="tag">annuncio ' + esc(j.listing) + '</span>' : '') + '<div class="mute">' + esc(j.job_id) + ' - ' + esc(j.source || 'manuale') + ' - ' + esc((j.created_at || '').replace('T', ' ').slice(0, 16)) + '</div><div class="mute">' + links.join(' - ') + '</div><div id="rev-' + j.job_id + '"></div>';
 }
 const KIND = { rejected: 'rifiutata', flagged: 'segnalata', failed: 'clip non generato' };
 function sceneBlock(id, s, withChoice) {
@@ -157,6 +157,8 @@ function autoCell(j) {
   if (j.stops) t.push('<span class="tag attn">in attesa di te: ' + j.stops + ' scene</span>');
   return t.join('') || '<span class="mute">-</span>';
 }
+let FILTER = '';
+function setFilter(f) { FILTER = (FILTER === f ? '' : f); if (LAST) { load(); } }
 async function load() {
   try {
     const d = await api('/operator/status');
@@ -167,12 +169,13 @@ async function load() {
     document.getElementById('cards').innerHTML =
       '<div class="card"><b>' + d.active + ' / ' + d.max_active + '</b><span>job in generazione</span></div>' +
       '<div class="card"><b>' + d.spent_24h_eur.toFixed(1) + ' / ' + d.cap_eur.toFixed(0) + ' EUR</b><span>impegnati nelle ultime 24 h / tetto</span></div>' +
-      '<div class="card"><b>' + waiting + '</b><span>job che aspettano te</span></div>' +
-      '<div class="card"><b>' + pending + '</b><span>job con scene da rivedere</span></div>' +
+      '<div class="card" style="cursor:pointer;' + (FILTER === 'waiting' ? 'outline:2px solid var(--warn)' : '') + '" onclick="setFilter(\'waiting\')" title="Job fermi in attesa di una tua decisione (scene segnalate dal QC o rework esauriti). Clic per vedere solo quelli."><b>' + waiting + '</b><span>job che aspettano te</span></div>' +
+      '<div class="card" style="cursor:pointer;' + (FILTER === 'review' ? 'outline:2px solid var(--warn)' : '') + '" onclick="setFilter(\'review\')" title="Job gia andati avanti: il sistema ha approvato scene con difetti lievi, da rivedere con calma. Clic per vedere solo quelli."><b>' + pending + '</b><span>job con scene da rivedere</span></div>' +
       '<div class="card"><b>' + (d.release_mode === 'auto' ? 'automatico' : 'con il tuo ok') + '</b><span>rilascio all\'agenzia</span><br><button onclick="setRelease(\'' + (d.release_mode === 'auto' ? 'manual' : 'auto') + '\')">' + (d.release_mode === 'auto' ? 'Passa a: con il mio ok' : 'Passa a: automatico') + '</button></div>';
     const s = d.switches, p = (n, v) => '<span class="pill ' + (v ? 'on' : 'off') + '">' + n + ': ' + (v ? 'acceso' : 'spento') + '</span>';
     document.getElementById('sw').innerHTML = p('avvio automatico', s.auto_start) + p('rework automatico', s.auto_rework) + p('approvazione segnalate', s.auto_approve_flags) + p('regola misurata', s.standard_enforce) + '<span class="pill">Luma: ' + esc(s.luma_resolution) + '</span>';
-    document.getElementById('rows').innerHTML = d.jobs.map(j =>
+    const shown = FILTER === 'waiting' ? d.jobs.filter(j => j.stops || j.needs_operator) : FILTER === 'review' ? d.jobs.filter(j => j.review_pending) : d.jobs;
+    document.getElementById('rows').innerHTML = shown.map(j =>
       '<tr><td>' + nameCell(j) + '</td>' +
       '<td><span class="st-' + esc(j.status) + '">' + esc(j.status) + '</span>' + (j.progress != null ? '<div class="bar"><i style="width:' + Math.max(0, Math.min(100, j.progress)) + '%"></i></div>' : '') + '<div class="mute">' + esc(j.message) + '</div></td>' +
       '<td>' + autoCell(j) + '</td><td>' + (j.cost_eur != null ? j.cost_eur.toFixed(2) + ' EUR' : '<span class="mute">-</span>') + '</td></tr>').join('');
