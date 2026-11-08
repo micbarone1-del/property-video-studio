@@ -168,7 +168,7 @@ def derive_available_category_order(photos: list, priority_order: list = None) -
 
 # 2026-11-03 (Michele): "teniamo i motivi delle selezioni per capire se funziona e come". For every photo: where its category came from and why it left the selection.
 EXCLUSION_REASONS = {"vision_illustration": "illustrazioni o render", "vision_aerial": "viste aeree o dall'alto", "vision_hall": "ingressi o corridoi",
-                     "vision_refine": "esterni non confermati", "vision_quality": "scarsa qualit\u00e0", "duplicate": "foto duplicata"}
+                     "vision_refine": "esterni non confermati", "vision_label_mismatch": "etichetta del partner non corrisponde alla foto", "vision_quality": "scarsa qualit\u00e0", "duplicate": "foto duplicata"}
 
 
 def photo_exclusion(p: dict):
@@ -181,6 +181,11 @@ def photo_exclusion(p: dict):
     cat = p.get("category")
     if cat in CATEGORIES:
         return None
+    if p.get("category_source") == "vision_label_mismatch" and p.get("label_conflict"):
+        lc = p["label_conflict"]
+        names = {"living": "soggiorno", "kitchen": "cucina", "bedrooms": "camera", "bathrooms": "bagno", "exterior": "esterno", "outdoor": "spazio esterno"}
+        names.update({k: v for k, v in OTHER_KINDS_IT.items() if k not in names})
+        return "etichetta partner \u00ab" + names.get(lc.get("partner"), str(lc.get("partner"))) + "\u00bb ma la foto mostra: " + names.get(lc.get("vision"), str(lc.get("vision")))
     if p.get("category_source") == "vision_aerial" and p.get("other_kind") not in (None, "", "aerial", "other"):
         return OTHER_KINDS_IT.get(p["other_kind"], EXCLUSION_REASONS["vision_aerial"])      # 2026-11-08: flagged aerial, but a second look says what it really is
     if p.get("other_kind") and not EXCLUSION_REASONS.get(p.get("category_source")):
@@ -198,7 +203,7 @@ def build_photo_audit(photos: list) -> list:
         out.append({"n": i + 1, "url": u, "label": p.get("label_it") or None, "category": p.get("category"),
                     "category_from_page": p.get("category_page") or p.get("category_before_source"),
                     "source": p.get("category_source") or "partner_or_page", "excluded": photo_exclusion(p),
-                    "quality": p.get("quality"), "sharp": p.get("sharp"), "render_accepted": bool(p.get("render_accepted"))})
+                    "quality": p.get("quality"), "sharp": p.get("sharp"), "label_conflict": p.get("label_conflict"), "render_accepted": bool(p.get("render_accepted"))})
     return out
 
 
@@ -273,29 +278,8 @@ def finish_photo_classification(photos: list) -> dict:
     """The ONE step both workflows (URL and Relinx) run after the categories are known: facade/balcony verified by vision, then duplicate pictures marked.
     Returns the classification summary stored in the job's selection_report."""
     summary = refine_exterior_outdoor_with_vision(photos)
-    summary["aerial_relabelled"] = relabel_aerial_excluded(photos)
     summary["duplicates"] = mark_duplicate_photos(photos)
     return summary
-
-
-def relabel_aerial_excluded(photos: list) -> int:
-    """2026-11-08: a photo excluded as "aerial" gets the same one-word "what does it show" question the other excluded photos get (audit only; it stays
-    excluded either way). A parking lot is then reported as a parking lot, not as an aerial view. Never raises; returns how many photos got a new kind."""
-    try:
-        todo = [p for p in photos or [] if p.get("category_source") == "vision_aerial" and not p.get("other_kind")]
-        if not todo:
-            return 0
-        from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=CLASSIFY_WORKERS) as ex:
-            kinds = list(ex.map(lambda p: _other_kind(p["url"], p.get("original_url")), todo))
-        n = 0
-        for p, k in zip(todo, kinds):
-            if k:
-                p["other_kind"] = k; n += 1
-        return n
-    except Exception as e:
-        log.warning(f"[Scraper] Aerial re-label failed: {e}")
-        return 0
 
 
 def refusal_report(photos: list) -> dict:
@@ -359,20 +343,10 @@ def check_listing_acceptance(photos: list) -> dict:
     return result
 
 
-# 2026-10-28 (Michele): launch scope. A listing whose living room AND bedroom show no furniture is "not furnished" and out of scope for now.
-# It is checked in the SAME gate as the photo rule (check_listing_scope), before any narration or voice is paid for. Page labels decide which
-# photos are the living room and the bedroom; Claude vision is asked only whether furniture is visible (kitchen units do not count).
-FURNISHED_SAMPLE_PER_ROOM = 2
-FURNISHED_ROOMS = ("living", "bedrooms")
-UNFURNISHED_MESSAGE = "Annuncio non supportato: appartamento non arredato (al momento non disponibile)."
-ACCEPTANCE_SHORT_REASON = {"insufficient_photos": "foto insufficienti", "unfurnished": "non arredato", "unlabeled_empty_rooms": "stanze vuote senza etichette"}
-UNLABELED_EMPTY_MESSAGE = ("Annuncio non idoneo: le stanze risultano vuote e le foto non hanno etichette che ne indichino l'ambiente; "
-                           "senza arredi e senza etichette non \u00e8 possibile riconoscere le stanze e produrre un video di qualit\u00e0.")
-_VISION_FURNISHED_PROMPT = (
-    "Look at this real estate interior photo. Does the room contain furniture (a sofa, table, chairs, a bed, a wardrobe, a desk, shelves "
-    "or similar movable furniture)? Built-in kitchen units, fixed lights and curtains do NOT count as furniture.\n"
-    "Answer with ONLY one word: furnished or empty."
-)
+# 2026-11-08 (Michele: "non possiamo avere 2 descrizioni che si possono contraddire"): the separate "furnished or empty" question is GONE.
+# What a photo shows, empty rooms included, comes from the ONE vision answer (_describe_photo): an empty room is "emptyroom", excluded when it has no
+# label from the partner and used when it has one. The refusal message lists the excluded photos (empty rooms included) as it always did.
+ACCEPTANCE_SHORT_REASON = {"insufficient_photos": "foto insufficienti"}
 
 
 def acceptance_short_reason(acceptance: dict) -> str:
@@ -380,70 +354,10 @@ def acceptance_short_reason(acceptance: dict) -> str:
     return ACCEPTANCE_SHORT_REASON.get((acceptance or {}).get("code"), "non idoneo")
 
 
-def check_listing_furnished(photos: list, ask=None) -> dict:
-    # returns ok False ONLY when every room that has photos (living, bedrooms) was judged empty by a clear majority of its sampled photos
-    # with no failed call. Anything unsure (no photo, failed call, unclear answer) never blocks a listing.
-    ask = ask or _vision_one_word
-    detail, verdicts, seen = {}, [], set()
-    unlabeled = False
-    for room in FURNISHED_ROOMS:
-        sample = []
-        for p in photos or []:
-            url = p.get("url")
-            if p.get("category") == room and url and url not in seen and len(sample) < FURNISHED_SAMPLE_PER_ROOM:
-                seen.add(url)
-                sample.append(p)
-        if not sample:
-            detail[room] = "no photo"
-            continue
-        words = [ask(p["url"], p.get("original_url"), _VISION_FURNISHED_PROMPT) for p in sample]
-        if any(not ok for _, ok in words):
-            detail[room] = "unknown (a vision call failed)"
-            verdicts.append(None)
-            continue
-        empties = sum(1 for w, _ in words if w == "empty")
-        furnished = sum(1 for w, _ in words if w.startswith("furnished"))
-        if empties * 2 > len(words):
-            detail[room] = "empty (" + str(empties) + " of " + str(len(words)) + " photos)"
-            verdicts.append("empty")
-            # 2026-11-03: a room whose category came from the classifier (no label from the page or the partner) cannot be told apart when it is empty
-            if any(p.get("category_source") == "vision" and not str(p.get("label_it") or "").strip() for p in sample):
-                unlabeled = True
-        elif furnished:
-            detail[room] = "furnished"
-            verdicts.append("furnished")
-        else:
-            detail[room] = "unknown (unclear answer)"
-            verdicts.append(None)
-    blocked = bool(verdicts) and all(v == "empty" for v in verdicts)
-    return {"ok": not blocked, "detail": detail, "unlabeled": bool(blocked and unlabeled)}
-
-
-def furnished_enforced() -> bool:
-    # 2026-10-28: measure-only by default. An empty flat is recorded (furnished_status = unfurnished) but NOT rejected.
-    # Set PVS_FURNISHED_ENFORCE=1 in .env and restart to reject unfurnished listings again.
-    return os.environ.get("PVS_FURNISHED_ENFORCE", "0").strip().lower() in ("1", "true", "yes", "on")
-
-
-def check_listing_scope(photos: list, ask=None) -> dict:
-    # the ONE gate both workflows call before narration: the photo rule (check_listing_acceptance) first, then the furnished rule.
-    # same result shape as check_listing_acceptance, so every caller reads it exactly as before
-    result = check_listing_acceptance(photos)
-    if not result["ok"]:
-        return result
-    furn = check_listing_furnished(photos, ask=ask)
-    result["furnished_check"] = furn["detail"]
-    result["furnished_status"] = "ok" if furn["ok"] else "unfurnished"
-    if not furn["ok"]:
-        if furn.get("unlabeled"):          # 2026-11-03 (Michele): empty rooms WITH labels are feasible; empty rooms WITHOUT labels are stopped
-            result.update({"ok": False, "code": "unlabeled_empty_rooms", "message": UNLABELED_EMPTY_MESSAGE})
-            log.warning("[Scraper] Listing rejected (empty rooms without labels): " + str(furn["detail"]))
-        elif furnished_enforced():
-            result.update({"ok": False, "code": "unfurnished", "message": UNFURNISHED_MESSAGE})
-            log.warning("[Scraper] Listing rejected (unfurnished): " + str(furn["detail"]))
-        else:
-            log.info("[Scraper] Listing looks unfurnished, measure-only mode (not rejected): " + str(furn["detail"]))
-    return result
+def check_listing_scope(photos: list) -> dict:
+    """The ONE gate both workflows call before narration: the photo rule (check_listing_acceptance). Kept as a named gate so both callers stay as
+    they are; the furnished rule that used to follow was a second description of the same photos and was removed (2026-11-08)."""
+    return check_listing_acceptance(photos)
 
 
 SUPPORTED_DOMAINS = {"immobiliare.it", "www.immobiliare.it", "idealista.it", "www.idealista.it",
@@ -676,19 +590,35 @@ def extract_listing(url: str, attempt_resolution_upgrade: bool = True) -> dict:
 
 # ── Uncategorized-photo fallback via existing vision QC ─────────────────────
 
-_VISION_CLASSIFY_PROMPT = (
-    "Look at this real estate photo. Which ONE category best describes what the photo mainly shows?\n\n"
+_VISION_DESCRIBE_PROMPT = (
+    "Look at this real estate photo and answer with TWO words: first WHAT it mainly shows, then WHAT KIND of picture it is.\n\n"
+    "FIRST word (exactly one of these):\n"
     "- exterior: the building's exterior walls and windows seen from the street OR from an inner courtyard. If the main subject is the building's outer walls, it is exterior even if a courtyard is visible.\n"
     "- living: only when a sofa, lounge or dining table is the main subject.\n"
     "- kitchen: choose kitchen whenever cabinets, hob, sink or appliances are the main subject, even in an open-plan room.\n"
-    "- bedrooms: bedroom or sleeping area (also the sleeping area of a studio flat).\n"
+    "- bedrooms: a bedroom or sleeping area where a BED (or cot) is visible (also the sleeping area of a studio flat).\n"
     "- bathrooms: bathroom, toilet, shower room.\n"
-    "- outdoor: a PRIVATE outdoor space belonging to this home: balcony, terrace, private garden, or the view from that balcony/terrace, or the view FROM A WINDOW of this home (skyline, rooftops, city, sea, countryside) when the view itself is the main subject. A shared or condominium space (courtyard, portico, shared balcony or walkway) is NOT outdoor: answer other.\n"
-    "- An AERIAL or DRONE photo taken from above, a map or satellite image, and a landmark or monument photographed from outside the property (not as seen from this home's own balcony, terrace or window) are NOT exterior and NOT outdoor: answer other.\n"
-    "- other: entrance hall, corridor, hallway, stairs, shared building areas (courtyard, portico, lobby, lift, communal garden), "
-    "floor plan, close-up of a detail, a single tree or plant close up, or anything that is not one of the categories above.\n\n"
-    "Answer with ONLY one word: exterior, living, kitchen, bedrooms, bathrooms, outdoor or other."
+    "- outdoor: a PRIVATE outdoor space belonging to this home: balcony, terrace, private garden, or the view from that balcony/terrace, or the view FROM A WINDOW of this home (skyline, rooftops, city, sea, countryside) when the view itself is the main subject. A shared or condominium space (courtyard, portico, shared balcony or walkway) is NOT outdoor: answer shared.\n"
+    "- emptyroom: an EMPTY or unfurnished ordinary room (bare floor and walls, no furniture) whose use you cannot tell, e.g. an empty bedroom or living room. An empty or unfurnished living room or open-plan room is emptyroom, NOT hall.\n"
+    "- hall: entrance hall, corridor, hallway or landing inside the home (a passage with doors, not a room to stay in).\n"
+    "- stairs: a staircase.\n"
+    "- floorplan: a floor plan, drawing or map of the layout.\n"
+    "- shared: shared building areas (courtyard, portico, lobby, lift, communal garden, street) and a landmark or monument photographed from outside the property (not as seen from this home's own balcony, terrace or window).\n"
+    "- parking: a parking area, car park, parking spaces or driveway (outdoors or in a garage).\n"
+    "- storage: a storage room, pantry or utility room (shelves, boxes, boiler).\n"
+    "- closet: a walk-in closet or dressing room.\n"
+    "- cellar: a cellar, basement or cantina.\n"
+    "- aerial: a real photograph taken FROM THE AIR (drone or aerial view looking down on roofs, streets or land from high above), a satellite image or a map; ALSO a photo taken from a high point (upper-floor balcony, roof, terrace edge, hill) that looks clearly DOWNWARDS so that streets, roofs, gardens or cars below fill much of the picture. A view that looks straight out at the horizon from a balcony is NOT aerial.\n"
+    "- detail: a close-up of a detail, an object, a single tree or plant, a door or a wall.\n"
+    "- other: anything else.\n\n"
+    "SECOND word: photo or render.\n"
+    "- photo: a real photograph taken by a person.\n"
+    "- render: a drawing, an architectural render, a CGI image, a 3D visualisation or a sketch (even if it looks realistic, with perfect colours, "
+    "people drawn as silhouettes or a computer-generated sky and plants).\n\n"
+    "Answer with ONLY two words, for example: kitchen photo"
 )
+DESCRIBE_WHAT = ("exterior", "living", "kitchen", "bedrooms", "bathrooms", "outdoor", "emptyroom", "hall", "stairs", "floorplan", "shared", "parking",
+                 "storage", "closet", "cellar", "aerial", "detail", "other")
 VISION_MAX_SIDE = 768
 
 
@@ -735,7 +665,7 @@ def _vision_word_from_b64(b64_images: list, prompt: str, label: str = "", words:
         return "", False
 
 
-def _vision_one_word(image_url: str, fallback_url: str, prompt: str) -> tuple:
+def _vision_one_word(image_url: str, fallback_url: str, prompt: str, words: int = 1) -> tuple:
     """Downloads a listing photo, sends it downscaled with a short question to Claude vision (see _vision_word_from_b64) and
     returns the answer as one lowercase word. (word, ok): ok is False only when the call itself failed (download or API)."""
     try:
@@ -746,17 +676,39 @@ def _vision_one_word(image_url: str, fallback_url: str, prompt: str) -> tuple:
     except Exception as e:
         log.warning(f"[Scraper] Vision question failed for {image_url}: {e}")
         return "", False
-    return _vision_word_from_b64([b64], prompt, image_url)
+    return _vision_word_from_b64([b64], prompt, image_url, words=words)
+
+
+_describe_cache: dict = {}
+
+
+def _describe_photo(image_url: str, fallback_url: str = None) -> tuple:
+    """THE one vision question per photo (2026-11-08): (what, source, ok). what is one of DESCRIBE_WHAT (anything else counts as "other"),
+    source is "photo" or "render"; ok is False only when the call itself failed (never cached, callers keep their previous label).
+    Room kind, render, aerial, hall / empty room / stairs / parking... are all READ from this single answer by the small wrappers below, so two checks
+    can never describe the same photo differently. The answer is remembered per url for the run of one listing (cleared by resolve_uncategorized_photos)."""
+    hit = _describe_cache.get(image_url)
+    if hit is not None:
+        return hit
+    word, ok = _vision_one_word(image_url, fallback_url, _VISION_DESCRIBE_PROMPT, words=2)
+    if not ok:
+        return "other", "photo", False
+    toks = word.split()
+    what = toks[0] if toks and toks[0] in DESCRIBE_WHAT else "other"
+    source = "render" if len(toks) > 1 and toks[1] in ("render", "illustration", "rendering", "drawing", "sketch") else "photo"
+    if toks and toks[0] in ("render", "illustration"):
+        what, source = "other", "render"
+    _describe_cache[image_url] = (what, source, True)
+    return what, source, True
 
 
 def _classify_photo_vision(image_url: str, fallback_url: str = None) -> tuple:
-    """Single implementation of "which room is this photo" (Claude vision). Returns (category, ok):
-    category is one of CATEGORIES or "uncategorized" (the model answered "other"/anything else);
-    ok is False only when the call itself failed (download or API), so callers can keep a previous label."""
-    word, ok = _vision_one_word(image_url, fallback_url, _VISION_CLASSIFY_PROMPT)
+    """Room kind read from the one answer. Returns (category, ok): category is one of CATEGORIES or "uncategorized" (hall, empty room, aerial, shared... );
+    ok is False only when the call itself failed, so callers can keep a previous label."""
+    what, _src, ok = _describe_photo(image_url, fallback_url)
     if not ok:
         return "uncategorized", False
-    return (word if word in CATEGORIES else "uncategorized"), True
+    return (what if what in CATEGORIES else "uncategorized"), True
 
 
 # ── Photo technical quality via Claude vision (2026-10-29) ───────────────────────────────────────────────────────────────
@@ -1033,35 +985,21 @@ def _quality_gap_note(photos: list) -> str:
             f"(blurred or pixelated).")
 
 
-# 2026-10-27: a photo the listing page labels "living" is sometimes the entrance hall, a corridor or a staircase (villa job
-# e1dccbd4: the only "living" photo was a corridor). A separate, narrow question on purpose: the general classifier says "other"
-# for a lounge with no sofa, which would wrongly throw away EMPTY apartments' living rooms.
-_VISION_HALL_PROMPT = (
-    "Look at this real estate photo. Does it mainly show an ENTRANCE HALL, a CORRIDOR, a hallway, a staircase or stairs landing, "
-    "or a lobby (a passage, not a room you stay in)? An empty or unfurnished living room, lounge or open-plan room is NOT a hall.\n"
-    "Answer with ONLY one word: hall or room."
-)
+# 2026-10-27: a photo the listing page labels "living" is sometimes the entrance hall, a corridor or a staircase (villa job e1dccbd4: the only "living" photo
+# was a corridor). 2026-11-08: read from the one answer (_describe_photo); an empty room or a staircase without any label is not a living room either.
+HALL_LIKE = ("hall", "stairs", "emptyroom")
 
 
 def _is_hall_photo(image_url: str, fallback_url: str = None) -> tuple:
-    """(is_hall, ok). ok False = the call failed, callers keep the page label."""
-    word, ok = _vision_one_word(image_url, fallback_url, _VISION_HALL_PROMPT)
-    return word == "hall", ok
+    """(is_hall, ok). is_hall: entrance / corridor / stairs / bare room. ok False = the call failed, callers keep the page label."""
+    what, _src, ok = _describe_photo(image_url, fallback_url)
+    return what in HALL_LIKE, ok
 
 
 # 2026-11-02 (Michele): only REAL photos go in the video, and no aerial view unless the agency says it shows the property.
-#   - job 4c34217d: a drone / aerial photo labelled "exterior" became the opening scene and the video model invented a street-level zoom; aerial views
-#     also often show a local landmark (Teatro Marcello) instead of the property.
-#   - job 50472245 (GIAL 1272, new building): scenes 0 and 1 were ILLUSTRATIONS / renders; animated they turned into cartoons, and scene 0 hallucinated.
-# ONE question per photo (one extra Claude call): photo | aerial | illustration.
-_VISION_SOURCE_PROMPT = (
-    "Look at this real estate image. What kind of picture is it?\n"
-    "- photo: a real photograph taken by a person on the ground, inside, on a balcony or at a window.\n"
-    "- aerial: a real photograph taken FROM THE AIR (drone or aerial view looking down on roofs, streets or land from high above), a satellite image or a map; ALSO a photo taken from a high point (upper-floor balcony, roof, terrace edge, hill) that looks clearly DOWNWARDS so that streets, roofs, gardens or cars below fill much of the picture. A view that looks straight out at the horizon from a balcony is NOT aerial.\n"
-    "- illustration: a drawing, an architectural render, a CGI image, a 3D visualisation or a sketch (even if it looks realistic, with perfect colours, "
-    "people drawn as silhouettes or a computer-generated sky and plants).\n"
-    "Answer with ONLY one word: photo, aerial or illustration."
-)
+#   - job 4c34217d: a drone / aerial photo labelled "exterior" became the opening scene and the video model invented a street-level zoom.
+#   - job 50472245 (GIAL 1272, new building): scenes 0 and 1 were ILLUSTRATIONS / renders; animated they turned into cartoons.
+# 2026-11-08: read from the one answer (_describe_photo): photo | aerial | illustration.
 AERIAL_PROPERTY_CAPTION_WORDS = ("facciata", "prospetto", "immobile", "la proprieta", "la proprietà", "l'edificio", "palazzina", "villa", "la casa")
 MAX_SOURCE_CHECK = 60
 
@@ -1080,9 +1018,11 @@ def accept_renders_enabled() -> bool:
 
 
 def _photo_source(image_url: str, fallback_url: str = None) -> tuple:
-    """(word, ok): word is photo | aerial | illustration (anything else counts as photo). ok False = the call failed, callers keep the photo."""
-    word, ok = _vision_one_word(image_url, fallback_url, _VISION_SOURCE_PROMPT)
-    return (word if word in ("photo", "aerial", "illustration") else "photo"), ok
+    """(word, ok): word is photo | aerial | illustration, read from the one answer. ok False = the call failed, callers keep the photo."""
+    what, src, ok = _describe_photo(image_url, fallback_url)
+    if src == "render":
+        return "illustration", ok
+    return ("aerial" if what == "aerial" else "photo"), ok
 
 
 def caption_ties_to_property(label: str) -> bool:
@@ -1101,6 +1041,18 @@ MAX_LIVING_TO_CHECK = 8     # 2026-10-27: first living-labelled photos checked f
 CLASSIFY_WORKERS = 4
 
 
+LABEL_ROOMS = ("living", "kitchen", "bedrooms", "bathrooms")
+
+
+def label_conflict(label_cat: str, what: str) -> bool:
+    """Pure. True only for a CLEAR disagreement between the partner label (an interior room) and what the one vision answer says the photo shows."""
+    if label_cat not in LABEL_ROOMS:
+        return False
+    if what in LABEL_ROOMS:
+        return what != label_cat and {label_cat, what} != {"living", "kitchen"}
+    return what in ("exterior", "outdoor", "floorplan", "parking", "shared", "cellar", "aerial")
+
+
 def refine_exterior_outdoor_with_vision(photos: list, max_photos: int = MAX_PHOTOS_TO_REFINE) -> dict:
     """2026-10-12 (A+): ONE shared check for the URL path and the Relinx path. Interior categories (living, kitchen,
     bedrooms, bathrooms) keep the label that came with the photo (listing page or CRM). Only photos labelled exterior or
@@ -1115,7 +1067,12 @@ def refine_exterior_outdoor_with_vision(photos: list, max_photos: int = MAX_PHOT
     cands = [p for p in photos if p.get("category") in ("exterior", "outdoor") and p.get("category_source") != "vision" and p.get("url")]
     todo, over = cands[:max_photos], cands[max_photos:]
     def work(p):
-        return _classify_photo_vision(p["url"], p.get("original_url"))
+        res = _classify_photo_vision(p["url"], p.get("original_url"))
+        # an aerial view or a render is not "not an exterior": the source check below decides about it (with the agency caption rule), so keep the label here
+        hit = _describe_cache.get(p["url"])
+        if res[1] and res[0] not in CATEGORIES and hit and (hit[0] == "aerial" or hit[1] == "render"):
+            return p.get("category"), True
+        return res
     with ThreadPoolExecutor(max_workers=CLASSIFY_WORKERS) as ex:
         results = list(ex.map(work, todo))
     confirmed = swapped = excluded = fallback = 0
@@ -1154,6 +1111,20 @@ def refine_exterior_outdoor_with_vision(photos: list, max_photos: int = MAX_PHOT
             p["category_before_source"] = p.get("category"); p["category"] = "uncategorized"; p["category_source"] = "vision_illustration"; illustrations += 1
         elif word == "aerial" and p.get("category") in ("exterior", "outdoor") and not caption_ties_to_property(p.get("label_it")):
             p["category_before_source"] = p.get("category"); p["category"] = "uncategorized"; p["category_source"] = "vision_aerial"; aerials += 1
+    # 2026-11-08 (Michele): the partner / page label is VERIFIED with the same one answer (no extra question: the source check above already asked it for
+    # these photos). A clear disagreement (a "kitchen" that shows a bathroom, a "living" that is a floor plan or a parking lot) EXCLUDES the photo and the audit
+    # shows both words (p["label_conflict"]). An empty room with a label is NOT a conflict (it is used); open-plan living / kitchen is not a conflict either.
+    mismatched = 0
+    verify = [p for p in photos if p.get("category") in LABEL_ROOMS and p.get("category_source") is None and p.get("url") and not p.get("render_accepted")][:MAX_SOURCE_CHECK]
+    with ThreadPoolExecutor(max_workers=CLASSIFY_WORKERS) as ex:
+        verify_results = list(ex.map(lambda p: _describe_photo(p["url"], p.get("original_url")), verify))
+    for p, (what, _src, ok) in zip(verify, verify_results):
+        if ok and label_conflict(p["category"], what):
+            p["label_conflict"] = {"partner": p["category"], "vision": what}
+            p["category_page"] = p["category"]; p["category"] = "uncategorized"; p["category_source"] = "vision_label_mismatch"
+            if what in OTHER_KINDS_IT:
+                p["other_kind"] = what
+            mismatched += 1
     # 2026-10-27: photos labelled "living" are checked for the entrance hall / corridor / stairs mix-up (see _VISION_HALL_PROMPT).
     # A hall leaves the selection (category "uncategorized"); anything else keeps the page label. Standard video only has the
     # six rooms; a premium "entrance" scene is a separate backlog item.
@@ -1168,11 +1139,14 @@ def refine_exterior_outdoor_with_vision(photos: list, max_photos: int = MAX_PHOT
         p["category_page"] = p.get("category")
         if ok and is_hall:
             p["category"] = "uncategorized"; p["category_source"] = "vision_hall"; halls += 1
+            hit = _describe_cache.get(p["url"])
+            if hit and hit[0] in OTHER_KINDS_IT:
+                p["other_kind"] = hit[0]
         else:
             p["category_source"] = "page_label_checked" if ok else "page_fallback"
     summary = {"method": "exterior_outdoor_check", "checked": len(todo), "confirmed": confirmed, "living_checked": len(living), "halls_removed_from_living": halls,
                "swapped_exterior_outdoor": swapped, "excluded_as_other": excluded,
-               "kept_page_label_after_failure": fallback, "not_checked_over_cap": len(over), "aerial_removed": aerials, "illustrations_removed": illustrations, "renders_accepted": renders_kept}
+               "kept_page_label_after_failure": fallback, "not_checked_over_cap": len(over), "label_mismatch_removed": mismatched, "aerial_removed": aerials, "illustrations_removed": illustrations, "renders_accepted": renders_kept}
     log.info(f"[Scraper] Exterior/outdoor check: {summary}")
     return summary
 
@@ -1184,31 +1158,15 @@ OTHER_KINDS_IT = {"hall": "ingresso o corridoio", "stairs": "scale", "floorplan"
                   # Audit label only: none of these kinds changes what is selected. The same list is the base of the extra categories for the premium video.
                   "emptyroom": "stanza vuota senza etichetta", "storage": "ripostiglio", "closet": "cabina armadio", "cellar": "cantina o seminterrato",
                   "parking": "parcheggio", "aerial": "vista aerea o dall'alto"}
-_VISION_OTHER_PROMPT = (
-    "Look at this real estate photo. What does it mainly show?\n"
-    "- hall: entrance hall, corridor, hallway or landing inside the home (a passage with doors, not a room to stay in).\n"
-    "- stairs: a staircase.\n"
-    "- floorplan: a floor plan, drawing or map of the layout.\n"
-    "- shared: shared building areas (courtyard, portico, lobby, lift, communal garden, street).\n"
-    "- parking: a parking area, car park, parking spaces or driveway (outdoors or in a garage).\n"
-    "- emptyroom: an EMPTY or unfurnished ordinary room (bare floor and walls, no furniture) whose use you cannot tell, e.g. an empty bedroom or living room.\n"
-    "- storage: a storage room, pantry or utility room (shelves, boxes, boiler).\n"
-    "- closet: a walk-in closet or dressing room.\n"
-    "- cellar: a cellar, basement or cantina.\n"
-    "- aerial: a view taken from above (drone, satellite image, map) of the property or the area.\n"
-    "- detail: a close-up of a detail, an object, a plant, a door or a wall.\n"
-    "- other: anything else.\n"
-    "Answer with ONLY one word: hall, stairs, floorplan, shared, parking, emptyroom, storage, closet, cellar, aerial, detail or other."
-)
-
-
 def _other_kind(image_url: str, fallback_url: str = None) -> str:
-    word, ok = _vision_one_word(image_url, fallback_url, _VISION_OTHER_PROMPT)
-    return word if ok and word in OTHER_KINDS_IT else ""
+    """Audit word for a photo that left the selection, read from the one answer (no second question)."""
+    what, _src, ok = _describe_photo(image_url, fallback_url)
+    return what if ok and what in OTHER_KINDS_IT else ""
 
 
 def resolve_uncategorized_photos(photos: list) -> list:
     """Runs the vision-QC fallback on every 'uncategorized' photo, in place. A photo the classifier calls "other" gets p["other_kind"] (audit only)."""
+    _describe_cache.clear()
     for p in photos:
         if p.get("category") == "uncategorized":
             p["category"] = classify_uncategorized_photo(p["url"], p.get("original_url"))
