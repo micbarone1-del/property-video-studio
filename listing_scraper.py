@@ -181,6 +181,8 @@ def photo_exclusion(p: dict):
     cat = p.get("category")
     if cat in CATEGORIES:
         return None
+    if p.get("category_source") == "vision_aerial" and p.get("other_kind") not in (None, "", "aerial", "other"):
+        return OTHER_KINDS_IT.get(p["other_kind"], EXCLUSION_REASONS["vision_aerial"])      # 2026-11-08: flagged aerial, but a second look says what it really is
     if p.get("other_kind") and not EXCLUSION_REASONS.get(p.get("category_source")):
         return OTHER_KINDS_IT.get(p["other_kind"], "ambiente non riconosciuto")
     return EXCLUSION_REASONS.get(p.get("category_source")) or "ambiente non riconosciuto"
@@ -271,8 +273,29 @@ def finish_photo_classification(photos: list) -> dict:
     """The ONE step both workflows (URL and Relinx) run after the categories are known: facade/balcony verified by vision, then duplicate pictures marked.
     Returns the classification summary stored in the job's selection_report."""
     summary = refine_exterior_outdoor_with_vision(photos)
+    summary["aerial_relabelled"] = relabel_aerial_excluded(photos)
     summary["duplicates"] = mark_duplicate_photos(photos)
     return summary
+
+
+def relabel_aerial_excluded(photos: list) -> int:
+    """2026-11-08: a photo excluded as "aerial" gets the same one-word "what does it show" question the other excluded photos get (audit only; it stays
+    excluded either way). A parking lot is then reported as a parking lot, not as an aerial view. Never raises; returns how many photos got a new kind."""
+    try:
+        todo = [p for p in photos or [] if p.get("category_source") == "vision_aerial" and not p.get("other_kind")]
+        if not todo:
+            return 0
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=CLASSIFY_WORKERS) as ex:
+            kinds = list(ex.map(lambda p: _other_kind(p["url"], p.get("original_url")), todo))
+        n = 0
+        for p, k in zip(todo, kinds):
+            if k:
+                p["other_kind"] = k; n += 1
+        return n
+    except Exception as e:
+        log.warning(f"[Scraper] Aerial re-label failed: {e}")
+        return 0
 
 
 def refusal_report(photos: list) -> dict:
@@ -1156,16 +1179,26 @@ def refine_exterior_outdoor_with_vision(photos: list, max_photos: int = MAX_PHOT
 
 # 2026-11-03: the classifier answers "other" for entrance halls, corridors, stairs, shared areas, floor plans and details. For the per-photo audit (Michele: keep the
 # reasons of the selection) one more cheap question says WHICH of them it is, only for the photos that ended up "uncategorized".
-OTHER_KINDS_IT = {"hall": "ingresso o corridoio", "stairs": "scale", "floorplan": "piantina", "shared": "parti comuni dell'edificio", "detail": "dettaglio ravvicinato"}
+OTHER_KINDS_IT = {"hall": "ingresso o corridoio", "stairs": "scale", "floorplan": "piantina", "shared": "parti comuni dell'edificio", "detail": "dettaglio ravvicinato",
+                  # 2026-11-08 (job 943133a7, listing 1363): the old list had no word for an empty room (read as "hall"), a parking lot (flagged "aerial"), a storage room.
+                  # Audit label only: none of these kinds changes what is selected. The same list is the base of the extra categories for the premium video.
+                  "emptyroom": "stanza vuota senza etichetta", "storage": "ripostiglio", "closet": "cabina armadio", "cellar": "cantina o seminterrato",
+                  "parking": "parcheggio", "aerial": "vista aerea o dall'alto"}
 _VISION_OTHER_PROMPT = (
     "Look at this real estate photo. What does it mainly show?\n"
-    "- hall: entrance hall, corridor, hallway or landing inside the home.\n"
+    "- hall: entrance hall, corridor, hallway or landing inside the home (a passage with doors, not a room to stay in).\n"
     "- stairs: a staircase.\n"
     "- floorplan: a floor plan, drawing or map of the layout.\n"
-    "- shared: shared building areas (courtyard, portico, lobby, lift, communal garden, parking, street).\n"
+    "- shared: shared building areas (courtyard, portico, lobby, lift, communal garden, street).\n"
+    "- parking: a parking area, car park, parking spaces or driveway (outdoors or in a garage).\n"
+    "- emptyroom: an EMPTY or unfurnished ordinary room (bare floor and walls, no furniture) whose use you cannot tell, e.g. an empty bedroom or living room.\n"
+    "- storage: a storage room, pantry or utility room (shelves, boxes, boiler).\n"
+    "- closet: a walk-in closet or dressing room.\n"
+    "- cellar: a cellar, basement or cantina.\n"
+    "- aerial: a view taken from above (drone, satellite image, map) of the property or the area.\n"
     "- detail: a close-up of a detail, an object, a plant, a door or a wall.\n"
     "- other: anything else.\n"
-    "Answer with ONLY one word: hall, stairs, floorplan, shared, detail or other."
+    "Answer with ONLY one word: hall, stairs, floorplan, shared, parking, emptyroom, storage, closet, cellar, aerial, detail or other."
 )
 
 
