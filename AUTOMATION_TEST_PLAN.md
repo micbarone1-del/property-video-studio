@@ -621,3 +621,12 @@ test_photo_filters.py RESULT: ALL PASS (76/76)
 - NEW A10 "Test-instance cost shown at 1080p price": S2 O6 D2 -> 24 (reporting only). Open.
 - Test added today: test_accept_renders.py R1-R11 PASS (server 2026-11-06 15:00); listing_url null bug found by the real 1327 run (R11 asserted the code, not null input) and fixed in 1b69b37.
 - Scoreboard today: tests PASS on the server: test_accept_renders, test_auto_start, test_auto_rework, test_selection_report 29/29, test_aerial_filter, test_photo_filters 76/76; real-job tests of auto-start in production and automatic release: NOT RUN.
+
+## 2026-11-08 - FMEA rows (PROPOSALS, scores to be reviewed by Michele) and test status
+| Failure mode | S | O | D | RPN | Level | Control / test |
+|---|---|---|---|---|---|---|
+| Finished listing produced again (duplicate cost) | 5 | 6 | 3 | 90 | watch | registry guard, test_listing_registry, test_gial_start (PASS on server); fixed today, 7 prod jobs without number not covered |
+| Narration per_scene misalignment not caught | 6 | 6 | 8 | 288 | ACT open | no test, no gate yet |
+| Too fast clip not caught by QC | 6 | 6 | 7 | 252 | ACT open | probe measured, not wired |
+| Unexplained re-approval after rework | 5 | 4 | 8 | 160 | ACT open | needs event history |
+Test status: PASS (server): vision classify, selection report, photo filters, label first, listing registry, gial_start. NOT RUN: label mismatch on a real partner payload; any 1080p test of the new vision; dashboard visual check on a tablet.

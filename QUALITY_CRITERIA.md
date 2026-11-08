@@ -103,3 +103,9 @@ If the tracking is lost the geometry is not measured and only the judge decides.
 - Flagged scenes with only minor findings and no person may be approved by the system (review list + notification); any reject gets ONE automatic rework, then the operator. Delivery to the agency remains manual.
 - Narration: no claims (sea, views, floor, light) that the listing text or the photos do not support; unsupported sentences are replaced, not left empty.
 - Voice length: one criterion for test and production, minimum and maximum still to be fixed from data.
+
+## 2026-11-08 - Photo selection criteria
+- One question per photo; the same answer is used for category, usability and acceptance.
+- Label rule: clear conflict between partner label and vision excludes the photo; empty room needs a label to be used.
+- Quality: Haiku judge plus pixel checks (blockiness >= 2.5, period max 3.0, fine-mid max 0.60; OR for pixel defects, AND for blur).
+- Speed: criterion defined (motion too high in first part of clip), thresholds not yet set.

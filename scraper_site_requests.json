@@ -1,17 +1,37 @@
 [
   {
-    "domain": "",
-    "example_url": "PASTE_A_REAL_IDEALISTA_URL_HERE",
-    "requested_at": "2026-07-11T06:28:43.802796"
+    "domain": "relinx.it",
+    "example_url": "https://relinx.it/it/immobili/albano-laziale-centro-storico/appartamento-vendita-70-mq-3-locali-1288/",
+    "requested_at": "2026-11-04T13:01:04.372639"
   },
   {
     "domain": "relinx.it",
-    "example_url": "https://relinx.it/it/immobili/albano-laziale/villa-vendita-225-mq-5-locali-1269/",
-    "requested_at": "2026-10-07T14:07:43.799442"
+    "example_url": "https://relinx.it/it/immobili/albano-laziale-centro/appartamento-vendita-70-mq-3-locali-1248/",
+    "requested_at": "2026-11-04T13:01:04.377091"
   },
   {
-    "domain": "annunci.getrix.it",
-    "example_url": "https://annunci.getrix.it/annuncio.asp?id=6CD4AA7D-3CAD-4855-9A5F-A97FCEA10910",
-    "requested_at": "2026-10-15T06:57:08.502469"
+    "domain": "relinx.it",
+    "example_url": "https://relinx.it/it/immobili/albano-laziale-centro-storico/appartamento-vendita-130-mq-3-locali-1235/",
+    "requested_at": "2026-11-05T16:43:46.818935"
+  },
+  {
+    "domain": "relinx.it",
+    "example_url": "https://relinx.it/it/immobili/albano-laziale-centro-storico/attico-vendita-123-mq-3-locali-1031/",
+    "requested_at": "2026-11-05T16:44:01.449384"
+  },
+  {
+    "domain": "relinx.it",
+    "example_url": "https://relinx.it/it/immobili/albano-laziale-centro-storico/appartamento-vendita-70-mq-3-locali-1186/",
+    "requested_at": "2026-11-05T16:44:16.455232"
+  },
+  {
+    "domain": "relinx.it",
+    "example_url": "https://relinx.it/it/immobili/albano-laziale-pavona/appartamento-vendita-85-mq-3-locali-1237/",
+    "requested_at": "2026-11-05T16:44:31.460662"
+  },
+  {
+    "domain": "relinx.it",
+    "example_url": "https://relinx.it/it/immobili/castel-gandolfo-centro-storico-piazza-della-liberta/appartamento-vendita-114-mq-3-locali-1280/",
+    "requested_at": "2026-11-05T16:44:46.466017"
   }
 ]

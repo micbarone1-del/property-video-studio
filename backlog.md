@@ -1127,3 +1127,14 @@ Questions for Luma (Douglas) only after our tests: is 360p draft representative 
 - Renders decision (OPEN): trial on 1327 showed interior renders alone do not satisfy the 4-environment rule. Options: A keep excluding renders; B accept interior renders only when the listing has no real photos (needs the rule on environments reconsidered); C accept always. No new label for renders (Michele, 2026-11-06).
 - Narration still open: minimum acceptable voice length (candidate 22-32 s, no short-voice data yet); optional per-sentence Claude check only if filler still leaks; replace (not remove) unsupported sentences.
 - 3D (World Labs Atlas beta access obtained): only after automation and reporting.
+
+## 2026-11-08 - Backlog entries
+- **Speed control (priority):** baseline of motion per category from all job clips (read-only), propose thresholds, Michele confirms, then detection in QC (no extra Claude calls) + slowdown of the first part of the clip, apply to job 93432cd3 and future jobs. Test again at 1080p.
+- **Narration root cause:** find why anchored/block narration fails ~1/3 of jobs before touching per_scene. Open: run blocks regeneration on past failed jobs with the current model vs a stronger one (no video, small cost, estimate first). Consider a hard gate for sentence-vs-scene mismatch.
+- **Job event history** in job_meta (who/what/when per state change) to explain re-approvals.
+- **API feedback** "input ridotto a causa di xx" (field or webhook not scoped).
+- **Bring GIAL videos to production** under agency GIAL/Relinx with `gial_consolidate.py`.
+- **1080p redo:** only 1291 and 1363 lack a 1080p video; at production switch, redo tracking at high resolution.
+- **Registry:** collapse rows with same job id (prod copy + test original) in `listing_registry.scan`.
+- **Annunci per i prossimi test:** see annotated relinx_listings*.txt; battery 1271, 1254, 1003, 1345, 1273, 1327 all failed/draft at 360p.
+- Premium extra-category ideas (not built): ingresso, scale, cantina, parcheggio, piscina (most reliable), plus ripostiglio, cabina armadio, balcone/terrazzo/giardino, sala da pranzo, bagno padronale, cucinino, mansarda, lastrico solare, palestra, locale tecnico, cortile, vista panoramica.
