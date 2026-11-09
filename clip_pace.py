@@ -5,10 +5,13 @@ MIN_FACTOR): the first `factor` share of the clip is kept and stretched back to 
 rework, reassemble) simply sees a normal clip - no second speed mechanism. After the fix the fastest second is about at the limit; cutting the end also removes the stretch where the
 camera rushes / runs into a wall / invents.
 The original is kept as <clip>.pre_pace (never deleted); <clip>.pace.json marks a clip as done. Nothing runs unless BOTH are set: PVS_PACE_FIX=1 and PVS_PACE_LIMIT=<number>
-(the limit is calibrated on Michele's judgments with `calibrate`; there is deliberately no default). Never raises.
+(the limit is calibrated on Michele's judgments with `calibrate`; there is deliberately no default). Optional PVS_PACE_MIN = lower threshold: the slowed clip is
+measured again and, if it ended slower than that, it is slowed less (closed loop, up to 3 renders). PVS_PACE_INTERP=blend|mci. Never raises.
   python3 clip_pace.py scan                       every clip of production + test: measures (of the ORIGINAL when a .pre_pace exists)
   python3 clip_pace.py calibrate                  Michele's labelled clips sorted by motion_peak (clip_pace_labels.json) + how well a limit separates them
   python3 clip_pace.py review LIMIT              before/after copies of the labelled clips that LIMIT would slow, in <test jobs>/_test_scratch (page /clip-review?pace=1)
+  python3 clip_pace.py dopo                       measured speed of the before/after review copies
+  python3 clip_pace.py compare LIMIT JOB:SCENE..  same clip slowed with blend and with mci (stutter check), prints the links
   python3 clip_pace.py apply JOB:SCENE LIMIT [redo]   slows that clip now, ignoring the switches ('redo' restarts from the kept original)"""
 import json
 import os
@@ -18,7 +21,7 @@ import sys
 import time
 from pathlib import Path
 
-MIN_FACTOR = 0.65         # slower than 0.6x would look like a still
+MIN_FACTOR = 0.6          # slower than 0.6x would look like a still
 MIN_SECS = 3.0
 FPS = 24
 HERE = Path(__file__).resolve().parent
@@ -34,6 +37,20 @@ def limit_from_env():
         return v if v > 0 else None
     except ValueError:
         return None
+
+
+def min_from_env():
+    """Lower threshold (a clip must not end up SLOWER than this: 'lento' is a defect too). None = not set = no floor."""
+    try:
+        v = float(os.getenv("PVS_PACE_MIN", ""))
+        return v if v > 0 else None
+    except ValueError:
+        return None
+
+
+def interp_mode() -> str:
+    """blend = cheap (2 s per clip at 1080p), mci = motion-compensated, smoother when slowed a lot but about 45-90 s per clip at 1080p."""
+    return "mci" if os.getenv("PVS_PACE_INTERP", "blend").strip().lower() == "mci" else "blend"
 
 
 def factor_for(motion_peak, limit):
@@ -62,9 +79,10 @@ def measure_file(path) -> dict:
     return cs.measures(frames, fps) if frames else {"ok": False, "why": "clip not readable"}
 
 
-def render(src, dst, orig, keep, height=None):
+def render(src, dst, orig, keep, height=None, mode=None):
     """The ONE ffmpeg step: the first `keep` seconds of src stretched to `orig` seconds, written to dst. (ok, error text)."""
-    vf = f"setpts=PTS*{orig / keep:.5f},minterpolate=fps={FPS}:mi_mode=blend" + (f",scale=-2:'min({int(height)},ih)'" if height else "")
+    mi = "mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1" if (mode or interp_mode()) == "mci" else "mi_mode=blend"
+    vf = f"setpts=PTS*{orig / keep:.5f},minterpolate=fps={FPS}:{mi}" + (f",scale=-2:'min({int(height)},ih)'" if height else "")
     r = subprocess.run(["ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-t", f"{keep:.3f}", "-i", str(src), "-an",
                         "-vf", vf, "-t", f"{orig:.3f}", "-c:v", "libx264", "-preset", "veryfast", "-crf", "17",
                         "-pix_fmt", "yuv420p", "-f", "mp4", str(dst)], stdin=subprocess.DEVNULL, capture_output=True, timeout=300)
@@ -73,7 +91,7 @@ def render(src, dst, orig, keep, height=None):
     return True, ""
 
 
-def apply(clip_path, geo, force=False, redo=False, limit=None) -> dict:
+def apply(clip_path, geo, force=False, redo=False, limit=None, min_speed=None) -> dict:
     """geo = the measures dict of the QC (clip_standard.measures, or the whole evaluate() result with its "geo"). {"applied": bool, ...}. Never raises."""
     try:
         if isinstance(geo, dict) and "geo" in geo:
@@ -97,11 +115,24 @@ def apply(clip_path, geo, force=False, redo=False, limit=None) -> dict:
         orig = _duration(src)
         if orig < MIN_SECS + 0.5:
             return {"applied": False, "reason": "clip too short to slow", "orig_secs": round(orig, 2)}
-        keep = max(MIN_SECS, orig * f)
+        min_speed = min_speed or min_from_env()
         tmp = Path(str(src) + ".pace_tmp.mp4")
-        ok, err = render(src, tmp, orig, keep)
-        if not ok:
-            return {"applied": False, "reason": "ffmpeg failed: " + err}
+        result_peak = None
+        for attempt in range(3):                   # closed loop: measure the RESULT; if it is slower than the lower threshold, slow less (cutting the tail lowers the speed more than limit/peak says)
+            keep = max(MIN_SECS, orig * f)
+            ok, err = render(src, tmp, orig, keep)
+            if not ok:
+                return {"applied": False, "reason": "ffmpeg failed: " + err}
+            if not min_speed:
+                break
+            g2 = measure_file(tmp)
+            result_peak = g2.get("motion_peak") if g2.get("ok") else None
+            if result_peak is None or result_peak >= min_speed:
+                break
+            f = min(1.0, f * min_speed / max(result_peak, 0.1))
+            if f >= 0.95:
+                tmp.unlink(missing_ok=True)
+                return {"applied": False, "reason": "would end too slow, left as is", "motion_peak": peak, "result_peak": result_peak}
         new = _duration(tmp)
         if abs(new - orig) > 0.25:
             tmp.unlink()
@@ -109,7 +140,7 @@ def apply(clip_path, geo, force=False, redo=False, limit=None) -> dict:
         if not backup(src).exists():
             shutil.copy2(src, backup(src))
         os.replace(tmp, src)
-        info = {"applied": True, "motion_peak": peak, "limit": limit, "keep_secs": round(keep, 2), "factor": round(keep / orig, 3), "orig_secs": round(orig, 2),
+        info = {"applied": True, "motion_peak": peak, "result_peak": result_peak, "limit": limit, "min_speed": min_speed, "interp": interp_mode(), "keep_secs": round(keep, 2), "factor": round(keep / orig, 3), "orig_secs": round(orig, 2),
                 "ts": time.strftime("%Y-%m-%dT%H:%M:%S")}
         marker(src).write_text(json.dumps(info), encoding="utf-8")
         return info
@@ -264,6 +295,43 @@ def cmd_review(argv):
     return 0
 
 
+def cmd_dopo():
+    """Measured speed of every before/after copy in _test_scratch (to set the lower threshold from Michele's judgments of the AFTER clips)."""
+    out = _roots()[1] / "_test_scratch"
+    for f in sorted(out.glob("pace_*_dopo.mp4")) + sorted(out.glob("pace_*_prima.mp4")):
+        g = measure_file(f)
+        print(f.name, "picco", g.get("motion_peak"), "medio", g.get("motion_mean")) if g.get("ok") else print(f.name, "non misurabile")
+    return 0
+
+
+def cmd_compare(argv):
+    """compare LIMIT JOB:SCENE [...] : the same clip slowed with blend AND with mci (540p, in _test_scratch) to judge the stutter; prints the links."""
+    import preview_proxy
+    limit = float(argv[0])
+    out = _roots()[1] / "_test_scratch"
+    out.mkdir(parents=True, exist_ok=True)
+    for key in argv[1:]:
+        job, _, sc = key.partition(":")
+        d = _find_job(job)
+        for n, s, mp4 in (_clips_of(d) if d else []):
+            if n != int(sc):
+                continue
+            src = _original(mp4)
+            g = measure_file(src)
+            f = factor_for(g.get("motion_peak") if g.get("ok") else None, limit)
+            if f is None:
+                print(key, "non rallentato")
+                continue
+            orig = _duration(src)
+            keep = max(MIN_SECS, orig * f)
+            for mode in ("blend", "mci"):
+                name = f"cmp_{job}_{n}_{mode}.mp4"
+                t0 = time.time()
+                ok, err = render(src, out / name, orig, keep, height=preview_proxy.PREVIEW_HEIGHT, mode=mode)
+                print(key, mode, "fattore", round(keep / orig, 3), "ok %.0fs" % (time.time() - t0) if ok else "ERRORE " + err, f"http://187.77.196.94:8002/test-scratch/{name}")
+    return 0
+
+
 def cmd_apply(argv):
     job, _, sc = argv[0].partition(":")
     d = _find_job(job)
@@ -284,6 +352,10 @@ def main(argv) -> int:
         return cmd_scan()
     if len(argv) >= 2 and argv[1] == "calibrate":
         return cmd_calibrate()
+    if len(argv) >= 2 and argv[1] == "dopo":
+        return cmd_dopo()
+    if len(argv) >= 4 and argv[1] == "compare":
+        return cmd_compare(argv[2:])
     if len(argv) >= 3 and argv[1] == "review":
         return cmd_review(argv[2:])
     if len(argv) >= 4 and argv[1] == "apply" and ":" in argv[2]:
