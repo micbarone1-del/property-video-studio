@@ -8,6 +8,7 @@ The original is kept as <clip>.pre_pace (never deleted); <clip>.pace.json marks 
 (the limit is calibrated on Michele's judgments with `calibrate`; there is deliberately no default). Never raises.
   python3 clip_pace.py scan                       every clip of production + test: measures (of the ORIGINAL when a .pre_pace exists)
   python3 clip_pace.py calibrate                  Michele's labelled clips sorted by motion_peak (clip_pace_labels.json) + how well a limit separates them
+  python3 clip_pace.py review LIMIT              before/after copies of the labelled clips that LIMIT would slow, in <test jobs>/_test_scratch (page /clip-review?pace=1)
   python3 clip_pace.py apply JOB:SCENE LIMIT [redo]   slows that clip now, ignoring the switches ('redo' restarts from the kept original)"""
 import json
 import os
@@ -61,6 +62,16 @@ def measure_file(path) -> dict:
     return cs.measures(frames, fps) if frames else {"ok": False, "why": "clip not readable"}
 
 
+def render(src, dst, orig, keep):
+    """The ONE ffmpeg step: the first `keep` seconds of src stretched to `orig` seconds, written to dst. (ok, error text)."""
+    r = subprocess.run(["ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-t", f"{keep:.3f}", "-i", str(src), "-an",
+                        "-vf", f"setpts=PTS*{orig / keep:.5f},minterpolate=fps={FPS}:mi_mode=blend", "-t", f"{orig:.3f}", "-c:v", "libx264", "-preset", "veryfast", "-crf", "17",
+                        "-pix_fmt", "yuv420p", "-f", "mp4", str(dst)], stdin=subprocess.DEVNULL, capture_output=True, timeout=300)
+    if r.returncode != 0 or not Path(dst).exists() or Path(dst).stat().st_size == 0:
+        return False, r.stderr[-200:].decode("utf-8", "replace")
+    return True, ""
+
+
 def apply(clip_path, geo, force=False, redo=False, limit=None) -> dict:
     """geo = the measures dict of the QC (clip_standard.measures, or the whole evaluate() result with its "geo"). {"applied": bool, ...}. Never raises."""
     try:
@@ -87,12 +98,9 @@ def apply(clip_path, geo, force=False, redo=False, limit=None) -> dict:
             return {"applied": False, "reason": "clip too short to slow", "orig_secs": round(orig, 2)}
         keep = max(MIN_SECS, orig * f)
         tmp = Path(str(src) + ".pace_tmp.mp4")
-        k = orig / keep
-        r = subprocess.run(["ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-t", f"{keep:.3f}", "-i", str(src), "-an",
-                            "-vf", f"setpts=PTS*{k:.5f},minterpolate=fps={FPS}:mi_mode=blend", "-t", f"{orig:.3f}", "-c:v", "libx264", "-preset", "veryfast", "-crf", "17",
-                            "-pix_fmt", "yuv420p", "-f", "mp4", str(tmp)], stdin=subprocess.DEVNULL, capture_output=True, timeout=300)
-        if r.returncode != 0 or not tmp.exists() or tmp.stat().st_size == 0:
-            return {"applied": False, "reason": "ffmpeg failed: " + r.stderr[-200:].decode("utf-8", "replace")}
+        ok, err = render(src, tmp, orig, keep)
+        if not ok:
+            return {"applied": False, "reason": "ffmpeg failed: " + err}
         new = _duration(tmp)
         if abs(new - orig) > 0.25:
             tmp.unlink()
@@ -175,6 +183,40 @@ def cmd_calibrate():
     return 0
 
 
+def cmd_review(argv):
+    """Before/after copies of every labelled clip the limit would slow, for Michele to watch. Writes ONLY into <test jobs>/_test_scratch/ (never touches a job)."""
+    limit = float(argv[0])
+    out = _roots()[1] / "_test_scratch"
+    out.mkdir(parents=True, exist_ok=True)
+    labels = {k: v for k, v in json.loads((HERE / "clip_pace_labels.json").read_text(encoding="utf-8")).items() if not k.startswith("_")}
+    index = []
+    for key, lab in labels.items():
+        job, _, sc = key.partition(":")
+        d = _find_job(job)
+        if d is None:
+            continue
+        for n, s, mp4 in _clips_of(d):
+            if n != int(sc):
+                continue
+            src = _original(mp4)
+            g = measure_file(src)
+            f = factor_for(g.get("motion_peak") if g.get("ok") else None, limit)
+            name = f"pace_{job}_{n}"
+            if f is None:
+                print(key, lab, "non rallentato (picco", g.get("motion_peak"), ")")
+                continue
+            orig = _duration(src)
+            keep = max(MIN_SECS, orig * f)
+            shutil.copy2(src, out / f"{name}_prima.mp4")
+            ok, err = render(src, out / f"{name}_dopo.mp4", orig, keep)
+            print(key, lab, "picco", g.get("motion_peak"), "fattore", round(keep / orig, 3), "ok" if ok else "ERRORE " + err)
+            if ok:
+                index.append({"key": key, "label": lab, "peak": g.get("motion_peak"), "factor": round(keep / orig, 3), "prima": f"{name}_prima.mp4", "dopo": f"{name}_dopo.mp4"})
+    (out / "pace_review.json").write_text(json.dumps({"limit": limit, "items": index}), encoding="utf-8")
+    print("pagina: /clip-review?pace=1  (porta 8002), clip:", len(index))
+    return 0
+
+
 def cmd_apply(argv):
     job, _, sc = argv[0].partition(":")
     d = _find_job(job)
@@ -195,6 +237,8 @@ def main(argv) -> int:
         return cmd_scan()
     if len(argv) >= 2 and argv[1] == "calibrate":
         return cmd_calibrate()
+    if len(argv) >= 3 and argv[1] == "review":
+        return cmd_review(argv[2:])
     if len(argv) >= 4 and argv[1] == "apply" and ":" in argv[2]:
         return cmd_apply(argv[2:])
     print(__doc__.split("\n")[-4:])
