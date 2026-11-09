@@ -103,8 +103,14 @@ def measures(frames, fps) -> dict:
     s = math.sqrt(abs(np.linalg.det(T[:2, :2])))
     dur = len(frames) / (fps or 24.0)
     zoom_rate = math.log(s) / dur if s > 0 and dur else 0.0     # = the zoom_rate_mean_per_s of exp_clipeval (checked: bhl 0.302, mfq 0.245)
+    # 2026-11-09 PACE: apparent camera speed from the SAME transforms (no second tracking pass): how far the frame corners travel per second, as % of the frame width,
+    # per 0.25 s step; the peak is taken over 1 s windows. Zoom, pan and rotation all count, curved paths included.
+    mapped_all = [(Tk @ np.vstack([quad.T, np.ones(4)])).T[:, :2] for Tk in [np.eye(3)] + list(Ts)]
+    motion = [float(np.mean(np.linalg.norm(mapped_all[k + 1] - mapped_all[k], axis=1)) / W / STEP_S * 100) for k in range(len(Ts))]
+    win = max(1, round(1.0 / STEP_S))
+    peak = max(float(np.mean(motion[i:i + win])) for i in range(0, max(1, len(motion) - win + 1)))
     return {"ok": True, "new_frac": round(shares[-1], 3), "new_max": round(max(shares), 3), "pan_frac": round(float((c[0] - W / 2) / W), 3), "zoom_net": round(s, 3),
-            "zoom_rate": round(zoom_rate, 3)}
+            "zoom_rate": round(zoom_rate, 3), "motion_mean": round(float(np.mean(motion)), 2), "motion_peak": round(peak, 2), "motion": [round(x, 2) for x in motion]}
 
 
 def enabled() -> bool:
