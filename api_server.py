@@ -728,7 +728,7 @@ async def auth_middleware(request: Request, call_next):
     # bypassing UI_ACCESS_KEY here does not disable auth for these routes,
     # it just avoids a second, irrelevant check layered on top of the
     # partner-key check that already protects them.
-    if (path in ("/", "", "/health", "/operator-page")
+    if (path in ("/", "", "/health", "/operator-page", "/clip-review")
             or path.startswith("/static")
             or path.startswith("/test-scratch/")
             or path.startswith("/v1/")
@@ -3098,7 +3098,7 @@ def _listing_number(j, jid):
 
 
 @app.get("/operator/status")
-async def operator_status():
+async def operator_status(q: str = ""):
     """Everything the operator page shows: the switches, the money committed, and one row per recent job."""
     import auto_start
     now = datetime.utcnow()
@@ -3108,13 +3108,17 @@ async def operator_status():
             created = datetime.fromisoformat(j.get("created_at") or "")
         except ValueError:
             continue
-        if now - created > timedelta(hours=72) and j.get("status") == "done" and not j.get("review_pending"):
+        ql = (q or "").strip().lower()
+        if ql:   # search: ANY job, any age (job id, listing number or name)
+            if ql not in jid.lower() and ql not in str(_listing_number(j, jid) or "").lower() and ql not in str(j.get("property_name") or "").lower():
+                continue
+        elif now - created > timedelta(hours=72) and j.get("status") == "done" and not j.get("review_pending"):
             continue
         det, aw = [], (j.get("awaiting_scenes") if isinstance(j.get("awaiting_scenes"), dict) else {})
         for kind in ("rejected", "flagged", "failed"):
             for i in aw.get(kind) or []:
-                q = next((x for x in (j.get("qc_results") or []) if x.get("scene") == i and x.get("type") == "video"), {}) or {}
-                det.append({"scene": i, "kind": kind, "severity": q.get("severity"), "issues": [str(x)[:220] for x in (q.get("issues") or [])][:3]})
+                qcr = next((x for x in (j.get("qc_results") or []) if x.get("scene") == i and x.get("type") == "video"), {}) or {}
+                det.append({"scene": i, "kind": kind, "severity": qcr.get("severity"), "issues": [str(x)[:220] for x in (qcr.get("issues") or [])][:3]})
         rows.append({"job_id": jid, "name": j.get("property_name"), "source": j.get("source"), "status": j.get("status"),
                      "progress": j.get("progress"), "message": str(j.get("message") or "")[:140], "created_at": j.get("created_at"),
                      "cost_eur": auto_start.job_cost_eur(j), "auto_start": j.get("auto_start"),
@@ -3129,7 +3133,7 @@ async def operator_status():
             "switches": {"auto_start": on("PVS_AUTO_START"), "auto_rework": on("PVS_AUTO_REWORK"),
                          "auto_approve_flags": on("PVS_AUTO_APPROVE_FLAGS"), "standard_enforce": on("PVS_STANDARD_ENFORCE"),
                          "luma_resolution": os.getenv("PVS_LUMA_RESOLUTION", "1080p")},
-            "release_mode": _release_mode(), "jobs": rows[:80]}
+            "release_mode": _release_mode(), "jobs": rows[:(300 if (q or "").strip() else 80)]}
 
 
 @app.get("/operator/job/{job_id}/input")
@@ -3147,6 +3151,11 @@ async def operator_job_input(job_id: str):
             "photos_total": rep.get("photos_total"), "scene_facts": j.get("scene_facts"), "narration_text": j.get("narration_text"),
             "scenes": [{"i": i, "category": (c or {}).get("category")} for i, c in enumerate(j.get("scenes_config") or [])],
             "message": j.get("message")}
+
+
+@app.get("/clip-review", response_class=FileResponse)
+def clip_review_page():
+    return FileResponse(BASE_DIR / "clip_review.html", headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/operator-page", response_class=FileResponse)

@@ -33,5 +33,20 @@
     "domain": "relinx.it",
     "example_url": "https://relinx.it/it/immobili/castel-gandolfo-centro-storico-piazza-della-liberta/appartamento-vendita-114-mq-3-locali-1280/",
     "requested_at": "2026-11-05T16:44:46.466017"
+  },
+  {
+    "domain": "relinx.it",
+    "example_url": "https://relinx.it/it/immobili/albano-laziale-cecchina/appartamento-vendita-65-mq-2-locali-1299/",
+    "requested_at": "2026-11-09T18:24:48.228442"
+  },
+  {
+    "domain": "relinx.it",
+    "example_url": "https://relinx.it/it/immobili/albano-laziale-centro-storico/attico-vendita-130-mq-3-locali-1030/",
+    "requested_at": "2026-11-09T18:25:02.880283"
+  },
+  {
+    "domain": "relinx.it",
+    "example_url": "https://relinx.it/it/immobili/albano-laziale-centro/villa-vendita-160-mq-4-locali-1252/",
+    "requested_at": "2026-11-09T18:25:17.885295"
   }
 ]

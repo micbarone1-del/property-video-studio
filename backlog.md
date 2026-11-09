@@ -1161,3 +1161,8 @@ Questions for Luma (Douglas) only after our tests: is 360p draft representative 
 7. mci cost about 90 s per slowed clip; re-measure the share of slowed clips with limit 26.
 8. Drafts: re-create 1252, 1299, 1030 from the URL (drafts predate the November selection rules); 9 recent drafts were run on the test instance 2026-11-09.
 9. Director-guided pace limit (anchor/plan) stays as scoped earlier.
+
+## 2026-11-09 (night) - listings tracking and narration test status
+- Listing id = number in external_ref (T-<id>-...). Of the 48 in gial_all_listings.txt: 24 have a done job; 22 only failed (21 ineligible by rule, e.g. 1114/1258/1259/1260 empty rooms; 1298 9 photos but 3 environments and 1292 5 photos but 3 environments are borderline = Michele's decision); 1215 failed only on photo download (retry candidate). 1252 and 1272 have a PRODUCTION job awaiting approval: never start draft 01d4545e. 1299 and 1030 not eligible.
+- [open] Narration model test (Haiku 4.5 vs Sonnet 5.5, 12 listings, /tmp/narr_exp.py): NOT valid. Haiku fails on content rules; Sonnet replies came back empty or not JSON (suspect max_tokens 1200 in _block_narration or a rejected parameter). Not stopped for cost; to resume after speed. No result yet.
+- [open] clip_arrival monitoring (read-only), QC with anchor, QC recalibration with Michele's labels, store timeline_fallback_reason, outcome-based speed evaluation after ~50 clips, "illustrazione" defect check.
