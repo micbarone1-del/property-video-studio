@@ -183,35 +183,79 @@ def cmd_calibrate():
     return 0
 
 
+def _plan_of(mp4):
+    """(planned end scale, move) from the camera director's sidecar, or (None, None) - the anchor/depth-aware target of the clip, when there is one."""
+    try:
+        import movement_director
+        pl = movement_director.last_plan(mp4)
+        return (float(pl["scale"]), pl.get("move")) if pl and pl.get("scale") else (None, None)
+    except Exception:
+        return (None, None)
+
+
+def _all_clips(skip):
+    seen = set()
+    for root in _roots():
+        for d in sorted(Path(root).glob("*/")):
+            if d.name in seen or d.name.startswith("_") or not (d / "job_meta.json").exists():
+                continue
+            seen.add(d.name)
+            try:
+                for n, s, mp4 in _clips_of(d):
+                    if f"{d.name}:{n}" not in skip:
+                        yield d.name, n, s, mp4
+            except Exception:
+                continue
+
+
 def cmd_review(argv):
-    """Before/after copies of every labelled clip the limit would slow, for Michele to watch. Writes ONLY into <test jobs>/_test_scratch/ (never touches a job)."""
+    """Before/after copies for Michele to watch, written ONLY into <test jobs>/_test_scratch/ (never touches a job).
+    review LIMIT            the labelled clips that LIMIT would slow
+    review LIMIT N          the same + N UNLABELLED clips from the doubtful zone (peak 6..40), spread evenly over that zone, so Michele's judgment can settle it"""
+    import math
     limit = float(argv[0])
+    extra = int(argv[1]) if len(argv) > 1 else 0
     out = _roots()[1] / "_test_scratch"
     out.mkdir(parents=True, exist_ok=True)
     labels = {k: v for k, v in json.loads((HERE / "clip_pace_labels.json").read_text(encoding="utf-8")).items() if not k.startswith("_")}
-    index = []
+    todo = []                                              # (key, label or "?", scene dict, mp4)
     for key, lab in labels.items():
         job, _, sc = key.partition(":")
         d = _find_job(job)
-        if d is None:
+        for n, s, mp4 in (_clips_of(d) if d else []):
+            if n == int(sc):
+                todo.append((key, lab, s, mp4))
+    if extra:
+        pool = []
+        for job, n, s, mp4 in _all_clips(set(labels)):
+            g = measure_file(_original(mp4))
+            if g.get("ok") and 6 <= g["motion_peak"] <= 40:
+                pool.append((g["motion_peak"], f"{job}:{n}", s, mp4))
+        pool.sort(key=lambda r: r[0])
+        step = max(1, len(pool) // extra)
+        for peak, key, s, mp4 in pool[::step][:extra]:
+            todo.append((key, "?", s, mp4))
+    index = []
+    for key, lab, s, mp4 in todo:
+        src = _original(mp4)
+        g = measure_file(src)
+        pk = g.get("motion_peak") if g.get("ok") else None
+        f = factor_for(pk, limit)
+        if f is None:
+            print(key, lab, "non rallentato (picco", pk, ")")
             continue
-        for n, s, mp4 in _clips_of(d):
-            if n != int(sc):
-                continue
-            src = _original(mp4)
-            g = measure_file(src)
-            f = factor_for(g.get("motion_peak") if g.get("ok") else None, limit)
-            name = f"pace_{job}_{n}"
-            if f is None:
-                print(key, lab, "non rallentato (picco", g.get("motion_peak"), ")")
-                continue
-            orig = _duration(src)
-            keep = max(MIN_SECS, orig * f)
-            shutil.copy2(src, out / f"{name}_prima.mp4")
-            ok, err = render(src, out / f"{name}_dopo.mp4", orig, keep)
-            print(key, lab, "picco", g.get("motion_peak"), "fattore", round(keep / orig, 3), "ok" if ok else "ERRORE " + err)
-            if ok:
-                index.append({"key": key, "label": lab, "peak": g.get("motion_peak"), "factor": round(keep / orig, 3), "prima": f"{name}_prima.mp4", "dopo": f"{name}_dopo.mp4"})
+        job, _, n = key.partition(":")
+        name = f"pace_{job}_{n}"
+        orig = _duration(src)
+        keep = max(MIN_SECS, orig * f)
+        shutil.copy2(src, out / f"{name}_prima.mp4")
+        ok, err = render(src, out / f"{name}_dopo.mp4", orig, keep)
+        ps, move = _plan_of(mp4)
+        over = round(math.log(g["zoom_net"]) / math.log(ps), 2) if ps and ps > 1 and g.get("zoom_net", 0) > 1 else None
+        print(key, lab, "picco", pk, "fattore", round(keep / orig, 3), "piano", ps, "sforamento", over, "ok" if ok else "ERRORE " + err)
+        if ok:
+            index.append({"key": key, "label": lab, "peak": pk, "factor": round(keep / orig, 3), "cat": s.get("category"), "depth": s.get("depth"), "plan": ps, "over": over,
+                          "prima": f"{name}_prima.mp4", "dopo": f"{name}_dopo.mp4"})
     (out / "pace_review.json").write_text(json.dumps({"limit": limit, "items": index}), encoding="utf-8")
     print("pagina: /clip-review?pace=1  (porta 8002), clip:", len(index))
     return 0
