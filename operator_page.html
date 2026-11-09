@@ -50,6 +50,7 @@
 <body>
 <main>
   <h1>Stato operativo <span class="mute" id="upd"></span></h1>
+  <input id="q" placeholder="Cerca: id job, numero annuncio o nome (invio)" style="width:100%;padding:8px;margin:0 0 10px;border-radius:8px;border:1px solid var(--line);font:inherit" onkeydown="if(event.key==='Enter'){Q=this.value.trim();load();}">
   <div id="err"></div>
   <div class="cards" id="cards"></div>
   <div class="sw" id="sw"></div>
@@ -157,11 +158,11 @@ function autoCell(j) {
   if (j.stops) t.push('<span class="tag attn">in attesa di te: ' + j.stops + ' scene</span>');
   return t.join('') || '<span class="mute">-</span>';
 }
-let FILTER = '';
+let FILTER = ''; let Q = '';
 function setFilter(f) { FILTER = (FILTER === f ? '' : f); if (LAST) { load(); } }
 async function load() {
   try {
-    const d = await api('/operator/status');
+    const d = await api('/operator/status' + (Q ? '?q=' + encodeURIComponent(Q) : ''));
     LAST = d;
     document.getElementById('err').textContent = '';
     document.getElementById('upd').textContent = 'aggiornato ' + new Date().toLocaleTimeString('it-IT');
@@ -182,7 +183,7 @@ async function load() {
     Object.keys(OPEN).forEach(id => { if (OPEN[id]) paintRev(id); });
   } catch (e) { document.getElementById('err').textContent = 'Errore: ' + e.message; }
 }
-load(); setInterval(load, 15000);
+load(); setInterval(function () { if (!Object.keys(OPEN).some(function (k) { return OPEN[k]; })) load(); }, 15000);   // 2026-11-09: no refresh while a review form is open (it reset the choices and the video)
 </script>
 </body>
 </html>
