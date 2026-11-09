@@ -44,6 +44,38 @@ Judge the clip like a strict quality inspector for a real-estate agency:
 Answer with JSON only: {{"invented": [{{"frames": "3-5", "what": "short"}}], "animated": [{{"frames": "2-6", "what": "short"}}], "direction": "...", "speed": "...", "verdict": "pass", "reason": "one short sentence"}}"""
 
 
+ANCHOR_PROMPT = """
+The camera director planned this move toward: {target}. Add two more keys to the JSON:
+"anchor_visible": true or false (is that target clearly identifiable in frame 1),
+"anchor_progress": a list of exactly {n} numbers, one per frame in order, each from 0 to 100 = how much of the way toward that target the camera has covered by that frame (frame 1 = 0; 100 = the view the camera should end on, close to the target; keep 100 if it moves on past it; judge from what the picture shows, the path may be curved)."""
+
+
+def anchor_target(clip_path, scene=None) -> str:
+    """The ONE place that says what the clip should travel toward: the camera director's plan target (sidecar next to the clip), else the scene's anchor from the photo analysis. '' = unknown."""
+    try:
+        import movement_director
+        pl = movement_director.last_plan(clip_path)
+        if pl and pl.get("move") == "forward" and str(pl.get("target") or "").strip():
+            return str(pl["target"]).strip()[:200]
+    except Exception:
+        pass
+    a = str((scene or {}).get("anchor") or "").strip()
+    return a[:200]
+
+
+def arrival(progress) -> dict:
+    """Pure: shape of the anchor-progress curve (list of 0-100 numbers, one per key frame, in time order).
+    t_arrive = fraction of the clip (0-1) at which 90 is first reached (None = never); late_share = share of the total progress made in the LAST interval;
+    front_share = share made in the first half. Constant pace = late_share about 1/(n-1), front_share about 0.5."""
+    p = [float(x) for x in (progress or [])]
+    n = len(p)
+    if n < 3 or p[-1] <= 0:
+        return {}
+    arrive = next((i / (n - 1) for i, v in enumerate(p) if v >= 90), None)
+    half = p[(n - 1) // 2]
+    return {"t_arrive": arrive, "late_share": round((p[-1] - p[-2]) / p[-1], 3), "front_share": round(half / p[-1], 3), "final": p[-1]}
+
+
 def read_frames(path):
     cap = cv2.VideoCapture(str(path))
     fps = cap.get(cv2.CAP_PROP_FPS) or 24.0
@@ -147,6 +179,17 @@ def parse_judge(raw):
         return None
     v = str(d.get("verdict") or "").lower()
     d["verdict"] = v if v in ("pass", "review", "fail") else "review"
+    ap = d.get("anchor_progress")                       # optional: only kept when it is a clean list of numbers 0-100
+    try:
+        ap = [float(x) for x in ap]
+        if len(ap) < 3 or any(x < 0 or x > 100 for x in ap):
+            ap = None
+    except Exception:
+        ap = None
+    if ap is None:
+        d.pop("anchor_progress", None)
+    else:
+        d["anchor_progress"] = ap
     return d
 
 
@@ -175,7 +218,7 @@ def enforce() -> bool:
     return enabled() and os.getenv("PVS_STANDARD_ENFORCE", "").strip() == "1"
 
 
-def evaluate(clip_path, usage_out=None, ask=None, model=None) -> dict:
+def evaluate(clip_path, usage_out=None, ask=None, model=None, scene=None) -> dict:
     """Measures one clip. NEVER raises. `ask(images, prompt, usage_out)` -> text can be injected (tests); default = vision_analysis._claude_vision_call."""
     res = {"standard": "v0", "geo": None, "judge": None, "standard_verdict": None, "reasons": [], "error": None,
            "measured_verdict": None, "measured_reasons": [], "speed_over_limit": None}
@@ -194,12 +237,17 @@ def evaluate(clip_path, usage_out=None, ask=None, model=None) -> dict:
         if os.getenv("PVS_STANDARD_FEED_NUMBER", "").strip() == "1" and res["geo"].get("ok"):
             geo_line = f"\nSoftware measurement: {round(res['geo']['new_max'] * 100)}% of the picture in some frame lies outside the area visible in frame 1."
         prompt = JUDGE_PROMPT.format(n=len(frames_tmp)) + geo_line
+        target = anchor_target(clip_path, scene)
+        if target:                                   # SHADOW, same single call: where the clip is on its way to the anchor, frame by frame
+            prompt += ANCHOR_PROMPT.format(target=target, n=len(frames_tmp))
         if ask is None:
             import vision_analysis as va
             raw = va._claude_vision_call(frames_tmp, prompt, max_tokens=va.CLIP_QC_MAX_TOKENS, model=model or va.CLIP_QC_MODEL, usage_out=usage_out)
         else:
             raw = ask(frames_tmp, prompt, usage_out)
         res["judge"] = parse_judge(raw)
+        if target and res["judge"] and res["judge"].get("anchor_progress"):
+            res["anchor"] = {"target": target, "progress": res["judge"]["anchor_progress"], **arrival(res["judge"]["anchor_progress"])}
         if res["judge"] is None:
             res["error"] = "judge answer unusable"
         res["standard_verdict"], res["reasons"] = decide(res["geo"], res["judge"])
@@ -228,7 +276,8 @@ def record(clip_path, res, stage=None) -> bool:
         ev = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "job": p.parent.parent.name, "scene": p.stem, "new_max": g.get("new_max"), "new_frac": g.get("new_frac"),
               "geo_ok": g.get("ok"), "judge": j.get("verdict"), "direction": j.get("direction"), "speed": j.get("speed"),
               "standard": res.get("standard_verdict"), "reasons": res.get("reasons"), "error": res.get("error"),
-              "measured": res.get("measured_verdict"), "zoom_rate": g.get("zoom_rate"), "speed_over": res.get("speed_over_limit")}
+              "measured": res.get("measured_verdict"), "zoom_rate": g.get("zoom_rate"), "speed_over": res.get("speed_over_limit"),
+              "anchor": res.get("anchor")}
         if stage:
             ev["stage"] = stage
         with _LOCK:
@@ -350,5 +399,30 @@ def contact_sheet(clip_path, out_path, caption="") -> bool:
 
 
 
+def _cli_judge(argv) -> int:
+    """python3 clip_standard.py judge JOB:SCENE [...]   (scene 1-based) - runs evaluate() (ONE judge call per clip, about 0.06 USD) and prints speed + anchor progress. Records nothing."""
+    import clip_provenance
+    roots = [HERE / "jobs", Path(os.getenv("PVS_TEST_JOBS_DIR") or "/var/www/pvs_test_jobs")]
+    for arg in argv:
+        job, _, sc = arg.partition(":")
+        d = next((r / job for r in roots if (r / job / "job_meta.json").exists()), None)
+        if d is None or not sc:
+            print(arg, "job o scena mancante / non trovato")
+            continue
+        scenes = json.loads((d / "job_meta.json").read_text(encoding="utf-8")).get("scenes_config") or []
+        i = int(sc) - 1
+        mp4 = clip_provenance.clip_file_for_scene(d, i, scenes[i].get("scene_id")) if 0 <= i < len(scenes) else None
+        if not mp4:
+            print(arg, "clip non trovato")
+            continue
+        r = evaluate(mp4, usage_out={}, scene=scenes[i])
+        a, j = r.get("anchor") or {}, r.get("judge") or {}
+        print(f"{arg} velocita_giudice={j.get('speed')} direzione={j.get('direction')} bersaglio={a.get('target')!r} curva={a.get('progress')} arrivo={a.get('t_arrive')} "
+              f"parte_finale={a.get('late_share')} prima_meta={a.get('front_share')} errore={r.get('error')}")
+    return 0
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 2 and sys.argv[1] == "judge":
+        sys.exit(_cli_judge(sys.argv[2:]))
     print(json.dumps(summary(), indent=1))
