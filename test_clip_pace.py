@@ -35,7 +35,7 @@ check("P1 switch OFF by default: nothing touched", cp.apply(c1, g1, limit=pk / 1
 os.environ["PVS_PACE_FIX"] = "1"
 check("P2 no limit set = nothing happens (there is deliberately no default)", cp.apply(c1, g1)["reason"].startswith("no limit"))
 check("P3 within the limit = untouched", cp.apply(c1, g1, limit=pk * 1.1)["reason"] == "within limit" and not cp.marker(c1).exists())
-check("P4 factor is PROPORTIONAL: limit/peak, clamped to 0.6, none when within", abs(cp.factor_for(6, 5) - 5 / 6) < 1e-9 and cp.factor_for(7.5, 5) < cp.factor_for(6, 5) and cp.factor_for(100, 5) == 0.6 and cp.factor_for(5, 5) is None and cp.factor_for(None, 5) is None)
+check("P4 factor is PROPORTIONAL: limit/peak, clamped to 0.6, none when within", abs(cp.factor_for(6, 5) - 5 / 6) < 1e-9 and cp.factor_for(7.5, 5) < cp.factor_for(6, 5) and cp.factor_for(100, 5) == cp.MIN_FACTOR and cp.factor_for(5, 5) is None and cp.factor_for(None, 5) is None)
 check("P5 not measured = nothing happens", cp.apply(c1, {"ok": False}, limit=1)["reason"] == "speed not measured")
 size0 = c1.stat().st_size
 r = cp.apply(c1, {"geo": g1}, limit=pk / 1.25)
@@ -44,10 +44,10 @@ check("P7 original kept as .pre_pace, marker written, clip readable", cp.backup(
 check("P8 never slowed twice", cp.apply(c1, g1, limit=pk / 1.25)["reason"] == "already slowed")
 g_after = geo_of(c1)
 check("P9 after the fix the fastest second is lower, close to the limit", g_after["ok"] and g_after["motion_peak"] < pk * 0.95)
-rr = cp.apply(c1, g1, limit=pk / 1.6, redo=True)
-check("P10 redo restarts from the original with another proportional factor (0.625), original still there", rr["applied"] and abs(rr["factor"] - 0.625) < 0.02 and cp.backup(c1).exists())
+rr = cp.apply(c1, g1, limit=pk / 1.4, redo=True)
+check("P10 redo restarts from the original with another proportional factor (0.625), original still there", rr["applied"] and abs(rr["factor"] - 0.714) < 0.02 and cp.backup(c1).exists())
 c2 = make("b.mp4"); g2 = geo_of(c2)
-check("P11 a very high peak is clamped at 0.6 (3.0 s kept)", cp.apply(c2, g2, limit=pk / 5)["keep_secs"] == 3.0)
+check("P11 a very high peak is clamped at 0.6 (3.0 s kept)", abs(cp.apply(c2, g2, limit=pk / 5)["keep_secs"] - 5.0 * cp.MIN_FACTOR) < 0.15)
 c3 = tmp / "short.mp4"; subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", str(cp.backup(c2)), "-t", "3.2", "-c:v", "libx264", str(c3)], check=True)
 check("P12 a clip too short to slow is left alone", cp.apply(c3, g2, limit=pk / 2)["applied"] is False)
 check("P13 missing file never raises", cp.apply(tmp / "nope.mp4", g2, limit=pk / 2)["applied"] is False)

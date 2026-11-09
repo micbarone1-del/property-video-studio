@@ -18,7 +18,7 @@ import sys
 import time
 from pathlib import Path
 
-MIN_FACTOR = 0.6          # slower than 0.6x would look like a still
+MIN_FACTOR = 0.65         # slower than 0.6x would look like a still
 MIN_SECS = 3.0
 FPS = 24
 HERE = Path(__file__).resolve().parent

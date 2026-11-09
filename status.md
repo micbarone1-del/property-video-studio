@@ -1439,3 +1439,9 @@ Stato dei commit sul server/GitHub: p27-p32 adbccdc; p33-p36 ecf1643; p37-p38 + 
 - Dashboard (operator page): badge `annuncio N`; the two overview cards (jobs waiting / scenes to review) filter the list on click. NOT visually confirmed by Michele; test instance UI port 8002 reachability not confirmed.
 - Not built: API feedback to client "input ridotto a causa di xx" (1254 accepted as is); job event history in job_meta (approved); moving all GIAL videos to production under agency GIAL/Relinx (`gial_consolidate.py`, dry run first, only when no job runs).
 - Correction: the forced trial of listing 1327 mentioned earlier was never executed.
+
+
+## 2026-11-09 - Proportional pace fix (BUILT, NOT ENABLED)
+- clip_pace.py: motion_peak = apparent camera speed in the fastest second (% of frame width per second), from the tracked-feature transforms of the QC geometry rule (clip_standard.measures): no extra pass, no Claude call, no cost. Above the limit, factor = limit / motion_peak (min MIN_FACTOR 0.65, provisional): the first factor share of the clip is kept and stretched back to 5 s. Original kept as .pre_pace. Needs PVS_PACE_FIX=1 and PVS_PACE_LIMIT; neither is set anywhere yet. Hook: vision_analysis.analyse_output, judge block, one place.
+- Data (21 clips judged by Michele, clip-review page): limit 15 supported, every clip slowed toward a peak of about 15 was judged giusto after; one lento (bf48281a:6 at 0.6, hence the 0.65 floor). His judgment of the same clip moved by one level between sessions. Reliable on strong cases, not on mild ones (6c79ce33:1 judged veloce, measured 1.3). Depth classes show the same speed distribution (median about 10.7).
+- 93432cd3 scenes 1 and 2 were slowed to 0.8 by an earlier two-level version (originals kept as .pre_pace), not yet redone. Removed: clip_arrival.py, clip_flow.py, judge anchor-progress question.
