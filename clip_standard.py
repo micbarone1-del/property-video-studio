@@ -182,7 +182,17 @@ def enforce() -> bool:
     return enabled() and os.getenv("PVS_STANDARD_ENFORCE", "").strip() == "1"
 
 
-def evaluate(clip_path, usage_out=None, ask=None, model=None) -> dict:
+def plan_lines(plan, n):
+    """2026-11-09 (Michele): the judge compares what the camera really did with the director's PLAN (past the target / other direction = faster than planned). Same call, shadow only."""
+    if not plan:
+        return ""
+    return ("\nThe camera was PLANNED to do this: move=%s, travel=%s, target=%s. Also add to the JSON a key \"plan_check\": "
+            "{\"reached_target_at_frame\": <1-%d, or null if never>, \"past_target\": true|false, \"direction_matches_plan\": true|false, "
+            "\"more_than_planned\": \"no|a_little|a_lot\"} comparing what the camera really did with that plan."
+            % (plan.get("move"), plan.get("travel"), str(plan.get("target"))[:80], n))
+
+
+def evaluate(clip_path, usage_out=None, ask=None, model=None, plan=None) -> dict:
     """Measures one clip. NEVER raises. `ask(images, prompt, usage_out)` -> text can be injected (tests); default = vision_analysis._claude_vision_call."""
     res = {"standard": "v0", "geo": None, "judge": None, "standard_verdict": None, "reasons": [], "error": None,
            "measured_verdict": None, "measured_reasons": [], "speed_over_limit": None}
@@ -200,7 +210,8 @@ def evaluate(clip_path, usage_out=None, ask=None, model=None) -> dict:
         geo_line = ""
         if os.getenv("PVS_STANDARD_FEED_NUMBER", "").strip() == "1" and res["geo"].get("ok"):
             geo_line = f"\nSoftware measurement: {round(res['geo']['new_max'] * 100)}% of the picture in some frame lies outside the area visible in frame 1."
-        prompt = JUDGE_PROMPT.format(n=len(frames_tmp)) + geo_line
+        prompt = JUDGE_PROMPT.format(n=len(frames_tmp)) + geo_line + plan_lines(plan, len(frames_tmp))
+        res["plan"] = ({k: plan.get(k) for k in ("move", "travel", "target")} if plan else None)
         if ask is None:
             import vision_analysis as va
             raw = va._claude_vision_call(frames_tmp, prompt, max_tokens=va.CLIP_QC_MAX_TOKENS, model=model or va.CLIP_QC_MODEL, usage_out=usage_out)
@@ -236,7 +247,7 @@ def record(clip_path, res, stage=None) -> bool:
               "geo_ok": g.get("ok"), "judge": j.get("verdict"), "direction": j.get("direction"), "speed": j.get("speed"),
               "standard": res.get("standard_verdict"), "reasons": res.get("reasons"), "error": res.get("error"),
               "measured": res.get("measured_verdict"), "zoom_rate": g.get("zoom_rate"), "speed_over": res.get("speed_over_limit"),
-              "pace": res.get("pace")}
+              "pace": res.get("pace"), "plan": res.get("plan"), "plan_check": j.get("plan_check")}
         if stage:
             ev["stage"] = stage
         with _LOCK:

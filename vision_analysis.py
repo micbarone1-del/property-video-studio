@@ -594,7 +594,12 @@ def analyse_output(
         try:
             import clip_standard as _cs
             if _cs.enabled():
-                _std = _cs.evaluate(video_path, usage_out=usage)
+                try:
+                    import movement_director as _md
+                    _plan = _md.last_plan(video_path)
+                except Exception:
+                    _plan = None
+                _std = _cs.evaluate(video_path, usage_out=usage, plan=_plan)
                 out["standard_shadow"] = _std
                 _std["pace"] = pace      # applied BEFORE the QC (top of this function), whatever Claude answers
                 out["pace"] = pace
