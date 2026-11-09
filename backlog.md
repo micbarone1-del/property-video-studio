@@ -1144,3 +1144,9 @@ Questions for Luma (Douglas) only after our tests: is 360p draft representative 
 - Michele wants the camera DIRECTOR (which sees the whole image) to drive the pace control: the allowed travel of a clip is its planned move (target/anchor, planned end scale 1.05-1.4, already capped by scene depth) and a clip that goes beyond the plan is slowed proportionally to arrive at the anchor, not past it.
 - Why not now: the judge anchor-progress curve (6 frames) came out almost identical for every clip (START 26) so it carries no information; director plans exist only for recent clips (2 of 15 judged clips); zoom vs plan is not validated.
 - Next: keep collecting data per clip (planned scale, measured zoom_net, motion_peak, Michele judgment) with clip_pace.py review; compare a plan-based limit with the global limit 15 before replacing it.
+
+## 2026-11-09 Pace fix: interpolation + outdoor naming (decisions)
+- Judged by Michele on 93432cd3:2 and 91056c3e:1 (factors 0.8/0.7/0.65): blend slowdown is NOT acceptable (jerky); mci is acceptable. Final renders must use mci. NOT YET BUILT.
+- Open: mci cost at 1080p (77-105 s per clip at test resolution, measured under load; clean timing at 1080p still to do). Proposal pending OK: search the factor with blend (1-3 s), one final mci render.
+- Measurement noise ~2 peak points, non-monotonic vs factor (91056c3e:1, 31d0ae6f:5): the closed loop cannot be trusted below ~2 points.
+- Outdoor naming (5f6a2fe0): narration said "terrazzo" over a garden photo; the Whisper check only matches category outdoor. Approved fix: name terrace/balcony/garden only if photo analysis confirms it, otherwise "spazio esterno"/"zona verde". NOT YET BUILT; isolated change, do not touch other narration logic.
