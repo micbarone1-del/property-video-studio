@@ -1,12 +1,14 @@
-"""clip_pace.py - slows a clip the QC judge called too fast (2026-11-09, Michele).
-The judge (clip_standard, ONE call per clip, already asking for speed) answers static | slow | fast | very_fast. For fast / very_fast the clip is rebuilt BEFORE anything else
-uses it: only the first part of the clip is kept and stretched back to its original length, so the scene stays 5 s and every later step (narration timing, assembly, rework,
-reassemble) simply sees a normal clip, with no second speed mechanism. Cutting the end also removes the stretch where the camera rushes / runs into a wall / invents.
-  fast       keeps the first 4.0 s of a 5 s clip -> played at 0.8x
-  very_fast  keeps the first 3.0 s of a 5 s clip -> played at 0.6x   (the floor; slower than that would look like a still)
-The original file is kept next to it as <clip>.pre_pace (never deleted); <clip>.pace.json marks a clip as done, so it is never slowed twice.
-Switch: PVS_PACE_FIX=1 (default OFF). Never raises. Fake providers / tests: not applied.
-  python3 clip_pace.py JOB:SCENE fast|very_fast     slows that one existing clip now (scene 1-based), ignoring the switch; then reassemble the job"""
+"""clip_pace.py - PROPORTIONAL slowdown of a clip that is too fast (2026-11-09, Michele: a measured value must give a proportional fix, never two levels).
+The measure comes from the clip QC (clip_standard.measures, the tracked-feature transforms already computed for the geometry rule): `motion_peak` = the apparent camera speed in the
+fastest second of the clip, in % of the frame width per second (zoom, pan and curved paths all count). If it is above the limit, factor = limit / motion_peak (never below
+MIN_FACTOR): the first `factor` share of the clip is kept and stretched back to its original length, so the scene stays 5 s and every later step (narration timing, assembly,
+rework, reassemble) simply sees a normal clip - no second speed mechanism. After the fix the fastest second is about at the limit; cutting the end also removes the stretch where the
+camera rushes / runs into a wall / invents.
+The original is kept as <clip>.pre_pace (never deleted); <clip>.pace.json marks a clip as done. Nothing runs unless BOTH are set: PVS_PACE_FIX=1 and PVS_PACE_LIMIT=<number>
+(the limit is calibrated on Michele's judgments with `calibrate`; there is deliberately no default). Never raises.
+  python3 clip_pace.py scan                       every clip of production + test: measures (of the ORIGINAL when a .pre_pace exists)
+  python3 clip_pace.py calibrate                  Michele's labelled clips sorted by motion_peak (clip_pace_labels.json) + how well a limit separates them
+  python3 clip_pace.py apply JOB:SCENE LIMIT [redo]   slows that clip now, ignoring the switches ('redo' restarts from the kept original)"""
 import json
 import os
 import shutil
@@ -15,13 +17,29 @@ import sys
 import time
 from pathlib import Path
 
-KEEP_FRACTION = {"fast": 0.8, "very_fast": 0.6}      # share of the clip that is kept = playback speed after the fix
+MIN_FACTOR = 0.6          # slower than 0.6x would look like a still
 MIN_SECS = 3.0
 FPS = 24
+HERE = Path(__file__).resolve().parent
 
 
 def enabled() -> bool:
     return os.getenv("PVS_PACE_FIX", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def limit_from_env():
+    try:
+        v = float(os.getenv("PVS_PACE_LIMIT", ""))
+        return v if v > 0 else None
+    except ValueError:
+        return None
+
+
+def factor_for(motion_peak, limit):
+    """Pure: None = no fix needed / possible; else the playback factor in [MIN_FACTOR, 1)."""
+    if not motion_peak or not limit or motion_peak <= limit:
+        return None
+    return max(MIN_FACTOR, limit / motion_peak)
 
 
 def _duration(p) -> float:
@@ -37,21 +55,37 @@ def backup(clip_path) -> Path:
     return Path(str(clip_path) + ".pre_pace")
 
 
-def apply(clip_path, speed_word, force=False) -> dict:
-    """{"applied": bool, "reason"/"keep_secs"/"factor"/"orig_secs"}. Never raises."""
+def measure_file(path) -> dict:
+    import clip_standard as cs
+    frames, fps = cs.read_frames(path)
+    return cs.measures(frames, fps) if frames else {"ok": False, "why": "clip not readable"}
+
+
+def apply(clip_path, geo, force=False, redo=False, limit=None) -> dict:
+    """geo = the measures dict of the QC (clip_standard.measures, or the whole evaluate() result with its "geo"). {"applied": bool, ...}. Never raises."""
     try:
-        frac = KEEP_FRACTION.get(str(speed_word or "").strip().lower())
-        if frac is None:
-            return {"applied": False, "reason": "speed not fast"}
+        if isinstance(geo, dict) and "geo" in geo:
+            geo = geo["geo"]
+        limit = limit or limit_from_env()
         if not force and not enabled():
             return {"applied": False, "reason": "switch off"}
+        if not limit:
+            return {"applied": False, "reason": "no limit set (PVS_PACE_LIMIT)"}
+        if not geo or not geo.get("ok"):
+            return {"applied": False, "reason": "speed not measured"}
+        peak = geo.get("motion_peak")
+        f = factor_for(peak, limit)
+        if f is None:
+            return {"applied": False, "reason": "within limit", "motion_peak": peak}
         src = Path(clip_path)
-        if marker(src).exists():
+        if marker(src).exists() and not redo:
             return {"applied": False, "reason": "already slowed"}
+        if redo and backup(src).exists():          # start again from the ORIGINAL clip (kept as .pre_pace), nothing is deleted
+            shutil.copy2(backup(src), src)
         orig = _duration(src)
-        keep = max(MIN_SECS, orig * frac)
         if orig < MIN_SECS + 0.5:
             return {"applied": False, "reason": "clip too short to slow", "orig_secs": round(orig, 2)}
+        keep = max(MIN_SECS, orig * f)
         tmp = Path(str(src) + ".pace_tmp.mp4")
         k = orig / keep
         r = subprocess.run(["ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-t", f"{keep:.3f}", "-i", str(src), "-an",
@@ -66,33 +100,105 @@ def apply(clip_path, speed_word, force=False) -> dict:
         if not backup(src).exists():
             shutil.copy2(src, backup(src))
         os.replace(tmp, src)
-        info = {"applied": True, "speed": speed_word, "keep_secs": round(keep, 2), "factor": round(keep / orig, 3), "orig_secs": round(orig, 2), "ts": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        info = {"applied": True, "motion_peak": peak, "limit": limit, "keep_secs": round(keep, 2), "factor": round(keep / orig, 3), "orig_secs": round(orig, 2),
+                "ts": time.strftime("%Y-%m-%dT%H:%M:%S")}
         marker(src).write_text(json.dumps(info), encoding="utf-8")
         return info
     except Exception as e:
         return {"applied": False, "reason": f"{type(e).__name__}: {str(e)[:160]}"}
 
 
-def main(argv) -> int:
+# ── command line: scan / calibrate / apply ──────────────────────────────────────────────
+def _roots():
+    return [HERE / "jobs", Path(os.environ.get("PVS_TEST_JOBS_DIR") or "/var/www/pvs_test_jobs")]
+
+
+def _clips_of(job_dir):
     import clip_provenance
-    if len(argv) != 3 or ":" not in argv[1]:
-        print(__doc__.split("\n")[-1])
-        return 2
-    job, _, sc = argv[1].partition(":")
-    here = Path(__file__).resolve().parent
-    roots = [here / "jobs", Path(os.environ.get("PVS_TEST_JOBS_DIR") or "/var/www/pvs_test_jobs")]
-    d = next((r / job for r in roots if (r / job / "job_meta.json").exists()), None)
+    meta = json.loads((job_dir / "job_meta.json").read_text(encoding="utf-8"))
+    for i, s in enumerate(meta.get("scenes_config") or []):
+        mp4 = clip_provenance.clip_file_for_scene(job_dir, i, s.get("scene_id"))
+        if mp4:
+            yield i + 1, s, mp4
+
+
+def _original(mp4) -> Path:
+    return backup(mp4) if backup(mp4).exists() else Path(mp4)
+
+
+def _find_job(job):
+    return next((r / job for r in _roots() if (r / job / "job_meta.json").exists()), None)
+
+
+def _line(job, n, s, g):
+    return (f"{job}:{n} {str(s.get('category')):<10} prof={str(s.get('depth')):<7} motion_peak={g.get('motion_peak')} motion_mean={g.get('motion_mean')} "
+            f"zoom_net={g.get('zoom_net')} zoom_rate={g.get('zoom_rate')}") if g.get("ok") else f"{job}:{n} {s.get('category')} non misurabile ({g.get('why')})"
+
+
+def cmd_scan():
+    seen = set()
+    for root in _roots():
+        for d in sorted(Path(root).glob("*/")):
+            if d.name in seen or d.name.startswith("_") or not (d / "job_meta.json").exists():
+                continue
+            seen.add(d.name)
+            try:
+                for n, s, mp4 in _clips_of(d):
+                    print(_line(d.name, n, s, measure_file(_original(mp4))))
+            except Exception as e:
+                print(d.name, "errore", e)
+    return 0
+
+
+def cmd_calibrate():
+    labels = {k: v for k, v in json.loads((HERE / "clip_pace_labels.json").read_text(encoding="utf-8")).items() if not k.startswith("_")}
+    rows = []
+    for key, lab in labels.items():
+        job, _, sc = key.partition(":")
+        d = _find_job(job)
+        if d is None:
+            print(key, "job non trovato")
+            continue
+        for n, s, mp4 in _clips_of(d):
+            if n == int(sc):
+                g = measure_file(_original(mp4))
+                rows.append((g.get("motion_peak") if g.get("ok") else None, key, lab, s, g))
+    for peak, key, lab, s, g in sorted(rows, key=lambda r: (r[0] is None, r[0] or 0)):
+        print(f"{lab:<12} {_line(*key.split(':')[:1], int(key.split(':')[1]), s, g)}")
+    order = {"lento": 0, "giusto": 1, "veloce": 2, "moltoveloce": 3}
+    ok = [(p, order[l]) for p, _, l, _, _ in rows if p is not None]
+    print("--- limite candidato: quanti 'giusto/lento' sopra il limite (falsi allarmi) e quanti 'veloce/moltoveloce' sotto (mancati)")
+    for lim in sorted({p for p, _ in ok}):
+        fa = sum(1 for p, o in ok if p > lim and o <= 1)
+        miss = sum(1 for p, o in ok if p <= lim and o >= 2)
+        print(f"limite {lim:>6}: falsi allarmi {fa}, mancati {miss}")
+    return 0
+
+
+def cmd_apply(argv):
+    job, _, sc = argv[0].partition(":")
+    d = _find_job(job)
     if d is None:
         print("job non trovato")
         return 1
-    scenes = json.loads((d / "job_meta.json").read_text(encoding="utf-8")).get("scenes_config") or []
-    i = int(sc) - 1
-    mp4 = clip_provenance.clip_file_for_scene(d, i, scenes[i].get("scene_id")) if 0 <= i < len(scenes) else None
-    if not mp4:
-        print("clip non trovato")
-        return 1
-    print(argv[1], mp4.name, apply(mp4, argv[2], force=True))
-    return 0
+    for n, s, mp4 in _clips_of(d):
+        if n == int(sc):
+            g = measure_file(_original(mp4))
+            print(argv[0], mp4.name, apply(mp4, g, force=True, redo=(len(argv) > 2 and argv[2] == "redo"), limit=float(argv[1])))
+            return 0
+    print("clip non trovato")
+    return 1
+
+
+def main(argv) -> int:
+    if len(argv) >= 2 and argv[1] == "scan":
+        return cmd_scan()
+    if len(argv) >= 2 and argv[1] == "calibrate":
+        return cmd_calibrate()
+    if len(argv) >= 4 and argv[1] == "apply" and ":" in argv[2]:
+        return cmd_apply(argv[2:])
+    print(__doc__.split("\n")[-4:])
+    return 2
 
 
 if __name__ == "__main__":
