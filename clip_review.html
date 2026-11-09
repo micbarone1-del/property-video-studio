@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Giudizio velocita clip</title>
+<style>
+body{margin:0;font:15px/1.4 system-ui,sans-serif;background:#f6f7f9;color:#1b1f24}main{max-width:760px;margin:0 auto;padding:14px}
+.c{background:#fff;border:1px solid #e3e6ea;border-radius:10px;padding:10px;margin-bottom:14px}video{width:100%;border-radius:8px;background:#000}
+label{margin-right:14px;display:inline-block;padding:6px 0}textarea{width:100%;height:120px;font:13px monospace}h2{font-size:16px;margin:0 0 6px}
+@media(prefers-color-scheme:dark){body{background:#111418;color:#e8ebef}.c{background:#1b2026;border-color:#2c333b}}
+</style></head><body><main>
+<h1>Giudizio velocita clip</h1><p>Guarda ogni clip e scegli. Alla fine copia il riepilogo e incollalo in chat.</p>
+<div id="list"></div><h2>Riepilogo da copiare</h2><textarea id="out" readonly></textarea>
+</main><script>
+const items=(new URLSearchParams(location.search).get('items')||'').split(',').filter(Boolean);
+const ans={};
+function upd(){document.getElementById('out').value=items.map(i=>i+' = '+(ans[i]||'?')).join('\n');}
+document.getElementById('list').innerHTML=items.map(it=>{const [j,s]=it.split(':');
+ return '<div class="c"><h2>Job '+j+' - scena '+s+'</h2><video controls loop muted playsinline preload="metadata" src="/jobs/'+encodeURIComponent(j)+'/clip/'+(parseInt(s,10)-1)+'/preview"></video><div>'+
+ [['lento','Lento'],['giusto','Giusto'],['veloce','Un po\' veloce'],['moltoveloce','Troppo veloce']].map(o=>'<label><input type="radio" name="'+it+'" value="'+o[0]+'" onchange="ans[\''+it+'\']=this.value;upd()"> '+o[1]+'</label>').join('')+'</div></div>';}).join('');
+upd();
+</script></body></html>
