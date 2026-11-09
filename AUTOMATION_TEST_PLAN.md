@@ -630,3 +630,13 @@ test_photo_filters.py RESULT: ALL PASS (76/76)
 | Too fast clip not caught by QC | 6 | 6 | 7 | 252 | ACT open | probe measured, not wired |
 | Unexplained re-approval after rework | 5 | 4 | 8 | 160 | ACT open | needs event history |
 Test status: PASS (server): vision classify, selection report, photo filters, label first, listing registry, gial_start. NOT RUN: label mismatch on a real partner payload; any 1080p test of the new vision; dashboard visual check on a tablet.
+
+## 2026-11-09 Pace fix and review UI - risk rows (PROPOSALS: S/O/D not reviewed by Michele; scoreboard NOT recalculated)
+| id | failure | S | O | D | RPN | level | control | test status |
+|---|---|---|---|---|---|---|---|---|
+| PF1 | pace slows a clip the operator rates giusto | 4 | 7 | 5 | 140 | ACT | limit 26, test instance only, marker keeps the original | label set exists (23); no automatic test |
+| PF2 | mci render makes generation slow | 5 | 4 | 3 | 60 | - | render_secs in the marker | 89-117 s measured; full-job run NOT run |
+| PF3 | pace skipped when the Claude QC fails | 6 | 2 | 6 | 72 | - | pace moved before the QC (2026-11-09) | P14 PASS (structure); live path PASS once |
+| PF4 | QC misses a human figure / mirror person after rework | 8 | 5 | 8 | 320 | ACT | none yet (backlog 1) | no test written |
+| PF5 | operator choices lost by the 15 s refresh | 6 | 8 | 3 | 144 | ACT | refresh paused while a review form is open | manual check NOT run |
+Tests: test_clip_pace.py 24 checks, 0 FAILS on the server; real-clip end to end (analyse_output) PASS twice; calibration of the speed signals recorded in status.md.

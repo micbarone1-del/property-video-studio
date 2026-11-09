@@ -1150,3 +1150,14 @@ Questions for Luma (Douglas) only after our tests: is 360p draft representative 
 - Open: mci cost at 1080p (77-105 s per clip at test resolution, measured under load; clean timing at 1080p still to do). Proposal pending OK: search the factor with blend (1-3 s), one final mci render.
 - Measurement noise ~2 peak points, non-monotonic vs factor (91056c3e:1, 31d0ae6f:5): the closed loop cannot be trusted below ~2 points.
 - Outdoor naming (5f6a2fe0): narration said "terrazzo" over a garden photo; the Whisper check only matches category outdoor. Approved fix: name terrace/balcony/garden only if photo analysis confirms it, otherwise "spazio esterno"/"zona verde". NOT YET BUILT; isolated change, do not touch other narration logic.
+
+## 2026-11-09 evening - open items (scoped, NOT built unless stated)
+1. QC recalibration on Michele's labels (ok / segnalare / respingere + reason): human figure left after a rework, people in mirrors, invented structures rated minor (door), rotation that reveals new content (use the existing new_frac/pan_frac measures, no new path). Needs more labelled scenes.
+2. Speed: no automatic signal found (peak, judge word, physical estimate all about AUC 0.7). Decision: measure the OUTCOME instead - record per clip peak, factor, QC verdict, rework, and after about 50 clips compare slowed vs not slowed. Limit 26 is provisional.
+3. Narration cascade (Haiku 4.5 -> anchored fails -> per_scene): store timeline_fallback_reason in job_meta first; then run _block_narration on the same listings with Haiku 4.5 vs Sonnet 5.5 (runtime MODEL override, TTS call cap). Michele said yes; NOT started. Never change narration as a side effect.
+4. Outdoor naming (approved): say terrazzo/balcone/giardino only if the photo analysis confirms it, else "spazio esterno" / "zona verde" (5f6a2fe0 said terrazzo over a garden).
+5. Listing tracking: per listing all attempts, outcome and cost in the dashboard search (1254 had 2 failed attempts and one done draft).
+6. Aerial photos: why 8d16bad9:6 (aerial) became the closing scene.
+7. mci cost about 90 s per slowed clip; re-measure the share of slowed clips with limit 26.
+8. Drafts: re-create 1252, 1299, 1030 from the URL (drafts predate the November selection rules); 9 recent drafts were run on the test instance 2026-11-09.
+9. Director-guided pace limit (anchor/plan) stays as scoped earlier.
