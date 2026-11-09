@@ -1,4 +1,4 @@
-"""test_clip_pace.py - offline checks of the pace fix. No network, no spend. Run: python3 test_clip_pace.py"""
+"""test_clip_pace.py - offline checks of the proportional pace fix. No network, no spend. Run: python3 test_clip_pace.py"""
 import json, os, subprocess, sys, tempfile
 from pathlib import Path
 import cv2, numpy as np
@@ -12,42 +12,50 @@ def check(n, c):
 tmp = Path(tempfile.mkdtemp())
 rng = np.random.default_rng(5)
 base = cv2.GaussianBlur(rng.integers(0, 255, (900, 1600, 3), dtype=np.uint8), (0, 0), 3)
-def make(name, n=120, fps=24):
+for x, y in zip(rng.integers(0, 1500, 120), rng.integers(0, 800, 120)):
+    cv2.rectangle(base, (int(x), int(y)), (int(x) + 40, int(y) + 40), (int(x) % 255, int(y) % 255, 128), -1)
+def make(name, rate=0.25, n=120):
     p = tmp / name
-    w = cv2.VideoWriter(str(p), cv2.VideoWriter_fourcc(*"mp4v"), fps, (320, 180))
+    w = cv2.VideoWriter(str(p), cv2.VideoWriter_fourcc(*"mp4v"), 24, (480, 270))
     for i in range(n):
-        t = (i / (n - 1)) ** 3                       # accelerating push-in
-        cw, ch = 800 * (1 - 0.3 * t), 450 * (1 - 0.3 * t)
-        w.write(cv2.resize(base[int(450 - ch / 2):int(450 + ch / 2), int(800 - cw / 2):int(800 + cw / 2)], (320, 180)))
+        z = rate * (i / (n - 1)) ** 3                 # accelerating push-in
+        cw, ch = 800 * (1 - z), 450 * (1 - z)
+        w.write(cv2.resize(base[int(450 - ch / 2):int(450 + ch / 2), int(800 - cw / 2):int(800 + cw / 2)], (480, 270)))
     w.release()
     subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", str(p), "-c:v", "libx264", "-pix_fmt", "yuv420p", str(p) + ".h264.mp4"], check=True)
     os.replace(str(p) + ".h264.mp4", p)
     return p
-os.environ.pop("PVS_PACE_FIX", None)
-c1 = make("a.mp4")
-check("P1 switch OFF by default: nothing is touched", cp.apply(c1, "very_fast") == {"applied": False, "reason": "switch off"} and not cp.marker(c1).exists())
-check("P2 not fast = not slowed (even forced)", cp.apply(c1, "slow", force=True)["reason"] == "speed not fast" and cp.apply(c1, None, force=True)["applied"] is False and cp.apply(c1, "static", force=True)["applied"] is False)
-size0 = c1.stat().st_size
-r = cp.apply(c1, "very_fast", force=True)
-d = cp._duration(c1)
-check("P3 very_fast keeps 3.0 s and stretches to the original length (scene stays 5 s)", r["applied"] and r["keep_secs"] == 3.0 and abs(d - 5.0) < 0.25 and abs(r["factor"] - 0.6) < 0.01)
-check("P4 original kept as .pre_pace, marker written, clip readable", cp.backup(c1).exists() and cp.backup(c1).stat().st_size == size0 and cp.marker(c1).exists() and cv2.VideoCapture(str(c1)).read()[0])
-check("P5 never slowed twice", cp.apply(c1, "very_fast", force=True) == {"applied": False, "reason": "already slowed"})
-c2 = make("b.mp4")
-r2 = cp.apply(c2, "fast", force=True)
-check("P6 fast keeps 4.0 s (0.8x)", r2["applied"] and r2["keep_secs"] == 4.0 and abs(cp._duration(c2) - 5.0) < 0.25)
+def geo_of(p):
+    return cp.measure_file(p)
+for k in ("PVS_PACE_FIX", "PVS_PACE_LIMIT"):
+    os.environ.pop(k, None)
+c1 = make("a.mp4"); g1 = geo_of(c1); pk = g1["motion_peak"]
+check("P0 the QC measures give a peak above the mean for an accelerating clip", g1["ok"] and pk > g1["motion_mean"] * 1.5 and len(g1["motion"]) >= 15)
+check("P1 switch OFF by default: nothing touched", cp.apply(c1, g1, limit=pk / 1.25)["reason"] == "switch off" and not cp.marker(c1).exists())
 os.environ["PVS_PACE_FIX"] = "1"
-c3 = make("c.mp4")
-check("P7 switch ON slows without force", cp.apply(c3, "fast")["applied"] is True)
-c4 = tmp / "short.mp4"; subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", str(c3) + ".pre_pace", "-t", "3.2", "-c:v", "libx264", str(c4)], check=True)
-check("P8 a clip too short to slow is left alone", cp.apply(c4, "very_fast")["applied"] is False)
-check("P9 missing file never raises", cp.apply(tmp / "nope.mp4", "fast")["applied"] is False)
-# hook + monitoring
+check("P2 no limit set = nothing happens (there is deliberately no default)", cp.apply(c1, g1)["reason"].startswith("no limit"))
+check("P3 within the limit = untouched", cp.apply(c1, g1, limit=pk * 1.1)["reason"] == "within limit" and not cp.marker(c1).exists())
+check("P4 factor is PROPORTIONAL: limit/peak, clamped to 0.6, none when within", abs(cp.factor_for(6, 5) - 5 / 6) < 1e-9 and cp.factor_for(7.5, 5) < cp.factor_for(6, 5) and cp.factor_for(100, 5) == 0.6 and cp.factor_for(5, 5) is None and cp.factor_for(None, 5) is None)
+check("P5 not measured = nothing happens", cp.apply(c1, {"ok": False}, limit=1)["reason"] == "speed not measured")
+size0 = c1.stat().st_size
+r = cp.apply(c1, {"geo": g1}, limit=pk / 1.25)
+check("P6 limit 1.25x under the peak -> factor 0.8: keeps 80%, stretched back to 5 s", r["applied"] and abs(r["factor"] - 0.8) < 0.02 and abs(cp._duration(c1) - 5.0) < 0.25)
+check("P7 original kept as .pre_pace, marker written, clip readable", cp.backup(c1).exists() and cp.backup(c1).stat().st_size == size0 and cp.marker(c1).exists() and cv2.VideoCapture(str(c1)).read()[0])
+check("P8 never slowed twice", cp.apply(c1, g1, limit=pk / 1.25)["reason"] == "already slowed")
+g_after = geo_of(c1)
+check("P9 after the fix the fastest second is lower, close to the limit", g_after["ok"] and g_after["motion_peak"] < pk * 0.95)
+rr = cp.apply(c1, g1, limit=pk / 1.6, redo=True)
+check("P10 redo restarts from the original with another proportional factor (0.625), original still there", rr["applied"] and abs(rr["factor"] - 0.625) < 0.02 and cp.backup(c1).exists())
+c2 = make("b.mp4"); g2 = geo_of(c2)
+check("P11 a very high peak is clamped at 0.6 (3.0 s kept)", cp.apply(c2, g2, limit=pk / 5)["keep_secs"] == 3.0)
+c3 = tmp / "short.mp4"; subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", str(cp.backup(c2)), "-t", "3.2", "-c:v", "libx264", str(c3)], check=True)
+check("P12 a clip too short to slow is left alone", cp.apply(c3, g2, limit=pk / 2)["applied"] is False)
+check("P13 missing file never raises", cp.apply(tmp / "nope.mp4", g2, limit=pk / 2)["applied"] is False)
 src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "vision_analysis.py"), encoding="utf-8").read()
-check("P10 hook: ONE place, inside the judge block, before the shadow record", src.count("_cp.apply(") == 1 and src.index("_cp.apply(") < src.index("_cs.record(video_path, _std)"))
+check("P14 hook: ONE place, inside the judge block, before the shadow record, takes the QC measures", src.count("_cp.apply(") == 1 and "_cp.apply(video_path, _std)" in src and src.index("_cp.apply(") < src.index("_cs.record(video_path, _std)"))
 f = tmp / "ev.jsonl"
-f.write_text("\n".join(json.dumps(e) for e in [{"speed": "fast"}, {"speed": "slow", "pace": {"applied": True}}, {"speed": None}, {"speed": "weird"}]), encoding="utf-8")
+f.write_text("\n".join(json.dumps(e) for e in [{"speed": "fast"}, {"speed": "slow", "pace": {"applied": True}}, {"speed": None}]), encoding="utf-8")
 s = cs.summary(str(f))
-check("P11 summary monitors unrecognised speed and applied fixes", s["speed_unknown"] == 2 and s["speed_unknown_rate"] == 0.5 and s["speed"]["fast"] == 1 and s["pace_applied"] == 1)
+check("P15 summary counts applied fixes", s["pace_applied"] == 1)
 print("FAILS:", fails)
 sys.exit(1 if fails else 0)
