@@ -9,7 +9,17 @@ label{margin-right:14px;display:inline-block;padding:6px 0}textarea{width:100%;h
 <h1>Giudizio velocita clip</h1><p>Guarda ogni clip e scegli. Alla fine copia il riepilogo e incollalo in chat.</p>
 <div id="list"></div><h2>Riepilogo da copiare</h2><textarea id="out" readonly></textarea>
 </main><script>
-const items=(new URLSearchParams(location.search).get('items')||'').split(',').filter(Boolean);
+const Q=new URLSearchParams(location.search);
+const items=(Q.get('items')||'').split(',').filter(Boolean);
+if(Q.get('pace')){ paceMode(); }
+async function paceMode(){
+  const d=await (await fetch('/test-scratch/pace_review.json?'+Date.now())).json();
+  document.getElementById('list').innerHTML='<p>Limite di prova: '+d.limit+'. Per ogni clip: prima (originale) e dopo (rallentato in proporzione).</p>'+d.items.map(it=>
+    '<div class="c"><h2>'+it.key+' - tuo giudizio: '+it.label+' - picco '+it.peak+' - velocita '+Math.round(it.factor*100)+'%</h2><b>Prima</b><video controls loop muted playsinline preload="none" src="/test-scratch/'+it.prima+'"></video><b>Dopo</b><video controls loop muted playsinline preload="none" src="/test-scratch/'+it.dopo+'"></video><div>'+
+    [['lento','Lento'],['giusto','Giusto'],['veloce','Un po\' veloce'],['moltoveloce','Troppo veloce']].map(o=>'<label><input type="radio" name="'+it.key+'" value="'+o[0]+'" onchange="ans[\''+it.key+'\']=this.value;upd2()"> '+o[1]+' (dopo)</label>').join('')+'</div></div>').join('');
+  window._pace=d.items;
+}
+function upd2(){document.getElementById('out').value=(window._pace||[]).map(i=>i.key+' dopo = '+(ans[i.key]||'?')).join('\n');}
 const ans={};
 function upd(){document.getElementById('out').value=items.map(i=>i+' = '+(ans[i]||'?')).join('\n');}
 document.getElementById('list').innerHTML=items.map(it=>{const [j,s]=it.split(':');
