@@ -35,7 +35,7 @@ check("P1 switch OFF by default: nothing touched", cp.apply(c1, g1, limit=pk / 1
 os.environ["PVS_PACE_FIX"] = "1"
 check("P2 no limit set = nothing happens (there is deliberately no default)", cp.apply(c1, g1)["reason"].startswith("no limit"))
 check("P3 within the limit = untouched", cp.apply(c1, g1, limit=pk * 1.1)["reason"] == "within limit" and not cp.marker(c1).exists())
-check("P4 factor is PROPORTIONAL: limit/peak, clamped to 0.6, none when within", abs(cp.factor_for(6, 5) - 5 / 6) < 1e-9 and cp.factor_for(7.5, 5) < cp.factor_for(6, 5) and cp.factor_for(100, 5) == 0.6 and cp.factor_for(5, 5) is None and cp.factor_for(None, 5) is None)
+check("P4 factor is PROPORTIONAL: limit/peak, clamped to 0.65, none when within", abs(cp.factor_for(6, 5) - 5 / 6) < 1e-9 and cp.factor_for(7.5, 5) < cp.factor_for(6, 5) and cp.factor_for(100, 5) == 0.65 and cp.factor_for(5, 5) is None and cp.factor_for(None, 5) is None)
 check("P5 not measured = nothing happens", cp.apply(c1, {"ok": False}, limit=1)["reason"] == "speed not measured")
 size0 = c1.stat().st_size
 r = cp.apply(c1, {"geo": g1}, limit=pk / 1.25)
@@ -45,9 +45,9 @@ check("P8 never slowed twice", cp.apply(c1, g1, limit=pk / 1.25)["reason"] == "a
 g_after = geo_of(c1)
 check("P9 after the fix the fastest second is lower, close to the limit", g_after["ok"] and g_after["motion_peak"] < pk * 0.95)
 rr = cp.apply(c1, g1, limit=pk / 1.6, redo=True)
-check("P10 redo restarts from the original with another proportional factor (0.625), original still there", rr["applied"] and abs(rr["factor"] - 0.625) < 0.02 and cp.backup(c1).exists())
+check("P10 redo restarts from the original; a factor below the minimum is clamped at 0.65, original still there", rr["applied"] and abs(rr["factor"] - 0.65) < 0.02 and cp.backup(c1).exists())
 c2 = make("b.mp4"); g2 = geo_of(c2)
-check("P11 a very high peak is clamped at 0.6 (3.0 s kept)", cp.apply(c2, g2, limit=pk / 5)["keep_secs"] == 3.0)
+check("P11 a very high peak is clamped at 0.65 (3.25 s kept)", abs(cp.apply(c2, g2, limit=pk / 5)["keep_secs"] - 3.25) < 0.06)
 c3 = tmp / "short.mp4"; subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", str(cp.backup(c2)), "-t", "3.2", "-c:v", "libx264", str(c3)], check=True)
 check("P12 a clip too short to slow is left alone", cp.apply(c3, g2, limit=pk / 2)["applied"] is False)
 check("P13 missing file never raises", cp.apply(tmp / "nope.mp4", g2, limit=pk / 2)["applied"] is False)
@@ -57,10 +57,22 @@ check("P16 lower threshold: a result that would end too slow is not applied (clo
 r7 = cp.apply(c6, g6, limit=g6["motion_peak"] / 3, min_speed=0.01)
 check("P17 lower threshold met: applied and the measured result is recorded", r7["applied"] and r7["result_peak"] is not None and r7["min_speed"] == 0.01)
 os.environ.pop("PVS_PACE_INTERP", None)
-check("P18 interpolation: blend by default, mci when asked", cp.interp_mode() == "blend" and (os.environ.__setitem__("PVS_PACE_INTERP", "mci") or cp.interp_mode() == "mci"))
+check("P18 interpolation: mci by default (blend was judged jerky), blend only when asked", cp.interp_mode() == "mci" and (os.environ.__setitem__("PVS_PACE_INTERP", "blend") or cp.interp_mode() == "blend"))
 ok_mci, _ = cp.render(c2 if False else cp.backup(c1), tmp / "mci.mp4", 5.04, 3.5, mode="mci")
 check("P19 mci render works and keeps the length", ok_mci and abs(cp._duration(tmp / "mci.mp4") - 5.04) < 0.3)
 os.environ.pop("PVS_PACE_INTERP", None)
+check("P20 next_factor: in range = stop; too slow -> speed UP a little; too fast -> DOWN, clamped", cp.next_factor(0.7, 10, 15, 6) is None and cp.next_factor(0.7, 3, 15, 6) > 0.7 and cp.next_factor(0.8, 25, 15, 6) < 0.8 and cp.next_factor(0.7, 99, 15, 6) == 0.65 and cp.next_factor(0.7, None, 15, 6) is None and cp.next_factor(0.7, 4, 15) is None)
+c7 = make("g.mp4"); g7 = geo_of(c7)
+r8 = cp.apply(c7, g7, limit=g7["motion_peak"] / 1.05)
+check("P21 factor >= 0.9 (excess too small): clip untouched, no marker, no render", r8["applied"] is False and "too small" in r8["reason"] and not cp.marker(c7).exists() and not cp.backup(c7).exists())
+r9 = cp.apply(c7, g7, limit=g7["motion_peak"] / 1.4)
+check("P22 marker records tries, in_range, interp (mci by default), render time", r9["applied"] and r9["interp"] == "mci" and isinstance(r9["tries"], list) and 1 <= len(r9["tries"]) <= 3 and "in_range" in r9 and r9["render_secs"] >= 0 and json.loads(cp.marker(c7).read_text())["tries"] == r9["tries"])
+c8 = make("h.mp4"); g8 = geo_of(c8)
+seq = iter([5.0, 10.0, 10.5]); real = cp.measure_file
+cp.measure_file = lambda path: {"ok": True, "motion_peak": next(seq)}
+r10 = cp.apply(c8, {"ok": True, "motion_peak": 22.0}, limit=15.0, min_speed=6.0)
+cp.measure_file = real
+check("P23 result too SLOW (5 < 6): the factor is raised and re-tried (not the original); the final result is measured once", r10["applied"] and len(r10["tries"]) == 2 and r10["tries"][1]["factor"] > r10["tries"][0]["factor"] and r10["in_range"] and r10["result_peak"] == 10.5)
 src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "vision_analysis.py"), encoding="utf-8").read()
 check("P14 hook: ONE place, inside the judge block, before the shadow record, takes the QC measures", src.count("_cp.apply(") == 1 and "_cp.apply(video_path, _std)" in src and src.index("_cp.apply(") < src.index("_cs.record(video_path, _std)"))
 f = tmp / "ev.jsonl"
