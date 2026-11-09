@@ -23,6 +23,7 @@ from pathlib import Path
 
 MIN_FACTOR = 0.65         # slower than this would look like a still
 SKIP_FACTOR = 0.9         # a factor at or above this = the excess is too small to be worth any artifact: the clip is left alone
+BAND = 0.7                # the wanted result is in [BAND*limit, limit]: the MINIMUM slowdown that gets the clip under the limit (less movement = less risk), never more than needed
 STEP = 0.15               # largest factor change between two tries
 MAX_TRIES = 3             # cheap blend renders to find the factor (a measure is noisy by ~2 points)
 MIN_SECS = 3.0
@@ -95,14 +96,13 @@ def render(src, dst, orig, keep, height=None, mode=None):
 
 
 def next_factor(f, rp, limit, min_speed=None):
-    """Pure: the factor for the next try, or None = stop (result in the accepted range, or no useful change). Accepted range = [min_speed, limit]; the correction aims at its middle
-    (without a lower threshold: at 90% of the limit). Slower result than wanted -> factor goes UP (speed up a little); faster -> DOWN, always within [MIN_FACTOR, 1]."""
+    """Pure: the factor for the next try, or None = stop (result in the accepted range, or no useful change). Wanted range = [max(min_speed, BAND*limit), limit]; the correction aims at its middle. Slower result than wanted -> factor goes UP (speed up a little); faster -> DOWN, always within [MIN_FACTOR, 1]."""
     if rp is None or rp <= 0:
         return None
-    lo = min_speed or 0.0
+    lo = max(min_speed or 0.0, BAND * limit)
     if lo <= rp <= limit:
         return None
-    target = (lo + limit) / 2 if lo else limit * 0.9
+    target = (lo + limit) / 2
     nf = min(1.0, max(MIN_FACTOR, f * target / rp, f - STEP), f + STEP)   # one step at most STEP: the measure is noisy and not linear in the factor
     nf = max(MIN_FACTOR, nf)
     return None if abs(nf - f) < 0.02 else nf
@@ -110,8 +110,8 @@ def next_factor(f, rp, limit, min_speed=None):
 
 def apply(clip_path, geo, force=False, redo=False, limit=None, min_speed=None) -> dict:
     """geo = the measures dict of the QC (clip_standard.measures, or the whole evaluate() result with its "geo"). {"applied": bool, ...}. Never raises.
-    ONE decision, ONE final render: (1) factor = limit/peak of the ORIGINAL, (2) up to MAX_TRIES cheap BLEND renders to find a factor whose measured peak is in [min_speed, limit]
-    (a slower result than wanted is sped up a little, never sent back to the original), (3) ONE final render with the real method (mci unless PVS_PACE_INTERP=blend) and ONE measure."""
+    ONE decision, ONE final render: (1) factor = limit/peak of the ORIGINAL, (2) up to MAX_TRIES cheap BLEND renders to find the WEAKEST slowdown whose measured peak is in [max(min_speed, BAND*limit), limit]
+    (a slower result than wanted is sped up a little, never sent back to the original; the best valid try is used), (3) ONE final render with the real method (mci unless PVS_PACE_INTERP=blend) and ONE measure."""
     tmp_s = tmp_f = None
     try:
         if isinstance(geo, dict) and "geo" in geo:
@@ -140,6 +140,7 @@ def apply(clip_path, geo, force=False, redo=False, limit=None, min_speed=None) -
         min_speed = min_speed or min_from_env()
         tmp_s, tmp_f = Path(str(src) + ".pace_tmp.mp4"), Path(str(src) + ".pace_fin.mp4")
         tries, rp, keep = [], None, orig
+        lo = min_speed or 0.0
         for attempt in range(MAX_TRIES):
             keep = max(MIN_SECS, orig * f)
             ok, err = render(src, tmp_s, orig, keep, mode="blend")
@@ -149,11 +150,22 @@ def apply(clip_path, geo, force=False, redo=False, limit=None, min_speed=None) -
             rp = g2.get("motion_peak") if g2.get("ok") else None
             tries.append({"factor": round(keep / orig, 3), "peak": rp})
             nf = next_factor(keep / orig, rp, limit, min_speed) if attempt < MAX_TRIES - 1 else None
-            if nf is None:
+            if nf is None or nf >= SKIP_FACTOR:
                 break
-            if nf >= SKIP_FACTOR:                  # the correction would leave almost no slowdown: the clip stays as it is
-                return {"applied": False, "reason": "would end too slow, left as is", "motion_peak": peak, "result_peak": rp, "tries": tries}
             f = nf
+        # the factor used: the weakest slowdown whose measured peak is inside [min_speed, limit]; else the try closest to the range (slower than wanted is accepted, the original never comes back)
+        good = [t for t in tries if t["peak"] is not None and lo <= t["peak"] <= limit]
+        if good:
+            pick = max(good, key=lambda t: t["factor"])
+        else:
+            m = [t for t in tries if t["peak"] is not None]
+            pick = (min(m, key=lambda t: t["peak"] - limit if t["peak"] > limit else limit - t["peak"] + 1e-9) if m else tries[-1])
+        keep = max(MIN_SECS, orig * pick["factor"])
+        if interp_mode() == "blend" and pick is not tries[-1]:      # (with mci the final render below is made at the picked factor anyway)
+            ok, err = render(src, tmp_s, orig, keep, mode="blend")
+            if not ok:
+                return {"applied": False, "reason": "ffmpeg failed: " + err}
+        rp = pick["peak"]
         mode, t0, final = interp_mode(), time.time(), tmp_s
         if mode != "blend":
             ok, err = render(src, tmp_f, orig, keep, mode=mode)
@@ -170,7 +182,7 @@ def apply(clip_path, geo, force=False, redo=False, limit=None, min_speed=None) -
             shutil.copy2(src, backup(src))
         os.replace(final, src)
         info = {"applied": True, "motion_peak": peak, "result_peak": rp, "limit": limit, "min_speed": min_speed, "interp": mode, "keep_secs": round(keep, 2), "factor": round(keep / orig, 3),
-                "orig_secs": round(orig, 2), "tries": tries, "in_range": bool(rp is not None and (min_speed or 0) <= rp <= limit), "render_secs": secs, "ts": time.strftime("%Y-%m-%dT%H:%M:%S")}
+                "orig_secs": round(orig, 2), "tries": tries, "in_range": bool(rp is not None and lo <= rp <= limit), "render_secs": secs, "ts": time.strftime("%Y-%m-%dT%H:%M:%S")}
         marker(src).write_text(json.dumps(info), encoding="utf-8")
         return info
     except Exception as e:
