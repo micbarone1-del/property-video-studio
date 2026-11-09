@@ -1138,3 +1138,9 @@ Questions for Luma (Douglas) only after our tests: is 360p draft representative 
 - **Registry:** collapse rows with same job id (prod copy + test original) in `listing_registry.scan`.
 - **Annunci per i prossimi test:** see annotated relinx_listings*.txt; battery 1271, 1254, 1003, 1345, 1273, 1327 all failed/draft at 360p.
 - Premium extra-category ideas (not built): ingresso, scale, cantina, parcheggio, piscina (most reliable), plus ripostiglio, cabina armadio, balcone/terrazzo/giardino, sala da pranzo, bagno padronale, cucinino, mansarda, lastrico solare, palestra, locale tecnico, cortile, vista panoramica.
+
+
+## 2026-11-09 - Pace fix: director/anchor-guided limit (BACKLOG, not built)
+- Michele wants the camera DIRECTOR (which sees the whole image) to drive the pace control: the allowed travel of a clip is its planned move (target/anchor, planned end scale 1.05-1.4, already capped by scene depth) and a clip that goes beyond the plan is slowed proportionally to arrive at the anchor, not past it.
+- Why not now: the judge anchor-progress curve (6 frames) came out almost identical for every clip (START 26) so it carries no information; director plans exist only for recent clips (2 of 15 judged clips); zoom vs plan is not validated.
+- Next: keep collecting data per clip (planned scale, measured zoom_net, motion_peak, Michele judgment) with clip_pace.py review; compare a plan-based limit with the global limit 15 before replacing it.
