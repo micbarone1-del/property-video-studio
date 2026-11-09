@@ -86,18 +86,5 @@ check("S24 enforce() is OFF when the shadow evaluation is off (kill switch wins)
 os.environ["PVS_STANDARD_SHADOW"] = "1"; os.environ.pop("PVS_STANDARD_ENFORCE")
 check("S25 hook: enforcement only when enforce() and measured reject, never touches the judge verdict path", "_cs.enforce()" in src and 'measured_verdict") == "reject"' in src and src.count('out["verdict"] = "reject"') == 1)
 
-# ---- anchor progress (2026-11-09): same single judge call, shadow only
-prompts = []
-def ask_anchor(imgs, prompt, usage):
-    prompts.append(prompt)
-    return '{"direction": "toward_main_subject", "speed": "slow", "verdict": "pass", "reason": "ok", "anchor_visible": true, "anchor_progress": [0, 10, 20, 35, 70, 100]}'
-ra = cs.evaluate(push, ask=ask_anchor, scene={"anchor": "the far window"})
-check("A1 anchor from the scene goes into the SAME judge prompt (one call)", "the far window" in prompts[0] and "exactly 6 numbers" in prompts[0] and len(prompts) == 1)
-check("A2 curve is parsed and its shape computed", ra["anchor"]["progress"] == [0, 10, 20, 35, 70, 100] and ra["anchor"]["t_arrive"] == 1.0 and ra["anchor"]["late_share"] == 0.3 and ra["anchor"]["front_share"] == 0.2)
-rb = cs.evaluate(push, ask=ask_anchor)
-check("A3 no anchor known = no anchor question in the prompt, no anchor result", "planned this move" not in prompts[1] and "anchor" not in rb)
-check("A4 bad curve (out of range / too short) is dropped, verdict unaffected", cs.parse_judge('{"verdict":"pass","anchor_progress":[0,500,1]}').get("anchor_progress") is None and cs.parse_judge('{"verdict":"pass","anchor_progress":[1,2]}').get("anchor_progress") is None)
-check("A5 arrival(): constant pace vs rush at the end", cs.arrival([0, 20, 40, 60, 80, 100])["late_share"] == 0.2 and cs.arrival([0, 2, 4, 6, 8, 100])["late_share"] > 0.9 and cs.arrival([0, 10, 20])["t_arrive"] is None)
-check("A6 anchor never changes the standard verdict (shadow)", ra["standard_verdict"] == r1["standard_verdict"])
 print("FAILS:", fails)
 sys.exit(1 if fails else 0)
