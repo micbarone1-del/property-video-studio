@@ -554,6 +554,17 @@ def analyse_output(
         out.update({"verdict": "flag", "error": msg, "issues": [msg]})
         return out
 
+    # 2026-11-09: pace fix FIRST and independent of Claude: the measured speed slows the clip, then the QC judges the clip that will really be used.
+    pace = None
+    try:
+        import clip_pace as _cp
+        if _cp.enabled():
+            pace = _cp.apply(video_path, _cp.measure_file(video_path))
+            if pace.get("applied"):
+                log.info(f"[Vision QC] pace fix: {pace}")
+    except Exception as _pe:
+        log.warning(f"[Vision QC] pace fix skipped: {_pe}")
+    default["pace"] = pace
     first_frame = last_frame = None
     try:
         first_frame = _extract_video_frame(video_path, "first")
@@ -585,6 +596,8 @@ def analyse_output(
             if _cs.enabled():
                 _std = _cs.evaluate(video_path, usage_out=usage)
                 out["standard_shadow"] = _std
+                _std["pace"] = pace      # applied BEFORE the QC (top of this function), whatever Claude answers
+                out["pace"] = pace
                 _cs.record(video_path, _std)
                 # 2026-11-05: ENFORCED part (default OFF, PVS_STANDARD_ENFORCE=1): only the MEASURED geometry rule; never downgrades a verdict, never uses the judge
                 if _cs.enforce() and _std.get("measured_verdict") == "reject":

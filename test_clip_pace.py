@@ -74,7 +74,7 @@ r10 = cp.apply(c8, {"ok": True, "motion_peak": 22.0}, limit=15.0, min_speed=6.0)
 cp.measure_file = real
 check("P23 result too SLOW (5 < 6): the factor is raised and re-tried (not the original); the final result is measured once", r10["applied"] and len(r10["tries"]) == 2 and r10["tries"][1]["factor"] > r10["tries"][0]["factor"] and r10["in_range"] and r10["result_peak"] == 10.5)
 src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "vision_analysis.py"), encoding="utf-8").read()
-check("P14 hook: ONE place, inside the judge block, before the shadow record, takes the QC measures", src.count("_cp.apply(") == 1 and "_cp.apply(video_path, _std)" in src and src.index("_cp.apply(") < src.index("_cs.record(video_path, _std)"))
+check("P14 hook: ONE place, inside the judge block, before the shadow record, takes the QC measures", src.count("_cp.apply(") == 1 and "_cp.apply(video_path, _cp.measure_file(video_path))" in src and src.index("_cp.apply(") < src.index("first_frame = _extract_video_frame(video_path"))
 f = tmp / "ev.jsonl"
 f.write_text("\n".join(json.dumps(e) for e in [{"speed": "fast"}, {"speed": "slow", "pace": {"applied": True}}, {"speed": None}]), encoding="utf-8")
 s = cs.summary(str(f))
