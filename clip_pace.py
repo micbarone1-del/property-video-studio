@@ -21,7 +21,10 @@ import sys
 import time
 from pathlib import Path
 
-MIN_FACTOR = 0.6          # slower than 0.6x would look like a still
+MIN_FACTOR = 0.65         # slower than this would look like a still
+SKIP_FACTOR = 0.9         # a factor at or above this = the excess is too small to be worth any artifact: the clip is left alone
+STEP = 0.15               # largest factor change between two tries
+MAX_TRIES = 3             # cheap blend renders to find the factor (a measure is noisy by ~2 points)
 MIN_SECS = 3.0
 FPS = 24
 HERE = Path(__file__).resolve().parent
@@ -49,8 +52,8 @@ def min_from_env():
 
 
 def interp_mode() -> str:
-    """blend = cheap (2 s per clip at 1080p), mci = motion-compensated, smoother when slowed a lot but about 45-90 s per clip at 1080p."""
-    return "mci" if os.getenv("PVS_PACE_INTERP", "blend").strip().lower() == "mci" else "blend"
+    """mci (default) = motion-compensated: judged acceptable by Michele at every slowdown level, 7-105 s per clip (89 s measured at 1080p). blend = 1-3 s but judged jerky at 0.65-0.9: only for tests (PVS_PACE_INTERP=blend)."""
+    return "blend" if os.getenv("PVS_PACE_INTERP", "mci").strip().lower() == "blend" else "mci"
 
 
 def factor_for(motion_peak, limit):
@@ -91,8 +94,25 @@ def render(src, dst, orig, keep, height=None, mode=None):
     return True, ""
 
 
+def next_factor(f, rp, limit, min_speed=None):
+    """Pure: the factor for the next try, or None = stop (result in the accepted range, or no useful change). Accepted range = [min_speed, limit]; the correction aims at its middle
+    (without a lower threshold: at 90% of the limit). Slower result than wanted -> factor goes UP (speed up a little); faster -> DOWN, always within [MIN_FACTOR, 1]."""
+    if rp is None or rp <= 0:
+        return None
+    lo = min_speed or 0.0
+    if lo <= rp <= limit:
+        return None
+    target = (lo + limit) / 2 if lo else limit * 0.9
+    nf = min(1.0, max(MIN_FACTOR, f * target / rp, f - STEP), f + STEP)   # one step at most STEP: the measure is noisy and not linear in the factor
+    nf = max(MIN_FACTOR, nf)
+    return None if abs(nf - f) < 0.02 else nf
+
+
 def apply(clip_path, geo, force=False, redo=False, limit=None, min_speed=None) -> dict:
-    """geo = the measures dict of the QC (clip_standard.measures, or the whole evaluate() result with its "geo"). {"applied": bool, ...}. Never raises."""
+    """geo = the measures dict of the QC (clip_standard.measures, or the whole evaluate() result with its "geo"). {"applied": bool, ...}. Never raises.
+    ONE decision, ONE final render: (1) factor = limit/peak of the ORIGINAL, (2) up to MAX_TRIES cheap BLEND renders to find a factor whose measured peak is in [min_speed, limit]
+    (a slower result than wanted is sped up a little, never sent back to the original), (3) ONE final render with the real method (mci unless PVS_PACE_INTERP=blend) and ONE measure."""
+    tmp_s = tmp_f = None
     try:
         if isinstance(geo, dict) and "geo" in geo:
             geo = geo["geo"]
@@ -107,6 +127,8 @@ def apply(clip_path, geo, force=False, redo=False, limit=None, min_speed=None) -
         f = factor_for(peak, limit)
         if f is None:
             return {"applied": False, "reason": "within limit", "motion_peak": peak}
+        if f >= SKIP_FACTOR:
+            return {"applied": False, "reason": "excess too small to fix (factor >= %.2f)" % SKIP_FACTOR, "motion_peak": peak, "factor": round(f, 3)}
         src = Path(clip_path)
         if marker(src).exists() and not redo:
             return {"applied": False, "reason": "already slowed"}
@@ -116,36 +138,50 @@ def apply(clip_path, geo, force=False, redo=False, limit=None, min_speed=None) -
         if orig < MIN_SECS + 0.5:
             return {"applied": False, "reason": "clip too short to slow", "orig_secs": round(orig, 2)}
         min_speed = min_speed or min_from_env()
-        tmp = Path(str(src) + ".pace_tmp.mp4")
-        result_peak = None
-        for attempt in range(3):                   # closed loop: measure the RESULT; if it is slower than the lower threshold, slow less (cutting the tail lowers the speed more than limit/peak says)
+        tmp_s, tmp_f = Path(str(src) + ".pace_tmp.mp4"), Path(str(src) + ".pace_fin.mp4")
+        tries, rp, keep = [], None, orig
+        for attempt in range(MAX_TRIES):
             keep = max(MIN_SECS, orig * f)
-            ok, err = render(src, tmp, orig, keep)
+            ok, err = render(src, tmp_s, orig, keep, mode="blend")
             if not ok:
                 return {"applied": False, "reason": "ffmpeg failed: " + err}
-            if not min_speed:
+            g2 = measure_file(tmp_s)
+            rp = g2.get("motion_peak") if g2.get("ok") else None
+            tries.append({"factor": round(keep / orig, 3), "peak": rp})
+            nf = next_factor(keep / orig, rp, limit, min_speed) if attempt < MAX_TRIES - 1 else None
+            if nf is None:
                 break
-            g2 = measure_file(tmp)
-            result_peak = g2.get("motion_peak") if g2.get("ok") else None
-            if result_peak is None or result_peak >= min_speed:
-                break
-            f = min(1.0, f * min_speed / max(result_peak, 0.1))
-            if f >= 0.95:
-                tmp.unlink(missing_ok=True)
-                return {"applied": False, "reason": "would end too slow, left as is", "motion_peak": peak, "result_peak": result_peak}
-        new = _duration(tmp)
+            if nf >= SKIP_FACTOR:                  # the correction would leave almost no slowdown: the clip stays as it is
+                return {"applied": False, "reason": "would end too slow, left as is", "motion_peak": peak, "result_peak": rp, "tries": tries}
+            f = nf
+        mode, t0, final = interp_mode(), time.time(), tmp_s
+        if mode != "blend":
+            ok, err = render(src, tmp_f, orig, keep, mode=mode)
+            if not ok:
+                return {"applied": False, "reason": "ffmpeg failed: " + err}
+            final = tmp_f
+            g3 = measure_file(final)
+            rp = g3.get("motion_peak") if g3.get("ok") else rp
+        secs = round(time.time() - t0, 1)
+        new = _duration(final)
         if abs(new - orig) > 0.25:
-            tmp.unlink()
             return {"applied": False, "reason": f"length check failed ({new:.2f}s vs {orig:.2f}s)"}
         if not backup(src).exists():
             shutil.copy2(src, backup(src))
-        os.replace(tmp, src)
-        info = {"applied": True, "motion_peak": peak, "result_peak": result_peak, "limit": limit, "min_speed": min_speed, "interp": interp_mode(), "keep_secs": round(keep, 2), "factor": round(keep / orig, 3), "orig_secs": round(orig, 2),
-                "ts": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        os.replace(final, src)
+        info = {"applied": True, "motion_peak": peak, "result_peak": rp, "limit": limit, "min_speed": min_speed, "interp": mode, "keep_secs": round(keep, 2), "factor": round(keep / orig, 3),
+                "orig_secs": round(orig, 2), "tries": tries, "in_range": bool(rp is not None and (min_speed or 0) <= rp <= limit), "render_secs": secs, "ts": time.strftime("%Y-%m-%dT%H:%M:%S")}
         marker(src).write_text(json.dumps(info), encoding="utf-8")
         return info
     except Exception as e:
         return {"applied": False, "reason": f"{type(e).__name__}: {str(e)[:160]}"}
+    finally:
+        for t in (tmp_s, tmp_f):
+            try:
+                if t is not None:
+                    t.unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 # ── command line: scan / calibrate / apply ──────────────────────────────────────────────
