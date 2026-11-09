@@ -1,0 +1,4 @@
+{"_note": "Michele's judgments of clip speed, 2026-11-09 (clip-review page). lento < giusto < veloce < moltoveloce. Key = JOB:SCENE (1-based). Used only by clip_pace.py calibrate.",
+ "5e32e730:1": "lento", "de90cbaf:1": "lento", "91056c3e:2": "giusto", "26d7a774:2": "giusto",
+ "6c79ce33:1": "veloce", "4c34217d:1": "veloce", "e1dccbd4:1": "veloce", "91056c3e:1": "veloce",
+ "3fcff5a9:2": "moltoveloce", "93432cd3:1": "moltoveloce", "93432cd3:2": "moltoveloce"}
