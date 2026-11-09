@@ -62,10 +62,11 @@ def measure_file(path) -> dict:
     return cs.measures(frames, fps) if frames else {"ok": False, "why": "clip not readable"}
 
 
-def render(src, dst, orig, keep):
+def render(src, dst, orig, keep, height=None):
     """The ONE ffmpeg step: the first `keep` seconds of src stretched to `orig` seconds, written to dst. (ok, error text)."""
+    vf = f"setpts=PTS*{orig / keep:.5f},minterpolate=fps={FPS}:mi_mode=blend" + (f",scale=-2:'min({int(height)},ih)'" if height else "")
     r = subprocess.run(["ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-t", f"{keep:.3f}", "-i", str(src), "-an",
-                        "-vf", f"setpts=PTS*{orig / keep:.5f},minterpolate=fps={FPS}:mi_mode=blend", "-t", f"{orig:.3f}", "-c:v", "libx264", "-preset", "veryfast", "-crf", "17",
+                        "-vf", vf, "-t", f"{orig:.3f}", "-c:v", "libx264", "-preset", "veryfast", "-crf", "17",
                         "-pix_fmt", "yuv420p", "-f", "mp4", str(dst)], stdin=subprocess.DEVNULL, capture_output=True, timeout=300)
     if r.returncode != 0 or not Path(dst).exists() or Path(dst).stat().st_size == 0:
         return False, r.stderr[-200:].decode("utf-8", "replace")
@@ -248,8 +249,10 @@ def cmd_review(argv):
         name = f"pace_{job}_{n}"
         orig = _duration(src)
         keep = max(MIN_SECS, orig * f)
-        shutil.copy2(src, out / f"{name}_prima.mp4")
-        ok, err = render(src, out / f"{name}_dopo.mp4", orig, keep)
+        import preview_proxy                                   # light 540p copies: the heavy originals did not play on a tablet
+        pre_ok = preview_proxy.build(src, out / f"{name}_prima.mp4")
+        ok, err = render(src, out / f"{name}_dopo.mp4", orig, keep, height=preview_proxy.PREVIEW_HEIGHT)
+        ok = ok and pre_ok
         ps, move = _plan_of(mp4)
         over = round(math.log(g["zoom_net"]) / math.log(ps), 2) if ps and ps > 1 and g.get("zoom_net", 0) > 1 else None
         print(key, lab, "picco", pk, "fattore", round(keep / orig, 3), "piano", ps, "sforamento", over, "ok" if ok else "ERRORE " + err)
