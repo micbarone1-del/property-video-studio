@@ -19,3 +19,5 @@ Noise
 *.bak_p*
 *.tmp_p*
 scene_risk_events.jsonl
+*.bak_docs_merge
+standard_shadow_events.jsonl
