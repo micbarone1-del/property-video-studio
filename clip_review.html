@@ -13,7 +13,22 @@ const items=(new URLSearchParams(location.search).get('items')||'').split(',').f
 const ans={};
 function upd(){document.getElementById('out').value=items.map(i=>i+' = '+(ans[i]||'?')).join('\n');}
 document.getElementById('list').innerHTML=items.map(it=>{const [j,s]=it.split(':');
- return '<div class="c"><h2>Job '+j+' - scena '+s+'</h2><video controls loop muted playsinline preload="metadata" src="/jobs/'+encodeURIComponent(j)+'/clip/'+(parseInt(s,10)-1)+'/preview"></video><div>'+
+ return '<div class="c"><h2>Job '+j+' - scena '+s+'</h2><video id="v-'+it+'" controls loop muted playsinline preload="none" data-src="/jobs/'+encodeURIComponent(j)+'/clip/'+(parseInt(s,10)-1)+'/preview" data-orig="/jobs/'+encodeURIComponent(j)+'/clip/'+(parseInt(s,10)-1)+'"></video><div class="mute" id="m-'+it+'">in attesa di caricamento...</div><div>'+
  [['lento','Lento'],['giusto','Giusto'],['veloce','Un po\' veloce'],['moltoveloce','Troppo veloce']].map(o=>'<label><input type="radio" name="'+it+'" value="'+o[0]+'" onchange="ans[\''+it+'\']=this.value;upd()"> '+o[1]+'</label>').join('')+'</div></div>';}).join('');
 upd();
+// one clip at a time: the server builds each light copy one by one, ten requests at once made most of them time out
+(async function(){
+  for(const it of items){
+    const v=document.getElementById('v-'+it), m=document.getElementById('m-'+it);
+    if(!v) continue;
+    m.textContent='caricamento...';
+    await new Promise(res=>{
+      let done=false; const fin=(txt)=>{ if(done) return; done=true; m.textContent=txt; res(); };
+      v.addEventListener('loadeddata',()=>fin(''),{once:true});
+      v.addEventListener('error',()=>{ if(!v.dataset.tried){ v.dataset.tried='1'; v.src=v.dataset.orig; v.load(); } else { fin('clip non disponibile'); } });
+      setTimeout(()=>fin('lento: premi play per riprovare'),90000);
+      v.src=v.dataset.src; v.load();
+    });
+  }
+})();
 </script></body></html>
