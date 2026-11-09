@@ -78,6 +78,8 @@ def scan(dirs=None) -> list:
             if ref is None:
                 continue
             res, src = resolution_of(p.parent, m)
+            if any(o["job_id"] == p.parent.name for o in out):
+                continue          # same job id already listed (production copy wins over the test original)
             out.append({"listing": ref, "job_id": p.parent.name, "where": where, "status": m.get("status"),
                         "created_at": str(m.get("created_at") or "")[:16], "resolution": res, "source": src})
     return out
