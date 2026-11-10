@@ -1,0 +1,13 @@
+# Lista completa dei 12 annunci richiesti a Relinx per la prova con API (fornita da Michele il 2026-11-10). Formato: URL | id etichetta
+https://relinx.it/it/immobili/albano-laziale-centro-storico/appartamento-vendita-110-mq-3-locali-1307/ | 1307 appartamento 110mq Albano Centro Storico [vendita]
+https://relinx.it/it/immobili/albano-laziale-cecchina/appartamento-vendita-65-mq-2-locali-1299/ | 1299 appartamento 65mq Albano Cecchina [vendita]
+https://relinx.it/it/immobili/albano-laziale-centro/appartamento-vendita-115-mq-3-locali-1019/ | 1019 appartamento 115mq Albano Centro [vendita]
+https://relinx.it/it/immobili/roma-prati-borgo-mazzini-delle-vittorie-degli-eroi/appartamento-vendita-45-mq-2-locali-1305/ | 1305 appartamento 45mq Roma Prati [vendita]
+https://relinx.it/it/immobili/albano-laziale-pavona/villa-vendita-225-mq-5-locali-1328/ | 1328 villa 225mq Albano Pavona [vendita]
+https://relinx.it/it/immobili/marino-castagnole-due-santi-cava-dei-selci/appartamento-vendita-90-mq-4-locali-1101/ | 1101 appartamento 90mq Marino [vendita]
+https://relinx.it/it/immobili/velletri-cigliolo-via-ariana/appartamento-vendita-125-mq-3-locali-1033/ | 1033 appartamento 125mq Velletri [vendita]
+https://relinx.it/it/immobili/lanuvio-colle-cavaliere/appartamento-vendita-180-mq-7-locali-1046/ | 1046 villa 180mq Lanuvio [vendita]
+https://relinx.it/it/immobili/ariccia-zona-di-espansione/villa-vendita-270-mq-6-locali-1334/ | 1334 villa 270mq Ariccia [vendita]
+https://relinx.it/it/immobili/frascati-zona-di-espansione-via-enrico-fermi/villa-vendita-236-mq-5-locali-1346/ | 1346 villa 236mq Frascati [vendita]
+https://relinx.it/it/immobili/albano-laziale-zona-semicentrale/appartamento-affitto-170-mq-7-locali-1251/ | 1251 appartamento 170mq Albano [affitto]
+https://relinx.it/it/immobili/marino-castagnole-due-santi-cava-dei-selci/appartamento-affitto-90-mq-3-locali-1321/ | 1321 appartamento 90mq Marino [affitto]
