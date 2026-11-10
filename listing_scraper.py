@@ -2085,16 +2085,17 @@ def scene_facts_enabled() -> bool:
 
 
 SCENE_FACTS_PROMPT = (
-    "You see {n} photos of ONE property, in the order of the scenes of a short video: photo 1 is scene 1, and so on.\n"
-    "For each photo write ONE short Italian phrase (4 to 12 words) that says only what is PLAINLY VISIBLE: natural light, windows, "
-    "the colour of the floor and walls, the sense of space, a view. Rules:\n"
-    "- Describe only what you can clearly see. No numbers at all (say finestre, not due finestre). Give COLOURS, never materials "
-    "(say pavimento rosso, not terracotta or cotto; pareti chiare, not intonaco).\n"
-    "- Never name the room or its use (no cucina, bagno, stanza, camera) and never say it is empty: the scene already says which room it is.\n"
-    "- For a view, say what is seen (alberi, edifici, cielo), never what kind of place it is (no piazza, cortile, strada).\n"
-    "- No judgement of condition or value (new, renovated, luxury, recent), no price, no location.\n"
-    "- If the room is empty, do not mention furniture: speak of light, windows, floor and space.\n"
-    "- If you cannot say anything certain about a photo, write an empty string for it.\n"
+    "You see {n} photos of ONE property, in the order of the scenes of a short video: photo 1 is scene 1, and so on. The room of each photo is given next to it.\n"
+    "For each photo write ONE short Italian phrase (3 to 10 words) about the COMPOSITION and FUNCTION of the space that you can CLEARLY see, "
+    "the way an estate agent would mention it, starting with the room name given. Examples: 'cucina con zona pranzo' (a dining table is visible), "
+    "'camera da letto con balcone' (a balcony or balcony door is visible), 'ampio soggiorno' (the room is clearly large), 'ampio terrazzo' (clearly large), "
+    "'soggiorno con angolo cottura'. Rules:\n"
+    "- Say only what is CLEARLY visible and certain. When in doubt, write an empty string.\n"
+    "- NEVER describe colours, materials (tiles, wood, brick...), windows, shutters, furniture style, light or the condition of the room. No numbers at all.\n"
+    "- 'ampio' or 'spazioso' only if the room is clearly large; never 'luminoso'.\n"
+    "- Outdoor features count only if visible (balcone, terrazzo, giardino); for a view say what is seen (alberi, edifici, cielo), never what kind of place it is.\n"
+    "- No judgement of condition or value (new, renovated, luxury, recent), no price, no location, never say the room is empty.\n"
+    "- Exterior photo (facade or building): one phrase on the building type or its outdoor spaces (for example 'edificio con balconi'), nothing about colours.\n"
     "Answer with ONLY a JSON array of {n} strings, in the photo order."
 )
 _SCENE_FACT_VISIBLE_OK = ("piscin", "giardin", "terrazz", "balcon", "vista", "mare", "lago", "parco", "pergol", "portic", "veranda", "uliv", "cancell", "camin")
@@ -2107,7 +2108,9 @@ def _scene_fact_banned() -> tuple:
     # a fact is a place where a word becomes allowed in the voice, so it must not introduce a word a photo cannot prove: the promotional
     # stems and the feature stems of the validator (scene_script) are read from there, except the few that a photo can show
     import scene_script as ss
-    return _SCENE_FACT_WORDS + tuple(ss._PROMO_STEMS) + tuple(x for x in ss._FEATURE_STEMS if x not in _SCENE_FACT_VISIBLE_OK)
+    # 2026-11-10: the room of each scene is given by us (the category), so a room word in a fact proves nothing new and is allowed
+    _rooms_ok = ("bagno", "camera", "cucina", "salone", "soggiorno", "stanza")
+    return ("finestr",) + tuple(w for w in _SCENE_FACT_WORDS if w not in _rooms_ok) + tuple(ss._PROMO_STEMS) + tuple(x for x in ss._FEATURE_STEMS if x not in _SCENE_FACT_VISIBLE_OK)
 
 
 def parse_scene_facts(raw: str, n: int):
@@ -2137,7 +2140,7 @@ def describe_scenes_for_narration(scene_photos: list) -> dict:
             if not fetched["ok"]:
                 why = fetched.get("error")
                 return {"ok": False, "error": f"photo {i + 1} could not be downloaded: {why}"}
-            content.append({"type": "text", "text": f"Photo {i + 1}:"})
+            content.append({"type": "text", "text": f"Photo {i + 1}" + (f" (room: {p['label']})" if p.get("label") else "") + ":"})
             content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": _image_b64_for_vision(fetched["content"])}})
         client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
         response = _track_claude(client.messages.create(model=MODEL, max_tokens=700, temperature=0, messages=[{"role": "user", "content": content}]))
@@ -2155,7 +2158,7 @@ def scene_facts_block(facts: list, scene_sequence: list) -> str:
     # giardino and terrazza that the validator would then accept for every listing
     words = ["one", "two", "three", "four", "five", "six", "seven", "eight"]
     lines = [f"Scene {words[i]}: {fact}" for i, fact in enumerate(facts) if fact and i < len(words)]
-    return "WHAT THE PHOTOS PLAINLY SHOW (in the order of the video; true facts about this property, usable like the rest of the listing text):\n" + "\n".join(lines)
+    return "WHAT THE PHOTOS PLAINLY SHOW (in the order of the video; true but LAST-RESORT material: use a photo note only when the listing text has nothing usable for that scene, see the SOURCES rule):\n" + "\n".join(lines)
 
 
 def standard_scene_photos(selection: dict) -> list:
@@ -2172,7 +2175,7 @@ def generate_narration_and_derive_scenes(
     facts, facts_error = None, None
     if (scene_photos and scene_facts_enabled() and (not premium) and scene_sequence
             and len(scene_sequence) == STANDARD_SCENES and len(scene_photos) == STANDARD_SCENES):
-        info = describe_scenes_for_narration(scene_photos)
+        info = describe_scenes_for_narration([dict(ph, label=CATEGORY_ITALIAN_LABELS.get(c, c)) for ph, c in zip(scene_photos, scene_sequence)])
         if info["ok"]:
             facts = info["facts"]
             description = (description or "") + "\n\n" + scene_facts_block(facts, scene_sequence)

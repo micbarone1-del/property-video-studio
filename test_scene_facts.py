@@ -10,7 +10,7 @@ def check(name, ok):
 
 seq = ["exterior", "living", "kitchen", "bedrooms", "bathrooms", "outdoor"]
 photos = [{"url": "u/" + c, "original_url": "o/" + c} for c in seq]
-six = ["Facciata chiara con finestre", "", "Luce naturale e pareti chiare", "Finestra con luce laterale", "Piastrelle chiare e finestra", "Balcone con vista aperta"]
+six = ["Edificio con balconi", "", "Cucina con zona pranzo", "Camera da letto con balcone", "Bagno con doccia", "Balcone con vista aperta"]
 j = lambda l: __import__("json").dumps(l, ensure_ascii=False)
 
 check("F1 a valid list of facts is kept", ls.parse_scene_facts(j(six), 6) == six)
@@ -22,16 +22,16 @@ check("F4 a banned word or a digit empties only that phrase", r is not None and 
 bad2 = list(six); bad2[0] = "Facciata con parquet"; bad2[3] = "Camera splendida"; bad2[5] = "Balcone con vista aperta"
 r2 = ls.parse_scene_facts(j(bad2), 6)
 check("F4b a word a photo cannot prove (parquet, promotional) is dropped, balcony and view are kept", r2 is not None and r2[0] == "" and r2[3] == "" and r2[5] == six[5])
-bad3 = list(six); bad3[1] = "Stanza vuota con pareti chiare"; bad3[2] = "Bagno stretto con piastrelle"; bad3[3] = "Pavimento in terracotta"
+bad3 = list(six); bad3[1] = "Stanza vuota con pareti chiare"; bad3[2] = "Bagno con pavimento in marmo"; bad3[3] = "Pavimento in terracotta"
 r3 = ls.parse_scene_facts(j(bad3), 6)
-check("F4c a fact that names the room, says empty or names a material is dropped", r3 is not None and r3[1] == "" and r3[2] == "" and r3[3] == "" and r3[0] == six[0])
-check("F4d the prompt asks for colours not materials and forbids naming the room", "COLOURS, never materials" in ls.SCENE_FACTS_PROMPT and "Never name the room" in ls.SCENE_FACTS_PROMPT)
+check("F4c a fact that says empty or names a material is dropped (the room name is allowed since 2026-11-10)", r3 is not None and r3[1] == "" and r3[2] == "" and r3[3] == "" and r3[0] == six[0])
+check("F4d the prompt asks for composition and function, forbids colours and materials, and gives the room of each photo", "COMPOSITION and FUNCTION" in ls.SCENE_FACTS_PROMPT and "NEVER describe colours, materials" in ls.SCENE_FACTS_PROMPT and "The room of each photo is given" in ls.SCENE_FACTS_PROMPT)
 bad4 = list(six); bad4[0] = "Vista su piazza con alberi"; bad4[5] = "Balcone in cemento grigio"; bad4[2] = "Vista su alberi e edifici"
 r4 = ls.parse_scene_facts(j(bad4), 6)
 check("F4e a place name or a material is dropped, a view of trees and buildings is kept", r4 is not None and r4[0] == "" and r4[5] == "" and r4[2] == "Vista su alberi e edifici")
 check("F5 all phrases empty -> None", ls.parse_scene_facts(j([""] * 6), 6) is None)
 blk = ls.scene_facts_block(six, seq)
-check("F6 the block lists only non-empty facts, scene numbers as words, no room label, no digit", "Scene three: Luce naturale e pareti chiare" in blk and "Scene two" not in blk and "terrazza" not in blk and not any(c.isdigit() for c in blk))
+check("F6 the block lists only non-empty facts, scene numbers as words, no digit (room names are allowed since 2026-11-10)", "Scene three: Cucina con zona pranzo" in blk and "Scene two" not in blk and "terrazza" not in blk and not any(c.isdigit() for c in blk))
 
 orig_core, orig_desc, orig_flag = ls._generate_narration_core, ls.describe_scenes_for_narration, os.environ.get("PVS_SCENE_FACTS")
 seen, calls = {}, []
@@ -45,7 +45,7 @@ r = ls.generate_narration_and_derive_scenes("TESTO", None, None, None, False, "A
 check("W1 switch off: text unchanged, no vision call, scene_facts None", seen["d"] == "TESTO" and not calls and r["scene_facts"] is None)
 os.environ["PVS_SCENE_FACTS"] = "1"
 r = ls.generate_narration_and_derive_scenes("TESTO", None, None, None, False, "Ag", None, seq, photos)
-check("W2 switch on: the facts follow the listing text and are returned", seen["d"].startswith("TESTO") and "Scene three: Luce naturale e pareti chiare" in seen["d"] and r["scene_facts"] == six)
+check("W2 switch on: the facts follow the listing text and are returned", seen["d"].startswith("TESTO") and "Scene three: Cucina con zona pranzo" in seen["d"] and r["scene_facts"] == six)
 calls.clear()
 ls.generate_narration_and_derive_scenes("TESTO", None, None, None, True, "Ag", None, seq, photos)
 ls.generate_narration_and_derive_scenes("TESTO", None, None, None, False, "Ag", None, seq, photos[:5])
