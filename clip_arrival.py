@@ -97,3 +97,15 @@ def main(argv) -> int:
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv))
+
+
+def monitor(clip_path):
+    """2026-11-10: READ-ONLY monitor, called once per clip from vision_analysis.analyse_output. None unless PVS_ARRIVAL_MONITOR=1.
+    Measured on the ORIGINAL clip (before the pace fix); the plan belongs to the clip file itself."""
+    if os.environ.get("PVS_ARRIVAL_MONITOR") != "1":
+        return None
+    import clip_pace
+    t = planned_scale_of(str(clip_path))
+    nums = [x for x in t if isinstance(x, (int, float)) and not isinstance(x, bool)] if isinstance(t, (tuple, list)) else ([t] if isinstance(t, (int, float)) else [])
+    r = profile(str(clip_pace._original(clip_path)), nums[-1] if nums else None)
+    return json.loads(json.dumps(r, default=float))

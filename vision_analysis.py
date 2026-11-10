@@ -603,6 +603,11 @@ def analyse_output(
                 out["standard_shadow"] = _std
                 _std["pace"] = pace      # applied BEFORE the QC (top of this function), whatever Claude answers
                 out["pace"] = pace
+                try:      # 2026-11-10: read-only monitor (PVS_ARRIVAL_MONITOR=1), never changes a verdict
+                    import clip_arrival as _ca
+                    _std["arrival"] = _ca.monitor(video_path)
+                except Exception as _ae:
+                    log.warning(f"[Vision QC] arrival monitor skipped: {_ae}")
                 _cs.record(video_path, _std)
                 # 2026-11-05: ENFORCED part (default OFF, PVS_STANDARD_ENFORCE=1): only the MEASURED geometry rule; never downgrades a verdict, never uses the judge
                 if _cs.enforce() and _std.get("measured_verdict") == "reject":

@@ -247,7 +247,7 @@ def record(clip_path, res, stage=None) -> bool:
               "geo_ok": g.get("ok"), "judge": j.get("verdict"), "direction": j.get("direction"), "speed": j.get("speed"),
               "standard": res.get("standard_verdict"), "reasons": res.get("reasons"), "error": res.get("error"),
               "measured": res.get("measured_verdict"), "zoom_rate": g.get("zoom_rate"), "speed_over": res.get("speed_over_limit"),
-              "pace": res.get("pace"), "plan": res.get("plan"), "plan_check": j.get("plan_check")}
+              "pace": res.get("pace"), "plan": res.get("plan"), "plan_check": j.get("plan_check"), "arrival": res.get("arrival")}
         if stage:
             ev["stage"] = stage
         with _LOCK:
