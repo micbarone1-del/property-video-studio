@@ -2140,7 +2140,7 @@ def describe_scenes_for_narration(scene_photos: list) -> dict:
             content.append({"type": "text", "text": f"Photo {i + 1}:"})
             content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": _image_b64_for_vision(fetched["content"])}})
         client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-        response = _track_claude(client.messages.create(model=MODEL, max_tokens=700, messages=[{"role": "user", "content": content}]))
+        response = _track_claude(client.messages.create(model=MODEL, max_tokens=700, temperature=0, messages=[{"role": "user", "content": content}]))
         raw = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
         facts = parse_scene_facts(raw, n)
         if facts is None:

@@ -27,7 +27,7 @@ PRICE = "€ 1.680.000"
 GOOD = [
     "Coldwell Banker presenta una villa in vendita a Olgiata, vicino a Roma.",
     "La villa unifamiliare di 650 metri quadri è completamente ristrutturata.",
-    "Il soggiorno è un ampio ambiente, ideale per vivere la casa.",
+    "Il soggiorno è un ampio ambiente, curato, silenzioso e ordinato.",
     "La cucina è abitabile.",
     "La zona notte dispone di 5 camere da letto.",
     "Terrazza e giardino completano la proprietà: contattate Coldwell Banker per maggiori informazioni.",
@@ -227,7 +227,7 @@ bad_it = list(GOOD); bad_it[3] = "La cucina è abitabille."
 LANG[:] = ['{"errors": [{"wrong": "abitabille", "fix": "abitabile"}]}']
 o = run([J(bad_it)], [(28.5, {})])
 check("O24 per-scene script: a misspelled word is corrected before the voice (Italian check), still one script attempt", o["narration_mode"] == "per_scene" and o["script_attempts"] == 1 and o["narration_text"] == " ".join(GOOD) and "abitabille" not in measure_calls[0][0], (o.get("narration_text"), measure_calls))
-LANG[:] = ['{"errors": [{"wrong": "abitabille", "fix": "abitabile"}]}', '{"errors": [{"wrong": "ideale", "fix": "adatto"}]}']
+LANG[:] = ['{"errors": [{"wrong": "abitabille", "fix": "abitabile"}]}', '{"errors": [{"wrong": "ordinato", "fix": "ordenato"}]}']
 o = run([J(bad_it)], [(28.5, {})])
 check("O25 per-scene script: if an error is still left after the fix, the original sentences are kept (never blocks the job)", o["narration_mode"] == "per_scene" and "abitabille" in o["narration_text"], o.get("narration_text"))
 LANG[:] = ['{"errors": [{"wrong": "xyzzy", "fix": "abc"}]}']
