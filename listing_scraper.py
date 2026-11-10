@@ -1668,9 +1668,19 @@ _PREMIUM_EXPAND_PRIORITY = ["outdoor_early", "outdoor_late", "bedrooms", "living
 _PREMIUM_EXTRA_CATEGORIES = ["laundry", "office", "garage"]
 
 
-def _claude_text_reply(client, prompt: str, max_tokens: int = 1024) -> str:
-    response = _track_claude(client.messages.create(model=MODEL, max_tokens=max_tokens,
-                                                    messages=[{"role": "user", "content": prompt}]))
+def narration_model() -> str:
+    """2026-11-10: the model that WRITES the narration text (PVS_NARRATION_MODEL; empty = MODEL, today's behaviour). ONE place for every writing call."""
+    return os.getenv("PVS_NARRATION_MODEL") or MODEL
+
+
+def narration_tokens(n: int) -> int:
+    """A model other than MODEL may think before answering and the thinking counts in max_tokens (Sonnet 5.5 returned an empty text at 1200): at least 3000."""
+    return n if narration_model() == MODEL else max(n, 3000)
+
+
+def _claude_text_reply(client, prompt: str, max_tokens: int = 1024, model: str = None) -> str:
+    response = _track_claude(client.messages.create(model=model or MODEL, max_tokens=max_tokens,
+                                                    messages=[{"role": "user", "content": prompt}]), model=model)
     return "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
 
 
@@ -1720,7 +1730,7 @@ def _write_standard_scene_script(description: str, address: str, price: str, age
     try:
         client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
         for attempt in (1, 2, 3):
-            sentences = ss.parse(_claude_text_reply(client, base_prompt + feedback))
+            sentences = ss.parse(_claude_text_reply(client, base_prompt + feedback, max_tokens=narration_tokens(1024), model=narration_model()))
             problems = (["the reply was not a JSON array of strings"] if sentences is None else
                         ss.validate(sentences, description, agency_name, price, split_fn=split_into_sentences))
             if not problems:
@@ -1746,7 +1756,7 @@ def _tighten_scene_script(sentences: list, bad: list, description: str, address:
     from narration import split_into_sentences
     try:
         client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-        revised = ss.parse(_claude_text_reply(client, ss.build_tighten_prompt(sentences, bad, description, agency_name)))
+        revised = ss.parse(_claude_text_reply(client, ss.build_tighten_prompt(sentences, bad, description, agency_name), max_tokens=narration_tokens(1024), model=narration_model()))
     except Exception as e:
         log.warning(f"[Scraper] Tighten pass failed, keeping the first script: {e}")
         return None
@@ -1796,7 +1806,7 @@ def _anchored_narration(description: str, address: str, price: str, voice_id: st
     try:
         client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
         for attempt in range(1, ANCHORED_MAX_ATTEMPTS + 1):
-            parsed = ss.parse_anchored(_claude_text_reply(client, base_prompt + feedback, max_tokens=1500))
+            parsed = ss.parse_anchored(_claude_text_reply(client, base_prompt + feedback, max_tokens=narration_tokens(1500), model=narration_model()))
             if parsed is None:
                 reason = "the reply was not the expected JSON object"
                 feedback = "\n\nYour previous answer was not a JSON object with \"text\" and \"anchors\". Return exactly that object."
@@ -1928,7 +1938,7 @@ def _block_narration(description: str, address: str, price: str, voice_id: str, 
     try:
         client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
         for attempt in range(1, BLOCK_MAX_ATTEMPTS + 1):
-            raw_reply = _claude_text_reply(client, base_prompt + feedback, max_tokens=1200)
+            raw_reply = _claude_text_reply(client, base_prompt + feedback, max_tokens=narration_tokens(1200), model=narration_model())
             blocks = ss.parse_blocks(raw_reply)
             if blocks is None:
                 reason = "the reply was not the expected JSON object"
@@ -2276,8 +2286,8 @@ def _generate_narration_core(
         )
         try:
             client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-            response = _track_claude(client.messages.create(model=MODEL, max_tokens=2048,
-                                                 messages=[{"role": "user", "content": prompt}]))
+            response = _track_claude(client.messages.create(model=narration_model(), max_tokens=narration_tokens(2048),
+                                                 messages=[{"role": "user", "content": prompt}]), model=narration_model())
             narration_text = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
         except Exception as e:
             return {"ok": False, "narration_text": "", "audio_path": None, "speech_duration_secs": None,
@@ -2350,8 +2360,8 @@ def _generate_narration_core(
             try:
                 shorten_prompt = SHORTEN_PROMPT.format(actual_secs=speech_secs, target_secs=target_speech,
                                                          target_words=target_words, narration=narration_text)
-                response = _track_claude(client.messages.create(model=MODEL, max_tokens=2048,
-                                                     messages=[{"role": "user", "content": shorten_prompt}]))
+                response = _track_claude(client.messages.create(model=narration_model(), max_tokens=narration_tokens(2048),
+                                                     messages=[{"role": "user", "content": shorten_prompt}]), model=narration_model())
                 revised = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
                 if revised:
                     remeasure = _measure_tts_duration(revised, voice_id, scene_secs=_fixed_scene_secs)
@@ -2378,8 +2388,8 @@ def _generate_narration_core(
             extend_prompt = EXTEND_PROMPT.format(actual_secs=speech_secs, target_secs=target_speech,
                                                    extra_words=extra_words, description=description,
                                                    narration=narration_text)
-            response = _track_claude(client.messages.create(model=MODEL, max_tokens=2048,
-                                                 messages=[{"role": "user", "content": extend_prompt}]))
+            response = _track_claude(client.messages.create(model=narration_model(), max_tokens=narration_tokens(2048),
+                                                 messages=[{"role": "user", "content": extend_prompt}]), model=narration_model())
             revised = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
             if revised:
                 remeasure = _measure_tts_duration(revised, voice_id, scene_secs=_fixed_scene_secs)

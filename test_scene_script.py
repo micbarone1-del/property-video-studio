@@ -132,7 +132,7 @@ class Msgs:
 class FakeClient:
     def __init__(self, api_key=None): self.messages = Msgs()
 ls.anthropic.Anthropic = FakeClient
-ls._track_claude = lambda r: r
+ls._track_claude = lambda r, model=None: r
 queue = []; measure_calls = []; trims = []
 def fake_measure(text, voice_id=None, attempts=1, scene_secs=None):
     measure_calls.append((text, scene_secs))

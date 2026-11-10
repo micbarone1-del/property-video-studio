@@ -135,7 +135,7 @@ class FakeClient:
     def __init__(self, api_key=None): pass
 ls.anthropic.Anthropic = FakeClient
 lang_prompts, LANG_REPLIES = [], []
-def fake_reply(client, prompt, max_tokens=1024):
+def fake_reply(client, prompt, max_tokens=1024, model=None):
     if prompt.startswith("You are a meticulous proofreader"):   # 2026-10-26: Italian check call, separate from the narration conversation
         lang_prompts.append(prompt)
         return LANG_REPLIES.pop(0) if LANG_REPLIES else '{"errors": []}'
@@ -187,7 +187,7 @@ def fake_transcribe(path, language="it"):
 WTM.transcribe_words = fake_transcribe
 LAST_BLOCKS = [GOOD]
 _orig_reply = ls._claude_text_reply
-def _tracking_reply(client, prompt, max_tokens=1024):
+def _tracking_reply(client, prompt, max_tokens=1024, model=None):
     r = fake_reply(client, prompt, max_tokens)
     try:
         LAST_BLOCKS[0] = json.loads(r)["blocks"]
