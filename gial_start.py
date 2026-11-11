@@ -41,7 +41,7 @@ def same_listing_done(job_id, jobs_dir=None, target_res=None):
     me = next((r for r in recs if r["job_id"] == job_id), None)
     if not me:
         return []
-    res = target_res or os.environ.get("PVS_LUMA_RESOLUTION", "1080p")
+    res = target_res or __import__("video_generation").luma_resolution()
     return [r["job_id"] for r in lr.finished_blocking(me["listing"], res, recs, exclude_job=job_id)]
 
 

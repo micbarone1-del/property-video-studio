@@ -123,6 +123,11 @@ from camera_plan import SPACE_DEFAULT_MOVEMENT   # noqa: E402
 import camera_plan   # noqa: E402
 
 # Single source of truth for the default motion pace (api_server.py imports it; ui.html mirrors it with its selected option).
+def luma_resolution() -> str:
+    """2026-11-10: the ONE reader of PVS_LUMA_RESOLUTION (it was read in four places): 360p only in the cheap test instance, 1080p otherwise."""
+    return (os.environ.get("PVS_LUMA_RESOLUTION", "1080p") or "").strip() or "1080p"
+
+
 DEFAULT_INTENSITY = "very_slow"
 
 # ── Movements that use crop-and-reveal pre-processing ─────────────────────────
@@ -791,7 +796,7 @@ def _generate_luma_direct(image_url: str, prompt: str, duration: int, aspect_rat
                 "prompt": prompt,
                 "aspect_ratio": aspect_ratio,
                 "video": {
-                    "resolution": os.environ.get("PVS_LUMA_RESOLUTION", "1080p").strip() or "1080p",   # 2026-11-04: ONLY the cheap 360p volume tests set it (exp_volume.py); production never does
+                    "resolution": luma_resolution(),   # 2026-11-04: ONLY the cheap 360p volume tests set it (exp_volume.py); production never does
                     "duration": luma_dur,
                     "start_frame": {"url": image_url},
                     **({"end_frame": {"url": end_frame_url}} if end_frame_url else {}),   # 2026-10-27: a crop of the photo (the first frame is its twin crop), see end_frame.py

@@ -265,7 +265,7 @@ def _overlay_narration_audio(video_path: str, narration_path: str, transition_st
 
 
 
-from video_generation import DEFAULT_INTENSITY
+from video_generation import DEFAULT_INTENSITY, luma_resolution
 
 app = FastAPI(title="Real Estate Video Generator", version="3.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -3028,7 +3028,7 @@ async def _auto_start_tick():
         res = list(_AUTO_START_CHECKED[jid])
         try:   # the SAME duplicate rule as gial_start.py (about 17 EUR were lost to regenerated listings on 2026-11-05)
             import gial_start
-            dup = gial_start.same_listing_done(jid, None, os.getenv("PVS_LUMA_RESOLUTION", "1080p"))
+            dup = gial_start.same_listing_done(jid, None, luma_resolution())
             if dup:
                 res.append(("FAIL", "DUP", f"the same listing already has a finished video ({', '.join(dup)})"))
         except Exception as e:
@@ -3132,7 +3132,7 @@ async def operator_status(q: str = ""):
             "spent_24h_eur": round(auto_start.spent_24h(JOBS, now), 2), "cap_eur": auto_start.cap_eur(),
             "switches": {"auto_start": on("PVS_AUTO_START"), "auto_rework": on("PVS_AUTO_REWORK"),
                          "auto_approve_flags": on("PVS_AUTO_APPROVE_FLAGS"), "standard_enforce": on("PVS_STANDARD_ENFORCE"),
-                         "luma_resolution": os.getenv("PVS_LUMA_RESOLUTION", "1080p")},
+                         "luma_resolution": luma_resolution()},
             "release_mode": _release_mode(), "jobs": rows[:(300 if (q or "").strip() else 80)]}
 
 
@@ -3996,6 +3996,7 @@ async def run_pipeline(
 
     # Store scenes_config for approval step
     JOBS[job_id]["scenes_config"] = scenes_config
+    JOBS[job_id]["luma_resolution"] = luma_resolution()   # 2026-11-10: explicit flag (360p test videos must never be mistaken for 1080p deliveries); the registry reads it
 
 
     try:
