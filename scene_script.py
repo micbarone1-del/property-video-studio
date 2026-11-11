@@ -743,6 +743,7 @@ CONTENT:
 - The closing is NOT a separate sentence: sentence 2 of block 3 (heard over scene 6) states the fact about that scene and ends with a short invitation to contact {agency_name or 'the agency'} by name, joined in the SAME sentence with a comma or a colon (shape: "<outdoor fact>, contatta {agency_it}."). The invitation never mentions a visit.
 - SPECIFIC, NOT GENERIC (important): before writing, pick from the listing text the most DISTINCTIVE concrete features of this property (architecture and character such as exposed wooden beams, double-height ceilings, a bathroom with a window, an attic, a period building, number of levels, balcony, terrace, view, orientation, renovation, large windows) and spend them one per sentence, the most striking first. Every sentence after the introduction must carry at least one such concrete fact. NEVER use filler that would fit any apartment ("spazi architettonici interessanti", "servizi igienici funzionali e ben posizionati", "ambienti funzionali", "soluzione ideale"): if you cannot name a concrete fact for a sentence, shorten it to a plain fact such as the size or the number of rooms. Property-level facts (a period building, double height, an attic, the number of levels) are allowed in any sentence; only a specific ROOM is tied to its scene.
 - LIGHT: at most ONE sentence of the whole narration may speak about light or brightness (luce, luminoso, illuminato, soleggiato). The photo notes mention light in every room: do not copy that. Every other sentence needs a different concrete fact.
+- NO REPEATS: say each fact ONCE in the whole narration. Name the place, the street and the type of property only in sentence 1 and never again, not even with another word for the same thing (villa, then casa indipendente). Never use the same distinctive word (for example ristrutturato) in two sentences: the listing text often repeats itself, you must not.
 - LAYOUT FACTS: when there is no striking feature, use plain facts from the listing text, one per sentence, instead of vague words about light or proportions: the number of levels ("su due livelli"), a private courtyard or garden, a cellar, a parking space, the renovation year, the view, the size. Never write sentences made only of vague impressions ("proporzioni accoglienti", "illuminazione diffusa", "luce dalle finestre"). CAREFUL: counting rooms ("due camere", "due bagni") counts as NAMING those rooms, and all room words together are limited (see above); the words balcone, terrazzo, giardino, corte, esterno may appear ONLY in the sentence heard over the outdoor scene (exception: a room and its outdoor space may share a sentence when the listing text itself joins them, e.g. 'cucina abitabile con balcone'), never over the kitchen or a bedroom.
 - Never name a room twice. Never talk about a room in a sentence that is heard over a different room.
 - SOURCES, IN THIS ORDER OF PREFERENCE (important): (1) the SELLING EXPRESSIONS of the listing text itself, keeping their wording where it fits and adapting the form freely, the way an estate agent would say them; prefer the listing's own phrases to anything you would create yourself: sentences invented by you are the rare exception: for example 'accogliente ingresso', 'ampio e luminoso salone', 'ambienti ben distribuiti', 'comoda scala interna', 'bagno finestrato'; when the listing text has such an expression about the room of a scene, use it in that scene's sentence. (2) A plain general fact of the property from the listing (size, levels, condition, area). (3) ONLY as a last resort, when the listing says nothing usable for that scene, one composition note from the photo notes (for example 'cucina con zona pranzo', 'camera da letto con balcone', 'ampio soggiorno'); never colours, materials or windows ('pareti bianche e azzurre', 'pavimento in piastrelle') and use at most THREE photo-note sentences in the whole narration.
@@ -804,6 +805,28 @@ def parse_blocks(raw: str):
     return out
 
 
+_REPEAT_SKIP = ("livell", "camer", "bagn", "cucin", "salon", "soggio", "piano", "metri", "quadr", "matrim", "immobi", "propri", "appart", "contat", "prese", "vendit", "second", "prima", "terzo")
+
+
+def repeat_problems(blocks: list, split_fn, agency_name: str = None) -> list:
+    # 2026-11-11 (Michele, jobs 1132 / 104 / 106): one narration must not repeat a place name, a street or a distinctive word
+    import re
+    if not split_fn:
+        return []
+    sents = [s for b in blocks for s in split_fn(b)]
+    skip = set(re.findall(r"[^\W\d_]+", (agency_name or "").lower()))
+    seen, out = {}, []
+    for i, s in enumerate(sents):
+        keys = {w.lower() for w in re.findall(r"(?<=[a-zà-ÿ,] )[A-ZÀ-Ý][^\W\d_]{2,}", s)}
+        for k in keys:
+            if k in skip or any(k.startswith(p) for p in _REPEAT_SKIP):
+                continue
+            if k in seen and seen[k] != i:
+                out.append(f"sentences {seen[k] + 1} and {i + 1} repeat '{k}': say each fact once, never restate the place, the street or the same word")
+            seen.setdefault(k, i)
+    return out
+
+
 def validate_blocks(blocks: list, description: str, agency_name: str = None, price: str = None, split_fn=None,
                     scene_sequence: list = None) -> list:
     """Problems of the 3 blocks (empty = accepted): the facts/agency/sale-rent rules of the free text, a word band per block,
@@ -819,6 +842,7 @@ def validate_blocks(blocks: list, description: str, agency_name: str = None, pri
     problems.extend(validate_free_text(" ".join(blocks), [], description, agency_name, price, split_fn=split_fn, check_timing=False))
     problems.extend(generic_problems(blocks))
     problems.extend(light_problems(blocks, split_fn))
+    problems.extend(repeat_problems(blocks, split_fn, agency_name))
     if scene_sequence and split_fn:
         total_named = 0
         for b, text in enumerate(blocks):
