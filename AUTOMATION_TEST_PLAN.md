@@ -650,3 +650,13 @@ Prima: S=5 O=5 D=6 RPN=150 (ACT, proposta). Controllo ora: elenco SERVICE_SPACE_
 PASS: test_auto_rework (incluse A5-A5e), test_upload_retry U1-U3, test_service_spaces S1-S12, test_scene_rework 77/77, test_rework_qc, test_scene_script 85/85, test_voice_priority, test_no_inference, test_scene_facts_rooms, test_scene_facts 19/19. NOT RUN: prova reale con un job che fallisce davvero la clip; prova a scala (campione di narrazione: 1 per annuncio su 1334 e 1101). Falliti gia' prima: test_anchor_direction (2), test_data_dir (1), test_exp_motion_cal (1), test_clip_qc, test_end_frame E16.
 ### Quattro invarianti (controllo per queste modifiche)
 Nessun job perso: il job resta in awaiting_approval se il rework non basta. Nessun doppio costo: il caricamento ripetuto non costa su Luma, un solo rework per scena. Stato finale corretto e visibile: verificato solo con test unitari. Operatore avvisato una volta: invariato, non riprovato su un caso reale.
+
+## 2026-11-11 (sera) - aggiunte di stato (punteggi = PROPOSTE non riviste da Michele; riepilogo totale NON ricalcolato)
+### Riga FMEA nuova: consegna al partner di un video non 1080p (360p per errore)
+S=9 (ACT per regola S>=9), O=3, D=2, RPN=54 (proposta). Controllo nominato: release_job, unico punto di rilascio (manuale e automatico), rifiuta 409 su istanza a 1080p; force=1 solo a mano; avviso una volta. Test: D1-D5 PASS; prova dal vivo su 4b11d6d7 (copia 360p in produzione) = HTTP 409, released=None, nessun webhook nel log (1 job). NOT RUN: rilascio positivo di un vero 1080p dopo la modifica; percorso force=1; ricezione dell'avviso (da Michele).
+### Riga FMEA nuova: job duplicato per lo stesso annuncio (precedente: 1186 e 1280 generati due volte, circa 17 EUR)
+S=6 O=5 D=3 RPN=90 prima (proposta); dopo: guardia unica nel registro per le bozze (strumenti interni). Residuo: API partner senza guardia (NOT BUILT), bozze doppie gia' esistenti. Test: G1-G8 PASS (test_dup_guard), W1-W5 PASS (vista Relinx), prova sui dati veri (1336 bloccato, 1101 e 1334 no).
+### Narrazione: batteria viva (narration_battery.py)
+8 annunci Relinx su 12 elaborati, TOTALE FAIL 0; 4 saltati senza foto (1019, 1328, 1033, 1346). Una rigenerazione per annuncio: non e' una misura di frequenza. Il controllo non vede i fatti visivi sbagliati.
+### Invarianti (queste modifiche)
+Nessun job perso: la consolidazione copia e non cancella. Nessun doppio costo: guardia e blocco; copie con segno keep. Stato corretto e visibile: delivery_blocked impostato, 409 con messaggio. Operatore avvisato una volta: implementato, NON verificato.

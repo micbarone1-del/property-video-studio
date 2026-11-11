@@ -1171,7 +1171,7 @@ Questions for Luma (Douglas) only after our tests: is 360p draft representative 
 - [open, R&D, AFTER automation] Evaluate Claude Fable (current Fable 5.1) for: building a 3D model of a property from the photo, room navigation, or video. In addition to World Labs Atlas/Marble and the other options (see the 3D walkthrough area). Feasibility NOT assessed: nothing is known yet about what Fable can output for 3D; first step is a small, cheap feasibility check, not a build.
 
 ## 2026-11-11 - Backlog: automazione senza interruzioni (requisiti, decisioni, domande aperte)
-### Guardiano unico dei duplicati + consolidazione in produzione [REQUISITI CONFERMATI DA MICHELE, NON COSTRUITO]
+### Guardiano unico dei duplicati + consolidazione in produzione [COSTRUITO E APPLICATO 2026-11-11, vedi status.md; restano i punti sotto]
 Requisito: un solo controllo nel registro (listing_registry) che consideri anche le bozze aperte, usato da relinx_pilot_check.py, gial_drafts.py e gial_start.py (oggi bozze aperte e pilot_check non hanno guardia). Evitare duplicati nel test, nella produzione e tra i due. Mai cancellare. Consolidazione dei job GIAL fatti dal 2026-11-02 in produzione: mantenere il nome agenzia GIAL, segno "tieni", prima prova a secco (gial_consolidate.py ha gia' dry-run e .bak_p28). I video a 360p NON vanno confusi con quelli a 1080p per Relinx: flag di risoluzione (campo luma_resolution nel job, scritto da run_pipeline dal 115f519; i job vecchi ne sono privi e la risoluzione viene stimata). DA DECIDERE (Michele): blocco o solo avviso alla consegna di un video non 1080p; riempimento dei job vecchi; etichetta nella interfaccia.
 ### Recupero automatico di una clip non generata [FATTO NEL CODICE d5cb862, NON PROVATO SU JOB REALE]
 Decisione: ripetizioni nel caricamento (3), poi un solo rework automatico per scena (stessi budget e cicli del rework esistente), avviso unico se non basta. Aperto: (a) controllo che una scena approvata abbia il file della clip (economico, non costruito, non c'e' prova che serva); (b) perche' video_clip_paths[5] resta vuoto nel job 1101 con video finale corretto.
@@ -1183,3 +1183,12 @@ Con video: 1307, 1305, 1321 a 1080p in produzione; 1046, 1251 a 360p; 1101, 1334
 La popolazione GIAL ha 48 annunci: 46 vendita, 2 affitto. Per provare gli affitti e' necessario passare ad altre agenzie: servono le loro liste o siti (non disponibili).
 ### Altri aperti
 Produzione: narrazione ancora Haiku e pace fix spento (scelta di abilitare Sonnet: Michele). Ricalibrazione QC con etichette (lampadina intermittente di 1252 non vista). Documento di passaggio per Opus da scrivere dopo l'aggiornamento dei documenti.
+
+## 2026-11-11 (sera) - Decisioni di Michele su consegna e consolidazione; cosa resta
+- DECISO: consolidare in produzione solo i 18 video finiti (non le bozze, non i falliti); scrivere luma_resolution solo nelle copie (misurata dalle clip); bloccare con messaggio chiaro la consegna a Relinx di un video non 1080p (force a mano). Tutto eseguito e verificato (status.md, 2026-11-11 sera).
+- Il blocco vale solo sull'istanza configurata a 1080p (produzione). Il test a 360p non e' bloccato per scelta di progetto (altrimenti la prova dell'API partner non finirebbe).
+- [APERTO] Guardia duplicati sull'API partner (/v1/videos, /jobs/from-url): nessuna oggi. Da decidere con Michele la politica: Relinx puo' legittimamente rinviare lo stesso annuncio (idempotenza per external_ref?), quindi NON replicare la regola degli strumenti interni senza decisione.
+- [APERTO] Bozze doppie gia' esistenti (5 su 1336, 3 su 1119, ...): non toccate; sotto jobs/ nulla si cancella, la scelta e' di Michele.
+- [APERTO] Job vecchi in produzione senza luma_resolution (la risoluzione si stima/misura); registro Relinx: 1299 ha 2 bozze aperte, la nota "respinto" va verificata.
+- [DA VERIFICARE da Michele] avviso email/push "Consegna bloccata" ricevuto una volta.
+
