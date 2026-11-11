@@ -112,6 +112,8 @@ def main(argv):
     import requests
     import partner_api
     import draft_check
+    import listing_registry as lr
+    again = "--again" in argv
     from PIL import Image
     if not str(partner_api.PARTNERS_FILE).startswith(state):
         print("ABORT: the partner file is not inside the test state folder.")
@@ -164,6 +166,10 @@ def main(argv):
     checks = []
     for url, label in listings:
         print("\n=== " + label + "  " + url, flush=True)
+        why = None if again else lr.create_skip_reason(url)
+        if why:
+            print("  " + why, flush=True)
+            continue
         try:
             if url.endswith(".json"):
                 payload = payload_from_file(url, local)

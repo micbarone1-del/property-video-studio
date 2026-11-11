@@ -45,11 +45,15 @@ def read_list(path) -> list:
     return out
 
 
-def run(items, agency=AGENCY, s=None, sleep=time.sleep, out=_say, poll=POLL_SECS, max_wait=MAX_WAIT_SECS) -> dict:
+def run(items, agency=AGENCY, s=None, sleep=time.sleep, out=_say, poll=POLL_SECS, max_wait=MAX_WAIT_SECS, again=False) -> dict:
     """Returns {url: job_id or 'refused:<why>'}. Never starts a generation."""
     s = s or session()
     res = {}
+    import listing_registry as _lr
     for url, label in items:
+        why = None if again else _lr.create_skip_reason(url)
+        if why:
+            out(f"{label or url}: {why}"); res[url] = "skipped:duplicate"; continue
         r = s.post(f"{BASE}/jobs/from-url", data={"url": url, "agency_id": agency, "property_name": "", "model_tier": "luma"}, timeout=60)
         if r.status_code != 200:
             out(f"{label or url}: request refused ({r.status_code}) {r.text[:160]}: stopped")
@@ -70,7 +74,7 @@ def run(items, agency=AGENCY, s=None, sleep=time.sleep, out=_say, poll=POLL_SECS
             if st not in BUSY or waited >= max_wait:
                 why = (j.get("reason") or {}).get("code") if isinstance(j.get("reason"), dict) else j.get("message")
                 out(f"{label or url}: not ready ({st}) {str(why)[:140]}"); res[url] = f"refused:{st}"; break
-    ok = [v for v in res.values() if not str(v).startswith("refused")]
+    ok = [v for v in res.values() if not str(v).startswith(("refused", "skipped"))]
     out("RESULT:", res)
     out("JOB IDS for gial_start.py:", ",".join(ok))
     return res
@@ -80,4 +84,4 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         raise SystemExit(__doc__)
     ag = sys.argv[sys.argv.index("--agency") + 1] if "--agency" in sys.argv else AGENCY
-    run(read_list(sys.argv[1]), agency=ag)
+    run(read_list(sys.argv[1]), agency=ag, again="--again" in sys.argv)

@@ -91,6 +91,38 @@ def finished_blocking(listing: str, target_res: str, records=None, exclude_job=N
     return [r for r in recs if r["listing"] == listing and r["status"] == "done" and r["job_id"] != exclude_job and rank(r["resolution"]) >= rank(target_res)]
 
 
+FINAL_STATES = ("done", "failed")    # every other state (draft, preparing, running, awaiting_approval ...) is an OPEN job
+
+
+def listing_of_url(url: str):
+    """The Relinx listing number at the end of a listing URL (...-1101/); None when the URL carries none."""
+    import re as _re
+    m = _re.search(r"-(\d{3,5})/?(?:[?#].*)?$", str(url or ""))
+    return m.group(1) if m else None
+
+
+def open_jobs(listing: str, records=None, exclude_job=None) -> list:
+    """Jobs of the listing that are not finished or failed (a draft waiting to be started counts): creating another one is a duplicate."""
+    recs = records if records is not None else scan()
+    return [r for r in recs if r["listing"] == listing and r["status"] not in FINAL_STATES and r["job_id"] != exclude_job]
+
+
+def duplicates(listing: str, target_res: str, records=None, exclude_job=None) -> dict:
+    """ONE answer for every tool that creates or starts a job: {"open": open jobs, "done": finished videos of the same or higher resolution}."""
+    recs = records if records is not None else scan()
+    return {"open": open_jobs(listing, recs, exclude_job), "done": finished_blocking(listing, target_res, recs, exclude_job)}
+
+
+def create_skip_reason(url: str, records=None):
+    """Why a tool must NOT create another draft for this listing URL (an open job exists); None when it may. The ONE message for every tool."""
+    n = listing_of_url(url)
+    o = open_jobs(n, records) if n else []
+    if not o:
+        return None
+    return ("annuncio %s: esiste gia' un job aperto (%s): non creo un'altra bozza (--again per forzare)"
+            % (n, ", ".join("%s %s %s" % (r["job_id"], r["status"], r["where"]) for r in o)))
+
+
 def best_done(records: list, listing: str) -> str:
     done = [r["resolution"] for r in records if r["listing"] == listing and r["status"] == "done"]
     return max(done, key=rank) if done else "-"
