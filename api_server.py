@@ -3008,6 +3008,7 @@ async def _auto_release_tick():
     for jid, j in list(JOBS.items()):
         if (j.get("source") == "relinx" and j.get("status") == "done" and not j.get("released")
                 and not j.get("needs_operator")
+                and not j.get("delivery_blocked")
                 and not (any((j.get("awaiting_scenes") or {}).get(k) for k in ("rejected", "flagged", "failed"))
                          if isinstance(j.get("awaiting_scenes"), dict) else j.get("awaiting_scenes"))):
             try:
@@ -3745,8 +3746,19 @@ async def run_reassemble_only(job_id: str):
         _release_job_lock(job_id)
 
 
+def _delivery_block_reason(job_id: str, job: dict):
+    """2026-11-11 (Michele): on an instance set to 1080p (production) a video that is not 1080p never reaches the partner. None = may be released."""
+    if luma_resolution() != "1080p":
+        return None
+    import listing_registry as _lr
+    res, _src = _lr.resolution_of(JOBS_DIR / job_id, job)
+    if _lr.rank(res) >= _lr.rank("1080p"):
+        return None
+    return f"Il video e' a {res}, non a 1080p: non viene consegnato al partner."
+
+
 @app.post("/jobs/{job_id}/release")
-async def release_job(job_id: str):
+async def release_job(job_id: str, force: bool = False):
     """2026-10-02: operatore conferma che il video e pronto -- per ogni job;
     per uno Relinx, questo e il momento in cui parte il webhook al partner."""
     if job_id not in JOBS:
@@ -3756,6 +3768,18 @@ async def release_job(job_id: str):
         raise HTTPException(status_code=400, detail=f"Job not ready to release (status: {job['status']})")
     if job.get("released"):
         raise HTTPException(status_code=400, detail="Job already released")
+    _why = None if force else _delivery_block_reason(job_id, job)
+    if _why:
+        if not job.get("delivery_blocked"):
+            job["delivery_blocked"] = _why
+            _save_job(job_id)
+            try:
+                await _notify_operator(job_id, "Delivery blocked", subject=f"Consegna bloccata: {job.get('property_name') or job_id}",
+                                       body_html=f"<p>{_why}</p><p>Job {job_id}. Per consegnarlo comunque: POST /jobs/{job_id}/release?force=1.</p>",
+                                       push_message=f"Consegna bloccata ({_why})", tags=["warning"])
+            except Exception as e:
+                log.warning(f"[Job {job_id}] delivery-block notification failed (non-fatal): {e}")
+        raise HTTPException(status_code=409, detail=_why + " Per consegnarlo comunque: release?force=1.")
     job["released"] = True
     _save_job(job_id)
     if job.get("source") == "relinx":
