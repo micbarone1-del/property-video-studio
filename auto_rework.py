@@ -56,15 +56,16 @@ def plan(job, qc_results, rejected, flagged, failed, scenes_config, evaluate=Non
     no = lambda r: {"scene_ids": [], "indexes": [], "reason": r}
     if not enabled():
         return no("switch off")
-    if not rejected:
+    if not rejected and not failed:
         return no("no reject")
-    if flagged or failed:
-        return no("flagged/failed scenes need the operator")
+    if flagged:
+        return no("flagged scenes need the operator")
     done = set(job.get("auto_reworked") or [])
     ids, idxs = [], []
-    for i in rejected:
+    for i in sorted(set(rejected) | set(failed or [])):
         ent = next((q for q in (qc_results or []) if q.get("scene") == i and q.get("type") == "video"), None)
-        if not ent or ent.get("verdict") != "reject":
+        # 2026-11-11: a clip that was never generated has nothing to measure; it is redone once like a reject
+        if i not in (failed or []) and (not ent or ent.get("verdict") != "reject"):
             return no(f"scene {i}: no reject entry in the clip QC")
         if i >= len(scenes_config or []) or not (scenes_config[i] or {}).get("scene_id"):
             return no(f"scene {i}: no scene_id")

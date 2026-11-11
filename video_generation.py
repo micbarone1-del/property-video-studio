@@ -591,7 +591,16 @@ def _upload_bytes(data: bytes, filename: str = "image.jpg") -> str:
     try:
         with open(tmp, "wb") as f:
             f.write(data)
-        return fal_client.upload_file(tmp)
+        last = None
+        for attempt in range(3):   # 2026-11-11: a transient 502 from fal must not cost a scene
+            try:
+                return fal_client.upload_file(tmp)
+            except Exception as e:
+                last = e
+                log.warning(f"[VideoGen] upload attempt {attempt + 1}/3 failed: {e}")
+                if attempt < 2:
+                    time.sleep(2 * (attempt + 1))
+        raise last
     finally:
         try:
             os.remove(tmp)
