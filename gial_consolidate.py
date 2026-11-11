@@ -130,6 +130,9 @@ def run(prod_jobs, test_jobs, prod_agencies, test_agencies, scope, apply, create
         m["property_id"] = prop["property_id"]
         m["keep"] = True
         m["gial_consolidated"] = "2026-11-02"
+        if n in {c for c, _ in todo_copy} and not m.get("luma_resolution"):    # 2026-11-11: copies carry the MEASURED resolution (360p is never confused with 1080p)
+            import listing_registry as _lr
+            m["luma_resolution"] = _lr.resolution_of(Path(prod_jobs) / n, m)[0]
         _write_atomic(mp, m)
     if keep_test:
         for n, m in in_test:
