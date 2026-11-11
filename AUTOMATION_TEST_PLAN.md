@@ -640,3 +640,13 @@ Test status: PASS (server): vision classify, selection report, photo filters, la
 | PF4 | QC misses a human figure / mirror person after rework | 8 | 5 | 8 | 320 | ACT | none yet (backlog 1) | no test written |
 | PF5 | operator choices lost by the 15 s refresh | 6 | 8 | 3 | 144 | ACT | refresh paused while a review form is open | manual check NOT run |
 Tests: test_clip_pace.py 24 checks, 0 FAILS on the server; real-clip end to end (analyse_output) PASS twice; calibration of the speed signals recorded in status.md.
+
+## 2026-11-11 - aggiunte di stato (punteggi = PROPOSTE, non rivisti da Michele; il riepilogo totale NON e' stato ricalcolato)
+### Riga FMEA nuova: errore temporaneo del provider durante una clip (caso 1101, fal 502 al caricamento)
+Effetto: clip mancante, job fermo in awaiting_approval fino all'operatore. Prima: S=6 O=6 D=3 RPN=108 (ACT, proposta). Controlli ora: 3 ripetizioni del caricamento, un solo rework automatico per scena (auto_reworked), budget del rework, avviso unico se non basta. Dopo (proposta): S=6 O=3 D=3 RPN=54. Il nuovo O vale solo se si conferma su un job reale.
+### Riga FMEA nuova: frase su uno spazio diverso da quello mostrato (caso 1334, piano interrato sul bagno)
+Prima: S=5 O=5 D=6 RPN=150 (ACT, proposta). Controllo ora: elenco SERVICE_SPACE_KEYWORDS nel validatore dei blocchi + regola nel prompt. Dopo (proposta): S=5 O=3 D=3 RPN=45; lacuna nota: spazi non in elenco, fatti visivi sbagliati (es. "camera con balcone" non visibile).
+### Stato dei test (non arrotondato)
+PASS: test_auto_rework (incluse A5-A5e), test_upload_retry U1-U3, test_service_spaces S1-S12, test_scene_rework 77/77, test_rework_qc, test_scene_script 85/85, test_voice_priority, test_no_inference, test_scene_facts_rooms, test_scene_facts 19/19. NOT RUN: prova reale con un job che fallisce davvero la clip; prova a scala (campione di narrazione: 1 per annuncio su 1334 e 1101). Falliti gia' prima: test_anchor_direction (2), test_data_dir (1), test_exp_motion_cal (1), test_clip_qc, test_end_frame E16.
+### Quattro invarianti (controllo per queste modifiche)
+Nessun job perso: il job resta in awaiting_approval se il rework non basta. Nessun doppio costo: il caricamento ripetuto non costa su Luma, un solo rework per scena. Stato finale corretto e visibile: verificato solo con test unitari. Operatore avvisato una volta: invariato, non riprovato su un caso reale.

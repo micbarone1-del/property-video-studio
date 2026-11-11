@@ -1169,3 +1169,17 @@ Questions for Luma (Douglas) only after our tests: is 360p draft representative 
 
 ## 2026-11-10 - R&D after the automation is finished (Michele's request)
 - [open, R&D, AFTER automation] Evaluate Claude Fable (current Fable 5.1) for: building a 3D model of a property from the photo, room navigation, or video. In addition to World Labs Atlas/Marble and the other options (see the 3D walkthrough area). Feasibility NOT assessed: nothing is known yet about what Fable can output for 3D; first step is a small, cheap feasibility check, not a build.
+
+## 2026-11-11 - Backlog: automazione senza interruzioni (requisiti, decisioni, domande aperte)
+### Guardiano unico dei duplicati + consolidazione in produzione [REQUISITI CONFERMATI DA MICHELE, NON COSTRUITO]
+Requisito: un solo controllo nel registro (listing_registry) che consideri anche le bozze aperte, usato da relinx_pilot_check.py, gial_drafts.py e gial_start.py (oggi bozze aperte e pilot_check non hanno guardia). Evitare duplicati nel test, nella produzione e tra i due. Mai cancellare. Consolidazione dei job GIAL fatti dal 2026-11-02 in produzione: mantenere il nome agenzia GIAL, segno "tieni", prima prova a secco (gial_consolidate.py ha gia' dry-run e .bak_p28). I video a 360p NON vanno confusi con quelli a 1080p per Relinx: flag di risoluzione (campo luma_resolution nel job, scritto da run_pipeline dal 115f519; i job vecchi ne sono privi e la risoluzione viene stimata). DA DECIDERE (Michele): blocco o solo avviso alla consegna di un video non 1080p; riempimento dei job vecchi; etichetta nella interfaccia.
+### Recupero automatico di una clip non generata [FATTO NEL CODICE d5cb862, NON PROVATO SU JOB REALE]
+Decisione: ripetizioni nel caricamento (3), poi un solo rework automatico per scena (stessi budget e cicli del rework esistente), avviso unico se non basta. Aperto: (a) controllo che una scena approvata abbia il file della clip (economico, non costruito, non c'e' prova che serva); (b) perche' video_clip_paths[5] resta vuoto nel job 1101 con video finale corretto.
+### Narrazione: stanza mostrata e fatti generali [FATTO 6a2df1b, 1 CAMPIONE PER ANNUNCIO]
+Aperto per decisione di Michele: accettare i fatti da foto su balcone/terrazzo/giardino solo se l'annuncio li nomina (1334 dice ancora "Camera da letto con balcone" non visibile); unificare le tre copie della regola di tono in scene_script.py (rischio medio, scegliera' Michele); divieto di "tu" solo nel prompt, senza controllo automatico.
+### Batteria Relinx (12 annunci) [PARZIALE]
+Con video: 1307, 1305, 1321 a 1080p in produzione; 1046, 1251 a 360p; 1101, 1334 generati il 10-11 a 360p. Non fattibili oggi: 1299, 1019, 1346 (regola dei 4 ambienti, scelta di Michele; il verdetto di 1019 e' instabile), 1328 (foto lette come render: Michele verifica), 1033 (404: chiedere a Relinx). 1291: velocita' alta della facciata (velocita' = test only, pace fix spento in produzione).
+### Altre agenzie e affitti [DA FARE, SERVONO I SITI]
+La popolazione GIAL ha 48 annunci: 46 vendita, 2 affitto. Per provare gli affitti e' necessario passare ad altre agenzie: servono le loro liste o siti (non disponibili).
+### Altri aperti
+Produzione: narrazione ancora Haiku e pace fix spento (scelta di abilitare Sonnet: Michele). Ricalibrazione QC con etichette (lampadina intermittente di 1252 non vista). Documento di passaggio per Opus da scrivere dopo l'aggiornamento dei documenti.
