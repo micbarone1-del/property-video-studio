@@ -2165,6 +2165,15 @@ def standard_scene_photos(selection: dict) -> list:
     return [photo for _, photo in standard_scene_slots(selection)]
 
 
+_OUTDOOR_FACT_STEMS = ("balcon", "terrazz", "giardin")
+
+
+def drop_unlisted_outdoor_facts(facts: list, description: str) -> list:
+    # a photo may not introduce a balcony, terrace or garden that the listing text never names (2026-11-11)
+    d = (description or "").lower()
+    return ["" if any(w in x.lower() and w not in d for w in _OUTDOOR_FACT_STEMS) else x for x in facts]
+
+
 def generate_narration_and_derive_scenes(
     description: str, address: str = None, price: str = None, voice_id: str = None,
     premium: bool = False, agency_name: str = None, scene_category_order: list = None,
@@ -2178,6 +2187,7 @@ def generate_narration_and_derive_scenes(
         info = describe_scenes_for_narration([dict(ph, label=CATEGORY_ITALIAN_LABELS.get(c, c)) for ph, c in zip(scene_photos, scene_sequence)])
         if info["ok"]:
             facts = info["facts"]
+            facts = drop_unlisted_outdoor_facts(facts, description)
             description = (description or "") + "\n\n" + scene_facts_block(facts, scene_sequence)
         else:
             facts_error = info["error"]
