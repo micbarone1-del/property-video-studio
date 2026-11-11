@@ -15,3 +15,17 @@ src = open("scene_script.py").read()
 chk("S8 validator wired, exterior exempt", 'service_spaces(sent) if cat != "exterior"' in src)
 chk("S9 prompt has the rule and the no-tu rule", "WHAT A SENTENCE IS ABOUT" in src and "'trovi'" in src)
 print("FAILS", F)
+import narration as ls
+def _probe(sentences, seq):
+    blocks = [" ".join(sentences[0:2]), " ".join(sentences[2:4]), " ".join(sentences[4:6])]
+    return ss.validate_blocks(blocks, "Appartamento luminoso con tre camere e due bagni.", "GIAL IMMOBILIARE", None,
+                              split_fn=ls.split_into_sentences, scene_sequence=seq)
+_seq = ["exterior", "living", "kitchen", "bedrooms", "bathrooms", "outdoor"]
+_ok = ["Appartamento luminoso in ottima posizione.", "La zona e ben servita dai mezzi pubblici.", "Gli spazi sono distribuiti con equilibrio.",
+       "L'immobile ha tre camere da letto ampie.", "Il bagno e comodo e ben distribuito.", "Contatta GIAL IMMOBILIARE per vederlo."]
+_bad = list(_ok); _bad[4] = "Il piano interrato ospita cantina e garage."
+_ext = list(_ok); _ext[0] = "Edificio con garage e posto auto comodi."
+chk("S10 service space over a bathroom scene is blocked", any("another space" in p for p in _probe(_bad, _seq)))
+chk("S11 same text without it: no service-space problem", not any("another space" in p for p in _probe(_ok, _seq)))
+chk("S12 garage over the exterior scene is allowed", not any("another space" in p for p in _probe(_ext, _seq)))
+print("FAILS", F)
