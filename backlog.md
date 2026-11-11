@@ -1192,3 +1192,10 @@ Produzione: narrazione ancora Haiku e pace fix spento (scelta di abilitare Sonne
 - [APERTO] Job vecchi in produzione senza luma_resolution (la risoluzione si stima/misura); registro Relinx: 1299 ha 2 bozze aperte, la nota "respinto" va verificata.
 - [DA VERIFICARE da Michele] avviso email/push "Consegna bloccata" ricevuto una volta.
 
+
+## 2026-11-12 (notte) - decisioni di Michele e punti aperti
+- Decisioni: i termini poco chiari ("salone quadruplo") restano se vengono dall'annuncio; regola anti-ripetizione si' (fatta: prompt + controllo su luogo/via); dashboard di test lasciata com'e', corretta solo la data del segno gial_consolidated; fatti da foto su balcone/terrazzo/giardino solo se l'annuncio li nomina (fatto e testato).
+- Aperto: matrice dei guasti per provider (Claude, controllo qualita', timeout; la voce Google non e' simulabile; ElevenLabs superato) con lo stato reale di ogni riga; recupero dopo clip mancante da provare su un job intero sull'istanza finta con fal_upload.
+- Aperto: elenco annunci Relinx: serve un export di Relinx (ID, URL, agenzia), poi un campione di 100-150 annunci (stima 15-25 EUR, non misurata) per contare gli idonei.
+- Aperto: le batterie fatte prima del 12/11 sul simulatore Relinx con testi oltre 500 caratteri usavano testi tagliati: rileggerle con cautela.
+- Aperto: etichette QC = note di Michele sulla batteria dei 5 video (scena, tipo di difetto, gravita'); gia' segnalati: camino di 1132 da foto, frasi deboli di 106.

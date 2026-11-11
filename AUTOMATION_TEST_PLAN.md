@@ -660,3 +660,8 @@ S=6 O=5 D=3 RPN=90 prima (proposta); dopo: guardia unica nel registro per le boz
 8 annunci Relinx su 12 elaborati, TOTALE FAIL 0; 4 saltati senza foto (1019, 1328, 1033, 1346). Una rigenerazione per annuncio: non e' una misura di frequenza. Il controllo non vede i fatti visivi sbagliati.
 ### Invarianti (queste modifiche)
 Nessun job perso: la consolidazione copia e non cancella. Nessun doppio costo: guardia e blocco; copie con segno keep. Stato corretto e visibile: delivery_blocked impostato, 409 con messaggio. Operatore avvisato una volta: implementato, NON verificato.
+
+## 2026-11-12 (notte) - stato dei test (verificato con output)
+- PASS: test_outdoor_facts O1-O5; test_scene_facts 20/20 (W2 aggiornato, W2b); test_relinx_fulltext L1-L3; test_fake_upload_fault U1-U4; test_upload_fault_clip K1-K3; test_repeat_places P1-P5; test_block_narration 75/75.
+- Non provato: recupero automatico del rework dopo clip mancante su un job intero (solo test unitari A5); guasti di Claude, controllo qualita', timeout e voce Google (non simulabile con fake_providers).
+- FMEA: nessuna riga ri-valutata in questa sessione; i punteggi S/O/D restano proposte. Righe da rivedere: clip mancante dopo errore di caricamento, testo tagliato nel simulatore, ripetizioni nella voce.
