@@ -128,8 +128,35 @@ def best_done(records: list, listing: str) -> str:
     return max(done, key=rank) if done else "-"
 
 
+def relinx_view(list_path, records=None) -> list:
+    """One row per listing of a list file (URL | label [vendita|affitto] [esito ...]): what exists today. Read-only view of the jobs."""
+    import re as _re
+    recs = records if records is not None else scan()
+    rows = []
+    for ln in Path(list_path).read_text(encoding="utf-8").splitlines():
+        if not ln.strip() or ln.startswith("#"):
+            continue
+        url, _, lab = ln.partition("|")
+        n = listing_of_url(url.strip())
+        mine = [r for r in recs if r["listing"] == n]
+        best = max([r for r in mine if r["status"] == "done"], key=lambda r: rank(r["resolution"]), default=None)
+        op = open_jobs(n, recs)
+        fail = sum(1 for r in mine if r["status"] == "failed")
+        st = ("FINITO %s (%s)" % (best["resolution"], best["where"]) if best else
+              "APERTO (%s)" % ", ".join(r["job_id"] for r in op) if op else
+              "SOLO FALLITI (%d)" % fail if fail else "NESSUN JOB")
+        note = _re.search(r"\[esito[^\]]*\]", lab)
+        kind = (_re.findall(r"\[(vendita|affitto)\]", lab) or ["?"])[0]
+        rows.append((n, kind, st, len(op), fail, note.group(0) if note else ""))
+    return rows
+
+
 def main(argv) -> int:
     """Prints, per listing, the best finished video resolution and every job. Writes NOTHING (no registry file: the jobs ARE the registry)."""
+    if "--list" in argv:
+        for n, kind, st, nop, nfail, note in relinx_view(argv[argv.index("--list") + 1]):
+            print("%-5s %-8s %-34s aperti:%d falliti:%d %s" % (n, kind, st, nop, nfail, note))
+        return 0
     recs = scan()
     by = {}
     for r in recs:
