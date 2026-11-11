@@ -30,7 +30,7 @@ succeeds. Editing the file starts a new scenario (counters reset).
 Fault kinds: ok, http_400, http_422, http_429, http_500, timeout, failed
 (Luma accepted then state=failed / fal raises), no_output, quota (ElevenLabs
 quota exceeded), people (Florence mentions a person), slow:<secs>.
-Keys: luma_direct, elevenlabs, anthropic, florence, veo, kling, luma_fal, lyra,
+Keys: fal_upload (image uploads), luma_direct, elevenlabs, anthropic, florence, veo, kling, luma_fal, lyra,
 ltx, topaz, upscale_image, watermark, fal_other.
 """
 import io
@@ -178,6 +178,10 @@ def _fal_key(endpoint):
 
 def fake_upload_file(path, *a, **kw):
     import hashlib
+    fault = _apply_slow(next_fault("fal_upload"))   # 2026-11-11: upload errors, as on job 1101 (fal 502)
+    if fault not in ("ok", None):
+        outbox("fal_upload", path=str(path), fault=fault)
+        raise RuntimeError(f"[fake] fal upload failed ({fault})")
     # The pipeline deletes its temp file right after upload (video_generation._upload_bytes),
     # so keep our own copy: the fake clip must show the real photo.
     data = open(path, "rb").read() if os.path.exists(path) else b""
