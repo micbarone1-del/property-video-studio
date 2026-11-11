@@ -16,6 +16,14 @@ UA = {"User-Agent": "Mozilla/5.0"}
 WHITE = 245          # a channel value above this counts as white padding
 
 
+def _full_visible_text(page: str, desc: str) -> str:
+    # relinx.it caps the structured-data description at 500 characters; the full text is in the visible page (2026-11-11)
+    base = " ".join(desc.split())
+    cands = [" ".join(html.unescape(x).split()) for x in re.split(r"<[^>]+>", page)]
+    cands = [c for c in cands if not c.startswith("{") and c.startswith(base[:40]) and len(c) > len(base)]
+    return max(cands, key=len) if cands else desc
+
+
 def parse_listing(page: str, url: str) -> dict:
     """Pure: {id, name, description, photos:[relative media paths in gallery order]} from a relinx.it listing page."""
     m = re.search(r"-(\d+)/?$", url.split("?")[0].rstrip("/") + "/")
@@ -51,7 +59,7 @@ def parse_listing(page: str, url: str) -> dict:
     if not found:
         for pm in re.finditer(r"/it/immobili/foto/(\d+)/thumb/\?variant=full(?:&amp;|&)v=\d+", page):
             found.setdefault(pm.group(1), html.unescape(pm.group(0)))
-    return {"id": lid, "name": str(best.get("name") or ("Annuncio " + lid)), "description": str(best["description"]),
+    return {"id": lid, "name": str(best.get("name") or ("Annuncio " + lid)), "description": _full_visible_text(page, str(best["description"])),
             "photos": list(found.values())}
 
 
