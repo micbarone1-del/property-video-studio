@@ -81,10 +81,12 @@ def run(answers, cat="bathrooms", names=("a", "b", "c", "d")):
     return [p["url"] for p in by[cat]], seen, summ, by
 order, seen, summ, by = run({"a": False, "b": True, "c": True, "d": True})
 check("F1 first ranked has no fixtures -> the next one that shows them goes first", order == ["b", "c", "d", "a"], order)
-check("F2 the check stops at the first yes (c and d are not asked)", seen == ["a", "b"], seen)
+check("F2 every candidate is asked, no early stop", seen == ["a", "b", "c", "d"], seen)
 check("F3 the failed photo is tagged feature_visible False, the good one True", by["bathrooms"][3]["feature_visible"] is False and by["bathrooms"][0]["feature_visible"] is True)
 order, seen, summ, by = run({"a": False, "b": False, "c": False, "d": True})
-check("F4 nothing passes in the first 3 -> only 3 asked, nothing deleted, 4 photos stay", len(seen) == 3 and len(order) == 4 and summ["bathrooms"]["passed"] is False, (seen, summ))
+check("F4 only the last passes -> all 4 asked, it goes first, nothing deleted", len(seen) == 4 and order == ["d", "a", "b", "c"] and summ["bathrooms"]["checked"] == 4, (order, seen, summ))
+order, seen, summ, by = run({"a": False, "b": False, "c": False, "d": False})
+check("F4b nothing passes -> all asked, order unchanged, 4 photos stay, passed False", len(seen) == 4 and order == ["a", "b", "c", "d"] and summ["bathrooms"]["passed"] is False, (order, seen, summ))
 order, seen, summ, by = run({"a": None, "b": True, "c": True, "d": True})
 check("F5 a failed call (None) keeps the photo in front", order[0] == "a", order)
 by = {"living": mk("a", "b")}

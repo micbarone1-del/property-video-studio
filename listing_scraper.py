@@ -2683,7 +2683,7 @@ ROOM_FEATURE_QUESTION = {
     "bedrooms": ("Is a bed itself visible in this bedroom photo (not only its reflection in a mirror)? Answer with ONE word: yes or no."),
     "kitchen": ("Are kitchen units, a hob or cooker, or a kitchen sink with worktop clearly visible in this kitchen photo? Answer with ONE word: yes or no."),
 }
-ROOM_FEATURE_CHECK_PER_CATEGORY = 3     # the best-ranked candidates asked, in ranking order, until one passes
+ROOM_FEATURE_CHECK_PER_CATEGORY = 6     # every ranked candidate is asked (same pool size the quality comparison looks at)
 
 
 def room_feature_check_enabled() -> bool:
@@ -2694,7 +2694,7 @@ def filter_missing_feature_candidates(by_category: dict, check=None) -> dict:
     """Runs after the ranking, before the technical-quality filter (inside _categorize_and_rank_photos, so the URL path and the Relinx path both get it).
     For bathrooms / bedrooms / kitchen: walks the ranked candidates, asks whether the defining feature is visible in the photo AS USED; a candidate answering
     "no" is tagged p["feature_visible"] = False and moved BEHIND the ones that pass (nothing is deleted: when no candidate passes the order stays and the
-    report shows it). Stops at the first "yes". A failed call keeps the photo (unknown). Never raises."""
+    report shows it). Every candidate in the pool is asked (no early stop), so the selection report holds the answer for each photo. A failed call keeps the photo (unknown). Never raises."""
     if not room_feature_check_enabled():
         return {"enabled": False}
     check = check or _room_feature_visible
@@ -2703,23 +2703,23 @@ def filter_missing_feature_candidates(by_category: dict, check=None) -> dict:
         plist = by_category.get(cat) or []
         if len(plist) < 1:
             continue
-        failed, passed_at = [], None
-        for i, p in enumerate(plist[:ROOM_FEATURE_CHECK_PER_CATEGORY]):
+        failed, asked, passed = [], 0, False
+        for p in plist[:ROOM_FEATURE_CHECK_PER_CATEGORY]:
             try:
                 ok = check(cat, p, question)
             except Exception as e:
                 log.warning(f"[Scraper] Room feature check failed for {cat}: {e}")
                 ok = None
             p["feature_visible"] = ok
+            asked += 1
             if ok is False:
                 failed.append(p)
             else:
-                passed_at = i
-                break
+                passed = True
         if failed:
             keep = [p for p in plist if all(p is not f for f in failed)]
             by_category[cat] = keep + failed
-        summary[cat] = {"checked": len(failed) + (1 if passed_at is not None else 0), "failed": len(failed), "passed": passed_at is not None}
+        summary[cat] = {"checked": asked, "failed": len(failed), "passed": passed}
     return summary
 
 
