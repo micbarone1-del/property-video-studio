@@ -1294,6 +1294,32 @@ def download_selected_photos(selection: dict, output_dir: Path) -> dict:
 # possible to say AFTER the fact which photos existed, which were chosen, why a category was
 # not used, whether the quality ranking really ran, and which downloads failed and why.
 
+def pick_alternative_photo(report: dict, category: str, exclude_urls=()) -> dict:
+    """2026-11-12 (Michele, point 3): the scene was rejected twice with its photo -> the best OTHER photo of the same room that no scene uses.
+    No second selection procedure: the pool goes through the same shared step as the first selection (_categorize_and_rank_photos: ranking, room-feature
+    check, quality filter, all on the photo as the video uses it). A photo whose room feature is NOT visible is never an alternative.
+    report = the job's selection_report (candidate_urls by category + selected). Returns {"photo": dict | None, "reason": str, "considered": int}.
+    "photo" None = nothing to try: the caller stops and leaves the decision to the operator. Never raises."""
+    try:
+        used = set(exclude_urls or ())
+        for lst in ((report or {}).get("selected") or {}).values():
+            for sel in lst:
+                used.update(u for u in (sel.get("url"), sel.get("original_url"), sel.get("url_used")) if u)
+        urls = [u for u in (((report or {}).get("candidate_urls") or {}).get(category) or []) if u and u not in used]
+        if not urls:
+            return {"photo": None, "reason": "no other photo of this room", "considered": 0}
+        by = _categorize_and_rank_photos([{"url": u, "category": category} for u in urls], [category])
+        pool = by.get(category) or []
+        for p in pool:
+            if p.get("feature_visible") is False:
+                continue
+            return {"photo": p, "reason": "ok", "considered": len(urls)}
+        return {"photo": None, "reason": "no other photo of this room passes the quality / room-feature checks", "considered": len(urls)}
+    except Exception as e:
+        log.warning(f"[Scraper] Alternative photo failed for {category}: {e}")
+        return {"photo": None, "reason": "error: " + str(e)[:120], "considered": 0}
+
+
 def build_selection_report(photos: list, selection: dict, scene_count_requested=None, premium: bool = False) -> dict:
     from datetime import datetime
     candidates = {}
