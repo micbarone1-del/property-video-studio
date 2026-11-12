@@ -2644,7 +2644,7 @@ Rank them from best to worst based on:
 - Technical quality of the picture itself: sharp and clean is better. Clearly visible blur, pixelation, blocky JPEG compression, heavy noise, or a large semi-transparent watermark, text or logo across the main subject (a portal's stamp over the room or the building) are a significant penalty: the video model builds the whole clip from this one picture and cannot repair them. An ordinary phone photo with normal sharpness is fine, only clearly visible problems count.
 - The room/space is shown fully and spaciously in frame, not a cramped or heavily cropped angle — a fuller, more complete view is better. This also matters practically: a fuller frame gives the AI video-generation model more real visual information to work with, which reduces the risk of it inventing or distorting details in an ambiguous or heavily-cropped area.
 
-Return ONLY a JSON array of integers, the photo numbers ordered best to worst, e.g. [3, 1, 2]. No other text.
+Compare the photos in at most 5 short sentences. Then finish with a final line that contains ONLY the JSON array of integers, the photo numbers ordered best to worst, e.g. [3, 1, 2].
 """
 
 
@@ -2661,6 +2661,9 @@ def _tag_rank(photos: list, status: str) -> list:
 # cut photo from fetch_photo_bytes (the one download function), so no stage has its own cut.
 # The comparison runs on a stronger model: on that bathroom the default model put the wall photo first 3 times out of 3, Sonnet put the good landscape one first 3 of 3.
 RANK_MODEL = os.environ.get("PVS_RANK_MODEL", "claude-sonnet-5-5")
+# 2026-11-12: measured on listing 105 (6 runs): Sonnet writes its comparison BEFORE the list, 200 tokens cut it off 5 times of 6 (stop_reason max_tokens) and the
+# ranking silently fell back to the original order. The prompt now asks for a short comparison and the list on the LAST line; the parser takes the LAST list.
+RANK_MAX_TOKENS = 700
 
 
 PHOTO_SHAPE = os.environ.get("PVS_PHOTO_SHAPE", "landscape")      # the video shape the selection judges the photos for (every partner / URL job today is landscape)
@@ -2771,13 +2774,15 @@ def rank_photos_by_quality(category: str, candidates: list, max_to_compare: int 
             content.append({"type": "text", "text": f"Photo {i + 1}:" + (f" (page description: {lab})" if lab else "")})
             content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}})
 
-        response = _track_claude(client.messages.create(model=RANK_MODEL, max_tokens=200,
+        response = _track_claude(client.messages.create(model=RANK_MODEL, max_tokens=RANK_MAX_TOKENS,
                                              messages=[{"role": "user", "content": content}]), RANK_MODEL)
         raw = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
-        order_match = re.search(r"\[[\d,\s]+\]", raw)
-        if not order_match:
-            return _tag_rank(candidates, "fallback_original_order: unparseable model reply")
-        order = json.loads(order_match.group(0))
+        lists = re.findall(r"\[\s*\d+(?:\s*,\s*\d+)*\s*\]", raw)
+        if not lists:
+            why = "cut off at the token limit" if getattr(response, "stop_reason", None) == "max_tokens" else "no list in the reply"
+            log.warning(f"[Scraper] Quality ranking for {category}: {why}: {raw[:200]!r}")
+            return _tag_rank(candidates, "fallback_original_order: unparseable model reply (" + why + ")")
+        order = json.loads(lists[-1])
         ranked = [pool[i - 1] for i in order if 1 <= i <= len(pool)]
         ranked_ids = {id(p) for p in ranked}
         for p in pool:

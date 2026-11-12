@@ -110,6 +110,15 @@ FakeClient.answer = "no idea"
 calls = install_get({"U1": [Resp(200)], "U2": [Resp(200)]})
 res = ls.rank_photos_by_quality("bedrooms", photos2())
 check("R4 unparseable model reply -> original order, tagged", res[0]["rank_status"].startswith("fallback_original_order"), res)
+FakeClient.answer = "Photo 2 is brighter, no mirror. Photo 1 shows a bed (see [1] weaker).\nPhoto 2 first.\n[2, 1]"
+calls = install_get({"U1": [Resp(200)], "U2": [Resp(200)]})
+res = ls.rank_photos_by_quality("bedrooms", photos2())
+check("R4b reasoning before the list -> the LAST list is the order, tagged ranked", [p["url"] for p in res] == ["U2", "U1"] and res[0]["rank_status"] == "ranked", res)
+FakeClient.answer = "Photo 2 is brighter and has the bed,"
+calls = install_get({"U1": [Resp(200)], "U2": [Resp(200)]})
+res = ls.rank_photos_by_quality("bedrooms", photos2())
+check("R4c reply with no list -> original order and the status says why", res[0]["rank_status"].startswith("fallback_original_order") and "no list" in res[0]["rank_status"], res[0]["rank_status"])
+check("R4d room for a comparison before the list (>=500 tokens) and the prompt asks for the list on the last line", ls.RANK_MAX_TOKENS >= 500 and "final line" in ls.QUALITY_RANKING_PROMPT and "No other text" not in ls.QUALITY_RANKING_PROMPT)
 res = ls.rank_photos_by_quality("bedrooms", [{"url": "U1", "category": "bedrooms"}])
 check("R5 single candidate tagged, no fetch", res[0]["rank_status"] == "single_candidate")
 FakeClient.answer = "[2, 1]"
