@@ -2011,6 +2011,7 @@ def partner_agency_limit_24h() -> int:
 async def create_video_from_partner(
     payload: RelinxVideoRequest,
     background_tasks: BackgroundTasks,
+    request: Request,
     partner: dict = Depends(get_current_partner),
 ):
     """
@@ -2090,6 +2091,12 @@ async def create_video_from_partner(
             headers={"Retry-After": str(retry_after_secs)},
         )
 
+    try:   # 2026-11-12: keep the request as received (also fields the model does not know); a failure here must never stop the job
+        _raw_payload = partner_api.received_payload_for_job(await request.json())
+    except Exception as _e:
+        _raw_payload = None
+        logger.warning("partner_payload not stored: %s", _e)
+
     job_id = str(uuid.uuid4())[:8]
     JOBS[job_id] = {
         "status": "queued",
@@ -2110,6 +2117,7 @@ async def create_video_from_partner(
         "external_ref": payload.external_ref,
         "callback_url": payload.callback_url,
         "listing_url": payload.listing_url,
+        "partner_payload": _raw_payload,
     }
     _save_job(job_id)
 

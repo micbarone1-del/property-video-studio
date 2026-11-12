@@ -15,6 +15,20 @@ from pathlib import Path
 import cost_model   # the ONE place that decides the data folder (PVS_DATA_DIR)
 
 BASE_DIR = Path(__file__).resolve().parent
+
+PAYLOAD_MAX_CHARS = 200_000   # a request bigger than this is stored cut, with the flag below (never blocks the job)
+
+
+def received_payload_for_job(raw, max_chars=PAYLOAD_MAX_CHARS):
+    """2026-11-12: the request exactly as the partner sent it (all fields, also the ones the model does not know), to be kept in the job as
+    `partner_payload` so we can see what Relinx really sends. ONE function, ONE caller (POST /v1/videos). Never raises: None when unreadable."""
+    try:
+        text = json.dumps(raw, ensure_ascii=False)
+    except Exception:
+        return None
+    if len(text) > max_chars:
+        return {"_truncated": True, "_chars": len(text), "text": text[:max_chars]}
+    return json.loads(text)
 PARTNERS_FILE = cost_model.DATA_DIR / "partners.json"
 
 
