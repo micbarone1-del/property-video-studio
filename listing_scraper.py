@@ -2574,6 +2574,12 @@ def standard_scene_slots(selection: dict) -> list:
     for category in PRIORITY_ORDER:
         for photo in selection["selected"].get(category, []):
             slots.append((category, photo))
+    # 2026-11-12 (Michele): when several outside photos are used (facade + garden, or two of the same kind) ONE opens the video and the
+    # others close it, never all at the start. The first outside photo stays first; the rest go after the rooms.
+    outside = [x for x in slots if x[0] in ("exterior", "outdoor")]
+    if len(outside) >= 2:
+        rooms = [x for x in slots if x[0] not in ("exterior", "outdoor")]
+        slots = [outside[0]] + rooms + outside[1:]
     return slots
 
 
@@ -2758,9 +2764,11 @@ def select_photos_for_scene_count(photos: list, scene_count: int) -> dict:
     # Pass 2: backfill remaining slots (missing categories' slots, AND any
     # extra slots when scene_count > 6) from whichever categories have
     # surplus, in priority order — this is the actual "double up" behavior.
+    # 2026-11-12 (Michele): without a facade photo, extra outdoor photos fill the slot BEFORE a room is shown twice
+    fill_order = (["outdoor"] + [c for c in PRIORITY_ORDER if c != "outdoor"]) if not by_category["exterior"] else list(PRIORITY_ORDER)
     while remaining > 0:
         progress = False
-        for cat in PRIORITY_ORDER:
+        for cat in fill_order:
             if remaining <= 0:
                 break
             already = len(selected[cat])
