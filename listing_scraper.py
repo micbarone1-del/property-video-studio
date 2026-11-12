@@ -1314,6 +1314,7 @@ def build_selection_report(photos: list, selection: dict, scene_count_requested=
             "rank_position": p.get("rank_position"), "rank_status": p.get("rank_status"),
             "quality": p.get("quality"), "overlay": p.get("overlay"), "quality_by_model": p.get("quality_by_model"),
             "blockiness": p.get("blockiness"),
+            "feature_visible": p.get("feature_visible"),      # 2026-11-12: answer of the room-feature check (fixtures / bed / kitchen visible); None = not asked
         } for p in plist]
 
     used = {("outdoor" if c in ("outdoor_early", "outdoor_late") else c)

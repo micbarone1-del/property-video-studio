@@ -119,6 +119,8 @@ calls = install_get({"U1": [Resp(200)], "U2": [Resp(200)]})
 res = ls.rank_photos_by_quality("bedrooms", photos2())
 check("R4c reply with no list -> original order and the status says why", res[0]["rank_status"].startswith("fallback_original_order") and "no list" in res[0]["rank_status"], res[0]["rank_status"])
 check("R4d room for a comparison before the list (>=500 tokens) and the prompt asks for the list on the last line", ls.RANK_MAX_TOKENS >= 500 and "final line" in ls.QUALITY_RANKING_PROMPT and "No other text" not in ls.QUALITY_RANKING_PROMPT)
+_rep = ls.build_selection_report([{"url": "S1", "category": "bathrooms"}], {"selected": {"bathrooms": [{"url": "S1", "feature_visible": True}, {"url": "S2", "feature_visible": False}, {"url": "S3"}]}, "total_selected": 3})
+check("R4e the report carries the room-feature answer per selected photo (True / False / None = not asked)", [x["feature_visible"] for x in _rep["selected"]["bathrooms"]] == [True, False, None], _rep["selected"])
 res = ls.rank_photos_by_quality("bedrooms", [{"url": "U1", "category": "bedrooms"}])
 check("R5 single candidate tagged, no fetch", res[0]["rank_status"] == "single_candidate")
 FakeClient.answer = "[2, 1]"
