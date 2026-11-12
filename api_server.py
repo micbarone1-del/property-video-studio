@@ -3330,8 +3330,20 @@ def _rework_qc_enabled(job) -> bool:
     return bool(job.get("enable_vision_qc", True)) and os.getenv("PVS_REWORK_QC", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
-async def _rework_qc_gate(job_id: str, job_dir, result: dict) -> bool:
-    """Runs scene_rework.qc_redone on the clips just made. True = the job was PARKED at awaiting_approval (no reassembly); False = go on."""
+def _alt_photo_deps():
+    """The three outside calls of alt_photo_rework: the shared selection step, the ONE photo download (as the video uses it), the rework budget check."""
+    import types as _types
+    import listing_scraper as _ls
+
+    def _fetch(url):
+        f = _ls.fetch_photo_bytes(url, timeout=20)
+        return f["content"] if f.get("ok") else None
+    return _types.SimpleNamespace(pick=_ls.pick_alternative_photo, fetch=_fetch, evaluate=_rwp.evaluate)
+
+
+async def _rework_qc_gate(job_id: str, job_dir, result: dict):
+    """Runs scene_rework.qc_redone on the clips just made. True = the job was PARKED at awaiting_approval (no reassembly); False = go on;
+    "alt" = (PVS_AUTO_ALT_PHOTO) alternative photo(s) put on the twice-rejected scene(s): the caller runs the rework once more."""
     job = JOBS[job_id]
     from vision_analysis import analyse_output
     deps = _redo_deps(job_id)
@@ -3339,6 +3351,24 @@ async def _rework_qc_gate(job_id: str, job_dir, result: dict) -> bool:
     JOBS[job_id].update({"status": "running", "progress": 90, "message": "QC dei clip rigenerati…"})
     qc = await asyncio.to_thread(_sr.qc_redone, job, job_dir, result["redone"], deps)
     _save_job(job_id)
+    # 2026-11-12 (point 3, PVS_AUTO_ALT_PHOTO, default off): the clips made with an alternative photo get their verdict recorded; a scene rejected
+    # for the SECOND time (original + automatic rework) is redone ONCE with the best other photo of the same room (alt_photo_rework). Any doubt = park, as before.
+    try:
+        import alt_photo_rework as _apr
+        _apr.record_outcome(job, [r["scene_id"] for r in result["redone"]], result["failed"], qc["rejected"], qc["flagged"])
+        _save_job(job_id)
+        if qc["rejected"] and not qc["flagged"] and _apr.enabled():
+            _alt = await asyncio.to_thread(_apr.prepare, job, job_dir, qc["rejected"], qc["flagged"], _alt_photo_deps())
+            _save_job(job_id)
+            if _alt["scene_ids"]:
+                job["alt_pending"] = list(_alt["scene_ids"])
+                job.update({"status": "running", "progress": 76, "message": f"Rework con foto alternativa: {', '.join(_alt['scene_ids'])}"})
+                _save_job(job_id)
+                log.info(f"[Job {job_id}] alternative photo for {_alt['scene_ids']}")
+                return "alt"
+            log.info(f"[Job {job_id}] no alternative photo tried: {_alt['reason']}")
+    except Exception as _e:
+        log.warning(f"[Job {job_id}] alternative photo step failed (non-fatal, the job parks as before): {_e}")
     if not (qc["rejected"] or qc["flagged"]):
         return False
     # 2026-11-06 (PVS_AUTO_APPROVE_FLAGS): after a rework only minor flags left -> approved by the system, listed for a later review, job goes on
@@ -3400,6 +3430,12 @@ async def _run_redo(job_id: str, scene_ids: list, *, video: bool, strict: bool,
 
         result = await _sr.redo_scenes(job, job_dir, scene_ids, _redo_deps(job_id),
                                        video=video, strict=strict, label=label)
+        if video and result.get("failed"):
+            try:
+                import alt_photo_rework as _apr0
+                _apr0.record_outcome(job, [], result["failed"], [], [])   # an alternative-photo clip that was not generated
+            except Exception as _e:
+                log.warning(f"[Job {job_id}] alt photo outcome (failed) not recorded (non-fatal): {_e}")
         _sr.record_rework_cost(job, result["redone"], job.get("model_tier", "premium"), video, job_dir=job_dir)
         if result.get("watermark_failed"):
             log.warning(f"[Job {job_id}] rework: watermark removal failed for {result['watermark_failed']}, original photo used")
@@ -3416,6 +3452,15 @@ async def _run_redo(job_id: str, scene_ids: list, *, video: bool, strict: bool,
         # flagged one goes back to the operator (awaiting_approval) instead of silently into the final video.
         if video and result["redone"] and _rework_qc_enabled(job):
             gate = await _rework_qc_gate(job_id, job_dir, result)
+            if gate == "alt":
+                # 2026-11-12: the gate put an alternative photo on the scene(s): the SAME runner goes once more (budget, cost, QC, reassembly all as usual)
+                _alt_ids = JOBS[job_id].pop("alt_pending", None) or []
+                if policy:
+                    _rwp.end(JOBS[job_id])
+                _save_job(job_id)
+                if _alt_ids:
+                    await _run_redo(job_id, _alt_ids, video=True, strict=False, policy=policy, label="Rework foto alternativa")
+                    return
             if gate:
                 if policy:
                     _rwp.end(JOBS[job_id])
