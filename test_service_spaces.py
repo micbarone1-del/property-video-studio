@@ -12,7 +12,7 @@ chk("S5 ROOM_KEYWORDS untouched", set(ss.ROOM_KEYWORDS) == {"living", "kitchen",
 chk("S6 listing tie: lavanderia next to bagno", ss._service_tied("bagno con lavanderia", "bathrooms", "lavanderia"))
 chk("S7 no tie when far apart", not ss._service_tied("bagno luminoso. " + "x " * 60 + "cantina", "bathrooms", "cantina"))
 src = open("scene_script.py").read()
-chk("S8 validator wired, exterior exempt", 'service_spaces(sent) if cat != "exterior"' in src)
+chk("S8 validator wired, exterior and outdoor exempt (one constant)", 'service_spaces(sent) if cat not in SERVICE_SPACE_OK_SCENES' in src and ss.SERVICE_SPACE_OK_SCENES == ("exterior", "outdoor"))
 chk("S9 prompt has the rule and the no-tu rule", "WHAT A SENTENCE IS ABOUT" in src and "'trovi'" in src)
 print("FAILS", F)
 import narration as ls
