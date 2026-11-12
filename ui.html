@@ -555,6 +555,7 @@
       <div class="qc-head">⚠ Review required before assembly — approve or redo each flagged scene</div>
       <div class="qc-body" id="qc-body"></div>
     </div>
+    <div id="qc-feedback" style="margin:10px 0;font-size:.85rem"></div>
     <button class="btn-assemble" id="assemble-btn" disabled onclick="submitApproval()">
       Assemble Video →
     </button>
@@ -3229,6 +3230,8 @@ function showQcReview(job) {
   qcSec.style.display = 'block';
   qcSec.scrollIntoView({ behavior: 'smooth' });
   qcDecisions = {};
+  document.getElementById('assemble-btn').textContent = 'Assemble Video →';
+  document.getElementById('qc-feedback').textContent = '';
 
 
   const body    = document.getElementById('qc-body');
@@ -3325,6 +3328,9 @@ async function submitApproval() {
   }));
 
 
+  const btn = document.getElementById('assemble-btn');
+  const fb  = document.getElementById('qc-feedback');
+  btn.disabled = true; btn.textContent = 'Invio in corso…'; fb.textContent = '';
   try {
     const res = await authFetch(`${API_BASE}/jobs/${currentJobId}/approve`, { method: 'POST', body: fd });
     if (!res.ok) {
@@ -3334,10 +3340,24 @@ async function submitApproval() {
     }
     qcSec.style.display   = 'none';
     progSec.style.display = 'block';
-    updateProgress(82, 'Assemblaggio video finale…');
+    updateProgress(82, `Ricevuto: ${approvedScenes.length} approvate, ${redoScenes.length} da rifare. ${redoScenes.length ? 'Rigenero le scene…' : 'Assemblo il video finale…'}`);
     startPolling(currentJobId);
   } catch(e) {
-    showError(e.message);
+    fb.className = 'alert alert-error';
+    fb.textContent = '⚠ Approvazione NON ricevuta: ' + e.message;
+    fb.scrollIntoView({behavior: 'smooth', block: 'center'});
+    btn.textContent = 'Assemble Video →'; btn.disabled = false;
+    try { await resyncQcAfterRefusal(); } catch(_) {}
+  }
+}
+
+async function resyncQcAfterRefusal() {
+  const r = await authFetch(`${API_BASE}/jobs/${currentJobId}`);
+  if (!r.ok) return;
+  const j = await r.json();
+  if (j.status !== 'awaiting_approval') {
+    document.getElementById('qc-feedback').textContent += ` Stato del job: ${j.status}. Aggiorno.`;
+    qcSec.style.display = 'none'; progSec.style.display = 'block'; startPolling(currentJobId);
   }
 }
 

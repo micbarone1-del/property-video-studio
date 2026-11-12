@@ -2766,6 +2766,7 @@ async def approve_job(
         raise HTTPException(status_code=404, detail="Job not found")
     job = JOBS[job_id]
     if job["status"] != "awaiting_approval":
+        log.warning(f"[approve] {job_id} refused: status is {job['status']}, not awaiting_approval")
         raise HTTPException(status_code=400, detail="Job is not awaiting approval")
 
 
@@ -2777,10 +2778,12 @@ async def approve_job(
 
     redo_scenes     = data.get("redo_scenes", [])
     approved_scenes = data.get("approved_scenes", [])
+    log.info(f"[approve] {job_id} received approved={approved_scenes} redo={redo_scenes}")
 
     # 2026-10-28 (P1): a scene without a clip cannot be approved, only redone.
     _still_missing = [i for i in _missing_clip_scenes(job_id) if i not in redo_scenes]
     if _still_missing:
+        log.warning(f"[approve] {job_id} refused: scenes without clip {_still_missing}")
         raise HTTPException(status_code=400,
                             detail=f"Scene senza clip: {_still_missing}. Vanno rifatte, non approvate.")
 
