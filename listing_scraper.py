@@ -1341,6 +1341,7 @@ def build_selection_report(photos: list, selection: dict, scene_count_requested=
             "quality": p.get("quality"), "overlay": p.get("overlay"), "quality_by_model": p.get("quality_by_model"),
             "blockiness": p.get("blockiness"),
             "feature_visible": p.get("feature_visible"),      # 2026-11-12: answer of the room-feature check (fixtures / bed / kitchen visible); None = not asked
+            "same_view_as_first": p.get("same_view_as_first"),   # 2026-11-12: True = the same view as the category's best photo (only used when nothing else existed)      # 2026-11-12: answer of the room-feature check (fixtures / bed / kitchen visible); None = not asked
         } for p in plist]
 
     used = {("outdoor" if c in ("outdoor_early", "outdoor_late") else c)
@@ -2620,6 +2621,61 @@ def standard_scene_sequence(selection: dict) -> list:
 
 # ── Photo selection: priority order + gap detection ─────────────────────────
 
+DISTINCT_VIEW_CHECK_PER_CATEGORY = 3     # candidates after the best one that are compared with it (cost bound)
+
+DISTINCT_VIEW_QUESTION = ("These are two photos of the same listing. Do they show the SAME place from nearly the same spot and direction "
+                          "(the same scene, only a few steps closer or farther, or a slightly different zoom)? Two different rooms, or the same area seen from a clearly different "
+                          "side, angle or part of it are NOT the same view. Answer with one word: yes or no.")
+
+
+def distinct_views_enabled() -> bool:
+    return os.environ.get("PVS_DISTINCT_VIEWS", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _same_view(cat: str, a: dict, b: dict):
+    """True / False from one cheap vision answer on the two photos AS USED; None when a photo or the call failed (the order is then kept)."""
+    imgs = []
+    for p in (a, b):
+        f = fetch_photo_bytes(p.get("url"), p.get("original_url"), timeout=15)
+        if not f["ok"]:
+            return None
+        imgs.append(_image_b64_for_vision(f["content"]))
+    word, ok = _vision_word_from_b64(imgs, DISTINCT_VIEW_QUESTION, label=f"{cat} same view", words=1, max_tokens=20)
+    if not ok or word not in ("yes", "no"):
+        return None
+    return word == "yes"
+
+
+def order_distinct_views(by_category: dict, check=None) -> dict:
+    """Shared step (inside _categorize_and_rank_photos: standard AND premium selection, URL AND Relinx path). For every category with 2+ candidates the best
+    one stays first; the next DISTINCT_VIEW_CHECK_PER_CATEGORY candidates are compared with it and those that show the SAME view (p["same_view_as_first"] = True)
+    move BEHIND the ones that do not. Nothing is deleted: when every one is the same view the order stays and the report says so. A failed call keeps the order
+    (None). Never raises. PVS_DISTINCT_VIEWS=0 switches it off."""
+    if not distinct_views_enabled():
+        return {"enabled": False}
+    check = check or _same_view
+    summary = {}
+    for cat, plist in list(by_category.items()):
+        if len(plist) < 2:
+            continue
+        head, same, asked = plist[0], [], 0
+        for p in plist[1:1 + DISTINCT_VIEW_CHECK_PER_CATEGORY]:
+            try:
+                r = check(cat, head, p)
+            except Exception as e:
+                log.warning(f"[Scraper] Distinct-view check failed for {cat}: {e}")
+                r = None
+            p["same_view_as_first"] = r
+            asked += 1
+            if r is True:
+                same.append(p)
+        if same:
+            keep = [p for p in plist if all(p is not x for x in same)]
+            by_category[cat] = keep + same
+        summary[cat] = {"checked": asked, "same_view": len(same)}
+    return summary
+
+
 def _categorize_and_rank_photos(photos: list, categories: list) -> dict:
     """
     Shared setup step used by every photo-selection function: groups
@@ -2654,6 +2710,10 @@ def _categorize_and_rank_photos(photos: list, categories: list) -> dict:
     # 2026-10-29: the technical-quality filter (blurred / pixelated; watermark and agency logo are only labelled) acts HERE, on the ranked pool, so a
     # bad photo is never selected and the next candidate takes its place
     filter_poor_quality_candidates(by_category)
+
+    # 2026-11-12 (Michele, listing 105: first and last scene were the same garden shot from a few steps apart): a SECOND photo of a room must show a
+    # different view than the first. The hash duplicate rule only catches the same picture re-encoded; this one asks the model (see order_distinct_views).
+    order_distinct_views(by_category)
 
     return by_category
 
