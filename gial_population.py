@@ -26,7 +26,8 @@ def ids_from_agency_page(html: str) -> list:
 
 
 def canonical_of(html: str) -> str:
-    for pat in (r'property="og:url"\s+content="([^"]+)"', r'content="([^"]+)"\s+property="og:url"', r'rel="canonical"\s+href="([^"]+)"', r'href="([^"]+)"\s+rel="canonical"'):
+    # 2026-11-12: relinx.it now puts the AGENCY page in og:url; the property address is the rel=canonical link, so it is tried FIRST
+    for pat in (r'rel="canonical"\s+href="([^"]+)"', r'href="([^"]+)"\s+rel="canonical"', r'property="og:url"\s+content="([^"]+)"', r'content="([^"]+)"\s+property="og:url"'):
         m = re.search(pat, html)
         if m:
             return m.group(1)
