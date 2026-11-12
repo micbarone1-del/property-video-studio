@@ -34,8 +34,8 @@ check("K10 record_rework_cost uses the sidecar model (direct 1.20)", abs(rc["vid
 rc2 = sr.record_rework_cost(job, [{"scene_id": "sc_zz", "duration": 5}], "luma", True, job_dir=d)
 check("K11 no sidecar -> tier rate", abs(rc2["video_eur"] - 1.2 * E) < 1e-3)
 ui = open("ui.html").read()
-m = re.search(r"VIDEO_COST_PER_SEC_EUR = \{ luma: ([\d.]+)", ui)
-check("K12 UI mirror of the luma rate equals the backend", m and abs(float(m.group(1)) - ct.VIDEO_COST_PER_SEC_EUR["luma"]) < 1e-3, m and m.group(1))
+m = re.search(r"VIDEO_COST_PER_SEC_EUR = \{ luma: lumaEurPerSec \|\| ([\d.]+)", ui)
+check("K12 UI: Luma rate comes from the server (/cost/infra); the only literal left is the 1080p value used before it loads, equal to the backend", m and abs(float(m.group(1)) - ct.luma_eur_per_sec("1080p")) < 1e-3 and "lumaEurPerSec = ci.luma_eur_per_sec" in ui and "luma_eur_per_sec" in open("api_server.py").read(), m and m.group(1))
 api = open("api_server.py").read()
 check("K13 api passes used_models to the actual-cost calculation; rework passes job_dir", "used_models=used_models" in api and "job_dir=job_dir" in api)
 # ---- 2026-10-27: Luma is always one 5 s clip per scene (job 26d7a774 showed EUR 11.04 for a job of EUR 6.62) ----
@@ -53,5 +53,21 @@ check("K18 the UI estimate takes the Luma seconds from that slider table, not fr
 mq = re.search(r"const CLIP_QC_EST\s*=\s*([\d.]+)", ui_src)
 check("K19 the UI clip-QC cost equals the backend constant (Claude vision), the old Florence constant is gone", mq and abs(float(mq.group(1)) - ct.CLIP_QC_EST_EUR_PER_CLIP) < 1e-9 and "FLORENCE" not in ui_src, mq and mq.group(1))
 check("K20 labels say Luma Ray 3.2 (UI dropdown, UI cost lines, backend cost report); no 'Ray 2' label left", "Luma Ray 3.2 (~" in ui_src and "luma: 'Luma Ray 3.2'" in ui_src and '"luma":     "Luma Ray 3.2"' in open("cost_tracker.py").read() and "Luma Ray 2 (~" not in ui_src)
+# ---- 2026-11-12: Luma price BY RESOLUTION (360p test jobs were priced at the 1080p rate: EUR 6.62 shown for 6 clips that cost USD 0.36) ----
+import os as _os
+_old = _os.environ.get("PVS_LUMA_RESOLUTION")
+_os.environ["PVS_LUMA_RESOLUTION"] = "360p"
+check("K17 360p: 6 clips = USD 0.36", abs(sum(ct.video_cost_for_clip("luma", 5) for _ in scenes) / E - 0.36) < 1e-9)
+check("K18 360p: estimate = actual = rework price of one clip (same table)", abs(ct.estimate_job_cost(scenes, model_tier="luma", do_upscale=False, do_vision_qc=False)["video_eur"] - 6 * 0.06 * E) < 1e-3 and abs(ct.calculate_rework_cost([{"duration": 5}], [], True, model_tier="luma")["video_eur"] - 0.06 * E) < 1e-3)
+check("K19 360p: known direct clip = 0.06, fal fallback still 2.00", ct.clip_price_usd("luma-ray-3.2-direct") == 0.06 and ct.clip_price_usd("luma-ray-2-fallback") == 2.0)
+check("K20 360p is a measured price", ct.luma_price_is_measured())
+_os.environ["PVS_LUMA_RESOLUTION"] = "720p"
+check("K21 unmeasured resolution is priced like 1080p and flagged", ct.luma_direct_usd_per_clip() == 1.2 and not ct.luma_price_is_measured())
+_os.environ.pop("PVS_LUMA_RESOLUTION", None)
+check("K22 default (no switch) = 1080p 1.20", ct.luma_direct_usd_per_clip() == 1.2 and ct.luma_price_is_measured())
+check("K23 explicit resolution argument wins over the switch", ct.luma_direct_usd_per_clip("360p") == 0.06 and ct.luma_direct_usd_per_clip("1080p") == 1.2)
+check("K24 the 1.20 / 0.06 literals live once, in cost_tracker", len(re.findall(r"LUMA_DIRECT_USD_PER_CLIP_BY_RES\s*=", open("cost_tracker.py").read())) == 1)
+if _old is not None: _os.environ["PVS_LUMA_RESOLUTION"] = _old
+
 print(f"\nRESULT: {'ALL PASS' if not fails else fails} ({ok_n}/{ok_n+len(fails)})")
 sys.exit(1 if fails else 0)

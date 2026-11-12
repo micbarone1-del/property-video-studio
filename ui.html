@@ -1433,6 +1433,7 @@ checkGenerationPauseStatus();
 // 2026-10-08: voice menu + language architecture. Source of truth is voice_generation.TTS_LANGUAGES (via /tts/voices).
 // The language selector stays hidden until more than one language exists.
 let ttsCatalog = null;
+let lumaEurPerSec = null;   // EUR per second of Luma video at the current resolution, from /cost/infra (cost_tracker.luma_eur_per_sec)
 let infraCostPerJob = null;   // EUR per video, from /cost/infra (monthly VPS cost / done jobs of the last 30 days; no copy of the numbers here)
 let ttsCostPerChar = null;   // EUR per character of the ACTIVE TTS provider, read from /tts/voices (no second copy of the rate here)
 function onTtsLanguageChange(code) {
@@ -1445,7 +1446,9 @@ async function loadInfraCost() {
   try {
     const res = await authFetch("/cost/infra");
     if (!res.ok) return;
-    infraCostPerJob = (await res.json()).infra_cost_per_job_eur;
+    const ci = await res.json();
+    infraCostPerJob = ci.infra_cost_per_job_eur;
+    lumaEurPerSec = ci.luma_eur_per_sec;
     try { updateCostEstimate(); } catch (e) {}
   } catch (e) {}
 }
@@ -2794,7 +2797,7 @@ async function updateCostEstimate() {
   // of pricing logic living only in the frontend, never touched when the
   // backend was fixed.
   const ECO_CLIP_COST          = 0.05;  // eco tier keeps its own separate flat approximation
-  const VIDEO_COST_PER_SEC_EUR = { luma: 0.2208, premium: 0.092, premium_veo: 0.184 };
+  const VIDEO_COST_PER_SEC_EUR = { luma: lumaEurPerSec || 0.2208, premium: 0.092, premium_veo: 0.184 };   // luma: from the server (/cost/infra), 0.2208 = 1080p only while the page has not loaded it yet
   const UPSCALE      = 0.030;
   const VIDEO_UP_PER_SEC = 0.02;
   // voiceover rate: from the server (/tts/voices, cost_tracker.tts_cost_per_char), see ttsCostPerChar

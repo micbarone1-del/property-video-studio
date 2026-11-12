@@ -733,7 +733,9 @@ def infra_cost_per_job_endpoint():
     """Infrastructure share of ONE video = monthly VPS cost / done jobs of the last 30 days. Same count and same function as the draft estimates; the page reads it from here."""
     from cost_tracker import get_infra_cost_per_job
     n = _get_rolling_monthly_job_count()
-    return {"infra_cost_per_job_eur": get_infra_cost_per_job(n), "monthly_jobs": n}
+    from cost_tracker import luma_eur_per_sec, luma_price_is_measured
+    return {"infra_cost_per_job_eur": get_infra_cost_per_job(n), "monthly_jobs": n,
+            "luma_eur_per_sec": luma_eur_per_sec(), "luma_price_measured": luma_price_is_measured()}   # 2026-11-12: the page reads the Luma rate for the CURRENT resolution here
 
 
 @app.get("/test-scratch/{filename}")

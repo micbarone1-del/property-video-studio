@@ -119,7 +119,11 @@ USD_TO_EUR = 0.92  # matches the rate already used for VPS_MONTHLY_EUR
 # USD price points, defined ONCE (2026-10-15): VIDEO_COST_PER_SEC_EUR and
 # clip_price_usd() below both read these, so the two can never drift apart.
 LUMA_RAY2_FAL_USD_PER_CLIP = 2.00   # fal.ai Luma Ray 2, 1080p, one 5 s clip (4 x 0.50)
-LUMA_DIRECT_USD_PER_CLIP   = 1.20   # Luma direct API Ray 3.2 1080p SDR, one 5 s clip
+# 2026-11-12: Luma direct price per 5 s clip BY RESOLUTION, the ONE table (estimate, actual cost, rework, provenance and the page all read it).
+# Measured on the Luma billing page: 360p 0.06, 1080p 1.20. Other resolutions are NOT measured: they are priced like 1080p (conservative) and
+# luma_price_is_measured() says so, so the cost detail can flag them.
+LUMA_DIRECT_USD_PER_CLIP_BY_RES = {"360p": 0.06, "1080p": 1.20}
+LUMA_DIRECT_USD_PER_CLIP   = LUMA_DIRECT_USD_PER_CLIP_BY_RES["1080p"]   # Luma direct API Ray 3.2 1080p SDR, one 5 s clip
                                     # (Luma billing page, 7 Oct 2026: -1.20 per ray-3.2 usage line)
 VEO_FAST_USD_PER_SEC       = 0.10   # Veo 3.1 Fast, no audio
 VEO_STANDARD_USD_PER_SEC   = 0.20   # Veo 3.1 Standard, no audio
@@ -134,6 +138,28 @@ VIDEO_COST_PER_SEC_EUR = {
 }
 
 
+def luma_resolution_now():
+    """The resolution the Luma clips are generated at right now (video_generation.luma_resolution, the ONE reader of the switch)."""
+    try:
+        from video_generation import luma_resolution
+        return luma_resolution()
+    except Exception:
+        return (os.environ.get("PVS_LUMA_RESOLUTION", "1080p") or "").strip() or "1080p"
+
+
+def luma_price_is_measured(resolution=None):
+    return (resolution or luma_resolution_now()) in LUMA_DIRECT_USD_PER_CLIP_BY_RES
+
+
+def luma_direct_usd_per_clip(resolution=None):
+    """USD of one 5 s Luma direct clip at `resolution` (default: the current switch). Unmeasured resolution -> the 1080p price."""
+    return LUMA_DIRECT_USD_PER_CLIP_BY_RES.get(resolution or luma_resolution_now(), LUMA_DIRECT_USD_PER_CLIP)
+
+
+def luma_eur_per_sec(resolution=None):
+    return (luma_direct_usd_per_clip(resolution) / 5) * USD_TO_EUR
+
+
 def clip_price_usd(used_model, duration_secs=5):
     """USD price of ONE clip made by the model that actually produced it
     (the `used_model` name from video_generation). None if unknown. Used to
@@ -141,7 +167,7 @@ def clip_price_usd(used_model, duration_secs=5):
     it is also what video_cost_for_clip(used_model=...) uses for the luma tier."""
     m = used_model or ""
     if m == "luma-ray-3.2-direct":
-        return LUMA_DIRECT_USD_PER_CLIP
+        return luma_direct_usd_per_clip()
     if m in ("luma-ray-2", "luma-ray-2-fallback"):
         return LUMA_RAY2_FAL_USD_PER_CLIP
     if m == "veo-3.1-standard":
@@ -174,6 +200,8 @@ def video_cost_for_clip(model_tier: str, duration_secs, used_model=None) -> floa
         usd = clip_price_usd(used_model, duration_secs)
         if usd is not None:
             return (usd / 5.0) * float(duration_secs) * USD_TO_EUR
+    if model_tier == "luma":
+        return duration_secs * luma_eur_per_sec()
     if model_tier in VIDEO_COST_PER_SEC_EUR:
         return duration_secs * VIDEO_COST_PER_SEC_EUR[model_tier]
     return TIER_COST_PER_CLIP.get(model_tier, TIER_COST_PER_CLIP["premium"])

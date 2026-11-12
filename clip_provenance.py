@@ -119,9 +119,9 @@ def summarize(job_dir, scenes_config):
     out = {"clips": [], "fal_clips": 0, "level": "none",
            "est_usd_on_fal": 0.0, "est_usd_if_direct": 0.0}
     try:
-        from cost_tracker import clip_price_usd, LUMA_DIRECT_USD_PER_CLIP
+        from cost_tracker import clip_price_usd, luma_direct_usd_per_clip
     except Exception:
-        clip_price_usd, LUMA_DIRECT_USD_PER_CLIP = (lambda m, d=5: None), None
+        clip_price_usd, luma_direct_usd_per_clip = (lambda m, d=5: None), (lambda: None)
     for i, sc in enumerate(scenes_config or []):
         sid = (sc or {}).get("scene_id")
         f = clip_file_for_scene(job_dir, i, sid)
@@ -140,8 +140,8 @@ def summarize(job_dir, scenes_config):
         out["fal_clips"] += 1
         if price:
             out["est_usd_on_fal"] += price
-        if LUMA_DIRECT_USD_PER_CLIP:
-            out["est_usd_if_direct"] += LUMA_DIRECT_USD_PER_CLIP
+        if luma_direct_usd_per_clip():
+            out["est_usd_if_direct"] += luma_direct_usd_per_clip()
         if str(model).startswith("veo") or model == "ltx-emergency":
             out["level"] = "high"
         elif out["level"] != "high":
