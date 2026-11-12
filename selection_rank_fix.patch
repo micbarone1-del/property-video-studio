@@ -1,0 +1,379 @@
+diff --git a/api_server.py b/api_server.py
+index 46adcec..dff34bf 100644
+--- a/api_server.py
++++ b/api_server.py
+@@ -514,51 +514,8 @@ def _decide_job_format_from_bytes(contents: list) -> str:
+     return "portrait" if portrait_count > landscape_count else "landscape"
+ 
+ 
+-def _normalize_photo_to_format(image_bytes: bytes, target_format: str) -> bytes:
+-    """
+-    Crops a photo to match the job's chosen canonical output format --
+-    "landscape" (16:9) or "portrait" (9:16) -- so every photo in a job
+-    ends up exactly the same shape before generation, and video_assembly.py
+-    can use one fixed canvas per job matching that format (2026-07-17,
+-    per explicit product decision after a real client portrait-photo
+-    distortion issue -- forcing every clip through a hardcoded 16:9
+-    canvas was stretching portrait footage).
+-
+-    Crop direction depends on which way the source differs from target:
+-      - Source is taller/narrower than target (needs height cropped,
+-        e.g. a portrait photo going into a landscape job): TOP-BIASED
+-        crop, not centered -- confirmed via a real side-by-side test
+-        against an actual client photo that starting the crop window
+-        ~15% down from the top keeps more of the informative ceiling/
+-        window content real estate portrait shots are usually framed
+-        for, cropping more from the floor instead.
+-      - Source is wider than target (needs width cropped, e.g. a
+-        landscape photo going into a portrait job): plain CENTER crop --
+-        no equivalent left/right framing bias for typical room photos.
+-    """
+-    from PIL import Image
+-    import io
+-    img = Image.open(io.BytesIO(image_bytes))
+-    w, h = img.size
+-    target_ratio = (16 / 9) if target_format == "landscape" else (9 / 16)
+-    current_ratio = w / h
+-
+-    if abs(current_ratio - target_ratio) / target_ratio < 0.02:
+-        return image_bytes  # already an effective match, don't bother cropping
+-
+-    if current_ratio < target_ratio:
+-        new_h = min(int(w / target_ratio), h)
+-        top = int((h - new_h) * 0.26)  # 2026-07-17: proportional to actual crop amount, not a fixed % of original height
+-        top = max(0, min(top, h - new_h))
+-        cropped = img.crop((0, top, w, top + new_h))
+-    else:
+-        new_w = min(int(h * target_ratio), w)
+-        left = (w - new_w) // 2
+-        cropped = img.crop((left, 0, left + new_w, h))
+-
+-    buf = io.BytesIO()
+-    cropped.save(buf, format='JPEG', quality=95)
+-    return buf.getvalue()
++# 2026-11-12: the function lives in photo_format.py (shared with the photo selection in listing_scraper); this name stays for the callers below.
++from photo_format import normalize_photo_to_format as _normalize_photo_to_format
+ 
+ 
+ def _validate_image_bytes(data: bytes) -> bool:
+diff --git a/listing_scraper.py b/listing_scraper.py
+index 1947c39..dd9233b 100644
+--- a/listing_scraper.py
++++ b/listing_scraper.py
+@@ -468,8 +468,11 @@ def try_upgrade_resolution(image_url: str) -> dict:
+ # the real GET can still answer 403 ("Bad Parameters"); the original URL is kept in
+ # photo["original_url"] and tried second, so one bad upgraded URL no longer fails a job.
+ 
+-def fetch_photo_bytes(url: str, fallback_url: str = None, timeout: int = 20, attempts: int = 1) -> dict:
++def fetch_photo_bytes(url: str, fallback_url: str = None, timeout: int = 20, attempts: int = 1, as_used: bool = True) -> dict:
+     """Returns {"ok", "content", "url_used", "used_fallback", "error"}.
++    2026-11-12 (Michele, listing 105): "content" is the photo AS THE VIDEO WILL USE IT (cut to the video shape, a portrait photo becomes a 16:9 band), because
++    this is the ONE place every stage downloads a photo from (classification, duplicates, quality, ranking, room-feature check, scene facts, the download of
++    the chosen photos): they all judge the same picture the video is made from. as_used=False gives the original bytes.
+     Per URL: transient failures (timeout, connection error, HTTP 429/5xx) are retried up
+     to `attempts` times with a short backoff; other 4xx are permanent for that URL."""
+     urls = [url]
+@@ -486,7 +489,7 @@ def fetch_photo_bytes(url: str, fallback_url: str = None, timeout: int = 20, att
+                     last_error = f"HTTP {resp.status_code}"
+                 else:
+                     resp.raise_for_status()  # other 4xx -> permanent for this URL
+-                    return {"ok": True, "content": resp.content, "url_used": u,
++                    return {"ok": True, "content": _photo_as_used(resp.content) if as_used else resp.content, "url_used": u,
+                             "used_fallback": idx > 0, "error": None}
+             except requests.HTTPError as e:
+                 last_error = f"download failed: {e}"
+@@ -2618,6 +2621,9 @@ def _categorize_and_rank_photos(photos: list, categories: list) -> dict:
+     for cat in by_category:
+         by_category[cat] = rank_photos_by_quality(cat, by_category[cat])
+ 
++    # 2026-11-12: the room's defining feature must be visible in the photo AS USED (see filter_missing_feature_candidates)
++    filter_missing_feature_candidates(by_category)
++
+     # 2026-10-29: the technical-quality filter (blurred / pixelated; watermark and agency logo are only labelled) acts HERE, on the ranked pool, so a
+     # bad photo is never selected and the next candidate takes its place
+     filter_poor_quality_candidates(by_category)
+@@ -2650,6 +2656,85 @@ def _tag_rank(photos: list, status: str) -> list:
+     return photos
+ 
+ 
++# 2026-11-12 (Michele, listing 105, scene 5): the photo that is JUDGED must be the photo that is USED. The video cuts every photo to the job's shape
++# (photo_format.normalize_photo_to_format); a portrait bathroom became a band of bare wall that the whole-photo judge had ranked first. Every stage now gets the
++# cut photo from fetch_photo_bytes (the one download function), so no stage has its own cut.
++# The comparison runs on a stronger model: on that bathroom the default model put the wall photo first 3 times out of 3, Sonnet put the good landscape one first 3 of 3.
++RANK_MODEL = os.environ.get("PVS_RANK_MODEL", "claude-sonnet-5-5")
++
++
++PHOTO_SHAPE = os.environ.get("PVS_PHOTO_SHAPE", "landscape")      # the video shape the selection judges the photos for (every partner / URL job today is landscape)
++
++
++def _photo_as_used(content: bytes) -> bytes:
++    """The bytes of a photo as the video will see it (the ONE cut, shared with api_server). Never raises: on any error the original bytes are used."""
++    try:
++        import photo_format
++        return photo_format.normalize_photo_to_format(content, PHOTO_SHAPE)
++    except Exception as e:
++        log.warning(f"[Scraper] Could not cut the photo to the video shape ({e}), judging the whole photo")
++        return content
++
++
++# Michele 2026-11-12: a bedroom must show its bed, a kitchen its kitchen, a bathroom its fixtures. One yes/no question per category, asked on the photo AS USED.
++ROOM_FEATURE_QUESTION = {
++    "bathrooms": ("Is a sink, shower, bathtub, bidet or the toilet bowl ITSELF visible in this bathroom photo? A flush plate, tiles, a wall, a window or a mirror alone "
++                  "do NOT count. Answer with ONE word: yes or no."),
++    "bedrooms": ("Is a bed itself visible in this bedroom photo (not only its reflection in a mirror)? Answer with ONE word: yes or no."),
++    "kitchen": ("Are kitchen units, a hob or cooker, or a kitchen sink with worktop clearly visible in this kitchen photo? Answer with ONE word: yes or no."),
++}
++ROOM_FEATURE_CHECK_PER_CATEGORY = 3     # the best-ranked candidates asked, in ranking order, until one passes
++
++
++def room_feature_check_enabled() -> bool:
++    return os.environ.get("PVS_FEATURE_GATE", "1").strip().lower() not in ("0", "false", "no", "off")
++
++
++def filter_missing_feature_candidates(by_category: dict, check=None) -> dict:
++    """Runs after the ranking, before the technical-quality filter (inside _categorize_and_rank_photos, so the URL path and the Relinx path both get it).
++    For bathrooms / bedrooms / kitchen: walks the ranked candidates, asks whether the defining feature is visible in the photo AS USED; a candidate answering
++    "no" is tagged p["feature_visible"] = False and moved BEHIND the ones that pass (nothing is deleted: when no candidate passes the order stays and the
++    report shows it). Stops at the first "yes". A failed call keeps the photo (unknown). Never raises."""
++    if not room_feature_check_enabled():
++        return {"enabled": False}
++    check = check or _room_feature_visible
++    summary = {}
++    for cat, question in ROOM_FEATURE_QUESTION.items():
++        plist = by_category.get(cat) or []
++        if len(plist) < 1:
++            continue
++        failed, passed_at = [], None
++        for i, p in enumerate(plist[:ROOM_FEATURE_CHECK_PER_CATEGORY]):
++            try:
++                ok = check(cat, p, question)
++            except Exception as e:
++                log.warning(f"[Scraper] Room feature check failed for {cat}: {e}")
++                ok = None
++            p["feature_visible"] = ok
++            if ok is False:
++                failed.append(p)
++            else:
++                passed_at = i
++                break
++        if failed:
++            keep = [p for p in plist if all(p is not f for f in failed)]
++            by_category[cat] = keep + failed
++        summary[cat] = {"checked": len(failed) + (1 if passed_at is not None else 0), "failed": len(failed), "passed": passed_at is not None}
++    return summary
++
++
++def _room_feature_visible(cat: str, photo: dict, question: str):
++    """True / False from one cheap vision answer on the photo as used (fetch_photo_bytes already cuts it); None when the photo or the call failed (the photo is kept)."""
++    fetched = fetch_photo_bytes(photo.get("url"), photo.get("original_url"), timeout=15)
++    if not fetched["ok"]:
++        return None
++    b64 = _image_b64_for_vision(fetched["content"])
++    word, ok = _vision_word_from_b64([b64], question, label=f"{cat} feature", words=1, max_tokens=20)
++    if not ok or word not in ("yes", "no"):
++        return None
++    return word == "yes"
++
++
+ def rank_photos_by_quality(category: str, candidates: list, max_to_compare: int = 6) -> list:
+     """
+     Ranks candidate photos for a category by real visual quality, per the
+@@ -2681,13 +2766,13 @@ def rank_photos_by_quality(category: str, candidates: list, max_to_compare: int
+             fetched = fetch_photo_bytes(photo["url"], photo.get("original_url"), timeout=15)
+             if not fetched["ok"]:
+                 raise RuntimeError(fetched["error"])
+-            b64 = base64.b64encode(fetched["content"]).decode("utf-8")
++            b64 = base64.b64encode(fetched["content"]).decode("utf-8")   # already the photo as the VIDEO will use it (see fetch_photo_bytes)
+             lab = str(photo.get("label_it") or "").strip()[:80]
+             content.append({"type": "text", "text": f"Photo {i + 1}:" + (f" (page description: {lab})" if lab else "")})
+             content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}})
+ 
+-        response = _track_claude(client.messages.create(model=MODEL, max_tokens=200,
+-                                             messages=[{"role": "user", "content": content}]))
++        response = _track_claude(client.messages.create(model=RANK_MODEL, max_tokens=200,
++                                             messages=[{"role": "user", "content": content}]), RANK_MODEL)
+         raw = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
+         order_match = re.search(r"\[[\d,\s]+\]", raw)
+         if not order_match:
+diff --git a/photo_format.py b/photo_format.py
+new file mode 100644
+index 0000000..2efb1bb
+--- /dev/null
++++ b/photo_format.py
+@@ -0,0 +1,51 @@
++"""photo_format.py -- the ONE place that cuts a photo to the shape of the video (2026-11-12, moved out of api_server.py WITHOUT changing a line of its logic).
++Why: the photo SELECTION (listing_scraper.rank_photos_by_quality) judged the whole photo, while the video used the cut one: on listing 105 a portrait
++bathroom became a band of bare wall. Both now call this same function, so the photo that is judged is the photo that is used."""
++
++
++def normalize_photo_to_format(image_bytes: bytes, target_format: str) -> bytes:
++    """
++    Crops a photo to match the job's chosen canonical output format --
++    "landscape" (16:9) or "portrait" (9:16) -- so every photo in a job
++    ends up exactly the same shape before generation, and video_assembly.py
++    can use one fixed canvas per job matching that format (2026-07-17,
++    per explicit product decision after a real client portrait-photo
++    distortion issue -- forcing every clip through a hardcoded 16:9
++    canvas was stretching portrait footage).
++
++    Crop direction depends on which way the source differs from target:
++      - Source is taller/narrower than target (needs height cropped,
++        e.g. a portrait photo going into a landscape job): TOP-BIASED
++        crop, not centered -- confirmed via a real side-by-side test
++        against an actual client photo that starting the crop window
++        ~15% down from the top keeps more of the informative ceiling/
++        window content real estate portrait shots are usually framed
++        for, cropping more from the floor instead.
++      - Source is wider than target (needs width cropped, e.g. a
++        landscape photo going into a portrait job): plain CENTER crop --
++        no equivalent left/right framing bias for typical room photos.
++    """
++    from PIL import Image
++    import io
++    img = Image.open(io.BytesIO(image_bytes))
++    w, h = img.size
++    target_ratio = (16 / 9) if target_format == "landscape" else (9 / 16)
++    current_ratio = w / h
++
++    if abs(current_ratio - target_ratio) / target_ratio < 0.02:
++        return image_bytes  # already an effective match, don't bother cropping
++
++    if current_ratio < target_ratio:
++        new_h = min(int(w / target_ratio), h)
++        top = int((h - new_h) * 0.26)  # 2026-07-17: proportional to actual crop amount, not a fixed % of original height
++        top = max(0, min(top, h - new_h))
++        cropped = img.crop((0, top, w, top + new_h))
++    else:
++        new_w = min(int(h * target_ratio), w)
++        left = (w - new_w) // 2
++        cropped = img.crop((left, 0, left + new_w, h))
++
++    buf = io.BytesIO()
++    cropped.save(buf, format='JPEG', quality=95)
++    return buf.getvalue()
++
+diff --git a/test_photo_as_used.py b/test_photo_as_used.py
+new file mode 100644
+index 0000000..59f750a
+--- /dev/null
++++ b/test_photo_as_used.py
+@@ -0,0 +1,93 @@
++"""2026-11-12: the photo that is JUDGED is the photo that is USED (listing 105, scene 5). No network, no API key."""
++import base64, io, os, sys, types
++sys.path.insert(0, os.getcwd())
++try:
++    import anthropic  # noqa
++except Exception:
++    m = types.ModuleType("anthropic"); m.Anthropic = object; sys.modules["anthropic"] = m
++from PIL import Image
++import listing_scraper as ls
++import photo_format as pf
++
++res = []
++def check(name, ok, extra=""):
++    res.append(bool(ok)); print(("PASS " if ok else "FAIL ") + name + ("" if ok else "  [%s]" % extra))
++
++def jpg(w, h, grad=False):
++    im = Image.new("RGB", (w, h), (90, 120, 150))
++    if grad:
++        for y in range(h):
++            for x in range(0, w, 50):
++                im.putpixel((x, y), (y % 256, 0, 0))
++    b = io.BytesIO(); im.save(b, "JPEG", quality=95); return b.getvalue()
++
++PORTRAIT, LANDSCAPE = jpg(600, 1000, True), jpg(1600, 900)
++size = lambda b: Image.open(io.BytesIO(b)).size
++
++# P1-P3 the shared cut itself (same numbers the video has always used)
++cut = pf.normalize_photo_to_format(PORTRAIT, "landscape")
++check("P1 portrait photo -> 16:9 band, top-biased (600x337)", size(cut) == (600, 337), size(cut))
++check("P2 landscape photo is left as it is", pf.normalize_photo_to_format(LANDSCAPE, "landscape") == LANDSCAPE)
++check("P3 api_server uses the shared function (alias, no second copy)",
++      "from photo_format import normalize_photo_to_format as _normalize_photo_to_format" in open("api_server.py").read()
++      and "def _normalize_photo_to_format" not in open("api_server.py").read())
++
++# T1-T4 the ONE download function returns the photo as the video will use it
++class _Resp:
++    def __init__(self, c): self.content, self.status_code = c, 200
++    def raise_for_status(self): pass
++store = {"https://x/portrait.jpg": PORTRAIT, "https://x/land.jpg": LANDSCAPE, "https://x/bad.jpg": b"not an image"}
++real_get = ls.requests.get
++ls.requests.get = lambda u, timeout=0: _Resp(store[u])
++r = ls.fetch_photo_bytes("https://x/portrait.jpg")
++check("T1 a portrait photo comes back already cut to 16:9 (600x337)", r["ok"] and size(r["content"]) == (600, 337), size(r["content"]))
++check("T2 a landscape photo comes back unchanged", ls.fetch_photo_bytes("https://x/land.jpg")["content"] == LANDSCAPE)
++check("T3 as_used=False gives the original bytes", ls.fetch_photo_bytes("https://x/portrait.jpg", as_used=False)["content"] == PORTRAIT)
++check("T4 bytes that are not an image come back as they are (never an error)", ls.fetch_photo_bytes("https://x/bad.jpg")["content"] == b"not an image")
++# T5 the stages read photos only through it: no other requests.get in the module (the HEAD of the resolution upgrade is not a download)
++src = open("listing_scraper.py").read()
++check("T5 exactly one real photo download (= requests.get) in listing_scraper: fetch_photo_bytes", src.count("= requests.get(") == 1, src.count("= requests.get("))
++ls.requests.get = real_get
++
++# R1-R3 the comparison reads the photos through it, on the stronger model
++photos = {"u_portrait": PORTRAIT, "u_land": LANDSCAPE}
++ls.fetch_photo_bytes = lambda url, fb=None, timeout=20, attempts=1, as_used=True: {"ok": True, "content": ls._photo_as_used(photos[url]), "url_used": url, "used_fallback": False, "error": None}
++sent = {"sizes": [], "model": None}
++class _Msgs:
++    def create(self, model=None, max_tokens=0, messages=None):
++        sent["model"] = model
++        for part in messages[0]["content"]:
++            if part.get("type") == "image":
++                sent["sizes"].append(size(base64.b64decode(part["source"]["data"])))
++        return types.SimpleNamespace(content=[types.SimpleNamespace(type="text", text="[2, 1]")], usage=types.SimpleNamespace(input_tokens=10, output_tokens=5))
++class _Client:
++    def __init__(self, *a, **k): self.messages = _Msgs()
++ls.anthropic = types.SimpleNamespace(Anthropic=_Client)
++out = ls.rank_photos_by_quality("bathrooms", [{"url": "u_portrait"}, {"url": "u_land"}])
++check("R1 the comparison receives the portrait photo as cut for the video (600x337)", sent["sizes"][0] == (600, 337), sent["sizes"])
++check("R2 the landscape photo reaches the comparison unchanged (1600x900)", sent["sizes"][1] == (1600, 900), sent["sizes"])
++check("R3 the comparison runs on RANK_MODEL (Sonnet)", sent["model"] == ls.RANK_MODEL == "claude-sonnet-5-5", sent["model"])
++check("R4 the order returned follows the model's answer [2, 1], no second ordering rule", [p["url"] for p in out] == ["u_land", "u_portrait"])
++check("R5 no cut-share / demotion workflow left in the selection", "cut_share" not in src and "LOW_CUT" not in src)
++
++# F1-F6 the room-feature gate
++def mk(*names): return [{"url": n} for n in names]
++def run(answers, cat="bathrooms", names=("a", "b", "c", "d")):
++    seen = []
++    def check_fn(c, p, q):
++        seen.append(p["url"]); return answers[p["url"]]
++    by = {cat: mk(*names)}
++    summ = ls.filter_missing_feature_candidates(by, check=check_fn)
++    return [p["url"] for p in by[cat]], seen, summ, by
++order, seen, summ, by = run({"a": False, "b": True, "c": True, "d": True})
++check("F1 first ranked has no fixtures -> the next one that shows them goes first", order == ["b", "c", "d", "a"], order)
++check("F2 the check stops at the first yes (c and d are not asked)", seen == ["a", "b"], seen)
++check("F3 the failed photo is tagged feature_visible False, the good one True", by["bathrooms"][3]["feature_visible"] is False and by["bathrooms"][0]["feature_visible"] is True)
++order, seen, summ, by = run({"a": False, "b": False, "c": False, "d": True})
++check("F4 nothing passes in the first 3 -> only 3 asked, nothing deleted, 4 photos stay", len(seen) == 3 and len(order) == 4 and summ["bathrooms"]["passed"] is False, (seen, summ))
++order, seen, summ, by = run({"a": None, "b": True, "c": True, "d": True})
++check("F5 a failed call (None) keeps the photo in front", order[0] == "a", order)
++by = {"living": mk("a", "b")}
++check("F6 categories without a defining-feature question are untouched", ls.filter_missing_feature_candidates(by, check=lambda *x: False) == {} and [p["url"] for p in by["living"]] == ["a", "b"])
++print("%d/%d PASS" % (sum(res), len(res)))
++sys.exit(0 if all(res) else 1)
+diff --git a/test_photo_ranking_prompt.py b/test_photo_ranking_prompt.py
+index feeb678..690d57b 100644
+--- a/test_photo_ranking_prompt.py
++++ b/test_photo_ranking_prompt.py
+@@ -30,7 +30,7 @@ class Client:
+         return Msg("[2, 1]")
+ ls.anthropic = types.SimpleNamespace(Anthropic=Client)
+ ls.fetch_photo_bytes = lambda url, orig=None, timeout=15: {"ok": True, "content": b"x"}
+-ls._track_claude = lambda r: r
++ls._track_claude = lambda r, model=None: r
+ cands = [{"url": "u1", "label_it": "Camera da letto con armadio"}, {"url": "u2", "label_it": ""}]
+ out = ls.rank_photos_by_quality("bedrooms", cands)
+ texts = [c["text"] for c in sent["content"] if c["type"] == "text"]
+diff --git a/test_selection_report.py b/test_selection_report.py
+index a70cfc4..c52347e 100644
+--- a/test_selection_report.py
++++ b/test_selection_report.py
+@@ -93,7 +93,7 @@ class FakeClient:
+     answer = "[2, 1]"
+     def __init__(self, api_key=None): self.messages = Msgs(FakeClient.answer)
+ ls.anthropic.Anthropic = FakeClient
+-ls._track_claude = lambda r: r
++ls._track_claude = lambda r, model=None: r   # 2026-11-12: the ranking passes the model it ran on (RANK_MODEL)
+ def photos2():
+     return [{"url": "U1", "original_url": "O1", "category": "bedrooms"}, {"url": "U2", "original_url": "O2", "category": "bedrooms"}]
+ FakeClient.answer = "[2, 1]"
