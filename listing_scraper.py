@@ -468,8 +468,11 @@ def try_upgrade_resolution(image_url: str) -> dict:
 # the real GET can still answer 403 ("Bad Parameters"); the original URL is kept in
 # photo["original_url"] and tried second, so one bad upgraded URL no longer fails a job.
 
-def fetch_photo_bytes(url: str, fallback_url: str = None, timeout: int = 20, attempts: int = 1) -> dict:
+def fetch_photo_bytes(url: str, fallback_url: str = None, timeout: int = 20, attempts: int = 1, as_used: bool = True) -> dict:
     """Returns {"ok", "content", "url_used", "used_fallback", "error"}.
+    2026-11-12 (Michele, listing 105): "content" is the photo AS THE VIDEO WILL USE IT (cut to the video shape, a portrait photo becomes a 16:9 band), because
+    this is the ONE place every stage downloads a photo from (classification, duplicates, quality, ranking, room-feature check, scene facts, the download of
+    the chosen photos): they all judge the same picture the video is made from. as_used=False gives the original bytes.
     Per URL: transient failures (timeout, connection error, HTTP 429/5xx) are retried up
     to `attempts` times with a short backoff; other 4xx are permanent for that URL."""
     urls = [url]
@@ -486,7 +489,7 @@ def fetch_photo_bytes(url: str, fallback_url: str = None, timeout: int = 20, att
                     last_error = f"HTTP {resp.status_code}"
                 else:
                     resp.raise_for_status()  # other 4xx -> permanent for this URL
-                    return {"ok": True, "content": resp.content, "url_used": u,
+                    return {"ok": True, "content": _photo_as_used(resp.content) if as_used else resp.content, "url_used": u,
                             "used_fallback": idx > 0, "error": None}
             except requests.HTTPError as e:
                 last_error = f"download failed: {e}"
@@ -2618,6 +2621,9 @@ def _categorize_and_rank_photos(photos: list, categories: list) -> dict:
     for cat in by_category:
         by_category[cat] = rank_photos_by_quality(cat, by_category[cat])
 
+    # 2026-11-12: the room's defining feature must be visible in the photo AS USED (see filter_missing_feature_candidates)
+    filter_missing_feature_candidates(by_category)
+
     # 2026-10-29: the technical-quality filter (blurred / pixelated; watermark and agency logo are only labelled) acts HERE, on the ranked pool, so a
     # bad photo is never selected and the next candidate takes its place
     filter_poor_quality_candidates(by_category)
@@ -2648,6 +2654,85 @@ def _tag_rank(photos: list, status: str) -> list:
         p["rank_status"] = status
         p["rank_position"] = i + 1
     return photos
+
+
+# 2026-11-12 (Michele, listing 105, scene 5): the photo that is JUDGED must be the photo that is USED. The video cuts every photo to the job's shape
+# (photo_format.normalize_photo_to_format); a portrait bathroom became a band of bare wall that the whole-photo judge had ranked first. Every stage now gets the
+# cut photo from fetch_photo_bytes (the one download function), so no stage has its own cut.
+# The comparison runs on a stronger model: on that bathroom the default model put the wall photo first 3 times out of 3, Sonnet put the good landscape one first 3 of 3.
+RANK_MODEL = os.environ.get("PVS_RANK_MODEL", "claude-sonnet-5-5")
+
+
+PHOTO_SHAPE = os.environ.get("PVS_PHOTO_SHAPE", "landscape")      # the video shape the selection judges the photos for (every partner / URL job today is landscape)
+
+
+def _photo_as_used(content: bytes) -> bytes:
+    """The bytes of a photo as the video will see it (the ONE cut, shared with api_server). Never raises: on any error the original bytes are used."""
+    try:
+        import photo_format
+        return photo_format.normalize_photo_to_format(content, PHOTO_SHAPE)
+    except Exception as e:
+        log.warning(f"[Scraper] Could not cut the photo to the video shape ({e}), judging the whole photo")
+        return content
+
+
+# Michele 2026-11-12: a bedroom must show its bed, a kitchen its kitchen, a bathroom its fixtures. One yes/no question per category, asked on the photo AS USED.
+ROOM_FEATURE_QUESTION = {
+    "bathrooms": ("Is a sink, shower, bathtub, bidet or the toilet bowl ITSELF visible in this bathroom photo? A flush plate, tiles, a wall, a window or a mirror alone "
+                  "do NOT count. Answer with ONE word: yes or no."),
+    "bedrooms": ("Is a bed itself visible in this bedroom photo (not only its reflection in a mirror)? Answer with ONE word: yes or no."),
+    "kitchen": ("Are kitchen units, a hob or cooker, or a kitchen sink with worktop clearly visible in this kitchen photo? Answer with ONE word: yes or no."),
+}
+ROOM_FEATURE_CHECK_PER_CATEGORY = 3     # the best-ranked candidates asked, in ranking order, until one passes
+
+
+def room_feature_check_enabled() -> bool:
+    return os.environ.get("PVS_FEATURE_GATE", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def filter_missing_feature_candidates(by_category: dict, check=None) -> dict:
+    """Runs after the ranking, before the technical-quality filter (inside _categorize_and_rank_photos, so the URL path and the Relinx path both get it).
+    For bathrooms / bedrooms / kitchen: walks the ranked candidates, asks whether the defining feature is visible in the photo AS USED; a candidate answering
+    "no" is tagged p["feature_visible"] = False and moved BEHIND the ones that pass (nothing is deleted: when no candidate passes the order stays and the
+    report shows it). Stops at the first "yes". A failed call keeps the photo (unknown). Never raises."""
+    if not room_feature_check_enabled():
+        return {"enabled": False}
+    check = check or _room_feature_visible
+    summary = {}
+    for cat, question in ROOM_FEATURE_QUESTION.items():
+        plist = by_category.get(cat) or []
+        if len(plist) < 1:
+            continue
+        failed, passed_at = [], None
+        for i, p in enumerate(plist[:ROOM_FEATURE_CHECK_PER_CATEGORY]):
+            try:
+                ok = check(cat, p, question)
+            except Exception as e:
+                log.warning(f"[Scraper] Room feature check failed for {cat}: {e}")
+                ok = None
+            p["feature_visible"] = ok
+            if ok is False:
+                failed.append(p)
+            else:
+                passed_at = i
+                break
+        if failed:
+            keep = [p for p in plist if all(p is not f for f in failed)]
+            by_category[cat] = keep + failed
+        summary[cat] = {"checked": len(failed) + (1 if passed_at is not None else 0), "failed": len(failed), "passed": passed_at is not None}
+    return summary
+
+
+def _room_feature_visible(cat: str, photo: dict, question: str):
+    """True / False from one cheap vision answer on the photo as used (fetch_photo_bytes already cuts it); None when the photo or the call failed (the photo is kept)."""
+    fetched = fetch_photo_bytes(photo.get("url"), photo.get("original_url"), timeout=15)
+    if not fetched["ok"]:
+        return None
+    b64 = _image_b64_for_vision(fetched["content"])
+    word, ok = _vision_word_from_b64([b64], question, label=f"{cat} feature", words=1, max_tokens=20)
+    if not ok or word not in ("yes", "no"):
+        return None
+    return word == "yes"
 
 
 def rank_photos_by_quality(category: str, candidates: list, max_to_compare: int = 6) -> list:
@@ -2681,13 +2766,13 @@ def rank_photos_by_quality(category: str, candidates: list, max_to_compare: int 
             fetched = fetch_photo_bytes(photo["url"], photo.get("original_url"), timeout=15)
             if not fetched["ok"]:
                 raise RuntimeError(fetched["error"])
-            b64 = base64.b64encode(fetched["content"]).decode("utf-8")
+            b64 = base64.b64encode(fetched["content"]).decode("utf-8")   # already the photo as the VIDEO will use it (see fetch_photo_bytes)
             lab = str(photo.get("label_it") or "").strip()[:80]
             content.append({"type": "text", "text": f"Photo {i + 1}:" + (f" (page description: {lab})" if lab else "")})
             content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}})
 
-        response = _track_claude(client.messages.create(model=MODEL, max_tokens=200,
-                                             messages=[{"role": "user", "content": content}]))
+        response = _track_claude(client.messages.create(model=RANK_MODEL, max_tokens=200,
+                                             messages=[{"role": "user", "content": content}]), RANK_MODEL)
         raw = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
         order_match = re.search(r"\[[\d,\s]+\]", raw)
         if not order_match:

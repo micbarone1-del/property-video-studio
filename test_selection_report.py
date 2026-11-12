@@ -93,7 +93,7 @@ class FakeClient:
     answer = "[2, 1]"
     def __init__(self, api_key=None): self.messages = Msgs(FakeClient.answer)
 ls.anthropic.Anthropic = FakeClient
-ls._track_claude = lambda r: r
+ls._track_claude = lambda r, model=None: r   # 2026-11-12: the ranking passes the model it ran on (RANK_MODEL)
 def photos2():
     return [{"url": "U1", "original_url": "O1", "category": "bedrooms"}, {"url": "U2", "original_url": "O2", "category": "bedrooms"}]
 FakeClient.answer = "[2, 1]"

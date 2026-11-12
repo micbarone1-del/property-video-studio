@@ -30,7 +30,7 @@ class Client:
         return Msg("[2, 1]")
 ls.anthropic = types.SimpleNamespace(Anthropic=Client)
 ls.fetch_photo_bytes = lambda url, orig=None, timeout=15: {"ok": True, "content": b"x"}
-ls._track_claude = lambda r: r
+ls._track_claude = lambda r, model=None: r
 cands = [{"url": "u1", "label_it": "Camera da letto con armadio"}, {"url": "u2", "label_it": ""}]
 out = ls.rank_photos_by_quality("bedrooms", cands)
 texts = [c["text"] for c in sent["content"] if c["type"] == "text"]
