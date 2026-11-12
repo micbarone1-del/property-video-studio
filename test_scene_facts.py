@@ -45,7 +45,7 @@ r = ls.generate_narration_and_derive_scenes("TESTO", None, None, None, False, "A
 check("W1 switch off: text unchanged, no vision call, scene_facts None", seen["d"] == "TESTO" and not calls and r["scene_facts"] is None)
 os.environ["PVS_SCENE_FACTS"] = "1"
 r = ls.generate_narration_and_derive_scenes("TESTO", None, None, None, False, "Ag", None, seq, photos)
-check("W2 switch on: the facts follow the listing text and are returned", seen["d"].startswith("TESTO") and "Scene three: Cucina con zona pranzo" in seen["d"] and r["scene_facts"] == ls.drop_unlisted_outdoor_facts(six, "TESTO") and r["scene_facts"] != six)
+check("W2 switch on: the facts follow the listing text and are returned", seen["d"].startswith("TESTO") and "Scene three: Cucina con zona pranzo" in seen["d"] and r["scene_facts"] == ls.drop_unlisted_facts(six, "TESTO") and r["scene_facts"] != six)
 r = ls.generate_narration_and_derive_scenes("TESTO con terrazza, balcone e giardino", None, None, None, False, "Ag", None, seq, photos)
 check("W2b the listing names terrace, balcony and garden: all facts are kept", r["scene_facts"] == six)
 calls.clear()
