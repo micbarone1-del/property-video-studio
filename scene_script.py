@@ -204,16 +204,20 @@ def sale_rent_problems(sentence_low: str, desc: str, who: str) -> list:
     return problems
 
 
+LIST_SPAN = 220   # 2026-11-13: after a floor word the listing often LISTS its rooms ("Al Piano Terra: ... soggiorno, ... bagno"): the list ends at the sentence end or at the next floor word
 TIE_SPAN = 45     # characters: how close two words must be in the listing text for the listing to "say" they belong together
 
 
-def _listing_ties(desc: str, pattern: str, room: str) -> bool:
+def _listing_ties(desc: str, pattern: str, room: str, list_mode: bool = False) -> bool:
     """2026-11-03 (Michele): "la cucina è al primo piano" is allowed when the listing says it; otherwise avoided. True when the listing text
     has `pattern` (a regex) and a keyword of `room` within TIE_SPAN characters of each other (either order)."""
     kws = "|".join(re.escape(k) for k in ROOM_KEYWORDS.get(room, ()))
     if not kws or not desc:
         return False
-    return bool(re.search(rf"(?:{pattern})[^.;!?]{{0,{TIE_SPAN}}}\b(?:{kws})|\b(?:{kws})[^.;!?]{{0,{TIE_SPAN}}}(?:{pattern})", desc, re.I | re.S))
+    back = rf"\b(?:{kws})[^.;!?]{{0,{TIE_SPAN}}}(?:{pattern})"
+    fwd = (rf"(?:{pattern})(?:(?!{pattern})[^.;!?]){{0,{LIST_SPAN}}}\b(?:{kws})" if list_mode
+           else rf"(?:{pattern})[^.;!?]{{0,{TIE_SPAN}}}\b(?:{kws})")
+    return bool(re.search(fwd + "|" + back, desc, re.I | re.S))
 
 
 def _rooms_tied(desc: str, cat: str, other: str) -> bool:
@@ -249,7 +253,7 @@ def _fact_problems(s: str, tag: str, low: str, desc: str, desc_numbers: set, pri
             problems.append(f"{tag}: promotional adjective '{stem}...' is not in the listing text")
     if _FLOOR_RE.search(s):
         for room in sorted(named_rooms(s)):
-            if not _listing_ties(desc, _FLOOR_RE.pattern, room):
+            if not _listing_ties(desc, _FLOOR_RE.pattern, room, list_mode=True):
                 problems.append(f"{tag}: names a floor together with a room ({room}) and the listing text does not tie them")
                 break
     return problems

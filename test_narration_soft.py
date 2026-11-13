@@ -10,4 +10,10 @@ chk("T3 two fillers not in the listing are rejected", len(ss.generic_problems(["
 src = open("scene_script.py").read()
 chk("T4 the live block validator and prompt have no max-rooms rule", "total_named > MAX_ROOMS_NAMED" not in src and "Name AT MOST {MAX_ROOMS_NAMED}" not in src)
 chk("T5 proofreader told that numbers in one word are correct", "duemilaventi" in ic.SUSPECT_PROMPT)
+DL = "Al Piano Terra: troviamo accogliente portico d'ingresso, luminoso soggiorno, cucinotto separato e bagno finestrato. Piano Primo : Camera matrimoniale, cameretta con balcone."
+FP = ss._FLOOR_RE.pattern
+chk("T6 floor then a list: the living room is tied to the floor", ss._listing_ties(DL, FP, "living", True))
+chk("T7 floor then a list: the bathroom is tied to the floor", ss._listing_ties(DL, FP, "bathrooms", True))
+chk("T8 a sentence break ends the list: living not tied", not ss._listing_ties("Al piano terra c'e il garage. Il soggiorno e ampio.", FP, "living", True))
+chk("T9 another floor word ends the list: bedrooms not tied", not ss._listing_ties("Al piano terra il garage, al primo piano il soggiorno.", FP, "bedrooms", True))
 print("FAILS", F)
