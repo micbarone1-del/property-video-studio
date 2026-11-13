@@ -145,10 +145,10 @@ vsrc = Path("video_generation.py").read_text()
 check("MD51 ONE place calls the director (generate_video_single); no other module does", vsrc.count("movement_director.plan(") == 1 and sum(Path(f).read_text().count("movement_director.plan(") for f in ("api_server.py", "scene_rework.py", "listing_scraper.py")) == 0)
 
 # I. target frame (2026-11-02): the description is written for the move, centred on the director's target
-p, _ = md.validate(dict(FWD, target_x=0.6, target_y=0.45), DEEP)
-check("MD52 the plan keeps the target's place in the photo", p["center"] == (0.6, 0.45), p.get("center"))
-p, _ = md.validate(dict(FWD, target_x=0.68, target_y="x"), DEEP)
-check("MD53 a near-edge or unreadable target position is kept near the middle", p["center"] == (0.65, 0.5), p.get("center"))
+p, _ = md.validate(dict(FWD, target_x=0.55, target_y=0.45), DEEP)
+check("MD52 the plan keeps the target's place in the photo", p["center"] == (0.55, 0.45), p.get("center"))
+p, _ = md.validate(dict(FWD, target_x=0.5, target_y="x"), DEEP)
+check("MD53 an unreadable target height is kept near the middle", p["center"] == (0.5, 0.5), p.get("center"))
 p, _ = md.validate(dict(FWD, target_x=0.95, target_y=0.5), DEEP)
 check("MD53b an extreme target (x=0.95) is retargeted to the exact centre (2026-11-03)", p["center"] == (0.5, 0.5) and p["target"] == "the centre of the frame", p)
 q = []
@@ -169,7 +169,7 @@ check("MD58 the final Luma prompt is not heavier than today's (words)", len(full
 # J. 2026-11-02 fixes after jobs 73fed155 / de90cbaf / 50472245
 for n, tg in (("MD59 a door", "the balcony door"), ("MD60 a mirror", "the mirror"), ("MD61 a wall TV and sideboard", "far wall with wall-mounted TV and sideboard"),
               ("MD62 a wall picture (the cityscape photograph)", "cityscape photograph on the far wall")):
-    p, pr = md.validate(dict(FWD, target=tg, target_x=0.3), DEEP)
+    p, pr = md.validate(dict(FWD, target=tg, target_x=0.5), DEEP)
     check(n + " as target -> Claude's forward move is KEPT, retargeted to the centre in the positive sentence (not the old negative fallback)",
           p and p["source"] == "claude" and p["move"] == "forward" and p["target"] == camera_plan.CENTRE_ANCHOR and "retargeted" in p["adjusted"]
           and p["center"] == (0.5, 0.5) and "never" not in p["sentence"], (p, pr))
@@ -201,7 +201,7 @@ p, _ = md.validate(_fw("kitchen island", 0.5), _H)
 check("MD73 a central target is kept", p["target"] == "kitchen island" and not p.get("adjusted"), p)
 p, _ = md.validate(_fw("far end wall of the room", 0.5), _H)
 check("MD74 'far end wall' is not a side", p["target"] == "far end wall of the room", p)
-check("MD75 the director's question tells Claude the target must be central", "target_x between 0.3 and 0.7" in Path("movement_director.py").read_text())
+check("MD75 the director's question tells Claude the target must be central", f"target_x between {md.CENTRAL_X_MIN} and {md.CENTRAL_X_MAX}" in Path("movement_director.py").read_text())
 check("MD76 the director treats a high viewpoint looking down as aerial -> static", "looking clearly DOWN" in Path("movement_director.py").read_text() and "aerial = drone, map, or a high viewpoint" in Path("movement_director.py").read_text())
 import os as _os
 _old = _os.environ.get("PVS_DIRECTOR_NEAR")
@@ -219,7 +219,7 @@ else:
 check("MD77 PVS_DIRECTOR_NEAR=0 gives exactly the old far-target prompt; with no variable the NEAR prompt is the default", _std == md.PROMPT and "Aim at something FAR" in _std and _default_is_near)
 check("MD78 with PVS_DIRECTOR_NEAR=1 the target is NEAR (reachable in five seconds), never the far background, never an entrance", "Aim at something NEAR" in _near and "Aim at something FAR" not in _near
       and "ARRIVE at its target" in _near and "not at the building or its" in _near)
-check("MD79 the near version keeps every other rule (central target, aerial, braces for format)", "target_x between 0.3 and 0.7" in _near and "looking clearly DOWN" in _near and bool(_near.format(facts="x", feedback="")))
+check("MD79 the near version keeps every other rule (central target, aerial, braces for format)", f"target_x between {md.CENTRAL_X_MIN} and {md.CENTRAL_X_MAX}" in _near and "looking clearly DOWN" in _near and bool(_near.format(facts="x", feedback="")))
 print(f"\n{'ALL PASS' if not fails else str(fails) + ' FAIL'}")
 
 # EYE (2026-11-04): floor / ground targets
@@ -240,4 +240,11 @@ check("MDE6 EYE on: the road is never a target", p["target"] == "the centre of t
 pt = md.prompt_text()
 check("MDE7 EYE on: the prompt asks for a vertical feature at eye level, facades aim at the building", "VERTICAL feature at about eye level" in pt and "aim at the building itself" in pt and "aim at the ground" not in pt)
 os.environ.pop("PVS_DIRECTOR_EYE", None)
+# 2026-11-13 (job b05655b9 scene 1): a target a little left of the middle (x=0.38) is no longer accepted: it turned the camera
+for n, x, ok in (("MDX1 x=0.38 (the sofa that made Luma turn)", 0.38, False), ("MDX2 x=0.62", 0.62, False), ("MDX3 x=0.45", 0.45, True), ("MDX4 x=0.55", 0.55, True)):
+    p, _ = md.validate(dict(FWD, target="the dining table", target_x=x, target_y=0.5), DEEP)
+    kept = bool(p) and p["target"] == "the dining table"
+    check(n + (" is kept as target" if ok else " is retargeted to the centre of the frame"),
+          kept == ok and (ok or (p["target"] == camera_plan.CENTRE_ANCHOR and p["center"] == (0.5, 0.5))), p)
+print(f"\n{'ALL PASS' if not fails else str(fails) + ' FAIL'} (final)")
 sys.exit(1 if fails else 0)
