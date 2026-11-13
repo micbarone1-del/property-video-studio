@@ -104,8 +104,18 @@ VERB_RULE = ("- Every sentence needs a conjugated verb. A noun phrase alone is N
              "but 'Il giardino terrazzato misura circa 60 metri quadri.' (or 'Il giardino è di circa 60 metri quadri'). Keep the short sentences short, but with a verb.")
 
 
+def spoken_name(name):
+    """2026-11-13 (Michele): the voice reads a word written in capitals as an acronym, letter by letter (a test agency "PVS DRYRUN" came out
+    as nonsense). The agency name is shown to Claude in normal capitals ("Gial Immobiliare"), so the sentence is written that way and the
+    voice reads words. Checks compare lower-case text, so they are unaffected. ONE place, used by every prompt builder below."""
+    if not name:
+        return name
+    return " ".join(w.capitalize() if len(w) > 1 and w.isalpha() and w.isupper() else w for w in str(name).split())
+
+
 def build_prompt(description: str, address: str, agency_name: str, labels: list) -> str:
     """labels: the Italian name of the room each of the 6 scenes shows, in video order."""
+    agency_name = spoken_name(agency_name)
     agency = agency_name or "(agency name not available: say 'l'agenzia')"
     scene_lines = []
     for i, label in enumerate(labels):
@@ -315,6 +325,7 @@ def spill_problems(sync: dict, scene_count: int = SCENES) -> list:
 
 
 def build_tighten_prompt(sentences: list, bad: list, description: str, agency_name: str = None) -> str:
+    agency_name = spoken_name(agency_name)
     lines = []
     for idx, over in bad:
         target = max(6, len(words(sentences[idx])) - max(2, int(round(over * WORDS_PER_SEC)) + 1))
@@ -357,6 +368,7 @@ ESTIMATE_PREFIX = "estimated timing:"   # every message of estimate_timing_probl
 
 def build_anchored_prompt(description: str, address: str, agency_name: str, labels: list) -> str:
     """labels: the Italian name of what each of the 6 scenes shows, in video order."""
+    agency_name = spoken_name(agency_name)
     agency = agency_name or "(agency name not available: say 'l'agenzia')"
     scene_lines = "\n".join(f"Scene {i + 1}: {label}" for i, label in enumerate(labels))
     return f"""You write the Italian voiceover of a 30-second real estate video. The video shows 6 scenes of about 5 seconds, in this order:
@@ -726,6 +738,7 @@ def generic_problems(blocks: list, description: str = "", min_hits: int = 1) -> 
 def build_blocks_prompt(description: str, address: str, agency_name: str, labels: list, scene_sequence: list) -> str:
     """labels: the Italian name of what each of the 6 scenes shows, in video order. The text comes back as 3 blocks of 2 sentences;
     sentence k of a block is heard while scene k of that block is shown (Patch R)."""
+    agency_name = spoken_name(agency_name)
     agency = agency_name or "(agency name not available: say 'l'agenzia')"
     agency_it = agency_name or "l'agenzia"
     scene_lines = "\n".join(f"Scene {i + 1}: {label}" for i, label in enumerate(labels))
