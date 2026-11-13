@@ -98,7 +98,7 @@ function sceneBlock(id, s, withChoice) {
   const vid = '<video controls preload="none" src="/jobs/' + id + '/clip/' + s.scene + '/preview"></video>';
   const sug = s.kind === 'flagged' ? 'approve' : 'redo';
   const choice = withChoice ? '<div class="choice"><label><input type="radio" name="c-' + id + '-' + s.scene + '" value="approve"' + (sug === 'approve' ? ' checked' : '') + '> Approva</label><label><input type="radio" name="c-' + id + '-' + s.scene + '" value="redo"' + (sug === 'redo' ? ' checked' : '') + '> Rifai (circa 1,1 EUR)</label></div>' : '';
-  return '<div class="scene">' + (s.kind === 'failed' ? '' : vid) + '<div class="txt"><b>Scena ' + (s.scene + 1) + '</b> - ' + esc(KIND[s.kind] || 'approvata dal sistema') + (s.severity ? ' (' + esc(s.severity) + ')' : '') + '<div class="mute">' + esc((s.issues || []).join(' | ')) + '</div>' + choice + '</div></div>';
+  return '<div class="scene">' + (s.kind === 'failed' ? '' : vid) + '<div class="txt"><b>Scena ' + (s.scene + 1) + '</b> - ' + esc(KIND[s.kind] || 'approvata dal sistema') + (s.severity && s.severity !== 'none' ? ' (' + esc(s.severity) + ')' : '') + '<div class="mute">' + esc((s.issues || []).join(' | ') || (s.kind ? 'nessun motivo registrato per questo verdetto' : '')) + '</div>' + choice + '</div></div>';
 }
 let OPEN = {}, LAST = null, INPUT = {};
 async function loadInput(id) {
@@ -126,7 +126,9 @@ function paintRev(id) {
   if (!OPEN[id]) { box.innerHTML = ''; return; }
   const j = LAST.jobs.find(x => x.job_id === id); if (!j) return;
   let html = '';
-  if (j.stops_detail && j.stops_detail.length) {
+  if (j.stops_detail && j.stops_detail.length && j.status !== 'awaiting_approval') {
+    html += j.stops_detail.map(s => sceneBlock(id, s, false)).join('') + '<div class="mute" style="margin-top:6px">Il job non e\' in attesa di te: per rifare una scena usa Rifai questa scena nell\'app principale.</div>';
+  } else if (j.stops_detail && j.stops_detail.length) {
     html += j.stops_detail.map(s => sceneBlock(id, s, true)).join('') + '<div style="margin-top:8px"><button class="go" onclick="confirmApproval(\'' + id + '\')">Conferma scelte</button></div>';
   } else if (j.auto_approved && j.auto_approved.length) {
     html += j.auto_approved.map(a => sceneBlock(id, { scene: a.scene, kind: '', severity: a.severity, issues: a.issues }, false)).join('') + '<div class="mute" style="margin-top:6px">Per rifare una di queste scene usa Rifai nell\'app principale.</div>';
