@@ -62,7 +62,7 @@ Facts from the photo analysis (may be wrong, trust your own eyes): {facts}
 JSON keys:
  "view": "interior" | "ground" | "aerial"   (ground = outdoors at ground level; aerial = drone, map, or a high viewpoint looking down)
  "move": one of forward, lateral_left, lateral_right, rotate_left, rotate_right, static
- "target": a short English noun phrase for the far fixed thing the camera heads toward (forward) or keeps in the centre, or "centre of the frame". A forward target MUST sit near the horizontal middle of the photo (target_x between 0.3 and 0.7) and its phrase names no side ("far right wall", "left corner"): the video model turns the camera towards any target that is off to one side. If the interesting thing is at a side, use "centre of the frame"
+ "target": a short English noun phrase for the far fixed thing the camera heads toward (forward) or keeps in the centre, or "centre of the frame". A forward target MUST sit near the horizontal middle of the photo (target_x between 0.42 and 0.58) and its phrase names no side ("far right wall", "left corner"): the video model turns the camera towards any target that is off to one side. If the interesting thing is at a side, use "centre of the frame"
  "target_x", "target_y": where the target sits in the photo, as fractions from 0 to 1 (x from the left edge, y from the top edge); the shot ends centred on it
  "travel": "short" | "medium" | "long"   (forward: how far the camera glides; sideways moves ignore this)
  "risk": "low" | "medium" | "high"   (your honest chance that the model invents something with the move you chose)
@@ -294,6 +294,10 @@ def validate(raw: dict, hints: dict):
     return plan, []
 
 
+# 2026-11-13 (job b05655b9 scene 1, Michele): a target at x=0.38 (orange sofa, a little left of the middle) made Luma turn the camera and show a wall that is not in
+# the photo, although it passed the old 0.3-0.7 band. The band is now narrow: only a target on the camera's own axis keeps the straight push-in; anything else
+# becomes 'the centre of the frame'. ONE place: the guard below uses these two numbers, the director's question (text above) must say the same (test MD75).
+CENTRAL_X_MIN, CENTRAL_X_MAX = 0.42, 0.58
 SIDE_WORDS = re.compile(r"\b(left|right|corner|side|edge)\b", re.I)
 
 
@@ -307,7 +311,7 @@ def _off_centre(raw: dict, target: str) -> bool:
         x = float(raw.get("target_x"))
     except (TypeError, ValueError):
         return False
-    return x < 0.3 or x > 0.7
+    return x < CENTRAL_X_MIN or x > CENTRAL_X_MAX
 
 
 def _center(raw: dict):
