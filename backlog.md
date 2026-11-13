@@ -1199,3 +1199,12 @@ Produzione: narrazione ancora Haiku e pace fix spento (scelta di abilitare Sonne
 - Aperto: elenco annunci Relinx: serve un export di Relinx (ID, URL, agenzia), poi un campione di 100-150 annunci (stima 15-25 EUR, non misurata) per contare gli idonei.
 - Aperto: le batterie fatte prima del 12/11 sul simulatore Relinx con testi oltre 500 caratteri usavano testi tagliati: rileggerle con cautela.
 - Aperto: etichette QC = note di Michele sulla batteria dei 5 video (scena, tipo di difetto, gravita'); gia' segnalati: camino di 1132 da foto, frasi deboli di 106.
+
+## 2026-11-13 - dopo il test Relinx: cosa resta (dettaglio in status.md 2026-11-13)
+- [APERTO] Prova generale in produzione con payload proprio sul canale vero: callback, stato, comportamento 429, notifiche; e verificare se Relinx riceve motivo/failure_code per una bozza non idonea (1346). Decisione di Michele: se ne parla con Relinx.
+- [APERTO] Riportare PVS_PARTNER_AGENCY_LIMIT_24H a 2 all'inizio del pilota ufficiale (ora 20).
+- [APERTO] Target del director: verificato su 5 piani + 1 clip; osservare le prime generazioni vere con Relinx. Eliminare dopo il test la logica ancora duplicata del target (anchor vs director) con un'unica via sicura (disciplina architettura).
+- [APERTO] Token "static" (micro-parallax 10 gradi) vs consiglio Luma "stationary / locked off": rimandato, stanze piccole non toccate.
+- [APERTO] Foto alternativa: stato "rejected_again" fuorviante (copre reject e flag); URL firmati Relinx a 3 giorni; il primo rifiuto del test era forzato.
+- [APERTO] Comando per forzare un rework anche su job gia' done senza passare dal gate; mostrare nel job il piano del director e il motivo misurato; start.sh con nome screen esatto; limite MAX_ANCHORS duplicato nel builder; riga di prompt "vista sugli alberi" in attesa dell'OK di Michele; eventuale NEW_MAX_LIMIT 0.15 solo con dati (clip_standard.record registra new_max per clip); 1336 accettazione non deterministica.
+- [APERTO] Chiusura capitolo narrazione: Michele deve ascoltare i video 360p con la nuova narrazione.
