@@ -695,17 +695,28 @@ def view_problems(text: str, description: str) -> list:
             f"(it is not in the listing); use another concrete fact about the property instead (floor, size, rooms, outdoor space, renovation, period building)"]
 
 
-def generic_problems(blocks: list) -> list:
+GENERIC_MIN_HITS = 2   # Michele 2026-11-13: filler stated by the listing is kept; a lone vague phrase is low priority and tolerated, 2 or more are not
+
+
+def generic_problems(blocks: list, description: str = "", min_hits: int = 1) -> list:
     """Problems for filler phrases that fit any apartment (empty = none)."""
     import re as _re
     out = []
+    desc = _re.sub(r"\s+", " ", str(description or "").lower())
+    total = 0
     for b, text in enumerate(blocks or []):
         low = _re.sub(r"\s+", " ", str(text).lower())
-        hit = [g for g in GENERIC_PHRASES if g in low]
+        hit = [g for g in GENERIC_PHRASES if g in low and g not in desc]
+        spans = sorted((m.start(), m.end()) for g in hit for m in _re.finditer(_re.escape(g), low))
+        end = -1
+        for st, en in spans:
+            if st >= end:
+                total += 1
+            end = max(end, en)
         if hit:
             out.append(f"block {b + 1} uses generic filler ({', '.join(repr(h) for h in hit)}) that fits any apartment: replace it with a concrete fact "
                        f"from the listing text (a named feature: for example exposed wooden beams, double height, a bathroom with a window, an attic, the period building, a balcony, the number of levels)")
-    return out
+    return out if total >= min_hits else []
 
 
 def build_blocks_prompt(description: str, address: str, agency_name: str, labels: list, scene_sequence: list) -> str:
@@ -745,7 +756,7 @@ Agency: {agency}
 
 CONTENT:
 - Block 1, sentence 1: the agency presenting the property ("{agency_name or "L'agenzia"} presenta ..."), saying clearly "in vendita" or "in affitto" (as the listing says; if the listing says neither sale nor rent, say neither) and the PLACE (the town or neighbourhood named in the address, the listing title or the listing text, for example "ad Albano Laziale": always name it when any of them gives one; never write only "vicino al centro"). Short. Sentence 2: the most important general fact (size, property type...).
-- Blocks 2 and 3: one short sentence per scene as listed above. A sentence over a room's scene may be about that room (a real fact from the listing or from the photo notes: light, size, equipment, number of rooms) or a general sentence about the property. Name AT MOST {MAX_ROOMS_NAMED} rooms in the whole narration, only the real highlights, and a room name is ONLY allowed in the sentence heard over that room's scene (the word is checked against the audio).
+- Blocks 2 and 3: one short sentence per scene as listed above. A sentence over a room's scene may be about that room (a real fact from the listing or from the photo notes: light, size, equipment, number of rooms) or a general sentence about the property. Naming rooms is not required (not all of them fit in 30 seconds): about {MAX_ROOMS_NAMED} highlight rooms is what to expect, it is not a limit. A room name is ONLY allowed in the sentence heard over that room's scene (the word is checked against the audio).
 - WHAT A SENTENCE IS ABOUT: over a room's scene, if the listing says something about THAT room, talk about that room. If it says nothing about it, make the sentence a general fact about the property as a whole taken from the listing (floor layout, number of rooms, position, transport, schools, building, outdoor spaces), NEVER about a DIFFERENT room or space (basement, cellar, garage, storage room, laundry): speaking of room A while the picture shows room B is a clash. Do not address the listener directly: no 'tu', 'ti', 'trovi', 'vedi', 'scopri' (the closing invitation with the agency name is the only imperative).
 - The closing is NOT a separate sentence: sentence 2 of block 3 (heard over scene 6) states the fact about that scene and ends with a short invitation to contact {agency_name or 'the agency'} by name, joined in the SAME sentence with a comma or a colon (shape: "<outdoor fact>, contatta {agency_it}."). The invitation never mentions a visit.
 - SPECIFIC, NOT GENERIC (important): before writing, pick from the listing text the most DISTINCTIVE concrete features of this property (architecture and character such as exposed wooden beams, double-height ceilings, a bathroom with a window, an attic, a period building, number of levels, balcony, terrace, view, orientation, renovation, large windows) and spend them one per sentence, the most striking first. Every sentence after the introduction must carry at least one such concrete fact. NEVER use filler that would fit any apartment ("spazi architettonici interessanti", "servizi igienici funzionali e ben posizionati", "ambienti funzionali", "soluzione ideale"): if you cannot name a concrete fact for a sentence, shorten it to a plain fact such as the size or the number of rooms. Property-level facts (a period building, double height, an attic, the number of levels) are allowed in any sentence; only a specific ROOM is tied to its scene.
@@ -848,7 +859,7 @@ def validate_blocks(blocks: list, description: str, agency_name: str = None, pri
         if n < BLOCK_MIN_WORDS or n > BLOCK_MAX_WORDS:
             problems.append(f"block {b + 1} has {n} words: it must have about {BLOCK_TARGET_WORDS} (never fewer than {BLOCK_MIN_WORDS} or more than {BLOCK_MAX_WORDS})")
     problems.extend(validate_free_text(" ".join(blocks), [], description, agency_name, price, split_fn=split_fn, check_timing=False))
-    problems.extend(generic_problems(blocks))
+    problems.extend(generic_problems(blocks, description, GENERIC_MIN_HITS))
     problems.extend(light_problems(blocks, split_fn))
     problems.extend(repeat_problems(blocks, split_fn, agency_name))
     if scene_sequence and split_fn:
@@ -874,8 +885,6 @@ def validate_blocks(blocks: list, description: str, agency_name: str = None, pri
                     problems.append(f"block {b + 1}, sentence {k + 1} is heard over scene {2 * b + k + 1} ({cat}) but names {', '.join(wrong)}: "
                                     f"talk only about what scene {2 * b + k + 1} shows, or about the property in general")
                 total_named += len(found & {cat})
-        if total_named > MAX_ROOMS_NAMED:
-            problems.append(f"{total_named} rooms are named: name at most {MAX_ROOMS_NAMED} (only the real highlights); speak of the property in general in the other sentences")
     return problems
 
 

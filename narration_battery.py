@@ -61,8 +61,6 @@ def checks(text, seq, desc):
                          ("seconda persona", SECOND.findall(s)), ("deduzione", ded)):
             if bad:
                 out.append((tag, i + 1, bad))
-    if named > ss.MAX_ROOMS_NAMED:
-        out.append(("troppe stanze", 0, named))
     return out, sents
 
 

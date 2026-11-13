@@ -78,7 +78,7 @@ pr = ss.validate_blocks(gen, DESC, AG, PRICE, split_fn=SPLIT, scene_sequence=SEQ
 check("B6 a GENERAL sentence over the kitchen scene is accepted (Michele 2026-10-25: only a wrong room name is not)", pr == [], pr)
 four = list(GOOD); four[2] = "I 4 bagni sono curati nei dettagli. Il giardino è di 3000 metri quadri, contatta Coldwell Banker."
 pr = ss.validate_blocks(four, DESC, AG, PRICE, split_fn=SPLIT, scene_sequence=SEQ)
-check("B6b more than 3 rooms named is rejected", any("at most 3" in x for x in pr), pr)
+check("B6b more than 3 rooms named is NOT rejected (Michele 2026-11-13: 3 is an expectation, not a limit)", not any("rooms are named" in x for x in pr), pr)
 bad = list(GOOD); bad[0] = "Coldwell Banker presenta una villa in vendita a Olgiata. Di 650 metri quadri, è completamente ristrutturata e a un solo livello."
 three = list(GOOD); three[0] = "Coldwell Banker presenta una villa in vendita. A Olgiata. Di 650 metri quadri, è ristrutturata."
 pr = ss.validate_blocks(three, DESC, AG, PRICE, split_fn=SPLIT, scene_sequence=SEQ)

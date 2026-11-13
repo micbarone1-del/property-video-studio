@@ -126,6 +126,8 @@ A word that is correct Italian is NOT an error, even if another form or wording 
 Reply with ONLY this JSON object, nothing else, no explanation:
 {{"errors": [{{"wrong": "<the word exactly as written>", "fix": "<the corrected word>"}}]}}
 
+Numbers written as one long word (for example "duemilaventi") are correct Italian: never split them.
+
 WORDS NOT IN THE DICTIONARY: {words}
 
 TEXT:
