@@ -58,7 +58,11 @@ chk("S21 page: clip previews and download links use the existing endpoints", "/c
 chk("S22 release mode: default manual, switch endpoint, auto release uses the operator's own release path",
     'RELEASE_MODE_FILE = JOBS_DIR / "_release_mode.json"' in src and '"/operator/release-mode"' in src and "await release_job(jid)" in src
     and 'return m if m in ("manual", "auto") else "manual"' in src)
-chk("S23 auto release never touches a job that needs the operator or has stops (an empty stops dict is NOT a stop)", 'not j.get("needs_operator")' in src and 'for k in ("rejected", "flagged", "failed"))' in src)
+import release_rule as _rr   # 2026-11-13: the rule moved to ONE module (release_rule.py), shared with the 'ready to release' notice
+_okj = {"source": "relinx", "status": "done", "awaiting_scenes": {"rejected": [], "flagged": [], "failed": []}}
+chk("S23 auto release never touches a job that needs the operator or has stops (an empty stops dict is NOT a stop)",
+    "release_rule.releasable(j)" in src and _rr.releasable(_okj) and not _rr.releasable(dict(_okj, needs_operator={"x": 1}))
+    and not _rr.releasable(dict(_okj, awaiting_scenes={"rejected": [2], "flagged": [], "failed": []})))
 chk("S24 page: release switch and per-job release button with confirmation", "setRelease(" in html and "releaseJob(" in html and "Consegna all" in html)
 import py_compile; py_compile.compile("api_server.py", doraise=True)
 chk("S18 api_server compiles", True)
