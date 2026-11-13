@@ -57,6 +57,26 @@ else
     echo -e "${GREEN}✓ Virtual environment activated${NC}"
 fi
 
+# ── Step 3b: Production switches (2026-11-13) ─────────────────────────────────
+# The PVS_* values production runs with (NO secrets here: the keys stay in .env, which never overrides a value exported below). Same flow as proven
+# on the test instance, at 1080p. /root/pvs_overrides.env (NOT in the repo, written by deploy_relinx_prod.sh) holds the two values that change per
+# deploy: PVS_AUTO_START_NOT_BEFORE (drafts older than this are never auto-started) and PVS_AUTO_ALT_PHOTO (0 or 1).
+set -a
+PVS_LUMA_RESOLUTION=1080p
+PVS_ACCEPT_RENDERS=0
+PVS_AUTO_START=1
+PVS_AUTO_START_CAP_EUR=100
+PVS_AUTO_START_MAX_ACTIVE=2
+PVS_AUTO_REWORK=1
+PVS_PARTNER_AGENCY_LIMIT_24H=20
+PVS_PACE_MIN=6
+PVS_PACE_FIX=1
+PVS_PACE_LIMIT=26
+PVS_ARRIVAL_MONITOR=1
+PVS_NARRATION_MODEL=claude-sonnet-5-5
+[ -f /root/pvs_overrides.env ] && . /root/pvs_overrides.env
+set +a
+
 # ── Step 4: Clear port 8000 if in use ─────────────────────────────────────────
 PORT_PID=$(fuser $PORT/tcp 2>/dev/null)
 if [ ! -z "$PORT_PID" ]; then
