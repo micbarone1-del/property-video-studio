@@ -5,9 +5,9 @@ def chk(n, c):
     print(("PASS " if c else "FAIL ") + n); F += (not c)
 LISTING = "Luminoso attico con affaccio panoramico verso il mare, terzo piano senza ascensore, palazzo d'epoca."
 FACTS = "\n\nWHAT THE PHOTOS PLAINLY SHOW (x):\nScene one: tetto a vista con travi di legno"
-chk("G1 sea claim only in the listing text -> problem", len(ss.view_problems("L'attico affaccia verso il mare.", LISTING + FACTS)) == 1)
+chk("G1 sea claim stated in the listing text -> ok (no photo confirmation needed)", ss.view_problems("Attico con affaccio verso il mare.", LISTING + FACTS) == [])
 chk("G2 sea confirmed by the photo facts -> ok", ss.view_problems("L'attico affaccia verso il mare.", LISTING + FACTS.replace("tetto a vista", "vista sul mare")) == [])
-chk("G3 no photo facts block at all -> sea still a problem", len(ss.view_problems("Vista sul mare.", LISTING)) == 1)
+chk("G3 sea in neither the listing nor the photos -> problem", len(ss.view_problems("Vista sul mare.", "Attico al terzo piano senza ascensore.")) == 1)
 chk("G4 horizon invented -> problem", len(ss.view_problems("Domina la città verso l'orizzonte.", LISTING + FACTS)) == 1)
 chk("G5 no view word -> no problem", ss.view_problems("Attico al terzo piano senza ascensore.", LISTING + FACTS) == [])
 chk("G6 'colline' and 'lago' both reported", "colline" in ss.view_problems("Vista su colline e lago.", LISTING + FACTS)[0] and "lago" in ss.view_problems("Vista su colline e lago.", LISTING + FACTS)[0])

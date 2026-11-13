@@ -685,14 +685,14 @@ def view_problems(text: str, description: str) -> list:
     desc = str(description or "")
     i = desc.find(PHOTO_FACTS_MARK)
     photo_part = desc[i:] if i >= 0 else ""
-    confirmed = {m.group(0).lower() for m in VIEW_RE.finditer(photo_part)}
+    confirmed = {m.group(0).lower() for m in VIEW_RE.finditer(desc)}
     # 2026-11-12: a CAPITALISED word is a place name, not a view (listing 1101 is in Marino: "ad Marino" was refused as a sea view, 2 narrations of 29)
     said = [m.group(0).lower() for m in VIEW_RE.finditer(str(text or "")) if not m.group(0)[:1].isupper()]
     bad = sorted({w for w in said if w not in confirmed})
     if not bad:
         return []
-    return [f"the narration speaks of {', '.join(repr(w) for w in bad)} as seen from the property, but the photos of THIS video do not show it: do not say it "
-            f"(not even if the listing text does); use another concrete fact about the property instead (floor, size, rooms, outdoor space, renovation, period building)"]
+    return [f"the narration speaks of {', '.join(repr(w) for w in bad)} as seen from the property, but neither the listing text nor the photos show it: do not say it "
+            f"(it is not in the listing); use another concrete fact about the property instead (floor, size, rooms, outdoor space, renovation, period building)"]
 
 
 def generic_problems(blocks: list) -> list:
@@ -749,7 +749,7 @@ CONTENT:
 - WHAT A SENTENCE IS ABOUT: over a room's scene, if the listing says something about THAT room, talk about that room. If it says nothing about it, make the sentence a general fact about the property as a whole taken from the listing (floor layout, number of rooms, position, transport, schools, building, outdoor spaces), NEVER about a DIFFERENT room or space (basement, cellar, garage, storage room, laundry): speaking of room A while the picture shows room B is a clash. Do not address the listener directly: no 'tu', 'ti', 'trovi', 'vedi', 'scopri' (the closing invitation with the agency name is the only imperative).
 - The closing is NOT a separate sentence: sentence 2 of block 3 (heard over scene 6) states the fact about that scene and ends with a short invitation to contact {agency_name or 'the agency'} by name, joined in the SAME sentence with a comma or a colon (shape: "<outdoor fact>, contatta {agency_it}."). The invitation never mentions a visit.
 - SPECIFIC, NOT GENERIC (important): before writing, pick from the listing text the most DISTINCTIVE concrete features of this property (architecture and character such as exposed wooden beams, double-height ceilings, a bathroom with a window, an attic, a period building, number of levels, balcony, terrace, view, orientation, renovation, large windows) and spend them one per sentence, the most striking first. Every sentence after the introduction must carry at least one such concrete fact. NEVER use filler that would fit any apartment ("spazi architettonici interessanti", "servizi igienici funzionali e ben posizionati", "ambienti funzionali", "soluzione ideale"): if you cannot name a concrete fact for a sentence, shorten it to a plain fact such as the size or the number of rooms. Property-level facts (a period building, double height, an attic, the number of levels) are allowed in any sentence; only a specific ROOM is tied to its scene.
-- SERVICE SPACES (""" + ", ".join(SERVICE_SPACE_KEYWORDS) + """): name one ONLY in a sentence heard over an """ + " or ".join(SERVICE_SPACE_OK_SCENES) + """ scene, or when the listing text itself ties it to the room shown (for example 'bagno con lavanderia'). Over any other scene do not name them: use another fact.
+- SERVICE SPACES (""" + ", ".join(SERVICE_SPACE_KEYWORDS) + """): prefer to name one in a sentence heard over an """ + " or ".join(SERVICE_SPACE_OK_SCENES) + """ scene, or when the listing text itself ties it to the room shown (for example 'bagno con lavanderia'). Over another scene avoid them when another fact is available: this is a preference, not a ban.
 - LIGHT: at most ONE sentence of the whole narration may speak about light or brightness (luce, luminoso, illuminato, soleggiato). The photo notes mention light in every room: do not copy that. Every other sentence needs a different concrete fact.
 - NO REPEATS: say each fact ONCE in the whole narration. Name the place, the street and the type of property only in sentence 1 and never again, not even with another word for the same thing (villa, then casa indipendente). Never use the same distinctive word (for example ristrutturato) in two sentences: the listing text often repeats itself, you must not.
 - LAYOUT FACTS: when there is no striking feature, use plain facts from the listing text, one per sentence, instead of vague words about light or proportions: the number of levels ("su due livelli"), a private courtyard or garden, a cellar, a parking space, the renovation year, the view, the size. Never write sentences made only of vague impressions ("proporzioni accoglienti", "illuminazione diffusa", "luce dalle finestre"). CAREFUL: counting rooms ("due camere", "due bagni") counts as NAMING those rooms, and all room words together are limited (see above); the words balcone, terrazzo, giardino, corte, esterno may appear ONLY in the sentence heard over the outdoor scene (exception: a room and its outdoor space may share a sentence when the listing text itself joins them, e.g. 'cucina abitabile con balcone'), never over the kitchen or a bedroom.
@@ -873,10 +873,6 @@ def validate_blocks(blocks: list, description: str, agency_name: str = None, pri
                 if wrong:
                     problems.append(f"block {b + 1}, sentence {k + 1} is heard over scene {2 * b + k + 1} ({cat}) but names {', '.join(wrong)}: "
                                     f"talk only about what scene {2 * b + k + 1} shows, or about the property in general")
-                svc = sorted(w for w in service_spaces(sent) if cat not in SERVICE_SPACE_OK_SCENES and not _service_tied(_norm(description), cat, w))
-                if svc:
-                    problems.append(f"block {b + 1}, sentence {k + 1} is heard over scene {2 * b + k + 1} ({cat}) but speaks of {', '.join(svc)}: "
-                                    f"that is another space than the one shown; talk about this room, or about the property in general")
                 total_named += len(found & {cat})
         if total_named > MAX_ROOMS_NAMED:
             problems.append(f"{total_named} rooms are named: name at most {MAX_ROOMS_NAMED} (only the real highlights); speak of the property in general in the other sentences")

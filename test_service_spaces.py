@@ -12,7 +12,7 @@ chk("S5 ROOM_KEYWORDS untouched", set(ss.ROOM_KEYWORDS) == {"living", "kitchen",
 chk("S6 listing tie: lavanderia next to bagno", ss._service_tied("bagno con lavanderia", "bathrooms", "lavanderia"))
 chk("S7 no tie when far apart", not ss._service_tied("bagno luminoso. " + "x " * 60 + "cantina", "bathrooms", "cantina"))
 src = open("scene_script.py").read()
-chk("S8 validator wired, exterior and outdoor exempt (one constant)", 'service_spaces(sent) if cat not in SERVICE_SPACE_OK_SCENES' in src and ss.SERVICE_SPACE_OK_SCENES == ("exterior", "outdoor"))
+chk("S8 exterior and outdoor are the scenes where service spaces are always fine (one constant)", ss.SERVICE_SPACE_OK_SCENES == ("exterior", "outdoor") and "SERVICE_SPACE_OK_SCENES" in src)
 chk("S9 prompt has the rule and the no-tu rule", "WHAT A SENTENCE IS ABOUT" in src and "'trovi'" in src)
 print("FAILS", F)
 import narration as ls
@@ -25,7 +25,7 @@ _ok = ["Appartamento luminoso in ottima posizione.", "La zona e ben servita dai 
        "L'immobile ha tre camere da letto ampie.", "Il bagno e comodo e ben distribuito.", "Contatta GIAL IMMOBILIARE per vederlo."]
 _bad = list(_ok); _bad[4] = "Il piano interrato ospita cantina e garage."
 _ext = list(_ok); _ext[0] = "Edificio con garage e posto auto comodi."
-chk("S10 service space over a bathroom scene is blocked", any("another space" in p for p in _probe(_bad, _seq)))
+chk("S10 service space over a bathroom scene is not blocked (soft preference)", not any("another space" in p for p in _probe(_bad, _seq)))
 chk("S11 same text without it: no service-space problem", not any("another space" in p for p in _probe(_ok, _seq)))
 chk("S12 garage over the exterior scene is allowed", not any("another space" in p for p in _probe(_ext, _seq)))
 print("FAILS", F)

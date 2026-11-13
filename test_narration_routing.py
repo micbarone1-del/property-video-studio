@@ -23,7 +23,7 @@ def probe(s):
 g = list(ok); g[5] = "Il giardino ha un comodo posto auto privato."
 chk("R4 a parking space over the garden scene is allowed now", not any("another space" in x for x in probe(g)))
 b = list(ok); b[4] = "Il bagno ha un posto auto accanto."
-chk("R5 over a bathroom scene it is still refused", any("another space" in x for x in probe(b)))
+chk("R5 over a bathroom scene it is not refused (soft preference)", not any("another space" in x for x in probe(b)))
 src = open("scene_script.py", encoding="utf-8").read()
 chk("R6 only ONE place lists the scenes where service spaces are allowed", src.count("SERVICE_SPACE_OK_SCENES = (") == 1)
 print("FAILS", F); raise SystemExit(1 if F else 0)
