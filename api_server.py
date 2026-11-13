@@ -2975,17 +2975,34 @@ async def set_release_mode(mode: str = Form(...)):
 async def _auto_release_tick():
     if _release_mode() != "auto":
         return
+    import release_rule
     for jid, j in list(JOBS.items()):
-        if (j.get("source") == "relinx" and j.get("status") == "done" and not j.get("released")
-                and not j.get("needs_operator")
-                and not j.get("delivery_blocked")
-                and not (any((j.get("awaiting_scenes") or {}).get(k) for k in ("rejected", "flagged", "failed"))
-                         if isinstance(j.get("awaiting_scenes"), dict) else j.get("awaiting_scenes"))):
+        if release_rule.releasable(j):
             try:
                 await release_job(jid)           # the SAME path as the operator's release button
                 log.info(f"[Job {jid}] released automatically (release mode auto)")
             except Exception as e:
                 log.warning(f"[Job {jid}] automatic release failed (non-fatal): {e}")
+
+
+_RELEASE_NOTIFIED: set = set()
+_RELEASE_BASELINE = [True]
+
+
+async def _release_ready_tick():
+    """2026-11-13: release mode manual = the agency gets nothing until the operator releases, so the operator is told ONCE per finished Relinx job
+    (same rule as the automatic release: release_rule). The first look after a server start only remembers the jobs already finished (no flood)."""
+    if _release_mode() != "manual":
+        return
+    import release_rule
+    ids = release_rule.new_notices(JOBS, _RELEASE_NOTIFIED, _RELEASE_BASELINE[0])
+    _RELEASE_BASELINE[0] = False
+    for jid in ids:
+        name = JOBS[jid].get("property_name") or jid
+        await _notify_operator(
+            jid, "Ready to release", subject=f"Video pronto da rilasciare: {name}",
+            body_html=f"<p>Il video di <b>{name}</b> e' pronto e non ha scene da rivedere.</p><p>Rilascialo all'agenzia dalla dashboard (Stato operativo).</p><p>Job ID: {jid}</p>",
+            push_message=f"{name} - video pronto da rilasciare", tags=["white_check_mark"])
 
 
 async def _auto_start_tick():
@@ -3008,6 +3025,7 @@ async def _auto_start_tick():
 
     actions = await asyncio.to_thread(auto_start.decide, dict(JOBS), datetime.utcnow(), _check) if auto_start.enabled() else []
     await _auto_release_tick()
+    await _release_ready_tick()
     for a in actions:
         jid, job = a["job_id"], JOBS.get(a["job_id"])
         if not job or job.get("status") != "draft":
@@ -3575,6 +3593,11 @@ async def _notify_operator(job_id: str, event: str, subject: str, body_html: str
         log.warning(f"[Job {job_id}] {event} alert failed (non-fatal): {e}")
 
 
+def _auto_start_on() -> bool:
+    import auto_start
+    return bool(auto_start.enabled())
+
+
 async def _send_new_partner_job_alert(job_id: str):
     """
     Backlog item 48: alerts the operator by email when a new job arrives
@@ -3598,9 +3621,11 @@ async def _send_new_partner_job_alert(job_id: str):
             f"<p><b>Immobile:</b> {job.get('property_name', 'Property')}<br>"
             f"<b>External ref:</b> {job.get('external_ref', 'N/A')}<br>"
             f"<b>Job ID:</b> {job_id}</p>"
-            f"<p>Apri l'app per rivedere scene e narrazione prima di generare il video.</p>"
+            + ("<p>La generazione parte da sola: ti avviso solo se serve il tuo intervento e quando il video e' pronto da rilasciare.</p>"
+               if _auto_start_on() else "<p>Apri l'app per rivedere scene e narrazione prima di generare il video.</p>")
         )
-        push_message = f"{job.get('property_name', 'Property')} - in attesa di revisione"
+        push_message = (f"{job.get('property_name', 'Property')} - in coda, parte da solo" if _auto_start_on()
+                        else f"{job.get('property_name', 'Property')} - in attesa di revisione")
         result = await asyncio.to_thread(maintenance_scheduler.send_notification, subject, body_html,
                                           push_message=push_message, tags=["inbox_tray"])
         if result["email"] or result["push"]:
