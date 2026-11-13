@@ -17,6 +17,9 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 BASE = "http://127.0.0.1:8000"
+AGENCY_NAME = os.environ.get("DRYRUN_AGENCY_NAME", "PVS DRYRUN")        # 2026-11-13: the voice reads this name aloud: use a real one (GIAL IMMOBILIARE)
+AGENCY_EXT = os.environ.get("DRYRUN_AGENCY_EXT", "pvs-dryrun")          # own external id = own agency record (same id would RENAME the existing one)
+SKIP_A = os.environ.get("DRYRUN_SKIP_A") == "1"
 KEYFILE = Path("/root/pvs_prod_dryrun_key.txt")
 JOBS = Path("/var/www/property-video-studio/jobs")
 
@@ -73,29 +76,30 @@ def main(argv):
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     hook = local + "/hook"
 
-    # ---- A1 wrong key
-    r = requests.post(BASE + "/v1/videos", headers={"Authorization": "Bearer wrong-key"}, json={}, timeout=30)
-    print("A1 wrong key -> HTTP %s (expected 401): %s" % (r.status_code, "PASS" if r.status_code == 401 else "FAIL"), flush=True)
+    if not SKIP_A:
+        # ---- A1 wrong key
+        r = requests.post(BASE + "/v1/videos", headers={"Authorization": "Bearer wrong-key"}, json={}, timeout=30)
+        print("A1 wrong key -> HTTP %s (expected 401): %s" % (r.status_code, "PASS" if r.status_code == 401 else "FAIL"), flush=True)
 
-    # ---- A2 unsuitable request: one photo only
-    Image.new("RGB", (800, 600), (120, 120, 120)).save(tmp / "one.jpg", quality=90)
-    bad = {"external_ref": "T-bad-" + uuid.uuid4().hex[:6], "agency_name": "PVS DRYRUN", "agency_external_id": "pvs-dryrun",
-           "property_name": "Prova non idonea", "description": "Appartamento di prova con una sola foto.", "features": [],
-           "photos": [{"url": local + "/one.jpg", "order": 0}], "voice_id": "", "callback_url": hook}
-    r = requests.post(BASE + "/v1/videos", headers=auth, json=bad, timeout=60)
-    print("A2 POST -> HTTP", r.status_code, r.text[:160], flush=True)
-    if r.status_code == 200:
-        jid = r.json()["id"]
-        for _ in range(60):
-            g = requests.get(BASE + "/v1/videos/" + jid, headers=auth, timeout=30).json()
-            if g.get("status") in ("failed", "in_review", "completed"):
-                break
+        # ---- A2 unsuitable request: one photo only
+        Image.new("RGB", (800, 600), (120, 120, 120)).save(tmp / "one.jpg", quality=90)
+        bad = {"external_ref": "T-bad-" + uuid.uuid4().hex[:6], "agency_name": "PVS DRYRUN", "agency_external_id": "pvs-dryrun",
+               "property_name": "Prova non idonea", "description": "Appartamento di prova con una sola foto.", "features": [],
+               "photos": [{"url": local + "/one.jpg", "order": 0}], "voice_id": "", "callback_url": hook}
+        r = requests.post(BASE + "/v1/videos", headers=auth, json=bad, timeout=60)
+        print("A2 POST -> HTTP", r.status_code, r.text[:160], flush=True)
+        if r.status_code == 200:
+            jid = r.json()["id"]
+            for _ in range(60):
+                g = requests.get(BASE + "/v1/videos/" + jid, headers=auth, timeout=30).json()
+                if g.get("status") in ("failed", "in_review", "completed"):
+                    break
+                time.sleep(3)
             time.sleep(3)
-        time.sleep(3)
-        print("A2 job %s status=%s failure_code=%s failure_message=%s" % (jid, g.get("status"), g.get("failure_code"), g.get("failure_message")), flush=True)
-        print("A2 expected: status failed + failure_code + message: %s; webhooks for it: %d" % (
-            "PASS" if g.get("status") == "failed" and g.get("failure_code") and g.get("failure_message") else "FAIL",
-            len([h for h in hooks if h.get("id") == jid])), flush=True)
+            print("A2 job %s status=%s failure_code=%s failure_message=%s" % (jid, g.get("status"), g.get("failure_code"), g.get("failure_message")), flush=True)
+            print("A2 expected: status failed + failure_code + message: %s; webhooks for it: %d" % (
+                "PASS" if g.get("status") == "failed" and g.get("failure_code") and g.get("failure_message") else "FAIL",
+                len([h for h in hooks if h.get("id") == jid])), flush=True)
 
     # ---- B the real listing
     url = argv[1]
@@ -110,7 +114,7 @@ def main(argv):
         im.save(d / ("%03d.jpg" % n_out), quality=95)
         photos.append({"url": local + "/" + L["id"] + "/%03d.jpg?u=%s" % (n_out, uuid.uuid4().hex[:6]), "order": n_out})
     print("B listing %s: %d photos kept of %d (%s)" % (L["id"], len(photos), len(imgs), binfo["mode"]), flush=True)
-    payload = {"external_ref": "T-%s-%s" % (L["id"], uuid.uuid4().hex[:6]), "agency_name": "PVS DRYRUN", "agency_external_id": "pvs-dryrun",
+    payload = {"external_ref": "T-%s-%s" % (L["id"], uuid.uuid4().hex[:6]), "agency_name": AGENCY_NAME, "agency_external_id": AGENCY_EXT,
                "property_name": L["name"], "description": L["description"], "features": [], "photos": photos, "voice_id": "",
                "callback_url": hook, "listing_url": url}
     t0 = time.time()
