@@ -665,3 +665,9 @@ Nessun job perso: la consolidazione copia e non cancella. Nessun doppio costo: g
 - PASS: test_outdoor_facts O1-O5; test_scene_facts 20/20 (W2 aggiornato, W2b); test_relinx_fulltext L1-L3; test_fake_upload_fault U1-U4; test_upload_fault_clip K1-K3; test_repeat_places P1-P5; test_block_narration 75/75.
 - Non provato: recupero automatico del rework dopo clip mancante su un job intero (solo test unitari A5); guasti di Claude, controllo qualita', timeout e voce Google (non simulabile con fake_providers).
 - FMEA: nessuna riga ri-valutata in questa sessione; i punteggi S/O/D restano proposte. Righe da rivedere: clip mancante dopo errore di caricamento, testo tagliato nel simulatore, ripetizioni nella voce.
+
+## 2026-11-13 - stato dei test (verificato con output; punteggi FMEA = PROPOSTE non riviste; riepilogo NON ricalcolato)
+- PASS (output visto): test_movement_director 90 PASS (MDX1-MDX4 fascia 0.42-0.58); test_release_rule RR1-RR17; test_auto_start S23 aggiornato; py_compile e node --check nel deploy; deploy produzione 7/7 con variabili del processo stampate.
+- PASS parziale: foto alternativa end-to-end sul test con primo rifiuto FORZATO (accuratezza QC non provata); avviso "pronto da rilasciare" una volta sul test; target del divano: 5 piani + 1 clip QC pass (campione 1).
+- NOT RUN: prova generale in produzione (callback, 429, notifiche); consegna del motivo di rifiuto a Relinx per bozza non idonea; scadenza URL firmati.
+- Righe a rischio toccate (stessa-commit rule): rework/foto alternativa, rilascio/consegna, costo (tetto 100 EUR, 2 job), avvio automatico. Controllo: rollback 2c50bad, rilascio manuale, NOT_BEFORE. Da ri-punteggiare con Michele alla prossima revisione.
