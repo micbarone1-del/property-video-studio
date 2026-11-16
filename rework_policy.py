@@ -64,6 +64,20 @@ def count(job, scene_ids):
     job["rework_rounds"] = int(job.get("rework_rounds", 0)) + 1
 
 
+def give_back(job, scene_ids, round_too=True):
+    """2026-11-16 (Michele): a rework that did not produce a clip (scene failed) or crashed is NOT an attempt: the count taken by count()
+    is given back for those scenes (and the round when nothing at all was redone). Same arithmetic as recovery_mark, ONE place."""
+    counts = job.get("rework_counts") or {}
+    for s in scene_ids or []:
+        if int(counts.get(s, 0)) > 0:
+            counts[s] = int(counts[s]) - 1
+    if round_too and int(job.get("rework_rounds", 0)) > 0:
+        job["rework_rounds"] = int(job["rework_rounds"]) - 1
+    done = job.get("auto_reworked")
+    if done:
+        job["auto_reworked"] = [x for x in done if x not in set(scene_ids or [])]
+
+
 def begin(job, scene_ids, kind):
     job["rework_in_progress"] = {
         "scene_ids": list(scene_ids), "kind": kind,
