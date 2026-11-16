@@ -37,6 +37,9 @@ JOBS = {"j1": {"status": "running", "output_path": str(mp4), "rework_counts": {"
                "rework_in_progress": {"scene_ids": ["s1"]}},
         "j2": {"status": "running", "output_path": None, "rework_counts": {"s1": 1}, "rework_rounds": 1}}
 ns = {"JOBS": JOBS, "_rwp": rwp, "Path": Path, "_save_job": lambda i: saved.append(i), "_notify_operator": _notify, "log": Log()}
+from datetime import datetime
+ns["datetime"] = datetime
+exec(ast.get_source_segment(src, next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_log_rework_event")), ns)
 exec(code, ns)
 asyncio.run(ns["_park_after_rework_crash"]("j1", ["s1"], policy=True, video=True, err=RuntimeError("boom")))
 check("RS5 a crash on a job with a final video leaves it done", JOBS["j1"]["status"] == "done")
@@ -48,6 +51,12 @@ check("RS9 a second crash does not notify again", sent == ["Rework crashed"])
 asyncio.run(ns["_park_after_rework_crash"]("j2", ["s1"], policy=True, video=True, err=RuntimeError("boom")))
 check("RS10 with no final video the job waits for the operator, never failed", JOBS["j2"]["status"] == "awaiting_approval")
 
+ev = JOBS["j1"].get("rework_events") or []
+check("RS16 the crash is kept in the job's internal log (kind, scenes, detail)", len(ev) == 2 and ev[0]["kind"] == "crash" and ev[0]["scenes"] == ["s1"] and "boom" in ev[0]["detail"])
+for i in range(60):
+    ns["_log_rework_event"](JOBS["j2"], "retry", ["s"], "x")
+check("RS17 the log keeps the last 50 entries only", len(JOBS["j2"]["rework_events"]) == 50)
+
 # ---- wiring in the real file
 run = next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef) and n.name == "_run_redo")
 rs = ast.get_source_segment(src, run)
@@ -58,4 +67,8 @@ ra = next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef) and n.name
 rss = ast.get_source_segment(src, ra)
 check("RS14 reassembly failure keeps a job that already has a final video", "_had_video" in rss and "resta il video precedente" in rss)
 check("RS15 first-generation reassembly failure still fails and tells the partner", "Errore assemblaggio" in rss and rss.count("_send_partner_webhook(job_id, \"failed\")") == 1)
+check("RS18 retries, no-clip and reassembly failures are logged", src.count("_log_rework_event(") >= 5)
+check("RS19 the dashboard payload carries the events and the count", '"rework_events": (j.get("rework_events")' in src and '"rework_failed"' in src)
+page = Path("operator_page.html").read_text()
+check("RS20 the dashboard shows the tag and the block", "rwBlock(j)" in page and "rework non riusciti" in page)
 sys.exit(1 if fails else 0)
