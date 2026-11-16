@@ -13,9 +13,9 @@ DEFAULT_LANGUAGE = "it"
 
 MESSAGES = {
     "it": {
-        "input_not_suitable": "Annuncio non idoneo al video standard: le foto disponibili non sono sufficienti o non hanno una qualita' adeguata.",
-        "generation_failed": "Non e' stato possibile produrre il video. Il nostro team e' stato avvisato.",
-        "rejected_by_operator": "Il video non ha superato il controllo di qualita' e non verra' consegnato. Il nostro team e' a disposizione per chiarimenti.",
+        "input_not_suitable": "Annuncio non idoneo al video standard: le foto disponibili non sono sufficienti o non hanno una qualità adeguata.",
+        "generation_failed": "Non è stato possibile produrre il video. Il nostro team è stato avvisato.",
+        "rejected_by_operator": "Il video non ha superato il controllo di qualità e non verrà consegnato. Il nostro team è a disposizione per chiarimenti.",
     },
 }
 
