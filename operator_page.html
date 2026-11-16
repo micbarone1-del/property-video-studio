@@ -80,6 +80,13 @@ async function setRelease(mode) {
   try { const r = await fetch('/operator/release-mode', { method: 'POST', headers: { 'X-Access-Key': getKey() }, body: fd }); if (!r.ok) throw new Error('HTTP ' + r.status); load(); }
   catch (e) { document.getElementById('err').textContent = 'Errore: ' + e.message; }
 }
+async function rejectJob(id) {
+  const note = prompt('Rifiutare questo video? L\'agenzia ricevera\' un messaggio standard (non la tua nota). Nota interna, facoltativa:');
+  if (note === null) return;
+  const fd = new FormData(); fd.append('note', note);
+  try { const r = await fetch('/jobs/' + id + '/reject', { method: 'POST', headers: { 'X-Access-Key': getKey() }, body: fd }); if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + (await r.text()).slice(0, 100)); load(); }
+  catch (e) { document.getElementById('err').textContent = 'Errore: ' + e.message; }
+}
 async function releaseJob(id) {
   if (!confirm('Consegnare questo video all\'agenzia?')) return;
   try { const r = await fetch('/jobs/' + id + '/release', { method: 'POST', headers: { 'X-Access-Key': getKey() } }); if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + (await r.text()).slice(0, 100)); load(); }
@@ -161,7 +168,8 @@ function autoCell(j) {
     t.push('<span class="tag' + (j.review_pending ? ' attn' : '') + '" title="' + esc(d) + '">scene approvate dal sistema: ' + j.auto_approved.length + (j.review_pending ? ' - da rivedere' : ' - viste') + '</span>');
     if (j.review_pending) t.push('<button onclick="reviewDone(\'' + j.job_id + '\')">Segna come vista</button>');
   }
-  if (j.status === 'done' && j.source === 'relinx') t.push(j.released ? '<span class="tag">consegnato all\'agenzia</span>' : '<span class="tag attn">non ancora consegnato</span><button onclick="releaseJob(\'' + j.job_id + '\')">Consegna all\'agenzia</button>');
+  if (j.status === 'done' && j.source === 'relinx') t.push(j.released ? '<span class="tag">consegnato all\'agenzia</span>' : '<span class="tag attn">non ancora consegnato</span><button onclick="releaseJob(\'' + j.job_id + '\')">Consegna all\'agenzia</button><button onclick="rejectJob(\'' + j.job_id + '\')">Rifiuta</button>')
+  if (j.status === 'failed' && j.failure_code === 'rejected_by_operator') t.push('<span class="tag attn" title="' + esc(j.operator_note || '') + '">rifiutato da te</span>');
   if (j.stops) t.push('<span class="tag attn">in attesa di te: ' + j.stops + ' scene</span>');
   return t.join('') || '<span class="mute">-</span>';
 }
