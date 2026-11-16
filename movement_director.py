@@ -71,6 +71,7 @@ JSON keys:
    Static: "almost static shot with imperceptibly subtle depth parallax".
  "bulky_near_camera": true | false   (a large plant, curtain, furniture or other bulky object stands close to the camera near an edge or low in the frame)
  "mirror_visible": true | false   (a mirror, mirrored wardrobe or large glass surface is in the photo, anywhere)
+ "opening_ahead": true | false   (an open door, doorway, archway or corridor to a space that is NOT visible in the photo lies in the middle of the frame, where a forward camera would end up. If true, the target must be a fixed feature of THIS room clearly before the opening, never the opening itself or what lies behind it)
  "reason": at most 40 words: why this move for this room (depth, what is at the edges, what could go wrong)."""
 
 
@@ -107,6 +108,12 @@ _EYE_FACADE = """- Facade and outdoor photos: aim at the building itself, at a w
 EYE_REPLACEMENTS = ((NEAR_REPLACEMENTS[0][1], _EYE_NEAR), (NEAR_REPLACEMENTS[1][1], _EYE_FACADE))
 LOW_WORDS = re.compile(r"\b(floor|ground|road|asphalt|paving|pavement|paved|tiles?|tiled|yard|lawn|drive|carpet|grass|street|path|walkway)\b", re.I)
 LOW_Y = 0.68
+OPENING_WORDS = re.compile(r"\b(door|doors|doorway|archway|arch|opening|corridor|hallway|passage|passageway)\b", re.I)
+
+
+def opening_enabled() -> bool:
+    """2026-11-16 (job 748be538 scene 4): PVS_DIRECTOR_OPENING=0 restores the old behaviour (no special treatment of an open doorway ahead)."""
+    return os.getenv("PVS_DIRECTOR_OPENING", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
 def eye_enabled() -> bool:
@@ -254,6 +261,7 @@ def validate(raw: dict, hints: dict):
             sp = safe_plan(hints, downgraded, aerial)
             sp["claude_target"], sp["claude_risk"], sp["adjusted"] = target, risk, downgraded
             return sp, []
+    opening = move == "forward" and opening_enabled() and str(raw.get("opening_ahead")).strip().lower() in ("true", "yes", "1")
     if move == "forward":
         if not re.search(r"forward|push-in|advance|dolly", low):
             return None, ["forward move whose sentence does not say forward"]
@@ -267,19 +275,23 @@ def validate(raw: dict, hints: dict):
             unsafe = f"target {target!r} is off to one side (the video model turns the camera towards it)"
         elif eye_enabled() and _too_low(raw, tgt_ok):
             unsafe = f"target {target!r} is on the floor or ground, or low in the photo (the camera would tilt down)"
+        if not unsafe and opening and OPENING_WORDS.search(tgt_ok):
+            unsafe = f"target {target!r} is the opening itself (the video model would invent the room behind it)"
         if unsafe:
             # keep Claude's decision (a forward move) and only change WHERE it heads: the centre of the frame, in the positive sentence
             downgraded = f"retargeted to the centre: {unsafe}"
             target = camera_plan.CENTRE_ANCHOR
-            sentence = forward_sentence(target, _is_slow_scene(hints))
+            sentence = forward_sentence(target, _is_slow_scene(hints) or opening)
             low = sentence.lower()
         else:
             target = tgt_ok
-            if _is_slow_scene(hints):
+            if _is_slow_scene(hints) or opening:
                 sentence = forward_sentence(target, True)      # slow scenes always get the tested very-slow wording
     if move == "static" and not aerial and not re.search(r"static|still", low):
         return None, ["static move whose sentence does not say static"]
     travel = _cap_travel(str(raw.get("travel", "short")).strip().lower(), hints)
+    if opening:
+        travel = "short"
     scale = _clip_scale(travel) if move == "forward" else (SIDEWAYS_SCALE if move in SIDEWAYS else STATIC_SCALE)
     if move == "static":
         # a static plan is not Claude's free text for another move: the proven almost-static token
@@ -288,7 +300,7 @@ def validate(raw: dict, hints: dict):
     elif TAIL not in sentence and "constant" not in low:
         sentence = sentence.rstrip(".") + ", " + TAIL
     plan = {"move": move, "sentence": sentence, "center": _center(raw) if (move == "forward" and not downgraded) else (0.5, 0.5), "scale": scale, "risk": risk, "target": target, "travel": travel, "aerial": aerial,
-            "source": "claude", "reason": str(raw.get("reason", ""))[:300], "slow": bool(move == "forward" and _is_slow_scene(hints))}
+            "source": "claude", "reason": str(raw.get("reason", ""))[:300], "slow": bool(move == "forward" and (_is_slow_scene(hints) or opening))}
     if downgraded:
         plan["adjusted"] = downgraded
     return plan, []

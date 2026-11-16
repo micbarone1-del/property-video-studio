@@ -222,6 +222,19 @@ check("MD78 with PVS_DIRECTOR_NEAR=1 the target is NEAR (reachable in five secon
 check("MD79 the near version keeps every other rule (central target, aerial, braces for format)", f"target_x between {md.CENTRAL_X_MIN} and {md.CENTRAL_X_MAX}" in _near and "looking clearly DOWN" in _near and bool(_near.format(facts="x", feedback="")))
 print(f"\n{'ALL PASS' if not fails else str(fails) + ' FAIL'}")
 
+# K. 2026-11-16 (job 748be538 scene 4): an open doorway ahead -> still a forward move, NEAR target in the room, short travel, the tested very-slow wording (static is NOT safer: round 6)
+p, _ = md.validate(dict(FWD, opening_ahead=True, target="the dining table", target_x=0.5, travel="long"), DEEP)
+check("MD70 opening ahead: forward kept, near target kept, travel short, very-slow wording", p and p["move"] == "forward" and p["target"] == "the dining table" and p["travel"] == "short" and "less than three metres" in p["sentence"] and p["slow"], p)
+p, _ = md.validate(dict(FWD, opening_ahead=True, target="the open doorway", target_x=0.5), DEEP)
+check("MD71 opening ahead and the target IS the opening -> retargeted to the centre, still short and slow", p and p["move"] == "forward" and p["target"] == camera_plan.CENTRE_ANCHOR and p["travel"] == "short" and "retargeted" in p["adjusted"], p)
+p, _ = md.validate(dict(FWD, opening_ahead=False), DEEP)
+check("MD72 opening_ahead false or missing -> as before", p and p["move"] == "forward" and not p.get("slow") and p["travel"] != "", p)
+os.environ["PVS_DIRECTOR_OPENING"] = "0"
+p, _ = md.validate(dict(FWD, opening_ahead=True, target="the dining table", target_x=0.5, travel="long"), DEEP)
+check("MD73 PVS_DIRECTOR_OPENING=0 restores the old behaviour", p and not p.get("slow") and p["travel"] != "short", p)
+os.environ.pop("PVS_DIRECTOR_OPENING")
+check("MD74 the prompt asks for opening_ahead", "opening_ahead" in md.prompt_text())
+
 # EYE (2026-11-04): floor / ground targets
 os.environ["PVS_DIRECTOR_EYE"] = "0"
 p, _ = md.validate(dict(FWD, target="the floor in the middle of the room", target_y=0.8), DEEP)

@@ -178,8 +178,8 @@ def measured_verdict(geo: dict) -> tuple:
 
 
 def enforce() -> bool:
-    """PVS_STANDARD_ENFORCE=1 lets the MEASURED rule change the clip QC verdict (default OFF). Needs the shadow evaluation to be on."""
-    return enabled() and os.getenv("PVS_STANDARD_ENFORCE", "").strip() == "1"
+    """2026-11-16 (Michele: the % is not usable, a calculation does not recognise what is NEW; the Claude check of the clip against the photo does): the geometry never rejects unless BOTH PVS_STANDARD_ENFORCE=1 and PVS_STANDARD_GEOMETRY_REJECT=1 are set; it is still measured and recorded. Old text: PVS_STANDARD_ENFORCE=1 lets the MEASURED rule change the clip QC verdict (default OFF). Needs the shadow evaluation to be on."""
+    return enabled() and os.getenv("PVS_STANDARD_ENFORCE", "").strip() == "1" and os.getenv("PVS_STANDARD_GEOMETRY_REJECT", "").strip() == "1"
 
 
 def plan_lines(plan, n):

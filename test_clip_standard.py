@@ -80,10 +80,12 @@ check("S21 zoom_rate recorded (push-in 12%: small; speed flag off)", r1["geo"]["
 os.environ.pop("PVS_STANDARD_ENFORCE", None)
 check("S22 enforce() is OFF by default and needs the switch", cs.enforce() is False)
 os.environ["PVS_STANDARD_ENFORCE"] = "1"
-check("S23 enforce() ON with the switch", cs.enforce() is True)
+check("S23a enforce() stays OFF with only the old switch (2026-11-16: geometry no longer rejects)", cs.enforce() is False)
+os.environ["PVS_STANDARD_GEOMETRY_REJECT"] = "1"
+check("S23 enforce() ON only with BOTH switches", cs.enforce() is True)
 os.environ["PVS_STANDARD_SHADOW"] = "0"
 check("S24 enforce() is OFF when the shadow evaluation is off (kill switch wins)", cs.enforce() is False)
-os.environ["PVS_STANDARD_SHADOW"] = "1"; os.environ.pop("PVS_STANDARD_ENFORCE")
+os.environ["PVS_STANDARD_SHADOW"] = "1"; os.environ.pop("PVS_STANDARD_ENFORCE"); os.environ.pop("PVS_STANDARD_GEOMETRY_REJECT", None)
 check("S25 hook: enforcement only when enforce() and measured reject, never touches the judge verdict path", "_cs.enforce()" in src and 'measured_verdict") == "reject"' in src and src.count('out["verdict"] = "reject"') == 1)
 
 calls.clear(); cs.evaluate(pan, ask=ask_pass, plan={"move": "forward", "travel": "short", "target": "the door"})
