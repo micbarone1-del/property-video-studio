@@ -1217,3 +1217,10 @@ Produzione: narrazione ancora Haiku e pace fix spento (scelta di abilitare Sonne
 - [DA FARE] Pronuncia dei nomi agenzia (pronunciation_fixes.json): elenco di relinx.it/it/network/: BUILDINGCASE BOLOGNA IMMOBILIARE, ETICASI, GIAL IMMOBILIARE, IMMOBILI DI PRESTIGIO, THRINAKIE GROUP; chiesta a Relinx la lettura di THRINAKIE (risposta attesa).
 - [DA FARE] Provare dal vivo: rifiuto manuale (Rifiuta) e webhook di errore in generazione; rilascio con webhook completed e video_url; agenzia di prova "GIAL test" per le prossime prove (il job c032532b e' ancora sull'agenzia ag_fa2fd9fb "PVS DRYRUN": spostarlo o rinominare solo con conferma, scrittura sullo stato del job).
 - [DA FARE] Sicurezza: disattivare la chiave fal "Property Video on Calude" se non serve; valutare di sostituire la chiave del server (Full access, senza scadenza) con una di tipo API con scadenza, in un momento tranquillo.
+
+## 2026-11-16 - Requisiti emersi dal job reale 748be538 (NON implementati, nessuna modifica in produzione durante i test Relinx senza OK)
+1. Stanze inventate attraversando porte aperte (scena 4): prevenzione nel director (non avanzare verso/attraverso una porta aperta o uno spazio non visibile; fermarsi prima della soglia, corsa piu' corta/lenta o statica). Opzione successiva: tagliare in montaggio la parte finale inventata usando i fotogrammi indicati dal QC. Da decidere: soglia di rilevamento "porta aperta" e se tagliare o rigenerare.
+2. Ombra/figura di due persone debole (scena 5): non grave, da evitare; annotare per il prompt e per il controllo persone.
+3. Falso positivo QC scena 6 ("camera moved" su avanzamento diritto) e scena 1 (29% fuori campo senza uscita visibile): raccogliere casi, ritarare solo con dati (NEW_MAX_LIMIT, giudice).
+4. Testi QC troncati: correzione 160->500 pronta, da distribuire e verificare nella dashboard.
+5. Decisione da confermare: attivare PVS_AUTO_APPROVE_FLAGS in produzione (flag minori approvati dal sistema ed elencati per revisione umana; i rifiuti misurati dello standard restano separati).

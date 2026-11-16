@@ -500,8 +500,8 @@ def _parse_clip_qc(raw: str):
     if not isinstance(ns, list):
         ns = [str(ns)]
     return {"people": bool(d.get("people")), "possible_person": bool(d.get("possible_person")), "same_space": d.get("same_space", True) is not False,
-            "new_structure": [str(x)[:160] for x in ns][:6], "severity": sev, "artifacts": bool(d.get("artifacts")),
-            "first_frame": str(d.get("first_frame", ""))[:300], "last_frame": str(d.get("last_frame", ""))[:300],
+            "new_structure": [str(x)[:500] for x in ns][:6], "severity": sev, "artifacts": bool(d.get("artifacts")),
+            "first_frame": str(d.get("first_frame", ""))[:600], "last_frame": str(d.get("last_frame", ""))[:600],
             "photo_elements": [str(x)[:80] for x in (d.get("photo_elements") or [])][:10] if isinstance(d.get("photo_elements"), list) else []}
 
 
