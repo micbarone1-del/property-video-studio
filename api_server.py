@@ -65,6 +65,7 @@ def _check_access(request: Request) -> bool:
 # the web UI; this supports multiple partners (e.g. Relinx), each with
 # their own revocable key, hashed at rest -- see partner_api.py.
 import partner_api
+import partner_messages
 
 
 async def get_current_partner(authorization: str = Header(None)) -> dict:
@@ -1941,6 +1942,7 @@ class RelinxVideoRequest(BaseModel):
     output_format: str = None
     callback_url: str
     listing_url: str | None = None     # 2026-11-06 (optional): the original listing page, shown on the operator page to compare input and output
+    language: str | None = None        # 2026-11-16 (optional): language of the messages to the agency; unknown or missing = "it" (partner_messages)
 
 
 def _map_internal_status_to_partner_status(internal_status: str, released: bool = False) -> str:
@@ -1968,15 +1970,14 @@ def _map_internal_status_to_partner_status(internal_status: str, released: bool 
 # the agency (never an exception text). Set where the job fails (failure_code + failure_public_message on the job); a job that
 # failed anywhere else (assembly, orphan recovery after a restart) gets the generic pair. ONE place builds the response fields,
 # used by GET /v1/videos/{id}, GET /v1/videos?external_ref= and the "failed" webhook.
-PARTNER_FAILURE_GENERIC = ("generation_failed", "The video could not be produced. Our team has been notified.")
+PARTNER_FAILURE_GENERIC = ("generation_failed", partner_messages.MESSAGES["it"]["generation_failed"])   # kept for old references
 
 
 def _partner_failure_fields(job: dict) -> dict:
+    """2026-11-16: three public codes only (partner_messages.public_failure); the detailed internal code stays on the job."""
     if job.get("status") != "failed":
         return {}
-    code = job.get("failure_code") or PARTNER_FAILURE_GENERIC[0]
-    msg = job.get("failure_public_message") or (PARTNER_FAILURE_GENERIC[1] if code == PARTNER_FAILURE_GENERIC[0] else None)
-    return {"failure_code": code, "failure_message": msg or PARTNER_FAILURE_GENERIC[1]}
+    return partner_messages.public_failure(job)
 
 
 def _partner_status_payload(public_id: str, job: dict, download_id: str) -> dict:
@@ -2115,6 +2116,7 @@ async def create_video_from_partner(
         "source": "relinx",
         "partner_id": partner["partner_id"],
         "external_ref": payload.external_ref,
+        "language": partner_messages.normalize_language(payload.language),
         "callback_url": payload.callback_url,
         "listing_url": payload.listing_url,
         "partner_payload": _raw_payload,
@@ -3112,7 +3114,7 @@ async def operator_status(q: str = ""):
                      "progress": j.get("progress"), "message": str(j.get("message") or "")[:140], "created_at": j.get("created_at"),
                      "cost_eur": auto_start.job_cost_eur(j), "auto_start": j.get("auto_start"),
                      "auto_reworked": len(j.get("auto_reworked") or []), "auto_approved": j.get("auto_approved") or [],
-                     "rework_events": (j.get("rework_events") or [])[-8:],
+                     "rework_events": (j.get("rework_events") or [])[-8:], "failure_code": j.get("failure_code"), "operator_note": j.get("operator_note"),
                      "rework_failed": sum(1 for x in (j.get("rework_events") or []) if x.get("kind") != "retry"),
                      "review_pending": bool(j.get("review_pending")), "released": bool(j.get("released")), "stops": len(det), "stops_detail": det,
                      "auto_approved_scenes": [a.get("scene") for a in (j.get("auto_approved") or [])],
@@ -3881,6 +3883,34 @@ def _delivery_block_reason(job_id: str, job: dict):
     return f"Il video e' a {res}, non a 1080p: non viene consegnato al partner."
 
 
+@app.post("/jobs/{job_id}/reject")
+async def reject_job(job_id: str, note: str = Form("")):
+    """2026-11-16 (Michele): the operator refuses a finished video instead of releasing it. The job becomes "failed" with the public code
+    rejected_by_operator, the partner gets the "failed" webhook, nothing is deleted (keep=True, files stay). The note is INTERNAL only."""
+    job = JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.get("released"):
+        raise HTTPException(status_code=400, detail="Job already released: it cannot be rejected any more")
+    if job.get("status") not in ("done", "awaiting_approval"):
+        raise HTTPException(status_code=400, detail=f"Job not ready to reject (status: {job.get('status')})")
+    if not _acquire_job_lock(job_id, "reject"):
+        lock = _job_lock_status(job_id)
+        raise HTTPException(status_code=409, detail=f"Job is busy ({lock.get('operation')})")
+    try:
+        note = (note or "").strip()[:500]
+        job.update({"status": "failed", "failure_code": "rejected_by_operator", "operator_note": note,
+                    "rejected_at": datetime.utcnow().isoformat(), "keep": True,
+                    "message": "Rifiutato dall'operatore" + (": " + note if note else "")})
+        job.pop("needs_operator", None)
+        _save_job(job_id)
+        if job.get("source") == "relinx":
+            await _send_partner_webhook(job_id, "failed")
+    finally:
+        _release_job_lock(job_id)
+    return {"job_id": job_id, "status": "failed", "failure_code": "rejected_by_operator", "partner_notified": job.get("source") == "relinx"}
+
+
 @app.post("/jobs/{job_id}/release")
 async def release_job(job_id: str, force: bool = False):
     """2026-10-02: operatore conferma che il video e pronto -- per ogni job;
@@ -4514,8 +4544,16 @@ async def run_pipeline(
 
     except Exception as e:
         log.error(f"[Job {job_id}] Pipeline failed: {e}", exc_info=True)
-        JOBS[job_id].update({"status": "failed", "message": f"Error: {str(e)}"})
+        JOBS[job_id].update({"status": "failed", "message": f"Error: {str(e)}", "failure_code": "generation_failed"})
         _save_job(job_id)
+        # 2026-11-16 (Michele): a failure during the FIRST generation is told to the partner (generic message) and to the operator
+        await _send_partner_webhook(job_id, "failed")
+        try:
+            await _notify_operator(job_id, "Job failed", subject=f"Job fallito: {JOBS[job_id].get('property_name') or job_id}",
+                                   body_html=f"<p>Errore in generazione: {str(e)[:200]}</p><p>Job {job_id}.</p>",
+                                   push_message=f"{JOBS[job_id].get('property_name') or job_id} - fallito in generazione", tags=["x"])
+        except Exception as e2:
+            log.warning(f"[Job {job_id}] Job-failed notification failed (non-fatal): {e2}")
 
 
 
