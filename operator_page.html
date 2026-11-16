@@ -89,9 +89,13 @@ async function reviewDone(id) { try { await api('/jobs/' + id + '/review-done', 
 function nameCell(j) {
   const links = [];
   if (j.status === 'done') links.push('<a href="/jobs/' + j.job_id + '/preview" target="_blank">Guarda</a>', '<a href="/jobs/' + j.job_id + '/download" target="_blank">Scarica</a>');
-  const open = ((j.stops_detail && j.stops_detail.length) || (j.review_pending && j.auto_approved_scenes && j.auto_approved_scenes.length));
+  const open = ((j.stops_detail && j.stops_detail.length) || j.rework_failed || (j.review_pending && j.auto_approved_scenes && j.auto_approved_scenes.length));
   links.push('<a href="#" onclick="toggle(\'' + j.job_id + '\');return false;">' + (open ? 'Rivedi scene' : 'Dettagli') + '</a>');
   return '<b>' + esc(j.name || j.job_id) + '</b>' + (j.listing ? ' <span class="tag">annuncio ' + esc(j.listing) + '</span>' : '') + '<div class="mute">' + esc(j.job_id) + ' - ' + esc(j.source || 'manuale') + ' - ' + esc((j.created_at || '').replace('T', ' ').slice(0, 16)) + '</div><div class="mute">' + links.join(' - ') + '</div><div id="rev-' + j.job_id + '"></div>';
+}
+function rwBlock(j) {
+  if (!j.rework_events || !j.rework_events.length) return '';
+  return '<div class="mute" style="margin-top:8px"><b>Rework non riusciti (log interno)</b><br>' + j.rework_events.map(e => esc((e.at || '').slice(0, 19).replace('T', ' ') + ' UTC - ' + e.kind + (e.scenes && e.scenes.length ? ' - scene ' + e.scenes.join(', ') : '') + (e.detail ? ' - ' + e.detail : ''))).join('<br>') + '</div>';
 }
 const KIND = { rejected: 'rifiutata', flagged: 'segnalata', failed: 'clip non generato' };
 function sceneBlock(id, s, withChoice) {
@@ -133,7 +137,7 @@ function paintRev(id) {
   } else if (j.auto_approved && j.auto_approved.length) {
     html += j.auto_approved.map(a => sceneBlock(id, { scene: a.scene, kind: '', severity: a.severity, issues: a.issues }, false)).join('') + '<div class="mute" style="margin-top:6px">Per rifare una di queste scene usa Rifai nell\'app principale.</div>';
   } else { html = '<div class="mute">' + esc(j.message) + '</div>'; }
-  box.innerHTML = '<div class="rev">' + html + inputBlock(id) + '</div>';
+  box.innerHTML = '<div class="rev">' + html + rwBlock(j) + inputBlock(id) + '</div>';
 }
 async function confirmApproval(id) {
   const j = LAST.jobs.find(x => x.job_id === id); if (!j) return;
@@ -150,6 +154,7 @@ async function confirmApproval(id) {
 function autoCell(j) {
   const t = [];
   if (j.auto_start) t.push('<span class="tag' + (j.auto_start.state === 'refused' ? ' attn' : '') + '" title="' + esc(j.auto_start.reason) + '">avvio: ' + esc(j.auto_start.state) + '</span>');
+  if (j.rework_failed) t.push('<span class="tag attn" title="' + esc((j.rework_events || []).map(e => e.kind + ' ' + (e.scenes || []).join(',') + ' ' + (e.detail || '')).join('\n')) + '">rework non riusciti: ' + j.rework_failed + '</span>');
   if (j.auto_reworked) t.push('<span class="tag">rework automatici: ' + j.auto_reworked + '</span>');
   if (j.auto_approved && j.auto_approved.length) {
     const d = j.auto_approved.map(a => 'scena ' + a.scene + ' (' + (a.severity || '-') + '): ' + (a.issues || []).join(' | ')).join('\n');
