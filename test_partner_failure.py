@@ -25,23 +25,24 @@ for node in tree.body:
         parts.append(ast.get_source_segment(src, node))
     if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "PARTNER_FAILURE_GENERIC" for t in node.targets):
         parts.append(ast.get_source_segment(src, node))
-ns = {}
+import partner_messages
+ns = {"partner_messages": partner_messages}
 exec("\n\n".join(parts), ns)
 fields, payload = ns["_partner_failure_fields"], ns["_partner_status_payload"]
 
 # P1-P4 failure fields
 check("P1 completed/running job: no failure fields", fields({"status": "done"}) == {} and fields({"status": "running"}) == {})
 f = fields({"status": "failed", "failure_code": "insufficient_photos", "failure_public_message": "Not enough usable photos for this listing: x"})
-check("P2 code and message from the job", f == {"failure_code": "insufficient_photos", "failure_message": "Not enough usable photos for this listing: x"}, f)
+check("P2 (2026-11-16) an input problem is the ONE public code input_not_suitable, message in Italian", f["failure_code"] == "input_not_suitable" and f["failure_message"].startswith("Annuncio non idoneo"), f)
 g = fields({"status": "failed", "message": "Errore assemblaggio: Traceback secret path /var/www"})
 check("P3 failed elsewhere (assembly, orphan): generic pair, internal text NOT leaked", g["failure_code"] == "generation_failed" and "Traceback" not in g["failure_message"] and "/var/www" not in g["failure_message"], g)
 h = fields({"status": "failed", "failure_code": "internal_error"})
-check("P4 code without a message still gets a sentence", bool(h["failure_message"]), h)
+check("P4 internal_error is told as generation_failed, with a sentence", h["failure_code"] == "generation_failed" and bool(h["failure_message"]), h)
 
 # P5-P8 shared payload
 fj = {"status": "failed", "external_ref": "R1", "failure_code": "unfurnished", "failure_public_message": "msg"}
 p = payload("abc", fj, "abc")
-check("P5 payload failed: status failed + both fields", p["status"] == "failed" and p["failure_code"] == "unfurnished" and p["failure_message"] == "msg" and "video_url" not in p, p)
+check("P5 payload failed: status failed + both fields (unfurnished is an input problem)", p["status"] == "failed" and p["failure_code"] == "input_not_suitable" and p["failure_message"] and "video_url" not in p, p)
 d = payload("abc", {"status": "done", "released": True, "external_ref": "R"}, "real9")
 check("P6 payload completed released: video_url uses the download id, no failure fields", d["video_url"].endswith("/real9/download") and "failure_code" not in d and d["id"] == "abc", d)
 d2 = payload("abc", {"status": "done", "released": False}, "abc")
