@@ -3112,6 +3112,8 @@ async def operator_status(q: str = ""):
                      "progress": j.get("progress"), "message": str(j.get("message") or "")[:140], "created_at": j.get("created_at"),
                      "cost_eur": auto_start.job_cost_eur(j), "auto_start": j.get("auto_start"),
                      "auto_reworked": len(j.get("auto_reworked") or []), "auto_approved": j.get("auto_approved") or [],
+                     "rework_events": (j.get("rework_events") or [])[-8:],
+                     "rework_failed": sum(1 for x in (j.get("rework_events") or []) if x.get("kind") != "retry"),
                      "review_pending": bool(j.get("review_pending")), "released": bool(j.get("released")), "stops": len(det), "stops_detail": det,
                      "auto_approved_scenes": [a.get("scene") for a in (j.get("auto_approved") or [])],
                      "needs_operator": bool(j.get("needs_operator")), "listing": _listing_number(j, jid)})
@@ -3443,6 +3445,14 @@ async def _rework_qc_gate(job_id: str, job_dir, result: dict):
     return True
 
 
+def _log_rework_event(job: dict, kind: str, scene_ids, detail: str = ""):
+    """2026-11-16 (Michele): every failed rework step is kept in the job (rework_events, last 50) so it shows on the dashboard and is not lost:
+    kind = retry | no_clip | crash | reassembly_failed. Internal only: never sent to the partner."""
+    ev = job.setdefault("rework_events", [])
+    ev.append({"at": datetime.utcnow().isoformat(), "kind": kind, "scenes": list(scene_ids or []), "detail": str(detail)[:300]})
+    del ev[:-50]
+
+
 async def _park_after_rework_crash(job_id: str, scene_ids: list, *, policy: bool, video: bool, err):
     """2026-11-16 (Michele): an UNEXPECTED error inside a rework never turns the whole job into "failed": the job goes back to what it was
     (done when a final video exists, otherwise awaiting_approval), the attempt is given back, the operator is told once. The partner hears
@@ -3457,6 +3467,7 @@ async def _park_after_rework_crash(job_id: str, scene_ids: list, *, policy: bool
     except Exception:
         had_video = False
     reason = f"Rework interrotto da un errore ({str(err)[:120]}): resta la versione precedente"
+    _log_rework_event(job, "crash", scene_ids, repr(err))
     job.update({"status": "done" if had_video else "awaiting_approval", "message": reason})
     _rwp.end(job)
     first = _rwp.flag(job, reason, "rework_crashed")
@@ -3501,6 +3512,7 @@ async def _run_redo(job_id: str, scene_ids: list, *, video: bool, strict: bool,
         while video and not strict and result.get("failed") and _tries < _env_int("PVS_REWORK_NOGEN_RETRIES", 2):
             _tries += 1
             log.warning(f"[Job {job_id}] rework: no clip for {result['failed']}, retry {_tries}")
+            _log_rework_event(job, "retry", result["failed"], f"nessun clip, riprova {_tries}")
             _again = await _sr.redo_scenes(job, job_dir, list(result["failed"]), _redo_deps(job_id),
                                            video=True, strict=False, label=label + " (riprova)")
             result["redone"] = list(result.get("redone") or []) + list(_again.get("redone") or [])
@@ -3510,6 +3522,7 @@ async def _run_redo(job_id: str, scene_ids: list, *, video: bool, strict: bool,
                 result["watermark_failed"] = list(result.get("watermark_failed") or []) + list(_again["watermark_failed"])
         # 2026-11-16 (Michele): a rework that produced no clip is not an attempt: its count (and the round, if nothing at all was redone) is given back
         if policy and video and result.get("failed"):
+            _log_rework_event(job, "no_clip", result["failed"], "nessun clip dopo le riprove: tentativo non contato")
             _rwp.give_back(job, result["failed"], round_too=not result.get("redone"))
             _save_job(job_id)
         if video and result.get("failed"):
@@ -3840,6 +3853,7 @@ async def run_reassemble_only(job_id: str):
         if _had_video:
             # 2026-11-16 (Michele): a reassembly that fails when a final video already exists (after a rework) leaves the job as it was
             _msg = f"Riassemblaggio non riuscito ({str(e)[:120]}): resta il video precedente"
+            _log_rework_event(_job, "reassembly_failed", [], repr(e))
             _job.update({"status": "done", "message": _msg})
             _rwp.flag(_job, _msg, "reassembly_failed")
             _save_job(job_id)
