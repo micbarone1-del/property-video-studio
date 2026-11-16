@@ -3235,6 +3235,13 @@ async def _rework_gate(job_id: str, scene_ids: list, force: bool = False):
                f"(POST /jobs/{job_id}/rework-budget/reset oppure force_rework=1).")
 
 
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, "").strip())
+    except ValueError:
+        return default
+
+
 class _MissingClips(Exception):
     """2026-10-28 (P1): the assembly was asked to run while some scenes have no clip.
     A video is never assembled with scenes silently left out: the job stops in review."""
@@ -3436,6 +3443,36 @@ async def _rework_qc_gate(job_id: str, job_dir, result: dict):
     return True
 
 
+async def _park_after_rework_crash(job_id: str, scene_ids: list, *, policy: bool, video: bool, err):
+    """2026-11-16 (Michele): an UNEXPECTED error inside a rework never turns the whole job into "failed": the job goes back to what it was
+    (done when a final video exists, otherwise awaiting_approval), the attempt is given back, the operator is told once. The partner hears
+    nothing: a good video may exist and a rework is not the partner's business."""
+    job = JOBS.get(job_id)
+    if not job:
+        return
+    if policy and video:
+        _rwp.give_back(job, scene_ids, round_too=True)
+    try:
+        had_video = bool(job.get("output_path")) and Path(job["output_path"]).exists()
+    except Exception:
+        had_video = False
+    reason = f"Rework interrotto da un errore ({str(err)[:120]}): resta la versione precedente"
+    job.update({"status": "done" if had_video else "awaiting_approval", "message": reason})
+    _rwp.end(job)
+    first = _rwp.flag(job, reason, "rework_crashed")
+    _save_job(job_id)
+    if first:
+        try:
+            await _notify_operator(
+                job_id, "Rework crashed",
+                subject=f"Rework interrotto: {job.get('property_name') or job_id}",
+                body_html=f"<p>{reason}.</p><p>Job {job_id}. Lo stato e' tornato com'era; il tentativo non e' stato contato.</p>",
+                push_message=reason, tags=["warning"],
+            )
+        except Exception as e2:
+            log.warning(f"[Job {job_id}] Rework-crash notification failed (non-fatal): {e2}")
+
+
 async def _run_redo(job_id: str, scene_ids: list, *, video: bool, strict: bool,
                     policy: bool, label: str):
     """2026-10-22 (backlog 75, architecture discipline): the ONE runner behind
@@ -3458,6 +3495,23 @@ async def _run_redo(job_id: str, scene_ids: list, *, video: bool, strict: bool,
 
         result = await _sr.redo_scenes(job, job_dir, scene_ids, _redo_deps(job_id),
                                        video=video, strict=strict, label=label)
+        # 2026-11-16 (Michele): a scene that gave no clip (fal 502, Luma error) is tried again, up to PVS_REWORK_NOGEN_RETRIES times
+        # (default 2), only for the scenes that failed; the sum of redone/failed is what the rest of this runner sees.
+        _tries = 0
+        while video and not strict and result.get("failed") and _tries < _env_int("PVS_REWORK_NOGEN_RETRIES", 2):
+            _tries += 1
+            log.warning(f"[Job {job_id}] rework: no clip for {result['failed']}, retry {_tries}")
+            _again = await _sr.redo_scenes(job, job_dir, list(result["failed"]), _redo_deps(job_id),
+                                           video=True, strict=False, label=label + " (riprova)")
+            result["redone"] = list(result.get("redone") or []) + list(_again.get("redone") or [])
+            result["failed"] = list(_again.get("failed") or [])
+            result["skipped"] = list(result.get("skipped") or []) + list(_again.get("skipped") or [])
+            if _again.get("watermark_failed"):
+                result["watermark_failed"] = list(result.get("watermark_failed") or []) + list(_again["watermark_failed"])
+        # 2026-11-16 (Michele): a rework that produced no clip is not an attempt: its count (and the round, if nothing at all was redone) is given back
+        if policy and video and result.get("failed"):
+            _rwp.give_back(job, result["failed"], round_too=not result.get("redone"))
+            _save_job(job_id)
         if video and result.get("failed"):
             try:
                 import alt_photo_rework as _apr0
@@ -3505,8 +3559,7 @@ async def _run_redo(job_id: str, scene_ids: list, *, video: bool, strict: bool,
 
     except Exception as e:
         log.error(f"[Job {job_id}] redo (video={video}) failed: {e}", exc_info=True)
-        JOBS[job_id].update({"status": "failed", "message": f"Errore: {str(e)[:200]}"})
-        _save_job(job_id)
+        await _park_after_rework_crash(job_id, scene_ids, policy=policy, video=video, err=e)
     finally:
         try:
             if _rwp.end(JOBS.get(job_id)):
@@ -3779,9 +3832,26 @@ async def run_reassemble_only(job_id: str):
             log.warning(f"[Job {job_id}] Missing-clips notification failed (non-fatal): {e2}")
     except Exception as e:
         log.error(f"[Job {job_id}] reassembly failed: {e}", exc_info=True)
-        JOBS[job_id].update({"status": "failed", "message": f"Errore assemblaggio: {str(e)[:200]}"})
-        _save_job(job_id)
-        await _send_partner_webhook(job_id, "failed")
+        _job = JOBS[job_id]
+        try:
+            _had_video = bool(_job.get("output_path")) and Path(_job["output_path"]).exists()
+        except Exception:
+            _had_video = False
+        if _had_video:
+            # 2026-11-16 (Michele): a reassembly that fails when a final video already exists (after a rework) leaves the job as it was
+            _msg = f"Riassemblaggio non riuscito ({str(e)[:120]}): resta il video precedente"
+            _job.update({"status": "done", "message": _msg})
+            _rwp.flag(_job, _msg, "reassembly_failed")
+            _save_job(job_id)
+            try:
+                await _notify_operator(job_id, "Reassembly failed", subject=f"Riassemblaggio non riuscito: {_job.get('property_name') or job_id}",
+                                       body_html=f"<p>{_msg}.</p><p>Job {job_id}.</p>", push_message=_msg, tags=["warning"])
+            except Exception as e2:
+                log.warning(f"[Job {job_id}] Reassembly-failed notification failed (non-fatal): {e2}")
+        else:
+            JOBS[job_id].update({"status": "failed", "message": f"Errore assemblaggio: {str(e)[:200]}"})
+            _save_job(job_id)
+            await _send_partner_webhook(job_id, "failed")
     finally:
         _release_job_lock(job_id)
 
