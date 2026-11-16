@@ -1929,6 +1929,10 @@ class RelinxPhoto(BaseModel):
     url: str
     category: str = "uncategorized"
     order: int = 0
+    label: str = None        # 2026-11-16: the caption the agency picked in Relinx; field name not confirmed by Relinx yet, so the usual names are all read
+    caption: str = None
+    didascalia: str = None
+    name: str = None
 
 class RelinxVideoRequest(BaseModel):
     external_ref: str
@@ -2146,8 +2150,13 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
 
         photos_for_selection = []
         for p in payload.photos:
-            cat = p.category if p.category in scraper.CATEGORIES else "uncategorized"
-            photos_for_selection.append({"url": p.url, "category": cat})
+            cat, label_text, kind = scraper.partner_photo_category(p.category, p.label, p.caption, p.didascalia, p.name)   # 2026-11-16: one table for every spelling
+            item = {"url": p.url, "category": "uncategorized" if cat == "floorplan" else cat}
+            if label_text:
+                item["label_it"] = label_text          # the agency's own wording, shown in the photo audit; also the "caption" the checks respect
+            if cat == "floorplan":
+                item["category_source"] = "partner_floorplan"
+            photos_for_selection.append(item)
         photos_for_selection = await asyncio.to_thread(scraper.resolve_uncategorized_photos, photos_for_selection)
         classification_summary = await asyncio.to_thread(scraper.finish_photo_classification, photos_for_selection)   # 2026-11-06: shared with the URL workflow
 

@@ -157,6 +157,46 @@ CATEGORY_ITALIAN_LABELS = {
 }
 
 
+# 2026-11-16 (Michele): the labels an agency picks in Relinx ("Seleziona una didascalia...", 18 entries). ONE table for every spelling: the
+# 18 Italian captions, the six English category names and plurals. Anything not in the table stays "uncategorized" (Claude vision decides, as
+# before). "floorplan" is not a photo to animate: it never becomes a scene. Rooms that are not one of the six categories (entrance, corridor,
+# cellar, garage, storeroom) are valid captions but stay "uncategorized": vision names them and they leave the selection, as today.
+PARTNER_LABELS = {
+    "bagno": "bathrooms", "bagni": "bathrooms", "bathroom": "bathrooms", "bathrooms": "bathrooms",
+    "camera da letto": "bedrooms", "camere da letto": "bedrooms", "cameretta": "bedrooms", "bedroom": "bedrooms", "bedrooms": "bedrooms",
+    "cucina": "kitchen", "kitchen": "kitchen",
+    "salone": "living", "soggiorno": "living", "living": "living", "living room": "living",
+    "facciata esterna": "exterior", "facciata": "exterior", "esterno": "exterior", "exterior": "exterior",
+    "giardino": "outdoor", "terrazzo": "outdoor", "balcone": "outdoor", "cortile": "outdoor", "vista": "outdoor", "outdoor": "outdoor",
+    "ingresso": "uncategorized", "corridoio": "uncategorized", "cantina": "uncategorized", "garage": "uncategorized", "ripostiglio": "uncategorized",
+    "planimetria": "floorplan", "floorplan": "floorplan", "floor plan": "floorplan",
+}
+
+
+def normalise_label(text) -> str:
+    """lower case, no accents or punctuation, single spaces, no trailing number ("Camera da letto 2" -> "camera da letto")."""
+    import unicodedata
+    t = unicodedata.normalize("NFKD", str(text or "")).encode("ascii", "ignore").decode().lower()
+    t = re.sub(r"[^a-z0-9]+", " ", t).strip()
+    return re.sub(r"\s+\d+$", "", t)
+
+
+def partner_photo_category(*texts):
+    """The category a partner photo gets from the texts it came with (category field first, then the caption fields), the original text it
+    was read from, and the table word. Returns (category, original_text, kind): category is one of CATEGORIES, "uncategorized" or "floorplan";
+    kind is "label" when a text was recognised, "" when none was (category "uncategorized", original_text = first non-empty text or "")."""
+    first = ""
+    for t in texts:
+        t = str(t or "").strip()
+        if not t or t.lower() == "uncategorized":
+            continue
+        first = first or t
+        hit = PARTNER_LABELS.get(normalise_label(t))
+        if hit:
+            return hit, t, "label"
+    return "uncategorized", first, ""
+
+
 def derive_available_category_order(photos: list, priority_order: list = None) -> list:
     """Returns the subset of priority_order categories that have at least
     one real photo, in priority_order's sequence -- this IS the actual
@@ -168,7 +208,7 @@ def derive_available_category_order(photos: list, priority_order: list = None) -
 
 # 2026-11-03 (Michele): "teniamo i motivi delle selezioni per capire se funziona e come". For every photo: where its category came from and why it left the selection.
 EXCLUSION_REASONS = {"vision_illustration": "illustrazioni o render", "vision_aerial": "viste aeree o dall'alto", "vision_hall": "ingressi o corridoi",
-                     "vision_refine": "esterni non confermati", "vision_label_mismatch": "etichetta del partner non corrisponde alla foto", "vision_quality": "scarsa qualit\u00e0", "duplicate": "foto duplicata"}
+                     "vision_refine": "esterni non confermati", "vision_label_mismatch": "etichetta del partner non corrisponde alla foto", "vision_quality": "scarsa qualit\u00e0", "duplicate": "foto duplicata", "partner_floorplan": "planimetria"}
 
 
 def photo_exclusion(p: dict):
@@ -1171,7 +1211,7 @@ def resolve_uncategorized_photos(photos: list) -> list:
     """Runs the vision-QC fallback on every 'uncategorized' photo, in place. A photo the classifier calls "other" gets p["other_kind"] (audit only)."""
     _describe_cache.clear()
     for p in photos:
-        if p.get("category") == "uncategorized":
+        if p.get("category") == "uncategorized" and p.get("category_source") != "partner_floorplan":
             p["category"] = classify_uncategorized_photo(p["url"], p.get("original_url"))
             p["category_source"] = "vision"
             if p["category"] == "uncategorized":
