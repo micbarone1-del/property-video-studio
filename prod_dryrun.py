@@ -20,6 +20,7 @@ BASE = "http://127.0.0.1:8000"
 AGENCY_NAME = os.environ.get("DRYRUN_AGENCY_NAME", "PVS DRYRUN")        # 2026-11-13: the voice reads this name aloud: use a real one (GIAL IMMOBILIARE)
 AGENCY_EXT = os.environ.get("DRYRUN_AGENCY_EXT", "pvs-dryrun")          # own external id = own agency record (same id would RENAME the existing one)
 SKIP_A = os.environ.get("DRYRUN_SKIP_A") == "1"
+ONLY_A = os.environ.get("DRYRUN_ONLY_A") == "1"      # 2026-11-16: run only the free checks (wrong key, unsuitable listing): no video, no cost
 KEYFILE = Path("/root/pvs_prod_dryrun_key.txt")
 JOBS = Path("/var/www/property-video-studio/jobs")
 
@@ -97,9 +98,13 @@ def main(argv):
                 time.sleep(3)
             time.sleep(3)
             print("A2 job %s status=%s failure_code=%s failure_message=%s" % (jid, g.get("status"), g.get("failure_code"), g.get("failure_message")), flush=True)
-            print("A2 expected: status failed + failure_code + message: %s; webhooks for it: %d" % (
-                "PASS" if g.get("status") == "failed" and g.get("failure_code") and g.get("failure_message") else "FAIL",
+            print("A2 expected: status failed + failure_code input_not_suitable + Italian message: %s; webhooks for it: %d" % (
+                "PASS" if g.get("status") == "failed" and g.get("failure_code") == "input_not_suitable" and g.get("failure_message") else "FAIL",
                 len([h for h in hooks if h.get("id") == jid])), flush=True)
+
+    if ONLY_A:
+        print("ONLY A: free checks done, no video started.", flush=True)
+        return 0
 
     # ---- B the real listing
     url = argv[1]
