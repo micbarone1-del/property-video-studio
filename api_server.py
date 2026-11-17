@@ -2156,7 +2156,7 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
         photos_for_selection = []
         for p in payload.photos:
             cat, label_text, kind = scraper.partner_photo_category(p.category, p.label, p.caption, p.didascalia, p.name)   # 2026-11-16: one table for every spelling
-            item = {"url": p.url, "category": "uncategorized" if cat == "floorplan" else cat}
+            item = {"url": p.url, "category": "uncategorized" if cat == "floorplan" else cat, "reject_overlay": True}     # 2026-11-17: watermark / logo photos are out in a partner job
             if label_text:
                 item["label_it"] = label_text          # the agency's own wording, shown in the photo audit; also the "caption" the checks respect
             if cat == "floorplan":

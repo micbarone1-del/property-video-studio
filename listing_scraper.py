@@ -208,7 +208,7 @@ def derive_available_category_order(photos: list, priority_order: list = None) -
 
 # 2026-11-03 (Michele): "teniamo i motivi delle selezioni per capire se funziona e come". For every photo: where its category came from and why it left the selection.
 EXCLUSION_REASONS = {"vision_illustration": "illustrazioni o render", "vision_aerial": "viste aeree o dall'alto", "vision_hall": "ingressi o corridoi",
-                     "vision_refine": "esterni non confermati", "vision_label_mismatch": "etichetta del partner non corrisponde alla foto", "vision_quality": "scarsa qualit\u00e0", "duplicate": "foto duplicata", "partner_floorplan": "planimetria", "vision_banner": "banner o scritta sulla foto (es. venduto)"}
+                     "vision_refine": "esterni non confermati", "vision_label_mismatch": "etichetta del partner non corrisponde alla foto", "vision_quality": "scarsa qualit\u00e0", "duplicate": "foto duplicata", "partner_floorplan": "planimetria", "vision_banner": "banner o scritta sulla foto (es. venduto)", "overlay": "watermark o logo sulla foto"}
 
 
 def photo_exclusion(p: dict):
@@ -216,6 +216,8 @@ def photo_exclusion(p: dict):
     category order, the selection and the dashboard audit all read it (2026-11-06: before, the acceptance counted photos the selection threw away)."""
     if p.get("duplicate_of"):
         return EXCLUSION_REASONS["duplicate"]
+    if p.get("overlay_rejected"):
+        return EXCLUSION_REASONS["overlay"]
     if p.get("quality_rejected"):
         return EXCLUSION_REASONS["vision_quality"]
     cat = p.get("category")
@@ -697,7 +699,14 @@ _VISION_DESCRIBE_PROMPT = (
 )
 DESCRIBE_WHAT = ("exterior", "living", "kitchen", "bedrooms", "bathrooms", "outdoor", "emptyroom", "hall", "stairs", "floorplan", "shared", "parking",
                  "storage", "closet", "cellar", "aerial", "detail", "other")
-VISION_MAX_SIDE = 768
+def _vision_side_from_env(default=768):
+    try:
+        return max(256, min(1568, int(os.environ.get("PVS_VISION_MAX_SIDE", default))))     # 2026-11-17: test knob (768 vs 1280), default unchanged
+    except Exception:
+        return default
+
+
+VISION_MAX_SIDE = _vision_side_from_env()
 
 
 def _image_b64_for_vision(content: bytes, max_side: int = 0) -> str:
@@ -1032,6 +1041,12 @@ def filter_poor_quality_candidates(by_category: dict, assess=None, enforce=None)
             p["quality"] = r["verdict"]
             p["sharp"] = r.get("sharp") or None
             p["overlay"] = r.get("overlay")
+            # 2026-11-17 (Michele): in a partner job (reject_overlay, no watermark removal) a portal watermark or an agency logo takes the photo out:
+            # the video model keeps it visible, hallucinates around it, and it can collide with our own logo. Logos/watermarks as a feature: backlog.
+            if p.get("reject_overlay") and p["overlay"] in ("portal", "agency"):
+                p["overlay_rejected"] = True
+                if enforce:
+                    p["quality_rejected"] = True
             p["quality_by_model"] = r.get("by_model")
             p["blockiness"] = r.get("blockiness")
             if r["verdict"] in PHOTO_QUALITY_POOR:
