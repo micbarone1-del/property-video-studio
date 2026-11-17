@@ -676,7 +676,7 @@ _VISION_DESCRIBE_PROMPT = (
     "- bathrooms: bathroom, toilet, shower room.\n"
     "- outdoor: a PRIVATE outdoor space belonging to this home: balcony, terrace, private garden, or the view from that balcony/terrace, or the view FROM A WINDOW of this home (skyline, rooftops, city, sea, countryside) when the view itself is the main subject. A shared or condominium space (courtyard, portico, shared balcony or walkway) is NOT outdoor: answer shared.\n"
     "- emptyroom: an EMPTY or unfurnished ordinary room (bare floor and walls, no furniture) whose use you cannot tell, e.g. an empty bedroom or living room. An empty or unfurnished living room or open-plan room is emptyroom, NOT hall.\n"
-    "- hall: entrance hall, corridor, hallway or landing inside the home (a passage with doors, not a room to stay in).\n"
+    "- hall: entrance hall, corridor, hallway or landing inside the home (a passage with doors, not a room to stay in). ALSO hall: any photo taken inside a passage, doorway or landing where two or more doorways or openings frame the view, even when a kitchen, bathroom or bedroom can be seen through them; this answer wins over every room answer below and above.\n"
     "- stairs: a staircase.\n"
     "- floorplan: a floor plan, drawing or map of the layout.\n"
     "- shared: shared building areas (courtyard, portico, lobby, lift, communal garden, street) and a landmark or monument photographed from outside the property (not as seen from this home's own balcony, terrace or window).\n"

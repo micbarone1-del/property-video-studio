@@ -493,6 +493,11 @@ def _get_image_dimensions(content: bytes):
     return img.size
 
 
+def _trimmed_dimensions(content: bytes):
+    from photo_format import trimmed_size
+    return trimmed_size(content)
+
+
 def _decide_job_format_from_bytes(contents: list) -> str:
     """
     Majority vote across a job's photos: 'landscape' or 'portrait'
@@ -505,7 +510,7 @@ def _decide_job_format_from_bytes(contents: list) -> str:
     portrait_count = 0
     for c in contents:
         try:
-            w, h = _get_image_dimensions(c)
+            w, h = _trimmed_dimensions(c)   # 2026-11-17: the vote looks at the photo WITHOUT its white padding border (photo_format)
             if w >= h:
                 landscape_count += 1
             else:
@@ -2286,6 +2291,18 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
             job_format = payload.output_format
         elif valid_img_paths:
             job_format = _decide_job_format_from_bytes([p.read_bytes() for p in valid_img_paths])
+            if job_format == "portrait":   # 2026-11-17 (Michele): portrait is not supported for partner jobs: a clear refusal, not a video that hallucinates
+                shutil.rmtree(str(job_dir), ignore_errors=True)
+                _msg = "Photos are mostly vertical (portrait): this format is not supported at the moment."
+                JOBS[job_id].update({"status": "failed", "message": _msg, "failure_code": "unsupported_format", "failure_public_message": _msg})
+                _save_job(job_id)
+                await _send_partner_webhook(job_id, "failed")
+                await _notify_operator(job_id, "Relinx job failed",
+                    subject=f"Job Relinx rifiutato: {payload.property_name}",
+                    body_html=f"<p><b>{payload.property_name}</b> - foto prevalentemente verticali (formato non supportato)</p>"
+                              f"<p>Job ID: {job_id}, external_ref: {payload.external_ref}</p>",
+                    push_message=f"{payload.property_name} - rifiutato (foto verticali)", tags=["x"])
+                return
             for p in valid_img_paths:
                 p.write_bytes(_normalize_photo_to_format(p.read_bytes(), job_format))
         else:

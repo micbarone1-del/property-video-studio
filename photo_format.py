@@ -3,6 +3,53 @@ Why: the photo SELECTION (listing_scraper.rank_photos_by_quality) judged the who
 bathroom became a band of bare wall. Both now call this same function, so the photo that is judged is the photo that is used."""
 
 
+# 2026-11-17 (Relinx feedback: white band at the top of every video): Relinx pads its photos to one uniform format, so the band is PART of the photo
+# we receive and passes the 2 % tolerance below (the padded photo is already 16:9). The border is cut here, ONE place, before the crop: the photo
+# that is judged (listing_scraper ranking), the photo that is used and the format vote all see the same trimmed picture.
+# A border is: touching the edge, white (mean >= BORDER_WHITE_MIN), uniform (std <= BORDER_STD_MAX), at least BORDER_MIN_PX thick, ending in a sharp
+# step to the content (BORDER_STEP_MIN), and never thicker than BORDER_MAX_FRAC of that dimension (25 %: a 4:3 photo padded to 16:9 has 12.5 % bars per side; a real white ceiling is not eaten by the other conditions).
+BORDER_WHITE_MIN = 244.0
+BORDER_STD_MAX = 6.0
+BORDER_MIN_PX = 3
+BORDER_STEP_MIN = 8.0
+BORDER_MAX_FRAC = 0.25
+
+
+def _edge_trim(lines, cap: int) -> int:
+    """How many lines (rows or columns, counted from the edge: lines[0] is the outermost) belong to a white padding border. 0 = none."""
+    k = 0
+    n = len(lines)
+    while k < min(cap, n) and lines[k].mean() >= BORDER_WHITE_MIN and lines[k].std() <= BORDER_STD_MAX:
+        k += 1
+    if k < BORDER_MIN_PX or k >= n:
+        return 0
+    if abs(lines[k] - lines[k - 1]).mean() < BORDER_STEP_MIN:
+        return 0
+    return k
+
+
+def border_box(img) -> tuple:
+    """(left, top, right, bottom) of the photo without its white padding border; the whole image when there is none."""
+    import numpy as np
+    gray = np.asarray(img.convert("L"), dtype=float)
+    h, w = gray.shape
+    capv, caph = int(h * BORDER_MAX_FRAC), int(w * BORDER_MAX_FRAC)
+    top = _edge_trim(gray, capv)
+    bottom = _edge_trim(gray[::-1], capv)
+    left = _edge_trim(gray.T, caph)
+    right = _edge_trim(gray.T[::-1], caph)
+    return (left, top, w - right, h - bottom)
+
+
+def trimmed_size(image_bytes: bytes) -> tuple:
+    """(width, height) of the photo once its white border is cut: what the landscape / portrait vote must look at."""
+    from PIL import Image
+    import io
+    img = Image.open(io.BytesIO(image_bytes))
+    l, t, r, b = border_box(img)
+    return (r - l, b - t)
+
+
 def normalize_photo_to_format(image_bytes: bytes, target_format: str) -> bytes:
     """
     Crops a photo to match the job's chosen canonical output format --
@@ -28,12 +75,20 @@ def normalize_photo_to_format(image_bytes: bytes, target_format: str) -> bytes:
     from PIL import Image
     import io
     img = Image.open(io.BytesIO(image_bytes))
+    box = border_box(img)
+    trimmed = box != (0, 0) + img.size
+    if trimmed:
+        img = img.crop(box)
     w, h = img.size
     target_ratio = (16 / 9) if target_format == "landscape" else (9 / 16)
     current_ratio = w / h
 
-    if abs(current_ratio - target_ratio) / target_ratio < 0.02:
-        return image_bytes  # already an effective match, don't bother cropping
+    # a trimmed photo is always cut to the exact shape (a 2 % mismatch would be stretched by the assembly); an untouched one keeps the old tolerance
+    if abs(current_ratio - target_ratio) / target_ratio < (0.002 if trimmed else 0.02):
+        if not trimmed:
+            return image_bytes  # already an effective match, don't bother cropping
+        buf = io.BytesIO(); img.save(buf, format='JPEG', quality=95)
+        return buf.getvalue()
 
     if current_ratio < target_ratio:
         new_h = min(int(w / target_ratio), h)
