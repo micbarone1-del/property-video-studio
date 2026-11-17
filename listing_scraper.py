@@ -208,7 +208,7 @@ def derive_available_category_order(photos: list, priority_order: list = None) -
 
 # 2026-11-03 (Michele): "teniamo i motivi delle selezioni per capire se funziona e come". For every photo: where its category came from and why it left the selection.
 EXCLUSION_REASONS = {"vision_illustration": "illustrazioni o render", "vision_aerial": "viste aeree o dall'alto", "vision_hall": "ingressi o corridoi",
-                     "vision_refine": "esterni non confermati", "vision_label_mismatch": "etichetta del partner non corrisponde alla foto", "vision_quality": "scarsa qualit\u00e0", "duplicate": "foto duplicata", "partner_floorplan": "planimetria"}
+                     "vision_refine": "esterni non confermati", "vision_label_mismatch": "etichetta del partner non corrisponde alla foto", "vision_quality": "scarsa qualit\u00e0", "duplicate": "foto duplicata", "partner_floorplan": "planimetria", "vision_banner": "banner o scritta sulla foto (es. venduto)"}
 
 
 def photo_exclusion(p: dict):
@@ -243,7 +243,8 @@ def build_photo_audit(photos: list) -> list:
         out.append({"n": i + 1, "url": u, "label": p.get("label_it") or None, "category": p.get("category"),
                     "category_from_page": p.get("category_page") or p.get("category_before_source"),
                     "source": p.get("category_source") or "partner_or_page", "excluded": photo_exclusion(p),
-                    "quality": p.get("quality"), "sharp": p.get("sharp"), "label_conflict": p.get("label_conflict"), "render_accepted": bool(p.get("render_accepted"))})
+                    "quality": p.get("quality"), "sharp": p.get("sharp"), "label_conflict": p.get("label_conflict"), "render_accepted": bool(p.get("render_accepted")),
+                    "render_second_look": p.get("render_second_look")})
     return out
 
 
@@ -689,6 +690,7 @@ _VISION_DESCRIBE_PROMPT = (
     "- other: anything else.\n\n"
     "SECOND word: photo or render.\n"
     "- photo: a real photograph taken by a person.\n"
+    "- banner: a real photograph with a ribbon, banner, stamp or big text laid over it that states the sale status or an offer (for example VENDUTO, SOLD, RISERVATO, AFFITTATO, TRATTATIVA RISERVATA, NUOVO PREZZO). A small logo or a faint watermark is NOT a banner: that is photo.\n"
     "- render: a drawing, an architectural render, a CGI image, a 3D visualisation or a sketch (even if it looks realistic, with perfect colours, "
     "people drawn as silhouettes or a computer-generated sky and plants).\n\n"
     "Answer with ONLY two words, for example: kitchen photo"
@@ -698,14 +700,15 @@ DESCRIBE_WHAT = ("exterior", "living", "kitchen", "bedrooms", "bathrooms", "outd
 VISION_MAX_SIDE = 768
 
 
-def _image_b64_for_vision(content: bytes) -> str:
+def _image_b64_for_vision(content: bytes, max_side: int = 0) -> str:
     """Downscaled JPEG (max side VISION_MAX_SIDE) as base64: enough to recognise a room, far cheaper and faster than the
     full-resolution original. Falls back to the original bytes if Pillow cannot read the image."""
     import base64, io
     try:
         from PIL import Image
         img = Image.open(io.BytesIO(content)).convert("RGB")
-        img.thumbnail((VISION_MAX_SIDE, VISION_MAX_SIDE))
+        side = max_side or VISION_MAX_SIDE
+        img.thumbnail((side, side))
         buf = io.BytesIO(); img.save(buf, "JPEG", quality=80)
         return base64.b64encode(buf.getvalue()).decode("utf-8")
     except Exception:
@@ -771,7 +774,7 @@ def _describe_photo(image_url: str, fallback_url: str = None) -> tuple:
         return "other", "photo", False
     toks = word.split()
     what = toks[0] if toks and toks[0] in DESCRIBE_WHAT else "other"
-    source = "render" if len(toks) > 1 and toks[1] in ("render", "illustration", "rendering", "drawing", "sketch") else "photo"
+    source = "render" if len(toks) > 1 and toks[1] in ("render", "illustration", "rendering", "drawing", "sketch") else ("banner" if len(toks) > 1 and toks[1] == "banner" else "photo")
     if toks and toks[0] in ("render", "illustration"):
         what, source = "other", "render"
     _describe_cache[image_url] = (what, source, True)
@@ -1098,7 +1101,42 @@ def _photo_source(image_url: str, fallback_url: str = None) -> tuple:
     what, src, ok = _describe_photo(image_url, fallback_url)
     if src == "render":
         return "illustration", ok
+    if src == "banner":
+        return "banner", ok     # 2026-11-17 (Michele): a photo with a VENDUTO / SOLD banner is not used
     return ("aerial" if what == "aerial" else "photo"), ok
+
+
+# 2026-11-17 (Michele: "non abbiamo abbastanza foto buone"): the first answer is ONE sample and called real, bright (HDR-looking) photos of old flats "render"
+# (Marino: photos 2, 6 and 16 of the agency's own listing, all real; the job had no kitchen and no living room left). An INTERIOR photo called a render is looked at
+# a second time, with a different question at a higher resolution; it leaves the selection only if the second look says render as well. A failed second call
+# keeps the first verdict (the photo stays out). Exterior renders (new buildings) keep the single answer. PVS_RENDER_SECOND_LOOK=0 switches it off.
+RENDER_SECOND_LOOK_SIDE = 1280
+_RENDER_SECOND_LOOK_PROMPT = (
+    "Look at this real estate picture closely. Is it a real photograph of a real place, or a computer-generated render / illustration?\n"
+    "Real listing photos often look very bright, saturated or processed (HDR, wide angle, strong window light), and empty or renovated flats look clean: that is still a PHOTO. "
+    "Old flats with imperfect walls, cables, switches, radiators, shadows, grain or lens distortion are real photos.\n"
+    "Answer render ONLY if you see clear signs of computer generation: surfaces too perfect and plastic, no grain or imperfection anywhere, impossible or too perfect geometry, "
+    "objects or people that look drawn, a painted sky. If in doubt, answer photo.\n"
+    "Answer with ONE word: photo or render."
+)
+
+
+def render_second_look_enabled() -> bool:
+    return os.getenv("PVS_RENDER_SECOND_LOOK", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _confirm_render(image_url: str, fallback_url: str = None) -> tuple:
+    """(is_render, ok): the second look at a photo the first answer called a render. ok False = the call failed (the first verdict then stands)."""
+    try:
+        fetched = fetch_photo_bytes(image_url, fallback_url, timeout=15)
+        if not fetched["ok"]:
+            raise RuntimeError(fetched["error"])
+        b64 = _image_b64_for_vision(fetched["content"], RENDER_SECOND_LOOK_SIDE)
+    except Exception as e:
+        log.warning(f"[Scraper] Render second look failed for {image_url}: {e}")
+        return True, False
+    word, ok = _vision_word_from_b64([b64], _RENDER_SECOND_LOOK_PROMPT, image_url, words=1)
+    return (word.startswith("render") or not ok), ok
 
 
 def caption_ties_to_property(label: str) -> bool:
@@ -1172,7 +1210,17 @@ def refine_exterior_outdoor_with_vision(photos: list, max_photos: int = MAX_PHOT
     src_check = [p for p in photos if p.get("category") in CATEGORIES and p.get("url")][:MAX_SOURCE_CHECK] if aerial_filter_enabled() else []
     with ThreadPoolExecutor(max_workers=CLASSIFY_WORKERS) as ex:
         src_results = list(ex.map(lambda p: _photo_source(p["url"], p.get("original_url")), src_check))
-    aerials = illustrations = renders_kept = 0
+    aerials = illustrations = renders_kept = banners = second_look_saved = 0
+    if render_second_look_enabled():
+        again = [i for i, (p_, (w_, ok_)) in enumerate(zip(src_check, src_results)) if ok_ and w_ == "illustration" and p_.get("category") in INTERIOR_CATEGORIES]
+        with ThreadPoolExecutor(max_workers=CLASSIFY_WORKERS) as ex:
+            second = list(ex.map(lambda i: _confirm_render(src_check[i]["url"], src_check[i].get("original_url")), again))
+        for i, (is_render, ok2) in zip(again, second):
+            if ok2 and not is_render:
+                src_check[i]["render_second_look"] = "photo"
+                src_results[i] = ("photo", True); second_look_saved += 1
+            elif ok2:
+                src_check[i]["render_second_look"] = "render"
     # 2026-11-06 (PVS_ACCEPT_RENDERS, default off; Michele: "fammi vedere come viene" for new-build listings such as 1327): when the listing has NO real
     # photo at all, renders of INTERIOR rooms stay in the selection (marked render_accepted); exterior / aerial renders and everything else still leave it.
     real_n = sum(1 for (w, ok_) in src_results if ok_ and w == "photo")
@@ -1183,7 +1231,9 @@ def refine_exterior_outdoor_with_vision(photos: list, max_photos: int = MAX_PHOT
         if word == "illustration" and keep_renders and p.get("category") in INTERIOR_CATEGORIES:
             p["render_accepted"] = True; renders_kept += 1
             continue
-        if word == "illustration":
+        if word == "banner":
+            p["category_before_source"] = p.get("category"); p["category"] = "uncategorized"; p["category_source"] = "vision_banner"; banners += 1
+        elif word == "illustration":
             p["category_before_source"] = p.get("category"); p["category"] = "uncategorized"; p["category_source"] = "vision_illustration"; illustrations += 1
         elif word == "aerial" and p.get("category") in ("exterior", "outdoor") and not caption_ties_to_property(p.get("label_it")):
             p["category_before_source"] = p.get("category"); p["category"] = "uncategorized"; p["category_source"] = "vision_aerial"; aerials += 1
@@ -1222,7 +1272,7 @@ def refine_exterior_outdoor_with_vision(photos: list, max_photos: int = MAX_PHOT
             p["category_source"] = "page_label_checked" if ok else "page_fallback"
     summary = {"method": "exterior_outdoor_check", "checked": len(todo), "confirmed": confirmed, "living_checked": len(living), "halls_removed_from_living": halls,
                "swapped_exterior_outdoor": swapped, "excluded_as_other": excluded,
-               "kept_page_label_after_failure": fallback, "not_checked_over_cap": len(over), "label_mismatch_removed": mismatched, "aerial_removed": aerials, "illustrations_removed": illustrations, "renders_accepted": renders_kept}
+               "kept_page_label_after_failure": fallback, "not_checked_over_cap": len(over), "label_mismatch_removed": mismatched, "aerial_removed": aerials, "illustrations_removed": illustrations, "banners_removed": banners, "renders_saved_by_second_look": second_look_saved, "renders_accepted": renders_kept}
     log.info(f"[Scraper] Exterior/outdoor check: {summary}")
     return summary
 
