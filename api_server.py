@@ -454,12 +454,9 @@ async def upload_agency_logo_ep(agency_id: str, logo: UploadFile = File(...)):
     img = Image.open(io.BytesIO(content))
     if img.mode not in ('RGBA', 'LA') and 'transparency' not in img.info:
         raise HTTPException(status_code=400, detail='Logo must have an alpha channel (transparent background) -- upload a PNG with transparency')
-    logos_dir = BASE_DIR / 'clients' / agency_id
-    logos_dir.mkdir(parents=True, exist_ok=True)
-    logo_path = logos_dir / 'logo.png'
-    img.convert('RGBA').save(logo_path, format='PNG')
-    cost_model.set_agency_logo(agency_id, str(logo_path))
-    return {'agency_id': agency_id, 'logo_path': str(logo_path)}
+    import agency_logo   # 2026-11-17: the file writing is shared with the partner intake (agency_logo.py)
+    logo_path = agency_logo.store_logo_png(agency_id, img, BASE_DIR)
+    return {'agency_id': agency_id, 'logo_path': logo_path}
 
 
 _RATE_LIMIT_WINDOW = 3600   # 1 hour in seconds
@@ -1952,6 +1949,7 @@ class RelinxVideoRequest(BaseModel):
     callback_url: str
     listing_url: str | None = None     # 2026-11-06 (optional): the original listing page, shown on the operator page to compare input and output
     language: str | None = None        # 2026-11-16 (optional): language of the messages to the agency; unknown or missing = "it" (partner_messages)
+    agency_logo_url: str | None = None  # 2026-11-17 (optional): the agency logo; downloaded and stored as the agency logo (agency_logo.py)
 
 
 def _map_internal_status_to_partner_status(internal_status: str, released: bool = False) -> str:
@@ -2312,6 +2310,11 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
 
         claude_usage = scraper.get_claude_cost()
         _prop = cost_model.create_property(payload.property_name, agency_id=agency["agency_id"])
+        if payload.agency_logo_url:   # 2026-11-17: a failed download never fails the job; the agency keeps its current logo
+            import agency_logo
+            _logo = await asyncio.to_thread(agency_logo.update_from_partner_url, agency["agency_id"], payload.agency_logo_url, BASE_DIR)
+            JOBS[job_id]["agency_logo_result"] = _logo
+            log.info(f"[Relinx] agency logo for job {job_id}: {_logo}")
 
         from cost_tracker import estimate_job_cost, format_cost_display
         rolling_jobs = _get_rolling_monthly_job_count()
