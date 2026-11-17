@@ -269,5 +269,38 @@ for n, x, ok in (("MDX1 x=0.38 (the sofa that made Luma turn)", 0.38, False), ("
     kept = bool(p) and p["target"] == "the dining table"
     check(n + (" is kept as target" if ok else " is retargeted to the centre of the frame"),
           kept == ok and (ok or (p["target"] == camera_plan.CENTRE_ANCHOR and p["center"] == (0.5, 0.5))), p)
+# 2026-11-17 (job fd52a881): an answer left open at its end is repaired; an unreadable one is asked once more
+good = json.dumps(FWD)
+o, rep = md.parse_answer(good)
+check("MDJ1 a complete answer is read as before, not marked repaired", o and o["move"] == "forward" and rep is False)
+cut = good[:-2]          # ...last string never closed, no closing brace
+o, rep = md.parse_answer(cut)
+check("MDJ2 last string never closed + no closing brace -> repaired, fields kept", o and o["move"] == "forward" and rep is True and o["risk"] == "low", (o, rep))
+o, rep = md.parse_answer('{"view": "interior", "move": "forward", "reason": "the room is deep}')
+check("MDJ3 the closing brace sits inside the unclosed last string -> repaired", o and o["move"] == "forward" and rep is True, (o, rep))
+o, rep = md.parse_answer("```json\n" + good + "\n```")
+check("MDJ4 fenced answer read, not repaired", o and o["move"] == "forward" and rep is False)
+o, rep = md.parse_answer('{"move": "forward", "target": ')
+check("MDJ5 dangling key gets null (validate decides)", o is not None and o.get("target") is None and rep is True, (o, rep))
+check("MDJ6 no object / empty / prose -> None", md.parse_answer("not json") == (None, False) and md.parse_answer("") == (None, False) and md.parse_answer(None) == (None, False))
+clip2 = tmp / "scene_002.mp4"
+n0 = len(calls)
+md._claude = fake(cut)
+r = md.plan(photo, DEEP, clip2)
+e = md.read_history(clip2)["entries"][-1]
+check("MDJ7 a repaired answer is used: ONE call, Claude's plan, history says repaired", len(calls) - n0 == 1 and r["source"] == "claude" and e.get("repaired_json") and not e.get("retried"), (r, e))
+seq = iter(["totally unreadable", good])
+def seq_claude(photo_path, prompt, usage):
+    calls.append(prompt); usage.update({"input_tokens": 1000, "output_tokens": 200, "calls": 1, "cost_eur": 0.01})
+    return next(seq)
+md._claude = seq_claude
+clip3 = tmp / "scene_003.mp4"; n0 = len(calls)
+r = md.plan(photo, DEEP, clip3)
+e = md.read_history(clip3)["entries"][-1]
+check("MDJ8 unreadable first answer -> asked once more -> Claude's plan, history says retried", len(calls) - n0 == 2 and r["source"] == "claude" and e.get("retried"), (r, e))
+md._claude = fake("totally unreadable")
+clip4 = tmp / "scene_004.mp4"; n0 = len(calls)
+r = md.plan(photo, DEEP, clip4)
+check("MDJ9 unreadable twice -> exactly TWO calls (never more), safe plan", len(calls) - n0 == 2 and r["source"] == "fallback")
 print(f"\n{'ALL PASS' if not fails else str(fails) + ' FAIL'} (final)")
 sys.exit(1 if fails else 0)

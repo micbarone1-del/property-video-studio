@@ -408,6 +408,56 @@ def _claude(photo_path, prompt, usage):
     return va._claude_vision_call([str(photo_path)], prompt, 1000, model=va.CLIP_QC_MODEL, usage_out=usage)
 
 
+def _repair_json(body: str) -> str:
+    """Closes what the model left open at the end of its answer: an unterminated string, a dangling key, missing ] or }. Text only; the
+    result still goes through json.loads and validate()."""
+    stack, in_str, esc = [], False, False
+    for ch in body:
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+        elif ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "}]" and stack:
+            stack.pop()
+    out = body.rstrip()
+    if in_str:
+        out += '"'
+    out = out.rstrip().rstrip(",")
+    if out.endswith(":"):
+        out += " null"
+    return out + "".join(reversed(stack))
+
+
+def parse_answer(text):
+    """The director's answer -> (dict or None, repaired). A complete object is read as before; an answer cut or left open at its end
+    (e.g. the last string never closed, job fd52a881) is repaired once. Anything else -> (None, False)."""
+    if not text:
+        return None, False
+    start = text.find("{")
+    if start < 0:
+        return None, False
+    body = text[start:]
+    m = re.search(r"\{.*\}", body, re.DOTALL)
+    if m:
+        try:
+            obj = json.loads(m.group(0))
+            return (obj if isinstance(obj, dict) else None), False
+        except Exception:
+            pass
+    try:
+        obj = json.loads(_repair_json(body))
+        return (obj, True) if isinstance(obj, dict) else (None, False)
+    except Exception:
+        return None, False
+
+
 def plan(photo_path, hints: dict, clip_path, qc_feedback: str = ""):
     """The plan for ONE clip, or None when Claude could not be reached at all (the caller then keeps the old movement table).
     hints: room, space_type, size, depth, anchor, anchor_side, anchor_height, foreground_risk, reflective_surface, output_format."""
@@ -423,17 +473,22 @@ def plan(photo_path, hints: dict, clip_path, qc_feedback: str = ""):
             _append(clip_path, {"ts": int(time.time()), "hints": hints, "qc_feedback": qc_feedback, "raw": None, "plan": None,
                                 "problems": ["no answer from Claude"], "usage": usage, "counted": False})
             return None
-        m = re.search(r"\{.*\}", raw_text, re.DOTALL)
-        try:
-            raw = json.loads(m.group(0)) if m else None
-        except Exception:
-            raw = None
+        raw, repaired = parse_answer(raw_text)
+        retried = False
+        if raw is None:
+            # 2026-11-17 (job fd52a881, 2 scenes of 6): an answer that cannot be read even after the repair is asked ONCE more before the safe plan
+            retried = True
+            raw_text2 = _claude(photo_path, prompt, usage)
+            if raw_text2:
+                raw_text = raw_text2
+                raw, repaired = parse_answer(raw_text2)
         result, problems = validate(raw, hints)
         if result is None:
             aerial = isinstance(raw, dict) and str(raw.get("view", "")).lower() == "aerial"
             result = safe_plan(hints, "; ".join(problems) or "unreadable answer", aerial)
         _append(clip_path, {"ts": int(time.time()), "hints": hints, "qc_feedback": qc_feedback, "raw": raw if raw is not None else raw_text[:800],
-                            "plan": result, "problems": problems, "usage": usage, "counted": False})
+                            "plan": result, "problems": problems, "usage": usage, "counted": False,
+                            **({"repaired_json": True} if repaired else {}), **({"retried": True} if retried else {})})
         log.info(f"[Director] {result['source']}: move={result['move']} travel={result.get('travel')} risk={result['risk']} :: {result['sentence'][:160]}")
         return result
     except Exception as e:
