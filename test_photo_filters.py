@@ -1,3 +1,4 @@
+import os as _os; _os.environ["PVS_VISION_MODEL"] = "legacy"     # these tests check the legacy one-word sender; the new one is covered by test_vision_model.py
 """2026-10-29: photo filters. Size check at download, Claude-vision quality check (measure-only by default, optional drop),
 watermark flag per origin. No network, no API key. Run: python3 test_photo_filters.py"""
 import base64, io, os, re, sys, tempfile, types

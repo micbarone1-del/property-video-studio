@@ -1,3 +1,4 @@
+import os as _os; _os.environ["PVS_VISION_MODEL"] = "legacy"     # these tests check the legacy one-word sender; the new one is covered by test_vision_model.py
 """6 (2026-10-12, A+): vision classifier + exterior/outdoor check. No network, no API key."""
 import os, sys, types, io
 sys.path.insert(0, os.getcwd())

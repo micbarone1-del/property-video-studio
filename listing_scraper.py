@@ -753,6 +753,23 @@ def _vision_word_from_b64(b64_images: list, prompt: str, label: str = "", words:
         return "", False
 
 
+# 2026-11-17: the classification question (room kind + photo / render / banner) ran on claude-haiku-4-5, the oldest model of the system. Test on the 16 GIAL
+# photos: it called real interiors "render" (kitchen 5 of 5 times, a bedroom 2 of 3), saw the "VENDUTO" ribbon only 1 time in 3 (hall photos were fine).
+# claude-sonnet-5-5 with the same prompt and room to reason in one sentence ("ANSWER: <kind> <source>") gave 48 of 48 stable answers on those photos.
+# PVS_VISION_MODEL: "" / "default" / "legacy" = the old behaviour (MODEL, bare two words); any model id = that model with the ANSWER line.
+VISION_REASONING_TOKENS = 300
+
+
+def vision_model() -> str:
+    v = os.environ.get("PVS_VISION_MODEL", "claude-sonnet-5-5").strip()
+    return "" if v.lower() in ("", "default", "legacy", "off", "0") else v
+
+
+def _answer_line_suffix(words: int) -> str:
+    return ("\n\nYou may write ONE short sentence of reasoning first. Then finish with ONE final line of exactly this form, with exactly "
+            + ("TWO words after the colon: ANSWER: <kind> <source>" if words == 2 else "ONE word after the colon: ANSWER: <word>"))
+
+
 def _vision_one_word(image_url: str, fallback_url: str, prompt: str, words: int = 1) -> tuple:
     """Downloads a listing photo, sends it downscaled with a short question to Claude vision (see _vision_word_from_b64) and
     returns the answer as one lowercase word. (word, ok): ok is False only when the call itself failed (download or API)."""
@@ -764,7 +781,10 @@ def _vision_one_word(image_url: str, fallback_url: str, prompt: str, words: int 
     except Exception as e:
         log.warning(f"[Scraper] Vision question failed for {image_url}: {e}")
         return "", False
-    return _vision_word_from_b64([b64], prompt, image_url, words=words)
+    vm = vision_model()
+    if not vm:
+        return _vision_word_from_b64([b64], prompt, image_url, words=words)
+    return _vision_word_from_b64([b64], prompt + _answer_line_suffix(words), image_url, words=words, max_tokens=VISION_REASONING_TOKENS, marker="answer:", model=vm)
 
 
 _describe_cache: dict = {}
@@ -1150,7 +1170,7 @@ def _confirm_render(image_url: str, fallback_url: str = None) -> tuple:
     except Exception as e:
         log.warning(f"[Scraper] Render second look failed for {image_url}: {e}")
         return True, False
-    word, ok = _vision_word_from_b64([b64], _RENDER_SECOND_LOOK_PROMPT, image_url, words=1)
+    word, ok = _vision_word_from_b64([b64], _RENDER_SECOND_LOOK_PROMPT, image_url, words=1, model=vision_model())
     return (word.startswith("render") or not ok), ok
 
 
