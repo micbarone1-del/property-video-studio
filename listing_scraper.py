@@ -2265,6 +2265,69 @@ def _block_narration(description: str, address: str, price: str, voice_id: str, 
         return {"ok": False, "reason": f"error: {e}", "tts_calls": tts_calls}
 
 
+def revoice_blocks(narration_text: str, voice_id: str, n: int) -> dict:
+    """2026-11-17 (Michele, job fd52a881): records AGAIN the narration of an anchored (3-block) job from its stored text, with the same
+    planner as _block_narration (plan_blocks_joint, tempo, silences, sentence anchors, plan_from_anchors) but WITHOUT the model: the text is
+    already written and accepted. Used when only the voice must change (pronunciation file, a voice that does not fit the clips).
+    Returns {"ok", "audio_path", "speech_secs", "timeline", "tts_calls"} or {"ok": False, "reason", "tts_calls"}. Never raises.
+    NOT done here: the room-word check against the final audio (timeline word_check says so)."""
+    import scene_timing as st
+    from narration import split_into_sentences
+    tts_calls = 0
+    try:
+        sents = split_into_sentences(narration_text or "")
+        nb = 3
+        if n % nb or len(sents) not in (2 * nb, 2 * nb + 1):
+            return {"ok": False, "reason": f"text has {len(sents)} sentences for {n} scenes: not the 3-block shape", "tts_calls": 0}
+        blocks = [" ".join(sents[0:2]), " ".join(sents[2:4]), " ".join(sents[4:])]
+        syn_list = []
+        for b in blocks:
+            syn = _synthesize_block(b, voice_id)
+            tts_calls += 1
+            if not syn["ok"]:
+                return {"ok": False, "reason": "TTS failed on a narration block", "tts_calls": tts_calls}
+            syn_list.append(syn)
+        sent_secs = [c["sentence_secs"] for c in syn_list]
+        offs_nominal = st.second_sentence_offsets(n)
+        plan = st.plan_blocks_joint(sent_secs, n)
+        segs = [_block_segment(c["clips"], r, o) for c, r, o in zip(syn_list, plan["rates"], offs_nominal)]
+        audio = _assemble_block_audio(segs, plan["rates"], plan["starts"])
+        if not audio.get("ok"):
+            return {"ok": False, "reason": "block audio assembly failed", "tts_calls": tts_calls}
+        speech_secs = float(audio["duration_secs"])
+        per = n // nb
+        real_starts = [float(x) for x in audio["starts_secs"]]
+        second_offsets = [(sent_secs[b][0] + st.sentence_pause_pre(sent_secs[b][0], plan["rates"][b], offset=offs_nominal[b])) / plan["rates"][b]
+                          for b in range(nb)]
+        full = st.sentence_anchor_times(real_starts, second_offsets, n, per)
+        blocks_only = [None] * n
+        for b in range(1, nb):
+            blocks_only[b * per] = real_starts[b]
+        clip_plan = st.plan_from_anchors(full, speech_secs, [SCENE_CLIP_SECS] * n)
+        sentence_sync = clip_plan["ok"]
+        if not sentence_sync:
+            clip_plan = st.plan_from_anchors(blocks_only, speech_secs, [SCENE_CLIP_SECS] * n)
+            if not clip_plan["ok"]:
+                return {"ok": False, "reason": f"clip speeds outside the limits: {clip_plan['problems']}", "tts_calls": tts_calls}
+        used = full if sentence_sync else blocks_only
+        infos = [{"scene": i_ + 1, "phrase": f"(block {i_ // per + 1}, sentence {i_ % per + 1})", "word_at": round(float(t_), 3)}
+                 for i_, t_ in enumerate(used) if t_ is not None and i_ > 0]
+        timeline = {"mode": "anchored", "method": "blocks", "sentence_sync": sentence_sync, "targets": clip_plan["targets"],
+                    "cuts": clip_plan["cuts"], "speeds": [c["speed"] for c in clip_plan["clips"]], "video_secs": clip_plan["video_secs"],
+                    "anchors": infos, "anchor_offsets": clip_plan["anchors"], "speech_secs": round(speech_secs, 3),
+                    "word_check": {"checked": False, "violations": 0, "rooms": [], "note": "revoice: room words NOT verified"},
+                    "revoiced": True,
+                    "blocks": [{"text": b, "start": real_starts[i], "rate": plan["rates"][i], "secs": round(len(segs[i]) / 1000.0, 3),
+                                "sentence_secs": [round(x, 3) for x in sent_secs[i]], "second_start": round(real_starts[i] + second_offsets[i], 3)}
+                               for i, b in enumerate(blocks)]}
+        log.info(f"[Scraper] Revoice: blocks {[round(len(s) / 1000.0, 1) for s in segs]}, starts {plan['starts']}, rates {plan['rates']}, "
+                 f"sentence_sync={sentence_sync}, speeds {timeline['speeds']}")
+        return {"ok": True, "audio_path": audio["audio_path"], "speech_secs": speech_secs, "timeline": timeline, "tts_calls": tts_calls}
+    except Exception as e:
+        log.warning(f"[Scraper] Revoice failed: {e}")
+        return {"ok": False, "reason": f"error: {e}", "tts_calls": tts_calls}
+
+
 # ── Scene facts: what each of the 6 scenes plainly shows (2026-10-28, Michele option 1) ──
 # The voice writers only knew the listing text: a thin listing gave short sentences and room names heard over the wrong scene (draft 832cb4f4).
 # ONE vision call looks at the 6 selected photos. Its facts are appended to the listing text that BOTH the prompt and the validator read,

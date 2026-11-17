@@ -1554,6 +1554,60 @@ async def reassemble_with_narration(job_id: str, background_tasks: BackgroundTas
 
 
 
+async def run_revoice_anchored(job_id: str):
+    """2026-11-17 (Michele, job fd52a881): records the narration of an ANCHORED job again from its stored text, aligned to the clips
+    (listing_scraper.revoice_blocks = the first generation's planner, no model), swaps narration.mp3 + timeline, then the ONE reassembly.
+    Voice cost only. A failure leaves the previous narration and video untouched."""
+    job = JOBS[job_id]
+    job_dir = JOBS_DIR / job_id
+    try:
+        import listing_scraper as scraper
+        text = job.get("narration_text") or ""
+        n = len(job.get("scenes_config", []))
+        res = await asyncio.to_thread(scraper.revoice_blocks, text, job.get("voice_id") or None, n)
+        if not res.get("ok"):
+            raise RuntimeError(res.get("reason") or "revoice failed")
+        narration_path = str(job_dir / "narration.mp3")
+        shutil.copy2(res["audio_path"], narration_path)
+        job["narration_path"] = narration_path
+        job["narration_duration_secs"] = res["speech_secs"]
+        job["narration_mode"] = "anchored"
+        job["timeline"] = res["timeline"]
+        _sr.record_rework_cost(job, [{"duration": 0, "had_voiceover": True, "voiceover_chars": len(text)}],
+                               job.get("model_tier", "premium"), redo_video=False)
+        _save_job(job_id)
+        await run_reassemble_only(job_id)
+    except Exception as e:
+        log.error(f"[Job {job_id}] revoice anchored failed: {e}", exc_info=True)
+        job["status"] = "done" if job.get("output_path") else "failed"
+        job["message"] = f"Voce non rigenerata ({str(e)[:150]}): resta la versione precedente"
+        _save_job(job_id)
+    finally:
+        _release_job_lock(job_id)
+
+
+@app.post("/jobs/{job_id}/narration/revoice-anchored")
+async def revoice_anchored(job_id: str, background_tasks: BackgroundTasks):
+    """Re-records an anchored job's narration aligned to its clips (pronunciation fixes, a voice that ends in the fade-out). See run_revoice_anchored."""
+    if job_id not in JOBS:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = JOBS[job_id]
+    if job.get("status") not in ("done", "failed", "awaiting_approval"):
+        raise HTTPException(status_code=400, detail=f"Job must be completed first (current status: {job.get('status')})")
+    if job.get("narration_mode") != "anchored":
+        raise HTTPException(status_code=400, detail="Only for jobs with an anchored (3-block) narration")
+    if not (job.get("narration_text") or "").strip():
+        raise HTTPException(status_code=400, detail="The job has no narration text")
+    if not _acquire_job_lock(job_id, "revoice anchored"):
+        lock = _job_lock_status(job_id)
+        raise HTTPException(status_code=409, detail=f"Job is busy ({lock.get('operation')})")
+    job["status"] = "running"
+    job["message"] = "Rigenero la voce allineata ai clip…"
+    _save_job(job_id)
+    background_tasks.add_task(run_revoice_anchored, job_id)
+    return {"job_id": job_id, "status": "running"}
+
+
 # ── Automated URL-to-video workflow (Phase 1: human-in-the-loop) ──────────────
 # Runs the full scrape -> narration -> scene-count -> photo-selection chain
 # (listing_scraper.py) and creates a job in "draft" status with everything
