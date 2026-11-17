@@ -108,7 +108,7 @@ _EYE_FACADE = """- Facade and outdoor photos: aim at the building itself, at a w
 EYE_REPLACEMENTS = ((NEAR_REPLACEMENTS[0][1], _EYE_NEAR), (NEAR_REPLACEMENTS[1][1], _EYE_FACADE))
 LOW_WORDS = re.compile(r"\b(floor|ground|road|asphalt|paving|pavement|paved|tiles?|tiled|yard|lawn|drive|carpet|grass|street|path|walkway)\b", re.I)
 LOW_Y = 0.68
-OPENING_WORDS = re.compile(r"\b(door|doors|doorway|archway|arch|opening|corridor|hallway|passage|passageway)\b", re.I)
+OPENING_WORDS = re.compile(r"\b(door|doors|doorway|doorways|archway|archways|arch|arches|opening|openings|corridor|corridors|hallway|hallways|passage|passages|passageway|passageways)\b", re.I)   # 2026-11-17: plurals ("between the two doorways" was not recognised on the real run)
 
 
 def opening_enabled() -> bool:

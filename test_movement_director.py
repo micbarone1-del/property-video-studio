@@ -237,6 +237,11 @@ check("MD74 the prompt asks for opening_ahead", "opening_ahead" in md.prompt_tex
 raw748 = dict(FWD, opening_ahead=True, target="stretch of the hallway wall between the two doorways", target_x=0.52, sentence="Slow straight forward camera push-in toward the stretch of hallway wall between the two doorways, the camera keeps the same height and direction and stops well before the wall.")
 p, pr = md.validate(dict(raw748), dict(DEEP, depth="shallow", space_type="small"))
 check("MD80 job 748be538 scene 4 redo: the target names the doorways -> NOT thrown away (no static fallback): forward kept, centre, short, standard wording without metres", p and not pr and p["move"] == "forward" and p["source"] == "claude" and p["target"] == camera_plan.CENTRE_ANCHOR and not p["slow"] and "metres" not in p["sentence"] and p["travel"] == "short", (p, pr))
+real_0117 = {'view': 'interior', 'move': 'forward', 'target': 'plain wall section between the two doorways', 'target_x': 0.42, 'target_y': 0.4, 'travel': 'short', 'risk': 'medium', 'sentence': 'Slow straight forward camera push-in toward the plain wall section between the two doorways at eye level, the camera keeps the same height and direction throughout and stops well before the wall.', 'bulky_near_camera': True, 'mirror_visible': False, 'opening_ahead': True}
+p, pr = md.validate(dict(real_0117), dict(DEEP, depth="shallow", space_type="small"))
+check("MD82 the REAL answer of 2026-11-17 (only the plural 'doorways', no 'hallway'): forward kept, centre target, short, no static fallback", p and not pr and p["move"] == "forward" and p["source"] == "claude" and p["target"] == camera_plan.CENTRE_ANCHOR and p["travel"] == "short" and "metres" not in p["sentence"], (p, pr))
+for w in ("doors", "doorways", "archways", "openings", "corridors", "hallways", "passages", "passageways", "arches"):
+    check(f"MD83 plural {w} is recognised as an opening word", md.OPENING_WORDS.search("toward the " + w), w)
 p, pr = md.validate(dict(raw748, opening_ahead=False), DEEP)
 check("MD81 same words without the opening flag: unchanged old behaviour (banned word -> answer refused)", p is None and pr, (p, pr))
 
