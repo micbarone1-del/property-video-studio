@@ -224,9 +224,9 @@ print(f"\n{'ALL PASS' if not fails else str(fails) + ' FAIL'}")
 
 # K. 2026-11-16 (job 748be538 scene 4): an open doorway ahead -> still a forward move, NEAR target in the room, short travel, the tested very-slow wording (static is NOT safer: round 6)
 p, _ = md.validate(dict(FWD, opening_ahead=True, target="the dining table", target_x=0.5, travel="long"), DEEP)
-check("MD70 opening ahead: forward kept, near target kept, travel short, very-slow wording", p and p["move"] == "forward" and p["target"] == "the dining table" and p["travel"] == "short" and "less than three metres" in p["sentence"] and p["slow"], p)
+check("MD70 opening ahead: forward kept, near target kept, travel short, STANDARD wording (no metres, nothing new for the video model)", p and p["move"] == "forward" and p["target"] == "the dining table" and p["travel"] == "short" and "metres" not in p["sentence"] and not p["slow"], p)
 p, _ = md.validate(dict(FWD, opening_ahead=True, target="the open doorway", target_x=0.5), DEEP)
-check("MD71 opening ahead and the target IS the opening -> retargeted to the centre, still short and slow", p and p["move"] == "forward" and p["target"] == camera_plan.CENTRE_ANCHOR and p["travel"] == "short" and "retargeted" in p["adjusted"], p)
+check("MD71 opening ahead and the target IS the opening -> retargeted to the centre, still short, standard wording", p and p["move"] == "forward" and p["target"] == camera_plan.CENTRE_ANCHOR and p["travel"] == "short" and "retargeted" in p["adjusted"], p)
 p, _ = md.validate(dict(FWD, opening_ahead=False), DEEP)
 check("MD72 opening_ahead false or missing -> as before", p and p["move"] == "forward" and not p.get("slow") and p["travel"] != "", p)
 os.environ["PVS_DIRECTOR_OPENING"] = "0"
@@ -234,6 +234,11 @@ p, _ = md.validate(dict(FWD, opening_ahead=True, target="the dining table", targ
 check("MD73 PVS_DIRECTOR_OPENING=0 restores the old behaviour", p and not p.get("slow") and p["travel"] != "short", p)
 os.environ.pop("PVS_DIRECTOR_OPENING")
 check("MD74 the prompt asks for opening_ahead", "opening_ahead" in md.prompt_text())
+raw748 = dict(FWD, opening_ahead=True, target="stretch of the hallway wall between the two doorways", target_x=0.52, sentence="Slow straight forward camera push-in toward the stretch of hallway wall between the two doorways, the camera keeps the same height and direction and stops well before the wall.")
+p, pr = md.validate(dict(raw748), dict(DEEP, depth="shallow", space_type="small"))
+check("MD80 job 748be538 scene 4 redo: the target names the doorways -> NOT thrown away (no static fallback): forward kept, centre, short, standard wording without metres", p and not pr and p["move"] == "forward" and p["source"] == "claude" and p["target"] == camera_plan.CENTRE_ANCHOR and not p["slow"] and "metres" not in p["sentence"] and p["travel"] == "short", (p, pr))
+p, pr = md.validate(dict(raw748, opening_ahead=False), DEEP)
+check("MD81 same words without the opening flag: unchanged old behaviour (banned word -> answer refused)", p is None and pr, (p, pr))
 
 # EYE (2026-11-04): floor / ground targets
 os.environ["PVS_DIRECTOR_EYE"] = "0"

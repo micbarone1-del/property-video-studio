@@ -225,6 +225,14 @@ def validate(raw: dict, hints: dict):
     risk = str(raw.get("risk", "")).strip().lower()
     sentence = " ".join(str(raw.get("sentence", "")).split())
     target = str(raw.get("target", "")).strip()
+    pre_opening = ""
+    if move == "forward" and opening_enabled() and str(raw.get("opening_ahead")).strip().lower() in ("true", "yes", "1") and (OPENING_WORDS.search(target) or OPENING_WORDS.search(sentence)):
+        # 2026-11-16 (job 748be538 scene 4 redo): Claude saw the doorway and named it in the target ("wall between the two doorways"); the banned word 'door' then threw the WHOLE answer away
+        # and the shallow-room fallback (static) ran. Keep the forward decision, only change WHERE it heads: the centre of the frame. The sentence is the STANDARD production one (no new wording for the video model)
+        import camera_plan as _cp
+        pre_opening = f"retargeted to the centre: target {target!r} names the opening (the video model would invent the room behind it)"
+        target = _cp.CENTRE_ANCHOR
+        sentence = forward_sentence(target, _is_slow_scene(hints))
     if move not in MOVES:
         problems.append(f"unknown move {move!r}")
     if risk not in ("low", "medium", "high"):
@@ -240,7 +248,7 @@ def validate(raw: dict, hints: dict):
     if problems:
         return None, problems
     aerial = view == "aerial"
-    downgraded = ""
+    downgraded = pre_opening
     if aerial and move != "static":
         move, downgraded = "static", "aerial view: static"
     if move in SIDEWAYS:
@@ -281,11 +289,11 @@ def validate(raw: dict, hints: dict):
             # keep Claude's decision (a forward move) and only change WHERE it heads: the centre of the frame, in the positive sentence
             downgraded = f"retargeted to the centre: {unsafe}"
             target = camera_plan.CENTRE_ANCHOR
-            sentence = forward_sentence(target, _is_slow_scene(hints) or opening)
+            sentence = forward_sentence(target, _is_slow_scene(hints))
             low = sentence.lower()
         else:
             target = tgt_ok
-            if _is_slow_scene(hints) or opening:
+            if _is_slow_scene(hints):
                 sentence = forward_sentence(target, True)      # slow scenes always get the tested very-slow wording
     if move == "static" and not aerial and not re.search(r"static|still", low):
         return None, ["static move whose sentence does not say static"]
@@ -300,7 +308,7 @@ def validate(raw: dict, hints: dict):
     elif TAIL not in sentence and "constant" not in low:
         sentence = sentence.rstrip(".") + ", " + TAIL
     plan = {"move": move, "sentence": sentence, "center": _center(raw) if (move == "forward" and not downgraded) else (0.5, 0.5), "scale": scale, "risk": risk, "target": target, "travel": travel, "aerial": aerial,
-            "source": "claude", "reason": str(raw.get("reason", ""))[:300], "slow": bool(move == "forward" and (_is_slow_scene(hints) or opening))}
+            "source": "claude", "reason": str(raw.get("reason", ""))[:300], "slow": bool(move == "forward" and _is_slow_scene(hints))}
     if downgraded:
         plan["adjusted"] = downgraded
     return plan, []

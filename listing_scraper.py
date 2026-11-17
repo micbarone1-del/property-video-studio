@@ -342,6 +342,39 @@ def exclusion_counts(photos: list) -> dict:
 
 
 MIN_USABLE_PHOTOS = 5
+
+# 2026-11-16 (Michele, real Relinx jobs 748be538 / 12940f6f): every partner description ends with the AGENCY's own presentation (history, team, training), not the property:
+# "ignore it, we will find it always or almost always". ONE place, used by the partner intake only (the sentences are dropped BEFORE narration, captions, validators and the stored source text).
+_AGENCY_TEXT_RE = re.compile(r"\b(agenzia|agenzie|gruppo|professionisti|clientela|formazione)\b|esperienza consolidata|\bsi occupa dal\b|\bil nostro (team|staff|gruppo)\b|\b(contattaci|chiamaci)\b", re.I)
+AGENCY_TEXT_MIN_KEEP_CHARS = 80
+
+
+def strip_agency_text(text: str) -> tuple:
+    """(clean_text, removed_sentences). Drops the sentences that talk about the agency itself. Fail-safe: if nothing sensible would be left (less than
+    AGENCY_TEXT_MIN_KEEP_CHARS characters) the ORIGINAL text is returned and nothing is reported as removed. Never raises. PVS_STRIP_AGENCY_TEXT=0 switches it off."""
+    try:
+        if os.getenv("PVS_STRIP_AGENCY_TEXT", "1").strip().lower() in ("0", "false", "no", "off"):
+            return text, []
+        original = str(text or "")
+        kept_blocks, removed = [], []
+        for block in re.split(r"(\n\s*\n)", original):
+            if not block.strip() or re.fullmatch(r"\n\s*\n", block):
+                kept_blocks.append(block)
+                continue
+            parts = re.split(r"(?<=[.!?])\s+", block.strip())
+            keep = [x for x in parts if not _AGENCY_TEXT_RE.search(x)]
+            removed.extend(x for x in parts if _AGENCY_TEXT_RE.search(x))
+            kept_blocks.append(" ".join(keep))
+        clean = "".join(kept_blocks).strip()
+        clean = re.sub(r"\n{3,}", "\n\n", clean)
+        if not removed:
+            return original, []
+        if len(re.sub(r"\s+", "", clean)) < AGENCY_TEXT_MIN_KEEP_CHARS:
+            return original, []
+        return clean, removed
+    except Exception:
+        return text, []
+
 MIN_ENVIRONMENT_TYPES = int(os.getenv("PVS_MIN_ENVIRONMENT_TYPES", "4"))   # 2026-11-06: default 4 = the rule; lowered ONLY by a deliberate test-instance switch (1327 forced trial)
 _STANDARD_TYPES_IT = "facciata, soggiorno, cucina, camera da letto, bagno, balcone/giardino"
 

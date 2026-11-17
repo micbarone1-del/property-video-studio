@@ -2144,7 +2144,9 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
     import listing_scraper as scraper
     try:
         scraper.reset_claude_usage()
-        description_full = payload.description
+        description_full, agency_text_removed = scraper.strip_agency_text(payload.description)   # 2026-11-16: the agency's own presentation is never narrated
+        if agency_text_removed:
+            log.info(f"[Job {job_id}] agency presentation dropped from the description ({len(agency_text_removed)} sentences)")
         if payload.features:
             description_full += "\n\nCaratteristiche: " + ", ".join(payload.features)
 
@@ -2332,6 +2334,7 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
             "timeline": narration.get("timeline"),   # 2026-10-23 (Patch J)
             "timeline_fallback": narration.get("timeline_fallback_reason"),
             "source_description": description_full,
+            "agency_text_removed": agency_text_removed,
             "selection_report": selection_report,
         })
         _save_job(job_id)
