@@ -705,3 +705,8 @@ Invariants for the room guard: no job lost OK (it never changes state); no doubl
 - R-ANCHOR (was 144 ACT): two paths that voided or skipped the aligned narration are closed in code: /narration refuses finished anchored jobs, redo-audio-only routes them to the revoice. Tests AR1-AR8 PASS (server). NOT RUN live (Marino). Proposed D6 -> D4 only after the live check. Score stays 144 until then.
 - Test status: test_anchored_routes AR1-AR8 PASS. Live: NOT RUN.
 - Architecture check: the aligned-narration decision now lives in two small helpers (_narration_regen_block, _audio_only_route) and one revoice implementation (run_revoice_anchored), used by both entry points. Known remaining duplicate: revoice_blocks (listing_scraper) repeats part of _block_narration (R-DUPE, accepted).
+
+## 2026-11-19 (14:45) - rilascio 10 (0bb4d54): test status (PROPOSALS)
+- test_scene_numbers SN1-SN4 PASS (server). Live/browser: NOT RUN. Nessun rischio nuovo: solo testi.
+- Fornitore (nuova riga proposta) R-LUMA-DEP: dipendenza da un solo motore video (nessun altro modello nell'API, nessun seed, 21-29% di clip con difetti nei test, impegno enterprise non disponibile al nostro stadio). S8 O7 D4 = 224 ACT (proposal). Controlli esistenti: rilevamento e rifiuto, rework automatico, revisione manuale prima del rilascio. Controlli da valutare: filtro 360p (da misurare), ripiego manuale con altri modelli (da chiarire). Non rivisto da Michele.
+- QC testi 500/600: verificato nel codice del server, non con un job reale.
