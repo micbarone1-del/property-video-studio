@@ -3087,10 +3087,13 @@ async def _release_ready_tick():
     _RELEASE_BASELINE[0] = False
     for jid in ids:
         name = JOBS[jid].get("property_name") or jid
+        _mr = _missing_rooms_italian(JOBS[jid])
         await _notify_operator(
             jid, "Ready to release", subject=f"Video pronto da rilasciare: {name}",
-            body_html=f"<p>Il video di <b>{name}</b> e' pronto e non ha scene da rivedere.</p><p>Rilascialo all'agenzia dalla dashboard (Stato operativo).</p><p>Job ID: {jid}</p>",
-            push_message=f"{name} - video pronto da rilasciare", tags=["white_check_mark"])
+            body_html=f"<p>Il video di <b>{name}</b> e' pronto e non ha scene da rivedere.</p>"
+                      + (f"<p><b>Attenzione:</b> tra le scene non ci sono: {', '.join(_mr)}. Guardalo prima di rilasciarlo.</p>" if _mr else "")
+                      + f"<p>Rilascialo all'agenzia dalla dashboard (Stato operativo).</p><p>Job ID: {jid}</p>",
+            push_message=f"{name} - video pronto da rilasciare" + (f" (mancano: {', '.join(_mr)})" if _mr else ""), tags=["white_check_mark"])
 
 
 async def _auto_start_tick():
@@ -3204,7 +3207,8 @@ async def operator_status(q: str = ""):
                      "rework_failed": sum(1 for x in (j.get("rework_events") or []) if x.get("kind") != "retry"),
                      "review_pending": bool(j.get("review_pending")), "released": bool(j.get("released")), "stops": len(det), "stops_detail": det,
                      "auto_approved_scenes": [a.get("scene") for a in (j.get("auto_approved") or [])],
-                     "needs_operator": bool(j.get("needs_operator")), "listing": _listing_number(j, jid)})
+                     "needs_operator": bool(j.get("needs_operator")), "listing": _listing_number(j, jid),
+                     "missing_rooms": _missing_rooms_italian(j)})
     rows.sort(key=lambda r: r["created_at"] or "", reverse=True)
     on = lambda n: os.getenv(n, "0").strip().lower() in ("1", "true", "yes", "on")
     return {"now": now.isoformat(), "active": auto_start.active_count(JOBS), "max_active": auto_start.max_active(),
@@ -3747,6 +3751,19 @@ async def _notify_operator(job_id: str, event: str, subject: str, body_html: str
         log.warning(f"[Job {job_id}] {event} alert failed (non-fatal): {e}")
 
 
+def _missing_rooms_italian(job) -> list:
+    """Italian names of the core rooms no final scene shows ([] when the job has no scenes yet). The ONE caller-side wrapper of
+    listing_scraper.missing_core_rooms: the alerts and the operator page use it, nobody recomputes."""
+    try:
+        import listing_scraper as _ls
+        cfg = (job or {}).get("scenes_config") or []
+        if not cfg:
+            return []
+        return [_ls.CATEGORY_ITALIAN_LABELS.get(c, c) for c in _ls.missing_core_rooms([s.get("category") for s in cfg])]
+    except Exception:
+        return []
+
+
 def _auto_start_on() -> bool:
     import auto_start
     return bool(auto_start.enabled())
@@ -3769,6 +3786,7 @@ async def _send_new_partner_job_alert(job_id: str):
         return
     try:
         import maintenance_scheduler
+        _mr = _missing_rooms_italian(job)
         subject = f"Nuovo job da {job.get('source', 'partner')}: {job.get('property_name', 'Property')}"
         body_html = (
             f"<p>È arrivato un nuovo job da {job.get('source', 'partner')}.</p>"
@@ -3777,6 +3795,7 @@ async def _send_new_partner_job_alert(job_id: str):
             f"<b>Job ID:</b> {job_id}</p>"
             + ("<p>La generazione parte da sola: ti avviso solo se serve il tuo intervento e quando il video e' pronto da rilasciare.</p>"
                if _auto_start_on() else "<p>Apri l'app per rivedere scene e narrazione prima di generare il video.</p>")
+            + (f"<p><b>Attenzione:</b> tra le scene non ci sono: {', '.join(_mr)}. Il job prosegue; controllalo prima di rilasciarlo.</p>" if _mr else "")
         )
         push_message = (f"{job.get('property_name', 'Property')} - in coda, parte da solo" if _auto_start_on()
                         else f"{job.get('property_name', 'Property')} - in attesa di revisione")

@@ -1126,6 +1126,14 @@ def aerial_filter_enabled() -> bool:
 INTERIOR_CATEGORIES = ("living", "kitchen", "bedrooms", "bathrooms")
 
 
+def missing_core_rooms(categories) -> list:
+    """2026-11-19 (Michele, 'da fare prima del test'): the core rooms (living, kitchen, bedrooms, bathrooms) that NONE of the final scenes shows.
+    The acceptance rule only counts environment TYPES (MIN_ENVIRONMENT_TYPES); four types can be facade, hall, bathroom and bedroom. ONE list,
+    used by the new-job alert, the ready-to-release notice and the operator page. A WARNING only: a studio flat has no separate kitchen."""
+    present = set(categories or [])
+    return [c for c in INTERIOR_CATEGORIES if c not in present]
+
+
 def accept_renders_enabled() -> bool:
     """PVS_ACCEPT_RENDERS=1: a listing with no real photo may use renders of interior rooms (default off)."""
     return os.getenv("PVS_ACCEPT_RENDERS", "0").strip().lower() in ("1", "true", "yes", "on")

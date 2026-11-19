@@ -193,7 +193,7 @@ async function load() {
     const shown = FILTER === 'waiting' ? d.jobs.filter(j => j.stops || j.needs_operator) : FILTER === 'review' ? d.jobs.filter(j => j.review_pending) : d.jobs;
     document.getElementById('rows').innerHTML = shown.map(j =>
       '<tr><td>' + nameCell(j) + '</td>' +
-      '<td><span class="st-' + esc(j.status) + '">' + esc(j.status) + '</span>' + (j.progress != null ? '<div class="bar"><i style="width:' + Math.max(0, Math.min(100, j.progress)) + '%"></i></div>' : '') + '<div class="mute">' + esc(j.message) + '</div></td>' +
+      '<td><span class="st-' + esc(j.status) + '">' + esc(j.status) + '</span>' + (j.progress != null ? '<div class="bar"><i style="width:' + Math.max(0, Math.min(100, j.progress)) + '%"></i></div>' : '') + '<div class="mute">' + esc(j.message) + '</div>' + (j.missing_rooms && j.missing_rooms.length ? '<div class="mute" style="color:#b45309">Mancano tra le scene: ' + esc(j.missing_rooms.join(', ')) + '</div>' : '') + '</td>' +
       '<td>' + autoCell(j) + '</td><td>' + (j.cost_eur != null ? j.cost_eur.toFixed(2) + ' EUR' : '<span class="mute">-</span>') + '</td></tr>').join('');
     Object.keys(OPEN).forEach(id => { if (OPEN[id]) paintRev(id); });
   } catch (e) { document.getElementById('err').textContent = 'Errore: ' + e.message; }
