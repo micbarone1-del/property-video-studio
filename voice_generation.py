@@ -11,7 +11,21 @@ load_dotenv()
 TTS_PROVIDER = os.environ.get("TTS_PROVIDER", "elevenlabs").strip().lower()
 
 DEFAULT_VOICE_ID_ELEVENLABS = "b8jhBTcGAq4kQGWmKprT"
-DEFAULT_VOICE_ID_GOOGLE     = "it-IT-Chirp3-HD-Leda"
+# 2026-11-19: the default Google voice is a knob (PVS_DEFAULT_VOICE, restart to apply) so it can be changed, and changed back, without a deploy.
+# An id that is not in the registry below is ignored (the knob can never break the TTS): Leda, the voice used until now, stays the fallback.
+FALLBACK_VOICE_GOOGLE       = "it-IT-Chirp3-HD-Leda"
+_IT_VOICES = [
+    {"id": "it-IT-Chirp3-HD-Leda",   "label": "Leda (femminile)"},
+    {"id": "it-IT-Chirp3-HD-Aoede",  "label": "Aoede (femminile)"},
+    {"id": "it-IT-Chirp3-HD-Kore",   "label": "Kore (femminile)"},
+    {"id": "it-IT-Chirp3-HD-Charon", "label": "Charon (maschile)"},
+    {"id": "it-IT-Chirp3-HD-Puck",   "label": "Puck (maschile)"},
+    {"id": "it-IT-Chirp3-HD-Orus",   "label": "Orus (maschile)"},
+]
+DEFAULT_VOICE_ID_GOOGLE     = os.environ.get("PVS_DEFAULT_VOICE", "").strip() or FALLBACK_VOICE_GOOGLE
+if DEFAULT_VOICE_ID_GOOGLE not in [v["id"] for v in _IT_VOICES]:
+    print(f"[TTS] PVS_DEFAULT_VOICE={DEFAULT_VOICE_ID_GOOGLE!r} is not a known voice, using {FALLBACK_VOICE_GOOGLE}")
+    DEFAULT_VOICE_ID_GOOGLE = FALLBACK_VOICE_GOOGLE
 DEFAULT_VOICE_ID = DEFAULT_VOICE_ID_GOOGLE if TTS_PROVIDER == "google" else DEFAULT_VOICE_ID_ELEVENLABS
 
 # 2026-10-08: language/voice registry -- single source of truth for which voices exist per language.
@@ -23,14 +37,7 @@ TTS_LANGUAGES = {
     "it-IT": {
         "label": "Italiano",
         "default_voice": DEFAULT_VOICE_ID_GOOGLE,
-        "voices": [
-            {"id": "it-IT-Chirp3-HD-Leda",   "label": "Leda (femminile)"},
-            {"id": "it-IT-Chirp3-HD-Aoede",  "label": "Aoede (femminile)"},
-            {"id": "it-IT-Chirp3-HD-Kore",   "label": "Kore (femminile)"},
-            {"id": "it-IT-Chirp3-HD-Charon", "label": "Charon (maschile)"},
-            {"id": "it-IT-Chirp3-HD-Puck",   "label": "Puck (maschile)"},
-            {"id": "it-IT-Chirp3-HD-Orus",   "label": "Orus (maschile)"},
-        ],
+        "voices": _IT_VOICES,
     },
 }
 
