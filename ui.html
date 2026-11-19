@@ -3123,13 +3123,14 @@ async function submitAudioOnlyRework() {
     const i = parseInt(panel.id.replace('rw-panel-',''));
     if (!isNaN(i)) reworkScenes.push(i);
   });
-  if (reworkScenes.length === 0) {
-    alert('Seleziona almeno una scena da rigenerare (apri il pannello rework di una scena) prima di usare questo pulsante.');
-    return;
-  }
   if (!currentJobId || currentJobStatus === 'draft') {
     alert('Questa funzione richiede un job gia generato.');
     return;
+  }
+  if (reworkScenes.length === 0) {
+    // 2026-11-19: a video with an aligned narration has no per-scene voice: with no scene selected the server re-records the whole voice
+    // (it answers 400 "Seleziona almeno una scena" for any other job).
+    if (!confirm("Nessuna scena selezionata. Se il video ha la narrazione allineata, rigenero la voce intera (costo solo voce, il video viene rimontato). Procedo?")) return;
   }
   const updatedScenes = getScenesConfig();
   const redoSceneIds = [];
@@ -3137,7 +3138,7 @@ async function submitAudioOnlyRework() {
     const sid = updatedScenes[idx]?.scene_id;
     if (sid) redoSceneIds.push(sid);
   });
-  if (!confirm(`Rigenerare solo l'audio per ${redoSceneIds.length} scena/e? Il video esistente non verra toccato.`)) return;
+  if (redoSceneIds.length > 0 && !confirm(`Rigenerare solo l'audio per ${redoSceneIds.length} scena/e? Il video esistente non verra toccato.`)) return;
 
   const btn = document.getElementById('audio-only-rework-btn');
   btn.disabled = true;

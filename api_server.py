@@ -1357,6 +1357,27 @@ async def resync_draft(
 
 
 
+_JOB_DONE_STATES = ("done", "failed", "awaiting_approval")
+
+
+def _narration_regen_block(job) -> str | None:
+    """2026-11-19: POST /narration overwrites narration.mp3 and sets the timeline to None. On a FINISHED job with an anchored narration
+    (one audio aligned to the clips) that silently destroys the alignment (what happened to the Marino job on 2026-11-17). Returns the
+    refusal text, or None when the call is fine (drafts and non-anchored jobs behave as before)."""
+    if (job or {}).get("narration_mode") == "anchored" and (job or {}).get("status") in _JOB_DONE_STATES:
+        return ("Questo video ha la narrazione allineata ai clip: rigenerarla qui cancellerebbe l'allineamento. "
+                "Per ri-registrare la voce usa «Rigenera solo audio» (rigenera la voce intera, costo solo voce).")
+    return None
+
+
+def _audio_only_route(job, scene_ids) -> str:
+    """'revoice' (anchored job: no per-scene voiceover exists, re-record the whole aligned narration), 'scenes' (old per-scene path), or
+    'none' (non-anchored job and no scene selected)."""
+    if (job or {}).get("narration_mode") == "anchored":
+        return "revoice"
+    return "scenes" if scene_ids else "none"
+
+
 @app.post("/jobs/{job_id}/narration")
 async def generate_narration(
     job_id: str,
@@ -1373,6 +1394,9 @@ async def generate_narration(
     if job_id not in JOBS:
         raise HTTPException(status_code=404, detail="Job not found")
     job = JOBS[job_id]
+    _blocked = _narration_regen_block(job)
+    if _blocked:
+        raise HTTPException(status_code=409, detail=_blocked)
 
 
     if not _acquire_job_lock(job_id, "generate narration"):
@@ -4084,6 +4108,14 @@ async def redo_audio_only(
             raise ValueError("scene_ids must be a JSON array")
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid payload: {e}")
+
+    # 2026-11-19: anchored jobs have ONE aligned narration and no per-scene voiceover (this path used to do nothing for them):
+    # route to the same revoice as POST /narration/revoice-anchored, whatever scenes were selected. Same job_id answer, so the UI polls as before.
+    _route = _audio_only_route(job, ids)
+    if _route == "revoice":
+        return await revoice_anchored(job_id, background_tasks)
+    if _route == "none":
+        raise HTTPException(status_code=400, detail="Seleziona almeno una scena da rigenerare")
 
     if not _acquire_job_lock(job_id, f"audio-only redo {len(ids)} scene(s)"):
         lock = _job_lock_status(job_id)
