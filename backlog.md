@@ -1259,3 +1259,15 @@ Regole di Michele: (1) NESSUNO step manuale nel flusso: escalation = notifica/au
 - RIPIEGO MANUALE CON MODELLI DELLA APP (idea, dipende dalle risposte): per le foto che falliscono sempre si genera la clip nella app e la si carica; richiede conferma sull'uso commerciale, e un punto di ingresso per una clip esterna in un job (non esiste oggi). Non iniziare prima delle risposte.
 - IMPEGNO ENTERPRISE LUMA: non prioritario ora. Da riaprire quando ci sono ricavi o volumi del pilota. Chiarire la cifra minima per iscritto.
 - NUMERAZIONE SCENE: decisione di Michele 19/11: da 1 per ogni testo che una persona legge, con il tag tecnico (scene_000). Fatto nel rilascio 10.
+
+## 2026-11-19 - nuove voci (tutte da fare, nessuna codificata)
+1. Pronuncia per agenzia (Michele 19/11): una voce per agenzia (nome, pronuncia, stato validata/non validata); ricerca senza distinguere maiuscole, anche nome parziale (es. solo Thrinakie); le voci delle agenzie escono dal file globale (un solo meccanismo). Nuova agenzia = non validata.
+2. Scheda dashboard "Nuove agenzie da validare": nome come arriva, pronuncia proposta modificabile, pulsante Ascolta (frase breve in voce vera), Conferma; controlla anche il logo. Una sola notifica all'operatore alla prima creazione (pronuncia da validare e/o logo mancante). Logo mancante = solo avviso (senza logo il video esce con la sola etichetta AI). Finche' la pronuncia non e' validata: nessun rilascio automatico; il rilascio manuale resta sempre possibile e vale come validazione dell'annuncio. Aperto: dove salvare lo stato.
+3. Stampatelli contro acronimi (problema separato): prima misurare sui copioni veri quali parole tutte maiuscole compaiono. Nessuna regola generale sulle 5 lettere (rischiosa, decisione Michele).
+4. POI in narrazione: un solo highlight, priorita' bassa; da intelligence.highlights o nearest con minuti; niente nomi di esercizi, mai coordinate/indirizzo; numeri come nell'annuncio; prima nell'istanza di test.
+5. Webhook: salvare esito e ora di ogni consegna sul job.
+6. Audio con le pronunce delle agenzie per Relinx: parcheggiato; elenco Relinx reale non disponibile (certe: GIAL, THRINAKIE). Sara' sostituito dal pulsante Ascolta.
+7. Difetto narrazione: "angolo cottura ... cucina con zona pranzo" (contraddizione).
+8. Regola operativa: l'istanza di test (8002) muore a ogni deploy di produzione: rilanciare ./start_test.sh.
+9. Luma: test 360p-vs-1080p dopo la risposta di Douglas; chiarire per iscritto il minimo "1000k/month" (importo ambiguo); idea partnership go-to-market registrata.
+10. Debiti: link dashboard-job; punto di ritorno sbagliato in deploy_relinx_prod.sh; LABEL_TO_CATEGORY inutilizzata in immobiliare_it.py; etichetta "max 15" gradi invece di 10; store_logo_png percorso assoluto; campo overlay nell'audit foto; PVS_PARTNER_AGENCY_LIMIT_24H da 20 a 2 all'avvio del pilota.

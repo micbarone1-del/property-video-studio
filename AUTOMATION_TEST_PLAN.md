@@ -710,3 +710,8 @@ Invariants for the room guard: no job lost OK (it never changes state); no doubl
 - test_scene_numbers SN1-SN4 PASS (server). Live/browser: NOT RUN. Nessun rischio nuovo: solo testi.
 - Fornitore (nuova riga proposta) R-LUMA-DEP: dipendenza da un solo motore video (nessun altro modello nell'API, nessun seed, 21-29% di clip con difetti nei test, impegno enterprise non disponibile al nostro stadio). S8 O7 D4 = 224 ACT (proposal). Controlli esistenti: rilevamento e rifiuto, rework automatico, revisione manuale prima del rilascio. Controlli da valutare: filtro 360p (da misurare), ripiego manuale con altri modelli (da chiarire). Non rivisto da Michele.
 - QC testi 500/600: verificato nel codice del server, non con un job reale.
+
+## 2026-11-19 - risultati e righe proposte
+Eseguiti oggi: RG1-RG12 PASS, AR1-AR8 PASS, SN1-SN4 PASS (server). Pronunce: 8 su 8 PASS (funzione vera, entrambi gli ordini). Istanza di test: logo da API PASS, agenzia per partner PASS, agency_text_removed PASS.
+Restano "not run": generation_failed, Rifiuta con webhook, completed con video_url su Relinx, firma URL logo reale, foto (corridoio, banner, watermark, verticali, render, bande).
+Righe FMEA PROPOSTE (S/O/D non riviste da Michele): nome agenzia pronunciato male S4 O6 D7 RPN 168 ACT (controllo: pronuncia validata per agenzia + notifica, da costruire); logo mancante su nuova agenzia S3 O4 D5 RPN 60 (controllo: avviso); esito webhook non registrato S5 O4 D8 RPN 160 ACT (controllo: salvare l'esito, da costruire). Ri-punteggio completo FMEA e cruscotto: NON fatto oggi.
