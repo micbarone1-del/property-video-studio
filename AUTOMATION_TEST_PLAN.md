@@ -700,3 +700,8 @@ Same-commit rule: docs-only commit; code commits aaffca2, 31b8c41, 3f52a5e, ae68
 - R-STATIC (175 ACT) unchanged: no control yet; the 3-variant test needs Michele's OK (about 3.3 EUR).
 Test status: test_room_guard RG1-RG8 PASS; test_movement_director MDJ1-MDJ9 PASS; test_default_voice 7/7 PASS. The Wed 18/11 Relinx test is recorded as "went well" per Michele, without evidence attached: not counted as a PASS.
 Invariants for the room guard: no job lost OK (it never changes state); no double cost OK; final state visible OK (dashboard row); operator informed once per event (two notices exist: new job and ready to release, by design).
+
+## 2026-11-19 (10:15) - rilascio 9 (459fffa): rows and test status (PROPOSALS)
+- R-ANCHOR (was 144 ACT): two paths that voided or skipped the aligned narration are closed in code: /narration refuses finished anchored jobs, redo-audio-only routes them to the revoice. Tests AR1-AR8 PASS (server). NOT RUN live (Marino). Proposed D6 -> D4 only after the live check. Score stays 144 until then.
+- Test status: test_anchored_routes AR1-AR8 PASS. Live: NOT RUN.
+- Architecture check: the aligned-narration decision now lives in two small helpers (_narration_regen_block, _audio_only_route) and one revoice implementation (run_revoice_anchored), used by both entry points. Known remaining duplicate: revoice_blocks (listing_scraper) repeats part of _block_narration (R-DUPE, accepted).
