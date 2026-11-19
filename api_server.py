@@ -4353,7 +4353,7 @@ async def run_pipeline(
         for i, scene in enumerate(scenes_config):
             if not scene.get("remove_watermark"):
                 continue
-            update("running", int(2 + (i/n)*3), f"Rimozione watermark scena {i}…")
+            update("running", int(2 + (i/n)*3), f"Rimozione watermark scena {i + 1}…")
             wm_out = str(enhanced_dir / f"scene_{i:03d}_dewatermarked.jpg")
             if resume and _reusable_image(wm_out):
                 wm_result = {"ok": True}

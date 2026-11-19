@@ -164,7 +164,7 @@ function autoCell(j) {
   if (j.rework_failed) t.push('<span class="tag attn" title="' + esc((j.rework_events || []).map(e => e.kind + ' ' + (e.scenes || []).join(',') + ' ' + (e.detail || '')).join('\n')) + '">rework non riusciti: ' + j.rework_failed + '</span>');
   if (j.auto_reworked) t.push('<span class="tag">rework automatici: ' + j.auto_reworked + '</span>');
   if (j.auto_approved && j.auto_approved.length) {
-    const d = j.auto_approved.map(a => 'scena ' + a.scene + ' (' + (a.severity || '-') + '): ' + (a.issues || []).join(' | ')).join('\n');
+    const d = j.auto_approved.map(a => 'scena ' + (a.scene + 1) + ' (' + (a.severity || '-') + '): ' + (a.issues || []).join(' | ')).join('\n');
     t.push('<span class="tag' + (j.review_pending ? ' attn' : '') + '" title="' + esc(d) + '">scene approvate dal sistema: ' + j.auto_approved.length + (j.review_pending ? ' - da rivedere' : ' - viste') + '</span>');
     if (j.review_pending) t.push('<button onclick="reviewDone(\'' + j.job_id + '\')">Segna come vista</button>');
   }
