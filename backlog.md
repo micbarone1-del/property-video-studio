@@ -1271,3 +1271,15 @@ Regole di Michele: (1) NESSUNO step manuale nel flusso: escalation = notifica/au
 8. Regola operativa: l'istanza di test (8002) muore a ogni deploy di produzione: rilanciare ./start_test.sh.
 9. Luma: test 360p-vs-1080p dopo la risposta di Douglas; chiarire per iscritto il minimo "1000k/month" (importo ambiguo); idea partnership go-to-market registrata.
 10. Debiti: link dashboard-job; punto di ritorno sbagliato in deploy_relinx_prod.sh; LABEL_TO_CATEGORY inutilizzata in immobiliare_it.py; etichetta "max 15" gradi invece di 10; store_logo_png percorso assoluto; campo overlay nell'audit foto; PVS_PARTNER_AGENCY_LIMIT_24H da 20 a 2 all'avvio del pilota.
+
+## 2026-11-19 sera: cosa resta dopo il deploy di 2f4f46c (in ordine)
+
+1. ANNUNCIO THRINAKIE DA RELINX VIA API (Michele lo chiede a Relinx): THRINAKIE GROUP, Piazza Verbano 16, Roma Coppede', 39 foto, con agency_logo_url, etichette, POI e descrizione. Serve per provare tutto il percorso reale: nuova agenzia, logo da URL firmato, notifica, scheda di validazione. Incoerenza mq nell'annuncio: 87 mq nel titolo e 104 mq netti nella scheda tecnica; Michele informa Relinx e dice che usiamo solo la descrizione (da verificare nel video, non provato). Stato: non ancora chiesto.
+2. AUDIO PRONUNCE PER RELINX: ascolto di Michele di agenzie_relinx.mp3, poi invio a Relinx (lo invia Michele). Dubbi aperti sul suono: ETICASI, IMMOBILI DI PRESTIGIO (nessuna regola IPA verificata).
+3. PRIMO VIDEO REALE DI UN'AGENZIA NUOVA: osservare il blocco del rilascio automatico (non provato dal vivo) e la scheda a schermo sull'iPad.
+4. POI NARRATION: un solo highlight a bassa priorita' dal campo POI/intelligence di Relinx (nessun nome di negozio, mai coordinate o indirizzo, numeri come nell'annuncio). Decisione: non chiedere a Relinx un nuovo campo "highlight". Non ancora codificato.
+5. STAMPATELLO vs SIGLE per il testo in generale (fuori dalle agenzie): problema separato, nessuna regola "5 lettere" (troppo rischiosa); prima misurare.
+6. TEST DA AGGIORNARE: test_tts_sanitize G3, E1, U10; test_selection_report C1, C3 (fallivano gia' prima di 2f4f46c). Indagare anche i FAIL C2/C3 del draft check sulla bozza fefb978c.
+7. PROVE ANCORA APERTE: generation_failed (chiave Luma sbagliata), "Rifiuta" + webhook, controlli a livello di foto (corridoio, banner, filigrana, verticali, render, bande); risultato del webhook di consegna non memorizzato.
+8. DEBITI NOTI: hash di rollback sbagliato nello script di deploy (si scrive a mano prima), LABEL_TO_CATEGORY inutilizzato, "max 15 gradi" contro 10, store_logo_png con percorso assoluto, campo overlay nell'audit foto, PVS_PARTNER_AGENCY_LIMIT_24H 20 -> 2 all'avvio del pilota. Luma: test 360p contro 1080p dopo la risposta di Douglas, chiarire "1000k/mese".
+9. LIMITE DELLA SCHEDA: la pronuncia digitata dall'operatore e' testo semplice. Se servisse IPA anche li', va esteso lo stesso meccanismo [[ipa|parola]] alla pronuncia per-agenzia (oggi vale solo per il file globale).

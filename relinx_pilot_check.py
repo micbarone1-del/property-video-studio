@@ -200,8 +200,8 @@ def main(argv):
                 print("  photos: %d of %d on the page; copies with white bands: %d (%s)%s" % (
                     len(photos), len(imgs), len(binfo["banded"]), binfo["mode"],
                     " first %s" % (Image.open(d / "000.jpg").size,) if photos else ""), flush=True)
-                payload = {"external_ref": "T-%s-%s" % (L["id"], uuid.uuid4().hex[:6]), "agency_name": "GIAL IMMOBILIARE",
-                           "agency_external_id": "gial-test", "property_name": L["name"], "description": L["description"],
+                payload = {"external_ref": "T-%s-%s" % (L["id"], uuid.uuid4().hex[:6]), "agency_name": os.environ.get("PVS_TEST_AGENCY", "GIAL IMMOBILIARE"),
+                           "agency_external_id": os.environ.get("PVS_TEST_AGENCY_ID", "gial-test"), "property_name": L["name"], "description": L["description"],
                            "features": [], "photos": photos, "voice_id": "", "callback_url": local + "/hook", "listing_url": url}
             r = requests.post(base + "/v1/videos", headers=auth, json=payload, timeout=60)
             if r.status_code != 200:
