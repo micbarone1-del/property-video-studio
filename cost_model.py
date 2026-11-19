@@ -68,7 +68,9 @@ def list_agencies():
     return _load(AGENCIES_FILE, [])
 
 
-def create_agency(name, notes=""):
+def create_agency(name, notes="", partner_flow=False):
+    """partner_flow=True (2026-11-19): a partner agency matched by NAME only (no external id sent): a NEW one starts with an unvalidated
+    pronunciation, exactly like create_agency_for_partner(). An agency that already exists is returned untouched."""
     agencies = list_agencies()
     for a in agencies:
         if a["name"].strip().lower() == name.strip().lower():
@@ -83,6 +85,8 @@ def create_agency(name, notes=""):
         # built yet. Read with .get("logo_path") since agencies created
         # before this change won't have the key at all.
     }
+    if partner_flow:
+        agency.update({"pronunciation": None, "pronunciation_validated": False, "setup_notified": False})
     agencies.append(agency)
     _save(AGENCIES_FILE, agencies)
     return agency
@@ -128,6 +132,11 @@ def create_agency_for_partner(name, partner_id, partner_external_id, notes=""):
         "logo_path": None,
         "partner_id": partner_id,
         "partner_external_id": partner_external_id,
+        # 2026-11-19: a NEW partner agency starts with an unvalidated pronunciation (agency_pronunciation.py); agencies created before this
+        # have none of these keys and count as validated.
+        "pronunciation": None,
+        "pronunciation_validated": False,
+        "setup_notified": False,
     }
     agencies.append(agency)
     _save(AGENCIES_FILE, agencies)
@@ -149,6 +158,27 @@ def update_agency(agency_id, name=None, notes=None):
                 a["name"] = name.strip()
             if notes is not None:
                 a["notes"] = notes
+    _save(AGENCIES_FILE, agencies)
+    return get_agency(agency_id)
+
+
+def set_agency_pronunciation(agency_id, pronunciation, validated):
+    """2026-11-19: stores how the voice says the agency name and whether the operator confirmed it. Nothing else is touched."""
+    agencies = list_agencies()
+    for a in agencies:
+        if a["agency_id"] == agency_id:
+            a["pronunciation"] = pronunciation
+            a["pronunciation_validated"] = bool(validated)
+    _save(AGENCIES_FILE, agencies)
+    return get_agency(agency_id)
+
+
+def mark_agency_setup_notified(agency_id):
+    """2026-11-19: the operator was told once about this new agency (pronunciation to validate, logo status)."""
+    agencies = list_agencies()
+    for a in agencies:
+        if a["agency_id"] == agency_id:
+            a["setup_notified"] = True
     _save(AGENCIES_FILE, agencies)
     return get_agency(agency_id)
 

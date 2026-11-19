@@ -1,4 +1,5 @@
 import os
+import re
 import requests
 import mimetypes
 from dotenv import load_dotenv
@@ -148,6 +149,28 @@ def spoken_units(text):
     return text
 
 
+_IPA_SRC = re.compile(r"\[\[([^|\]]+)\|([^\]]+)\]\]")
+_IPA_TOK = re.compile("([0-9a-f]+)_([0-9a-f]+)")
+
+
+def _protect_ipa(value):
+    """2026-11-19 (Michele): a rule value may carry an exact IPA pronunciation, written [[ipa|word]] (example: "[[trinaˈkie|Thrinakie]]").
+    Chirp voices ignore written accents and move the stress from run to run; an IPA <phoneme> is followed. The segment is turned into a token
+    made of hex digits (one \\w run, so no later rule can match inside it) and expanded by expand_ipa() AFTER the text is cleaned."""
+    return _IPA_SRC.sub(lambda m: "" + m.group(1).strip().encode("utf-8").hex() + "_" + m.group(2).strip().encode("utf-8").hex() + "", value)
+
+
+def expand_ipa(text, ssml=True):
+    """The tokens of _protect_ipa become <phoneme alphabet="ipa" ph="..">word</phoneme> (Google SSML) or just the word (any other provider).
+    An unsafe segment (a full stop would get a pause inserted inside the tag, or a character that breaks the attribute) falls back to the plain word."""
+    def one(m):
+        ph, word = bytes.fromhex(m.group(1)).decode("utf-8"), bytes.fromhex(m.group(2)).decode("utf-8")
+        if not ssml or not ph or "." in ph or any(c in ph + word for c in '<>&"'):
+            return word
+        return '<phoneme alphabet="ipa" ph="' + ph + '">' + word + '</phoneme>'
+    return _IPA_TOK.sub(one, text)
+
+
 def apply_pronunciation_fixes(text):
     import re, json
     try:
@@ -158,7 +181,7 @@ def apply_pronunciation_fixes(text):
         if _pron_cache["mtime"] != mtime:
             with open(_PRON_PATH, encoding="utf-8") as f:
                 data = json.load(f)
-            rules = [(re.compile(r"(?<!\w)" + re.escape(k) + r"(?!\w)"), v)
+            rules = [(re.compile(r"(?<!\w)" + re.escape(k) + r"(?!\w)"), _protect_ipa(v))
                      for k, v in sorted(data.items(), key=lambda kv: -len(kv[0]))
                      if isinstance(k, str) and isinstance(v, str) and k and not k.startswith("_")]
             _pron_cache["mtime"], _pron_cache["rules"] = mtime, rules
@@ -167,6 +190,17 @@ def apply_pronunciation_fixes(text):
     except Exception as e:
         print(f"[Pronunciation] ignoring fixes file ({e!r})")
     return text
+
+
+def apply_agency_pronunciations(text):
+    """2026-11-19: the agency names (agency_pronunciation.py): replaced whatever their case, BEFORE the global word file (which then still
+    applies, e.g. Gial -> Gi-al). Never raises: a broken agencies file leaves the text as it is."""
+    try:
+        import agency_pronunciation, cost_model
+        return agency_pronunciation.apply(text, cost_model.list_agencies())
+    except Exception as e:
+        print(f"[Pronunciation] agency names ignored ({e!r})")
+        return text
 
 
 def generate_speech(
@@ -201,8 +235,10 @@ def generate_speech(
         print(f"Error: {key_env_var} not found. Please set it or pass it as an argument.")
         return False
 
+    text = apply_agency_pronunciations(text)  # 2026-11-19: agency names first (any case), then the global word file
     text = apply_pronunciation_fixes(text)  # 2026-10-08: single choke point for all TTS callers
     text = sanitize_for_tts(text)  # 2026-10-12: SSML-safe plain text (see sanitize_for_tts)
+    text = expand_ipa(text, ssml=(TTS_PROVIDER == "google"))  # 2026-11-19: IPA pronunciations become <phoneme> tags (Google) after the cleaning
     print(f"Generating speech for: \"{text[:30]}...\"")
     
     # 2. Process Text for Pauses (SSML Injection)

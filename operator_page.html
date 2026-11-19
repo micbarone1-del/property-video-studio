@@ -54,6 +54,7 @@
   <div id="err"></div>
   <div class="cards" id="cards"></div>
   <div class="sw" id="sw"></div>
+  <div id="agencies"></div>
   <div class="wrap"><table>
     <thead><tr><th>Job</th><th>Stato</th><th>Automatico</th><th>Costo</th></tr></thead>
     <tbody id="rows"></tbody>
@@ -169,9 +170,43 @@ function autoCell(j) {
     if (j.review_pending) t.push('<button onclick="reviewDone(\'' + j.job_id + '\')">Segna come vista</button>');
   }
   if (j.status === 'done' && j.source === 'relinx') t.push(j.released ? '<span class="tag">consegnato all\'agenzia</span>' : '<span class="tag attn">non ancora consegnato</span><button onclick="releaseJob(\'' + j.job_id + '\')">Consegna all\'agenzia</button><button onclick="rejectJob(\'' + j.job_id + '\')">Rifiuta</button>')
+  if (j.agency_pending && j.status === 'done' && j.source === 'relinx' && !j.released) t.push('<span class="tag attn" title="La pronuncia del nome dell\'agenzia non e\' validata: il rilascio automatico e\' fermo">agenzia da validare</span>');
   if (j.status === 'failed' && j.failure_code === 'rejected_by_operator') t.push('<span class="tag attn" title="' + esc(j.operator_note || '') + '">rifiutato da te</span>');
   if (j.stops) t.push('<span class="tag attn">in attesa di te: ' + j.stops + ' scene</span>');
   return t.join('') || '<span class="mute">-</span>';
+}
+let AG_SIG = '';
+function paintAgencies(list) {   // 2026-11-19: new agencies wait here until the operator confirms how the voice says the name
+  const box = document.getElementById('agencies');
+  const sig = JSON.stringify(list.map(a => [a.agency_id, a.name, a.has_logo]));
+  if (sig === AG_SIG) return;   // no redraw while nothing changed: it would wipe what the operator is typing
+  AG_SIG = sig;
+  box.innerHTML = list.length ? '<div class="rev" style="margin-bottom:14px"><b>Nuove agenzie da validare</b>' + list.map(a =>
+    '<div class="scene"><div class="txt"><b>' + esc(a.name) + '</b> <span class="tag' + (a.has_logo ? '' : ' attn') + '">' + (a.has_logo ? 'logo presente' : 'logo mancante: video con la sola etichetta AI') + '</span>' +
+    '<div class="mute">Come la voce dice il nome (modificabile):</div>' +
+    '<input id="ap-' + a.agency_id + '" value="' + esc(a.proposal) + '" style="width:100%;max-width:420px;padding:6px;border-radius:8px;border:1px solid var(--line);font:inherit">' +
+    '<div style="margin-top:6px"><button onclick="listenAgency(\'' + a.agency_id + '\')">Ascolta</button> <button class="go" onclick="confirmAgency(\'' + a.agency_id + '\')">Conferma pronuncia</button></div>' +
+    '<audio id="au-' + a.agency_id + '" controls style="display:none;margin-top:6px;width:100%;max-width:420px"></audio>' +
+    '<div class="mute">Finche\' non confermi, il rilascio automatico dei video di questa agenzia e\' fermo (puoi sempre consegnare a mano).</div></div></div>').join('') + '</div>' : '';
+}
+async function listenAgency(id) {
+  const fd = new FormData(); fd.append('pronunciation', document.getElementById('ap-' + id).value);
+  const au = document.getElementById('au-' + id);
+  try {
+    const r = await fetch('/operator/agency/' + id + '/listen', { method: 'POST', headers: { 'X-Access-Key': getKey() }, body: fd });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    au.src = URL.createObjectURL(await r.blob()); au.style.display = 'block';
+    try { await au.play(); } catch (e) {}
+  } catch (e) { document.getElementById('err').textContent = 'Errore: ' + e.message; }
+}
+async function confirmAgency(id) {
+  const v = document.getElementById('ap-' + id).value.trim(); if (!v) return;
+  const fd = new FormData(); fd.append('pronunciation', v); fd.append('confirm', '1');
+  try {
+    const r = await fetch('/operator/agency/' + id + '/pronunciation', { method: 'POST', headers: { 'X-Access-Key': getKey() }, body: fd });
+    if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + (await r.text()).slice(0, 100));
+    AG_SIG = ''; load();
+  } catch (e) { document.getElementById('err').textContent = 'Errore: ' + e.message; }
 }
 let FILTER = ''; let Q = '';
 function setFilter(f) { FILTER = (FILTER === f ? '' : f); if (LAST) { load(); } }
@@ -188,6 +223,7 @@ async function load() {
       '<div class="card" style="cursor:pointer;' + (FILTER === 'waiting' ? 'outline:2px solid var(--warn)' : '') + '" onclick="setFilter(\'waiting\')" title="Job fermi in attesa di una tua decisione (scene segnalate dal QC o rework esauriti). Clic per vedere solo quelli."><b>' + waiting + '</b><span>job che aspettano te</span></div>' +
       '<div class="card" style="cursor:pointer;' + (FILTER === 'review' ? 'outline:2px solid var(--warn)' : '') + '" onclick="setFilter(\'review\')" title="Job gia andati avanti: il sistema ha approvato scene con difetti lievi, da rivedere con calma. Clic per vedere solo quelli."><b>' + pending + '</b><span>job con scene da rivedere</span></div>' +
       '<div class="card"><b>' + (d.release_mode === 'auto' ? 'automatico' : 'con il tuo ok') + '</b><span>rilascio all\'agenzia</span><br><button onclick="setRelease(\'' + (d.release_mode === 'auto' ? 'manual' : 'auto') + '\')">' + (d.release_mode === 'auto' ? 'Passa a: con il mio ok' : 'Passa a: automatico') + '</button></div>';
+    paintAgencies(d.agencies_pending || []);
     const s = d.switches, p = (n, v) => '<span class="pill ' + (v ? 'on' : 'off') + '">' + n + ': ' + (v ? 'acceso' : 'spento') + '</span>';
     document.getElementById('sw').innerHTML = p('avvio automatico', s.auto_start) + p('rework automatico', s.auto_rework) + p('approvazione segnalate', s.auto_approve_flags) + p('regola misurata', s.standard_enforce) + '<span class="pill">Luma: ' + esc(s.luma_resolution) + '</span>';
     const shown = FILTER === 'waiting' ? d.jobs.filter(j => j.stops || j.needs_operator) : FILTER === 'review' ? d.jobs.filter(j => j.review_pending) : d.jobs;

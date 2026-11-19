@@ -2151,7 +2151,7 @@ async def create_video_from_partner(
             payload.agency_name, partner["partner_id"], payload.agency_external_id
         )
     else:
-        agency = cost_model.create_agency(payload.agency_name)
+        agency = cost_model.create_agency(payload.agency_name, partner_flow=True)   # 2026-11-19: same new-agency workflow as the external-id branch
 
     # 2026-10-01 (backlog item 48): rate limit -- max 2 videos per agency
     # per rolling 24h, agreed with Relinx. Counts only jobs with
@@ -2393,6 +2393,7 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
             _logo = await asyncio.to_thread(agency_logo.update_from_partner_url, agency["agency_id"], payload.agency_logo_url, BASE_DIR)
             JOBS[job_id]["agency_logo_result"] = _logo
             log.info(f"[Relinx] agency logo for job {job_id}: {_logo}")
+        await _notify_new_agency_setup(agency["agency_id"], job_id)   # 2026-11-19: once per new agency (pronunciation to validate, logo status)
 
         from cost_tracker import estimate_job_cost, format_cost_display
         rolling_jobs = _get_rolling_monthly_job_count()
@@ -3084,12 +3085,26 @@ async def set_release_mode(mode: str = Form(...)):
     return {"mode": mode}
 
 
+_HELD_AGENCY_NOTIFIED: set = set()
+
+
 async def _auto_release_tick():
     if _release_mode() != "auto":
         return
-    import release_rule
+    import release_rule, agency_pronunciation
     for jid, j in list(JOBS.items()):
         if release_rule.releasable(j):
+            if agency_pronunciation.needs_validation(cost_model.get_agency(j.get("agency_id"))):
+                # 2026-11-19: the agency name pronunciation is not validated yet: no automatic release (a manual release is always possible)
+                if jid not in _HELD_AGENCY_NOTIFIED:
+                    _HELD_AGENCY_NOTIFIED.add(jid)
+                    _n = j.get("property_name") or jid
+                    await _notify_operator(
+                        jid, "Held: agency not validated", subject=f"Video pronto ma fermo: agenzia da validare ({_n})",
+                        body_html=f"<p>Il video di <b>{_n}</b> e' pronto, ma la pronuncia del nome dell'agenzia non e' ancora validata: il rilascio automatico e' fermo.</p>"
+                                  f"<p>Valida la pronuncia dalla dashboard (Stato operativo), oppure rilascia tu il video.</p><p>Job ID: {jid}</p>",
+                        push_message=f"{_n} - pronto, fermo: agenzia da validare", tags=["hourglass"])
+                continue
             try:
                 await release_job(jid)           # the SAME path as the operator's release button
                 log.info(f"[Job {jid}] released automatically (release mode auto)")
@@ -3204,8 +3219,9 @@ def _listing_number(j, jid):
 @app.get("/operator/status")
 async def operator_status(q: str = ""):
     """Everything the operator page shows: the switches, the money committed, and one row per recent job."""
-    import auto_start
+    import auto_start, agency_pronunciation
     now = datetime.utcnow()
+    _ag_pending = {a["agency_id"] for a in cost_model.list_agencies() if agency_pronunciation.needs_validation(a)}
     rows = []
     for jid, j in JOBS.items():
         try:
@@ -3232,7 +3248,7 @@ async def operator_status(q: str = ""):
                      "review_pending": bool(j.get("review_pending")), "released": bool(j.get("released")), "stops": len(det), "stops_detail": det,
                      "auto_approved_scenes": [a.get("scene") for a in (j.get("auto_approved") or [])],
                      "needs_operator": bool(j.get("needs_operator")), "listing": _listing_number(j, jid),
-                     "missing_rooms": _missing_rooms_italian(j, 1)})
+                     "missing_rooms": _missing_rooms_italian(j, 1), "agency_pending": j.get("agency_id") in _ag_pending})
     rows.sort(key=lambda r: r["created_at"] or "", reverse=True)
     on = lambda n: os.getenv(n, "0").strip().lower() in ("1", "true", "yes", "on")
     return {"now": now.isoformat(), "active": auto_start.active_count(JOBS), "max_active": auto_start.max_active(),
@@ -3240,7 +3256,8 @@ async def operator_status(q: str = ""):
             "switches": {"auto_start": on("PVS_AUTO_START"), "auto_rework": on("PVS_AUTO_REWORK"),
                          "auto_approve_flags": on("PVS_AUTO_APPROVE_FLAGS"), "standard_enforce": on("PVS_STANDARD_ENFORCE"),
                          "luma_resolution": luma_resolution()},
-            "release_mode": _release_mode(), "jobs": rows[:(300 if (q or "").strip() else 80)]}
+            "release_mode": _release_mode(), "agencies_pending": _agencies_pending_payload(),
+            "jobs": rows[:(300 if (q or "").strip() else 80)]}
 
 
 @app.get("/operator/job/{job_id}/input")
@@ -3791,6 +3808,73 @@ def _missing_rooms_italian(job, min_missing: int = 2) -> list:
 def _auto_start_on() -> bool:
     import auto_start
     return bool(auto_start.enabled())
+
+
+async def _notify_new_agency_setup(agency_id: str, job_id: str):
+    """2026-11-19 (Michele): ONE notice per new partner agency: its pronunciation is to be validated and its first logo may be missing.
+    Warns only, never blocks the job. Best-effort: never raises."""
+    try:
+        import agency_pronunciation as _ap
+        ag = cost_model.get_agency(agency_id)
+        if not _ap.needs_validation(ag) or ag.get("setup_notified"):
+            return
+        cost_model.mark_agency_setup_notified(agency_id)
+        has_logo = bool(ag.get("logo_path")) and not ag.get("logo_hidden")
+        logo_txt = "il logo e' presente" if has_logo else "<b>il logo manca</b>: il video esce con la sola etichetta AI finche' non ne arriva uno"
+        await _notify_operator(
+            job_id, "New agency", subject=f"Nuova agenzia da validare: {ag['name']}",
+            body_html=f"<p>E' arrivata una nuova agenzia: <b>{ag['name']}</b>.</p>"
+                      f"<p>Pronuncia proposta: <b>{_ap.effective(ag)}</b> (non validata); {logo_txt}.</p>"
+                      f"<p>Finche' la pronuncia non e' validata il rilascio automatico dei suoi video e' fermo; il rilascio manuale resta possibile.</p>"
+                      f"<p>Valida la pronuncia dalla dashboard (Stato operativo). Job ID: {job_id}</p>",
+            push_message=f"Nuova agenzia {ag['name']}: valida la pronuncia" + ("" if has_logo else " (logo mancante)"), tags=["office"])
+    except Exception as e:
+        log.warning(f"[Job {job_id}] new-agency notice failed (non-fatal): {e}")
+
+
+def _agencies_pending_payload() -> list:
+    """The agencies waiting for the operator (dashboard card): name as received, the pronunciation that would be spoken now, logo status."""
+    import agency_pronunciation as _ap
+    out = []
+    for a in cost_model.list_agencies():
+        if _ap.needs_validation(a):
+            out.append({"agency_id": a["agency_id"], "name": a["name"], "proposal": _ap.effective(a),
+                        "has_logo": bool(a.get("logo_path")) and not a.get("logo_hidden"), "created_at": a.get("created_at")})
+    return out
+
+
+@app.post("/operator/agency/{agency_id}/pronunciation")
+async def set_agency_pronunciation_endpoint(agency_id: str, pronunciation: str = Form(...), confirm: str = Form("0")):
+    """2026-11-19: stores the pronunciation; confirm=1 also marks it validated (the agency's videos can then be released automatically)."""
+    import agency_pronunciation as _ap
+    ag = cost_model.get_agency(agency_id)
+    if not ag:
+        raise HTTPException(status_code=404, detail="Agency not found")
+    pron = _ap.clean_pronunciation(pronunciation)
+    if not pron:
+        raise HTTPException(status_code=400, detail="Pronuncia vuota")
+    done = cost_model.set_agency_pronunciation(agency_id, pron, confirm.strip().lower() in ("1", "true", "yes", "on"))
+    log.info(f"[Agency {agency_id}] pronunciation set to {pron!r}, validated={done.get('pronunciation_validated')}")
+    return {"agency_id": agency_id, "pronunciation": pron, "validated": bool(done.get("pronunciation_validated"))}
+
+
+@app.post("/operator/agency/{agency_id}/listen")
+async def listen_agency_pronunciation(agency_id: str, pronunciation: str = Form(...)):
+    """2026-11-19: a short sample of how the voice will say this agency name (a few cents of TTS), so the operator validates by ear."""
+    import agency_pronunciation as _ap, voice_generation, tempfile
+    ag = cost_model.get_agency(agency_id)
+    if not ag:
+        raise HTTPException(status_code=404, detail="Agency not found")
+    pron = _ap.clean_pronunciation(pronunciation)
+    if not pron:
+        raise HTTPException(status_code=400, detail="Pronuncia vuota")
+    with tempfile.TemporaryDirectory() as td:
+        out = os.path.join(td, "listen.mp3")
+        ok = await asyncio.to_thread(voice_generation.generate_speech, f"Video presentato da {pron}.", out)
+        if not ok or not os.path.exists(out):
+            raise HTTPException(status_code=502, detail="Audio non generato")
+        data = open(out, "rb").read()
+    return Response(content=data, media_type="audio/mpeg", headers={"Cache-Control": "no-store"})
 
 
 async def _send_new_partner_job_alert(job_id: str):
