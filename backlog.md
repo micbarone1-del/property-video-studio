@@ -1310,3 +1310,27 @@ Regole di Michele: (1) NESSUNO step manuale nel flusso: escalation = notifica/au
 4. DUPLICATI (decisione di Michele 20/11): stesso annuncio con external_ref DIVERSO -> si crea il video e Michele riceve un avviso con i due job (stessa agenzia e stesse foto); non si blocca mai Relinx; il limite per agenzia nelle 24 ore resta. DA COSTRUIRE. Da fare anche il test della guardia per external_ref uguale (esiste dal 2 ottobre, nessun test la copre).
 5. TEST VECCHI: chiusi (test_tts_sanitize 19/19, test_selection_report 33/33).
 6. ANCORA APERTE (nell'ordine di rischio proposto): prova completa con la nuova narrazione su un video vero; prove dei percorsi di errore sull'istanza di test (generation_failed, "Rifiuta" + webhook, input non adatto); verificare che il controllo dei job bloccati e il tetto di spesa giornaliero (30 euro) avvisino davvero e una volta sola; Director: riparazione JSON con un nuovo tentativo; guardia per stanze principali mancanti; "Rigenera narrazione" su job ancorati cancella la timeline; sicurezza (chiave fal inutilizzata, chiave del server a scadenza); retention dei backup; riconciliare la fattura Luma con cost_actual; limite partner a 2 al lancio (impostazione, non backlog).
+
+
+<!-- agg-2026-11-20 -->
+### 2026-11-20 - Decisioni di Michele
+1. Webhook: 3 nuovi tentativi (1, 5, 15 minuti) poi UN avviso all'operatore (confermato dal test).
+2. Doppioni: il video viene creato e l'operatore e' avvisato.
+3. Consegna all'agenzia: manuale finche' Michele non decide diversamente.
+4. Tutte le clip fallite: il job resta in attesa per Relinx, operatore avvisato. Rischio accettato il 2026-11-20 ("Lascia com'e").
+5. Due mail per lo stesso problema di clip mancanti: lasciare cosi' (2026-11-20). Difetto minore.
+6. Relinx 401: aspettare Relinx, nessuna rotazione di chiave.
+7. Documenti (status.md, backlog.md, AUTOMATION_TEST_PLAN.md): aggiornati una volta al giorno.
+8. Notifiche: tutte nella dashboard con le azioni importanti aperte in cima (fatto, befba69).
+
+### Voci aperte
+- Criteri di rilascio automatico (punto 10): proposta da fare a Michele, decide lui.
+- Avviso per il monitor di arrivo clip: da decidere se serve.
+- Tetto di spesa: 100 EUR in produzione, valore di lancio da decidere.
+- Soglia job fermi 45 minuti provvisoria: rivedere dopo i primi video reali.
+- Test P1e del file fake_partial_clips.py da correggere (deve cercare l'oggetto reale della mail e aspettarsi 2 avvisi, non 1).
+- Test 360p contro 1080p: attendere il risultato e dirlo a Douglas; considerare in un secondo giro scene note come sicure per misurare i falsi allarmi.
+- Segreto di firma dei webhook: chiedere a Relinx.
+- Video completo con la nuova narrazione (THRINAKIE, circa 9-12 EUR, rilascio manuale).
+- Riparazione JSON del Director con un nuovo tentativo; guardia per stanze principali mancanti; "Rigenera narrazione" cancella la timeline sui job ancorati.
+- PVS_PARTNER_AGENCY_LIMIT_24H da 20 a 2 al lancio; consegna sicura della chiave; chiave fal inutilizzata e chiave server con scadenza; retention dei backup; riconciliare la fattura Luma con cost_actual.

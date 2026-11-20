@@ -740,3 +740,22 @@ NON eseguito: fallimento reale di webhook in produzione; ripresa dopo riavvio co
 FMEA aggiornate (proposte): (1) "401 sul percorso partner": con il controllo "avviso dopo 401" costruito, D da 6 a 3: S7 O5 D3 RPN 105, resta ACT (RPN>=100); controlli: log [PartnerAuth], avviso unico, registro consegne chiavi e canale sicuro (da costruire). (2) "webhook di consegna non arriva al partner" (nuova): prima S6 O5 D8 RPN 240 ACT (un solo tentativo, esito nel log, nessun avviso); dopo f088cce S6 O3 D3 RPN 54 (4 tentativi, esito salvato, avviso); da provare dal vivo. (3) "chiave partner non recuperabile": invariata S6 O6 D8 RPN 288 ACT; la rotazione e' pronta ma non applicata.
 Invarianti per il webhook: nessun job perso (il webhook non cambia mai lo stato del video), nessun doppio costo (nessun costo), stato finale visibile (job["webhook_delivery"]), operatore informato una volta (un avviso solo se falliscono tutti i tentativi).
 Scoreboard: non ricalcolato, da rifare alla prossima revisione; non arrotondato.
+
+
+<!-- agg-2026-11-20 -->
+### 2026-11-20 - Test aggiunti e risultati (prova = output incollato da Michele il 20/11, salvo dove scritto)
+| Test | Cosa verifica | Esito |
+|---|---|---|
+| test_stuck_jobs SJ1-SJ13 | monitor job fermi | 13/13 PASS |
+| test_fake_google_tts G1-G7 | voce Google finta | 7/7 PASS |
+| fake_failure_paths T3, T2 | foto insufficienti, rifiuto operatore | PASS |
+| fake_failure_paths T1 | tutte le clip falliscono | giudizio: rischio accettato 2026-11-20 |
+| fake_webhook_fail W1-W9 | webhook non raggiungibile + riavvio | 10/10 PASS |
+| fake_idempotency I1-I4 | richieste ripetute, doppioni, nuovo tentativo dopo fallimento | 10/10 PASS |
+| fake_partial_clips P1-P2 | clip in parte fallite, rifacimento delle sole mancanti | 11 PASS / 1 FAIL (P1e = difetto del test, vedi sopra) |
+| test_operator_inbox OI1-OI17, CAP1-CAP5 | casella dashboard, un solo punto di scrittura, avviso tetto una volta | 23/23 PASS (eseguito nella mia copia e sul server) |
+| test_exp_res_compare R1-R11 | strumento test 360p, tetto di spesa rigido | 11/11 PASS (server) |
+| Prova dal vivo casella | sezione presente, nessun errore | visto; avviso reale in produzione NON ancora visto |
+| Test 360p contro 1080p | scene rischiose a 360p lo sono anche a 1080p | AVVIATO, esito non noto |
+
+Quattro invarianti (nessun job perso, nessun doppio costo, stato finale corretto e visibile, operatore avvisato una volta): rispettate nei test sopra, con due eccezioni note: clip mancanti (due mail, accettato) e tutte le clip fallite (job in attesa, accettato). FMEA: righe da rivalutare con Michele (webhook non consegnato, richiesta ripetuta, tetto di spesa senza avviso, job fermi, clip in parte fallite); i punteggi qui NON sono stati cambiati.
