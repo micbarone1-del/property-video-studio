@@ -68,6 +68,32 @@ import partner_api
 import partner_messages
 
 
+_AUTH_ALERTS = partner_api.AuthRefusalAlerts()
+
+
+def _alert_auth_refusal(ip: str, path: str, reason: str, key_len: int, known: str, strong: bool) -> None:
+    """2026-11-20: ONE mail + push to the operator when a refused partner request looks like a real partner mistake (see partner_api.AuthRefusalAlerts).
+    Never raises, never blocks the request (the notification runs in its own thread), never changes the 401 answer, never carries the key."""
+    try:
+        if not _AUTH_ALERTS.note(f"{reason}|{known}|{key_len}", strong):
+            return
+        import threading
+        import maintenance_scheduler
+        why = ("una chiave che abbiamo emesso ma che e' stata disattivata" if str(known).endswith("(inactive)")
+               else "una chiave che ha la forma delle nostre ma non corrisponde a nessun partner" if strong
+               else "richieste ripetute con una chiave sconosciuta o senza chiave")
+        subject = "Property Video Studio: richiesta API partner rifiutata (401)"
+        body = (f"<p>Una richiesta all'API partner e' stata rifiutata con 401: {why}.</p>"
+                f"<p>Percorso: {path}<br>Indirizzo visto dal server: {ip}<br>Motivo: {reason}<br>Lunghezza chiave: {key_len}<br>Chiave riconosciuta: {known}</p>"
+                "<p>Il partner non riceve nessun video finche' non usa una chiave valida. La chiave non e' recuperabile: se serve, se ne emette una nuova. "
+                "Dettagli nel log: grep PartnerAuth /tmp/property-video.log</p>")
+        threading.Thread(target=maintenance_scheduler.send_notification, args=(subject, body),
+                         kwargs={"push_message": f"401 API partner: {why} (lunghezza {key_len}, {known})", "priority": "high", "tags": ["warning"]},
+                         daemon=True).start()
+    except Exception as e:
+        log.warning(f"[PartnerAuth] alert not sent: {e}")
+
+
 async def get_current_partner(request: Request, authorization: str = Header(None)) -> dict:
     """FastAPI dependency: validates the Authorization: Bearer <key> header
     against partner_api's stored partner keys. Raises 401 if missing,
@@ -76,11 +102,14 @@ async def get_current_partner(request: Request, authorization: str = Header(None
     ip = request.client.host if request.client else "?"
     if not authorization or not authorization.startswith("Bearer "):
         log.warning(f"[PartnerAuth] 401 no Bearer header: path={request.url.path} ip={ip} header_present={bool(authorization)}")
+        _alert_auth_refusal(ip, request.url.path, "no_bearer_header", 0, "unknown", False)
         raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
     raw_key = authorization[len("Bearer "):].strip()
     partner = partner_api.verify_partner_key(raw_key)
     if not partner:
-        log.warning(f"[PartnerAuth] 401 key refused: path={request.url.path} ip={ip} key_len={len(raw_key)} known_key={partner_api.identify_partner_key(raw_key)}")
+        _known = partner_api.identify_partner_key(raw_key)
+        log.warning(f"[PartnerAuth] 401 key refused: path={request.url.path} ip={ip} key_len={len(raw_key)} known_key={_known}")
+        _alert_auth_refusal(ip, request.url.path, "key_refused", len(raw_key), _known, partner_api.auth_refusal_is_strong(raw_key, _known))
         raise HTTPException(status_code=401, detail="Invalid or inactive API key")
     return partner
 

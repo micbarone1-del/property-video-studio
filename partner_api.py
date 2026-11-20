@@ -7,6 +7,7 @@ introducing a new mechanism.
 """
 import json
 import secrets
+import time
 import hashlib
 import uuid
 from datetime import datetime
@@ -93,6 +94,42 @@ def identify_partner_key(raw_key: str):
         if p.get("api_key_hash") == key_hash:
             return f"{p.get('partner_id')} ({'active' if p.get('active', True) else 'inactive'})"
     return "unknown"
+
+
+class AuthRefusalAlerts:
+    """2026-11-20: decides WHEN a refused partner request (401) is worth ONE notification to the operator. Pure and in memory (state resets at restart,
+    which only means one extra alert). It never blocks or changes the 401 answer.
+      strong refusal (the key looks like one of ours, or it is a key we issued and switched off): notify at the first occurrence
+      weak refusal (anything else: no header, short or foreign key): notify only when it repeats weak_threshold times inside window_secs
+      the same signature notifies at most once per cooldown_secs, and the whole process at most global_max times per global_window_secs
+    Why: a Relinx request refused with 401 on 19/11 at 23:14 left no trace and nobody was told."""
+    def __init__(self, window_secs=900, weak_threshold=3, cooldown_secs=21600, global_max=4, global_window_secs=3600):
+        self.window_secs, self.weak_threshold, self.cooldown_secs = window_secs, weak_threshold, cooldown_secs
+        self.global_max, self.global_window_secs = global_max, global_window_secs
+        self._hits, self._last_alert, self._global = {}, {}, []
+
+    def note(self, signature: str, strong: bool, now: float = None) -> bool:
+        now = time.time() if now is None else now
+        hits = [t for t in self._hits.get(signature, []) if now - t <= self.window_secs] + [now]
+        self._hits[signature] = hits
+        if not (strong or len(hits) >= self.weak_threshold):
+            return False
+        last = self._last_alert.get(signature)
+        if last is not None and now - last < self.cooldown_secs:
+            return False
+        self._global = [t for t in self._global if now - t <= self.global_window_secs]
+        if len(self._global) >= self.global_max:
+            return False
+        self._last_alert[signature] = now
+        self._global.append(now)
+        return True
+
+
+def auth_refusal_is_strong(raw_key: str, known: str) -> bool:
+    """True when a refused key is probably a real partner mistake: it is an issued key that was switched off, or it has the exact shape of our keys
+    (pvs_ + 43 characters) but matches nothing we stored."""
+    raw_key = raw_key or ""
+    return str(known).endswith("(inactive)") or (raw_key.startswith("pvs_") and len(raw_key) == 47)
 
 
 def deactivate_partner(partner_id: str) -> bool:
