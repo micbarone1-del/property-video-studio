@@ -42,11 +42,10 @@ in maintenance_alert_emails.json — throttled to at most one email per
 ALERT_COOLDOWN_MINUTES for an ongoing issue, so a persistent problem doesn't
 spam an email every 5 minutes.
 
-NOTE ON JOB SCHEMA ASSUMPTIONS: check_stuck_jobs() assumes each job
-directory's job.json has "status" and "generation_started_at" fields.
-If the actual field names differ, this check will just harmlessly report
-"none" rather than error — verify against real job.json content if you
-want to trust this one specifically.
+NOTE ON JOB FILES (verified 2026-11-20 on the server): check_stuck_jobs() reads each
+job folder's job_meta.json (the file _save_job writes) and treats status running or
+preparing as in progress. A job is stuck when nothing in its folder was written for
+STUCK_JOB_MINUTES. There is no job.json and no generation_started_at field.
 """
 
 import os
@@ -82,7 +81,7 @@ API_BASE          = "http://localhost:8000"
 CHECK_INTERVALS = {
     "service_status":       5,
     "disk_usage":           30,
-    "stuck_jobs":            30,
+    "stuck_jobs":            10,
     "credits":               60,
     "fallback_rate":         60,
     "test_scratch_size":     360,
@@ -224,36 +223,57 @@ def check_service() -> dict:
                 "summary": "Server is not responding — it may be down.", "detail": f"unreachable: {e}"}
 
 
-def check_stuck_jobs() -> dict:
-    if not JOBS_DIR.exists():
-        return {"name": "stuck_jobs", "title": "Stuck Jobs", "status": "ok",
-                "summary": "No jobs directory found.", "detail": "no jobs directory"}
+STUCK_STATUSES = ("running", "preparing")  # queued waits for a free slot, so it is not "stuck"
+
+
+def _job_last_activity(job_dir: Path) -> float:
+    """Newest write time (epoch) of job_meta.json or any file in the job folder."""
+    newest = 0.0
+    for root, _dirs, files in os.walk(job_dir):
+        for f in files:
+            try:
+                newest = max(newest, os.path.getmtime(os.path.join(root, f)))
+            except OSError:
+                pass
+    return newest
+
+
+def find_stuck_jobs(jobs_dir: Path, now: float, minutes: int = STUCK_JOB_MINUTES) -> list:
+    """Jobs in a running status whose folder has not been written for `minutes`.
+    Reads job_meta.json (the file _save_job really writes). Never changes anything."""
     stuck = []
-    cutoff = datetime.now() - timedelta(minutes=STUCK_JOB_MINUTES)
-    for job_dir in JOBS_DIR.iterdir():
-        if not job_dir.is_dir() or job_dir.name == "_test_scratch":
+    if not jobs_dir.exists():
+        return stuck
+    for job_dir in jobs_dir.iterdir():
+        if not job_dir.is_dir() or job_dir.name.startswith("_"):
             continue
-        meta_file = job_dir / "job.json"
+        meta_file = job_dir / "job_meta.json"
         if not meta_file.exists():
             continue
         try:
             meta = json.loads(meta_file.read_text())
         except Exception:
             continue
-        status = meta.get("status", "")
-        started = meta.get("generation_started_at")
-        if status in ("generating", "processing") and started:
-            try:
-                if datetime.fromisoformat(started) < cutoff:
-                    stuck.append(job_dir.name)
-            except Exception:
-                pass
+        if meta.get("status") not in STUCK_STATUSES:
+            continue
+        last = _job_last_activity(job_dir)
+        if last and now - last > minutes * 60:
+            stuck.append((job_dir.name, int((now - last) / 60)))
+    return stuck
+
+
+def check_stuck_jobs() -> dict:
+    if not JOBS_DIR.exists():
+        return {"name": "stuck_jobs", "title": "Stuck Jobs", "status": "ok",
+                "summary": "No jobs directory found.", "detail": "no jobs directory"}
+    stuck = find_stuck_jobs(JOBS_DIR, datetime.now().timestamp())
     if stuck:
         summary = f"{len(stuck)} job(s) appear stuck and may need attention."
     else:
-        summary = "No stuck jobs — everything is processing normally."
+        summary = "No stuck jobs - everything is processing normally."
     return {"name": "stuck_jobs", "title": "Stuck Jobs", "status": "red" if stuck else "ok",
-            "summary": summary, "detail": f"{', '.join(stuck)}" if stuck else "none"}
+            "summary": summary,
+            "detail": ", ".join(f"{n[:8]} ({m} min)" for n, m in stuck[:8]) if stuck else "none"}
 
 
 def check_test_scratch() -> dict:

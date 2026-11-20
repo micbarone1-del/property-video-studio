@@ -66,6 +66,7 @@ def _check_access(request: Request) -> bool:
 # their own revocable key, hashed at rest -- see partner_api.py.
 import partner_api
 import partner_webhook
+import partner_duplicates
 import partner_messages
 
 
@@ -2241,6 +2242,19 @@ async def create_video_from_partner(
         "partner_payload": _raw_payload,
     }
     _save_job(job_id)
+
+    # 2026-11-20 (decided with Michele): the same listing sent again with a DIFFERENT external_ref is created as usual and the operator is told.
+    # The same external_ref is answered by the idempotency check above. Never blocks, never raises, never changes the job's status.
+    try:
+        _dups = partner_duplicates.find_possible_duplicates(job_id, JOBS)
+        if _dups:
+            JOBS[job_id]["possible_duplicate_of"] = _dups
+            _save_job(job_id)
+            background_tasks.add_task(_notify_operator, job_id, "Possible duplicate", subject=f"Possibile doppione da Relinx: {payload.property_name}",
+                                      body_html=partner_duplicates.alert_html(job_id, JOBS[job_id], _dups),
+                                      push_message=f"Possibile doppione ({_dups[0]['reason']}): job {job_id[:8]} e {_dups[0]['job_id'][:8]}", priority="high", tags=["warning"])
+    except Exception as e:
+        log.warning(f"[Job {job_id}] duplicate check failed (non-fatal): {e}")
 
     background_tasks.add_task(_build_relinx_job_in_background, job_id, payload, agency)
 
