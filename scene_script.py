@@ -20,6 +20,7 @@ every risky feature word in a sentence must appear in the listing text, otherwis
 (see validate()). It is a heuristic safety net, not a proof: a person still listens to the first real jobs.
 """
 import json
+import os
 import re
 
 SCENES = 6
@@ -236,11 +237,25 @@ def _rooms_tied(desc: str, cat: str, other: str) -> bool:
     return bool(ks) and _listing_ties(desc, ks, cat)
 
 
-def _fact_problems(s: str, tag: str, low: str, desc: str, desc_numbers: set, price_numbers: set) -> list:
+def _agency_masked(text: str, agency_name) -> str:
+    """2026-11-19 (Michele, TEST INSTANCE ONLY while PVS_FACT_MASK_AGENCY is not 1): the agency NAME is not a claim about the property. A name
+    like 'Casa Nuova' or 'Vista Mare' made the fact check reject every sentence that names the agency (draft fefb978c, 'PROVA NUOVA AGENZIA SRL':
+    feature 'nuov...'). With the switch ON the name is blanked before the feature, promotional, number and floor checks; the 'must name the agency'
+    checks keep reading the original sentence. Switch OFF (production default) = text returned unchanged."""
+    if os.getenv("PVS_FACT_MASK_AGENCY", "0").strip() != "1" or not agency_name:
+        return text
+    toks = re.findall(r"[^\W_]+", str(agency_name))
+    if not toks:
+        return text
+    return re.sub(r"(?<!\w)" + r"\W+".join(re.escape(t) for t in toks) + r"(?!\w)", " ", text, flags=re.I)
+
+
+def _fact_problems(s: str, tag: str, low: str, desc: str, desc_numbers: set, price_numbers: set, agency_name=None) -> list:
     """The fact check of ONE sentence (price, numbers, feature words, promotional adjectives, floors). Shared by the
     one-sentence-per-scene script (validate) and the free narration of the anchor-driven timeline
     (validate_free_text): ONE implementation, not two copies (architecture discipline, 2026-10-23)."""
     problems = []
+    s, low = _agency_masked(s, agency_name), _agency_masked(low, agency_name)
     if "€" in s or re.search(r"\beuro\b", low):
         problems.append(f"{tag}: mentions the price")
     for tok in _number_tokens(s):
@@ -293,7 +308,7 @@ def validate(sentences: list, description: str, agency_name: str = None, price: 
             problems.append(f"{tag}: must be one sentence ending with a full stop")
         if s.count(".") > 1 and not re.search(r"\d\.\d", s):
             problems.append(f"{tag}: contains more than one sentence")
-        problems.extend(_fact_problems(s, tag, low, desc, desc_numbers, price_numbers))
+        problems.extend(_fact_problems(s, tag, low, desc, desc_numbers, price_numbers, agency_name))
         if i == 0:
             problems.extend(sale_rent_problems(low, desc, "scene 1:"))
         if agency_n and i in (0, SCENES - 1) and agency_n not in re.sub(r"[^a-z0-9àèéìòù ]", "", low):
@@ -508,7 +523,7 @@ def validate_free_text(text: str, anchors: list, description: str, agency_name: 
     if not sentences:
         return ["no sentences found in the text"]
     for i, sent in enumerate(sentences):
-        problems.extend(_fact_problems(sent, f"sentence {i + 1}", _norm(sent), desc, desc_numbers, price_numbers))
+        problems.extend(_fact_problems(sent, f"sentence {i + 1}", _norm(sent), desc, desc_numbers, price_numbers, agency_name))
     problems.extend(view_problems(text, description))   # 2026-11-06: ONE place, every narration path that uses this check
     first, last = _norm(sentences[0]), _norm(sentences[-1])
     problems.extend(sale_rent_problems(first, desc, "the first sentence"))
