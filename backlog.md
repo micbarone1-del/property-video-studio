@@ -1285,3 +1285,5 @@ Regole di Michele: (1) NESSUNO step manuale nel flusso: escalation = notifica/au
 9. LIMITE DELLA SCHEDA: la pronuncia digitata dall'operatore e' testo semplice. Se servisse IPA anche li', va esteso lo stesso meccanismo [[ipa|parola]] alla pronuncia per-agenzia (oggi vale solo per il file globale).
 
 - 2026-11-20 DECIDERE: accendere PVS_FACT_MASK_AGENCY=1 anche in start.sh (produzione) prima di accogliere agenzie con parole come Nuova, Vista, Mare, Parco, Box, Unica nel nome; richiede un deploy con produzione ferma (nessun job in corso). Ricordare: la modifica e' gia' nel codice, serve solo la riga in start.sh.
+
+- 2026-11-20 AGGIORNAMENTO: la decisione sull'interruttore PVS_FACT_MASK_AGENCY e' presa e applicata in produzione (vedi status.md). Resta da verificare sul primo video reale con un nome agenzia che contiene una parola vietata.

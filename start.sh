@@ -75,6 +75,7 @@ PVS_PACE_LIMIT=26
 PVS_ARRIVAL_MONITOR=1
 PVS_NARRATION_MODEL=claude-sonnet-5-5
 PVS_DEFAULT_VOICE=it-IT-Chirp3-HD-Aoede
+PVS_FACT_MASK_AGENCY=1
 [ -f /root/pvs_overrides.env ] && . /root/pvs_overrides.env
 set +a
 
