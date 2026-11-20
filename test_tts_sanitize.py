@@ -31,7 +31,7 @@ def fake_post(url, json=None, headers=None, **kw):
     return R()
 vg.requests.post = fake_post
 
-TEXT = "Engel & Völkers Roma presenta un trilocale in vendita. Contattate Engel & Völkers per informazioni."
+TEXT = "Böhm & Müller Roma presenta un trilocale in vendita. Contattate Böhm & Müller per informazioni."   # 2026-11-20: a name the global pronunciation rules do not touch (Engel & Völkers is rewritten on purpose)
 
 # Google (SSML)
 vg.TTS_PROVIDER = "google"; os.environ["GOOGLE_TTS_API_KEY"] = "k"
@@ -43,7 +43,7 @@ except Exception as e:
     valid = False
 check("G1 google: request succeeds", ok is True)
 check("G2 google: SSML is well-formed XML with '&' in the agency name", valid, ssml[:120])
-check("G3 google: '&' spoken as 'e', accents kept", "Engel e Völkers Roma" in ssml and "&" not in ssml, ssml[:120])
+check("G3 google: '&' spoken as 'e', accents kept", "Böhm e Müller Roma" in ssml and "&" not in ssml, ssml[:120])
 check("G4 google: break tags still present", "<break" in ssml)
 sent.clear()
 vg.generate_speech("Prezzo <ottimo> & vista.\nSecondo paragrafo.", os.path.join(os.getcwd(), "o2.mp3"), voice_id="it-IT-Chirp3-HD-Leda")
@@ -58,7 +58,7 @@ vg.TTS_PROVIDER = "elevenlabs"; os.environ["ELEVENLABS_API_KEY"] = "k"
 sent.clear()
 vg.generate_speech(TEXT, os.path.join(os.getcwd(), "o3.mp3"), voice_id="abc123")
 t = sent["json"]["text"]
-check("E1 elevenlabs: no '&', 'e' spoken, break tags kept", "&" not in t and "Engel e Völkers" in t and "<break" in t, t[:120])
+check("E1 elevenlabs: no '&', 'e' spoken, break tags kept", "&" not in t and "Böhm e Müller" in t and "<break" in t, t[:120])
 
 # plain text is untouched
 check("P1 plain text unchanged", vg.sanitize_for_tts("Appartamento luminoso, ampio. L'agenzia vi aspetta.") == "Appartamento luminoso, ampio. L'agenzia vi aspetta.")

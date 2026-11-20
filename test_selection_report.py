@@ -126,7 +126,7 @@ check("R5 single candidate tagged, no fetch", res[0]["rank_status"] == "single_c
 FakeClient.answer = "[2, 1]"
 
 # --- classify_uncategorized_photo ---
-FakeClient.answer = "kitchen"
+FakeClient.answer = "ANSWER: kitchen photo"   # 2026-11-20: the vision model answers with an ANSWER line (PVS_VISION_MODEL), a bare word reads as unknown
 calls = install_get({"U": [Resp(403)], "O": [Resp(200)]})
 check("C1 classify falls back to original URL", ls.classify_uncategorized_photo("U", "O") == "kitchen" and calls == ["U", "O"])
 ls._describe_cache.clear()
