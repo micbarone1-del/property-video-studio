@@ -100,7 +100,7 @@ echo -e "${YELLOW}↑ Starting server...${NC}"
 screen -dmS "$SCREEN_NAME" bash -c "
     cd $PROJECT_DIR
     source $VENV_DIR/bin/activate
-    uvicorn api_server:app --host 0.0.0.0 --port $PORT 2>&1 | tee /tmp/property-video.log
+    uvicorn api_server:app --host 0.0.0.0 --port $PORT 2>&1 | tee -a /tmp/property-video.log
 "
 
 # ── Step 7: Wait and verify ───────────────────────────────────────────────────

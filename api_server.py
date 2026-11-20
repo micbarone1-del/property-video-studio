@@ -68,15 +68,19 @@ import partner_api
 import partner_messages
 
 
-async def get_current_partner(authorization: str = Header(None)) -> dict:
+async def get_current_partner(request: Request, authorization: str = Header(None)) -> dict:
     """FastAPI dependency: validates the Authorization: Bearer <key> header
     against partner_api's stored partner keys. Raises 401 if missing,
-    malformed, or invalid."""
+    malformed, or invalid. 2026-11-20: every 401 leaves ONE log line (path, caller address, why, and which stored partner the key belongs to when
+    it is a known but inactive key): a Relinx request refused with 401 on 19/11 left no trace at all."""
+    ip = request.client.host if request.client else "?"
     if not authorization or not authorization.startswith("Bearer "):
+        log.warning(f"[PartnerAuth] 401 no Bearer header: path={request.url.path} ip={ip} header_present={bool(authorization)}")
         raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
     raw_key = authorization[len("Bearer "):].strip()
     partner = partner_api.verify_partner_key(raw_key)
     if not partner:
+        log.warning(f"[PartnerAuth] 401 key refused: path={request.url.path} ip={ip} key_len={len(raw_key)} known_key={partner_api.identify_partner_key(raw_key)}")
         raise HTTPException(status_code=401, detail="Invalid or inactive API key")
     return partner
 

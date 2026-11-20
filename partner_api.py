@@ -85,6 +85,16 @@ def verify_partner_key(raw_key: str):
     return None
 
 
+def identify_partner_key(raw_key: str):
+    """2026-11-20: for the 401 log only. 'partner_id (active|inactive)' when the key is one we issued (so a refused key tells which old key the caller
+    still uses), else 'unknown'. Never returns or logs the key itself."""
+    key_hash = _hash_key(raw_key or "")
+    for p in list_partners():
+        if p.get("api_key_hash") == key_hash:
+            return f"{p.get('partner_id')} ({'active' if p.get('active', True) else 'inactive'})"
+    return "unknown"
+
+
 def deactivate_partner(partner_id: str) -> bool:
     partners = list_partners()
     for p in partners:
