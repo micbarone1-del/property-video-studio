@@ -65,6 +65,7 @@ def _check_access(request: Request) -> bool:
 # the web UI; this supports multiple partners (e.g. Relinx), each with
 # their own revocable key, hashed at rest -- see partner_api.py.
 import partner_api
+import partner_webhook
 import partner_messages
 
 
@@ -3756,57 +3757,126 @@ async def run_redo_scene(job_id: str, scene_id: str):
 
 
 
+_WEBHOOK_TASKS = set()    # strong references to the background retry tasks (a task nobody holds can be collected)
+
+
+def _partner_webhook_payload(job_id: str, job: dict, event: str) -> dict:
+    payload = {
+        "id": job_id,
+        "external_ref": job.get("external_ref"),
+        "status": event,
+    }
+    if event == "completed":
+        payload["video_url"] = f"https://api.propertyvideostudioai.com/v1/videos/{job_id}/download"
+    if event == "failed":
+        payload.update(_partner_failure_fields({**job, "status": "failed"}))
+    return payload
+
+
+def _post_partner_webhook_once(job_id: str, job: dict, event: str):
+    """ONE delivery attempt, run in a thread. Returns (ok, http_status, error_name). The error is the exception NAME only: its text can carry the
+    callback URL, which holds a token. Signing stays optional (unsigned + a warning when WEBHOOK_SIGNING_SECRET is not set)."""
+    import requests, hmac, hashlib, json as _json
+    body = _json.dumps(_partner_webhook_payload(job_id, job, event))
+    headers = {"Content-Type": "application/json"}
+    secret = os.getenv("WEBHOOK_SIGNING_SECRET", "")
+    if secret:
+        headers["X-Signature"] = hmac.new(secret.encode(), body.encode(), hashlib.sha256).hexdigest()
+    else:
+        log.warning(f"[Job {job_id}] WEBHOOK_SIGNING_SECRET not set -- sending unsigned webhook")
+    try:
+        resp = requests.post(job["callback_url"], data=body, headers=headers, timeout=10)
+    except Exception as e:
+        return False, None, type(e).__name__
+    return partner_webhook.is_ok_http(resp.status_code), resp.status_code, None
+
+
+async def _webhook_attempt(job_id: str, state: dict) -> str:
+    """One recorded attempt for the delivery described by `state` (the object stored in job["webhook_delivery"]). Returns "delivered", "retry",
+    "failed" or "stop" (the delivery was replaced or the job is gone). When the last attempt fails the operator is told once. Never raises,
+    never touches the job's own status."""
+    job = JOBS.get(job_id)
+    if not job or job.get("webhook_delivery") is not state:
+        return "stop"
+    event = state.get("event")
+    try:
+        ok, http, err = await asyncio.to_thread(_post_partner_webhook_once, job_id, job, event)
+    except Exception as e:
+        ok, http, err = False, None, type(e).__name__
+    decision = partner_webhook.record_attempt(state, ok, http, err)
+    _save_job(job_id)
+    log.info(f"[Job {job_id}] Partner webhook ({event}) attempt {state['attempts']}: {decision} (HTTP {http}, error {err})")
+    if decision == "failed":
+        try:
+            await _notify_operator(job_id, "Webhook failed", subject=f"Webhook non consegnato: {job.get('property_name') or job_id}",
+                                   body_html=partner_webhook.failure_html(job_id, job, state),
+                                   push_message=f"Webhook {event} non consegnato dopo {state['attempts']} tentativi", priority="high", tags=["warning"])
+        except Exception as e:
+            log.warning(f"[Job {job_id}] webhook failure notification failed (non-fatal): {e}")
+    return decision
+
+
+async def _webhook_retry_loop(job_id: str, state: dict, first_delay=None):
+    """Background retries (1, 5, 15 minutes). Stops as soon as the delivery succeeds, fails for good or is replaced by a newer one."""
+    try:
+        while True:
+            job = JOBS.get(job_id)
+            if not job or job.get("webhook_delivery") is not state or state.get("status") != "pending":
+                return
+            delay = first_delay if first_delay is not None else partner_webhook.retry_delay(state)
+            first_delay = None
+            if delay is None:
+                return
+            await asyncio.sleep(delay)
+            job = JOBS.get(job_id)
+            if not job or job.get("webhook_delivery") is not state or state.get("status") != "pending":
+                return
+            if await _webhook_attempt(job_id, state) != "retry":
+                return
+    except Exception as e:
+        log.warning(f"[Job {job_id}] webhook retry loop stopped (non-fatal): {e}")
+
+
+def _schedule_webhook_retries(job_id: str, state: dict, first_delay=None):
+    t = asyncio.create_task(_webhook_retry_loop(job_id, state, first_delay))
+    _WEBHOOK_TASKS.add(t)
+    t.add_done_callback(_WEBHOOK_TASKS.discard)
+
+
 async def _send_partner_webhook(job_id: str, event: str):
     """
-    Backlog item 48 (Relinx): notifies a partner's callback_url when a job
-    reaches a state they care about. No-op for any job without a
-    callback_url -- every manual/URL-scraped job never has one, so this is
-    safe to call unconditionally from shared completion/failure paths.
-    Best-effort: never raises, a failed or slow webhook must never break
-    the assembly pipeline that calls this.
+    Backlog item 48 (Relinx): notifies a partner's callback_url when a job reaches a state they care about. No-op for any job without a
+    callback_url -- every manual/URL-scraped job never has one, so this is safe to call unconditionally from shared completion/failure paths.
+    2026-11-20: first attempt at once (as before), then up to 3 background retries after 1, 5 and 15 minutes; the result is stored in
+    job["webhook_delivery"] and the operator is told once if all fail (partner_webhook.py). Best-effort: never raises, never changes the job's
+    status, a failed or slow webhook must never break the pipeline that calls this. The retries live in memory, so a restart resumes the pending
+    ones from the stored state (_resume_pending_webhooks).
 
-    Signing is deliberately optional for now -- if WEBHOOK_SIGNING_SECRET
-    is not set in .env, sends unsigned (logs a warning) rather than
-    inventing a scheme Relinx hasn't confirmed how to verify yet.
-
-    video_url currently points at the existing /jobs/{id}/download
-    endpoint, which is protected by UI_ACCESS_KEY -- NOT actually
-    downloadable by an external partner yet. A dedicated, partner-key
-    authenticated download endpoint under /v1/ is still needed before
-    this is real for Relinx (see backlog item 48 "not yet built").
+    video_url points at the partner-key authenticated download endpoint under /v1/.
     """
     job = JOBS.get(job_id)
     if not job or not job.get("callback_url"):
         return
     try:
-        import requests, hmac, hashlib, json as _json
-        payload = {
-            "id": job_id,
-            "external_ref": job.get("external_ref"),
-            "status": event,
-        }
-        if event == "completed":
-            payload["video_url"] = f"https://api.propertyvideostudioai.com/v1/videos/{job_id}/download"
-        if event == "failed":
-            payload.update(_partner_failure_fields({**job, "status": "failed"}))
-
-        body = _json.dumps(payload)
-        headers = {"Content-Type": "application/json"}
-        secret = os.getenv("WEBHOOK_SIGNING_SECRET", "")
-        if secret:
-            signature = hmac.new(secret.encode(), body.encode(), hashlib.sha256).hexdigest()
-            headers["X-Signature"] = signature
-        else:
-            log.warning(f"[Job {job_id}] WEBHOOK_SIGNING_SECRET not set -- sending unsigned webhook")
-
-        def _post():
-            return requests.post(job["callback_url"], data=body, headers=headers, timeout=10)
-
-        resp = await asyncio.to_thread(_post)
-        cb_url = job["callback_url"]
-        log.info(f"[Job {job_id}] Partner webhook ({event}) sent to {cb_url}: HTTP {resp.status_code}")
+        state = partner_webhook.new_state(event)
+        job["webhook_delivery"] = state
+        if await _webhook_attempt(job_id, state) == "retry":
+            _schedule_webhook_retries(job_id, state)
     except Exception as e:
         log.warning(f"[Job {job_id}] Partner webhook ({event}) failed (non-fatal): {e}")
+
+
+@app.on_event("startup")
+async def _resume_pending_webhooks():
+    """A restart must not lose a webhook that was waiting for a retry: resume each pending delivery from its stored state after 30 seconds."""
+    try:
+        pending = partner_webhook.pending_event_jobs(JOBS)
+        for jid, st in pending:
+            _schedule_webhook_retries(jid, st, first_delay=30)
+        if pending:
+            log.info(f"[Webhook] resuming {len(pending)} pending partner webhook(s) after restart")
+    except Exception as e:
+        log.warning(f"[Webhook] could not resume pending webhooks (non-fatal): {e}")
 
 
 async def _notify_operator(job_id: str, event: str, subject: str, body_html: str,
