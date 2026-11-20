@@ -3212,8 +3212,18 @@ async def _auto_start_tick():
         prev = (job.get("auto_start") or {})
         if a["action"] == "wait":
             if prev.get("state") != "waiting" or prev.get("reason") != a["reason"]:
+                # 2026-11-20: a video held back by the DAILY CAP is told to the operator ONCE per job (the reason text changes with the money
+                # committed, so the flag cap_alerted - not the text - decides). Waiting for a free slot is normal and silent.
+                first_cap = a["reason"].startswith("daily cap") and not prev.get("cap_alerted")
                 job["auto_start"] = {"state": "waiting", "reason": a["reason"], "at": now_iso}
+                if first_cap or prev.get("cap_alerted"):
+                    job["auto_start"]["cap_alerted"] = True
                 _save_job(jid)
+                if first_cap:
+                    await _notify_operator(
+                        jid, "Daily cap", subject=f"Video in attesa: tetto di spesa raggiunto - {job.get('property_name') or jid}",
+                        body_html=f"<p>Il video {job.get('property_name') or jid} non parte perche' il tetto di spesa delle ultime 24 ore e' raggiunto.</p><p>{a['reason']}</p><p>Parte da solo appena rientra nel tetto. Se vuoi farlo partire subito, avvialo a mano o alza PVS_AUTO_START_CAP_EUR.</p><p>Job ID: {jid}</p>",
+                        push_message=f"Tetto di spesa raggiunto: {job.get('property_name') or jid} aspetta", priority="high", tags=["warning"], kind="cap_wait")
         elif a["action"] == "refuse":
             job["auto_start"] = {"state": "refused", "reason": a["reason"], "at": now_iso}
             _save_job(jid)
@@ -3305,7 +3315,31 @@ async def operator_status(q: str = ""):
                          "auto_approve_flags": on("PVS_AUTO_APPROVE_FLAGS"), "standard_enforce": on("PVS_STANDARD_ENFORCE"),
                          "luma_resolution": luma_resolution()},
             "release_mode": _release_mode(), "agencies_pending": _agencies_pending_payload(),
-            "jobs": rows[:(300 if (q or "").strip() else 80)]}
+            "inbox": _operator_inbox_snapshot(), "jobs": rows[:(300 if (q or "").strip() else 80)]}
+
+
+def _operator_inbox_snapshot():
+    try:
+        import operator_inbox
+        return operator_inbox.snapshot(JOBS)
+    except Exception as e:
+        log.warning(f"[Inbox] snapshot failed (non-fatal): {e}")
+        return {"actions": [], "info": []}
+
+
+@app.post("/operator/inbox/{entry_id}/done")
+async def operator_inbox_done(entry_id: str):
+    """2026-11-20: the operator closes one entry of the dashboard inbox ("Fatto"). Changes nothing else."""
+    import operator_inbox
+    if not operator_inbox.mark_done(entry_id):
+        raise HTTPException(status_code=404, detail="Entry not found or already closed")
+    return {"id": entry_id, "done": True}
+
+
+@app.post("/operator/inbox-info-done")
+async def operator_inbox_info_done():
+    import operator_inbox
+    return {"closed": operator_inbox.mark_all_info_done()}
 
 
 @app.get("/operator/job/{job_id}/input")
@@ -3894,12 +3928,12 @@ async def _resume_pending_webhooks():
 
 
 async def _notify_operator(job_id: str, event: str, subject: str, body_html: str,
-                            push_message: str, priority: str = "default", tags: list = None):
+                            push_message: str, priority: str = "default", tags: list = None, level: str = "action", kind: str = None):
     try:
         import maintenance_scheduler
         result = await asyncio.to_thread(
             maintenance_scheduler.send_notification,
-            subject, body_html, push_message=push_message, priority=priority, tags=tags,
+            subject, body_html, push_message=push_message, priority=priority, tags=tags, job_id=job_id, level=level, kind=kind,
         )
         if result["email"] or result["push"]:
             log.info(f"[Job {job_id}] {event} alert sent (email={result['email']}, push={result['push']})")
@@ -4025,7 +4059,7 @@ async def _send_new_partner_job_alert(job_id: str):
         push_message = (f"{job.get('property_name', 'Property')} - in coda, parte da solo" if _auto_start_on()
                         else f"{job.get('property_name', 'Property')} - in attesa di revisione")
         result = await asyncio.to_thread(maintenance_scheduler.send_notification, subject, body_html,
-                                          push_message=push_message, tags=["inbox_tray"])
+                                          push_message=push_message, tags=["inbox_tray"], job_id=job_id, level="info")
         if result["email"] or result["push"]:
             log.info(f"[Job {job_id}] New-job alert sent (email={result['email']}, push={result['push']})")
         else:

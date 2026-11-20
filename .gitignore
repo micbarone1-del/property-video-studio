@@ -21,3 +21,6 @@ Noise
 scene_risk_events.jsonl
 *.bak_docs_merge
 standard_shadow_events.jsonl
+operator_inbox.json
+operator_inbox.json.lock
+operator_inbox.json.tmp

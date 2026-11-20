@@ -459,7 +459,13 @@ def send_ntfy_push(subject: str, message: str, priority: str = "default", tags: 
 
 
 def send_notification(subject: str, body_html: str, push_message: str = None,
-                       priority: str = "default", tags: list = None) -> dict:
+                       priority: str = "default", tags: list = None,
+                       job_id: str = None, level: str = "action", kind: str = None) -> dict:
+    try:   # 2026-11-20: every alert is also kept for the operator dashboard (operator_inbox.py), whatever happens to the mail or the push
+        import operator_inbox
+        operator_inbox.add(subject, push_message or body_html, job_id=job_id, level=level, kind=kind)
+    except Exception as e:
+        log.warning(f"[Maintenance] could not record the alert on the dashboard (non-fatal): {e}")
     email_sent = send_maintenance_alert(subject, body_html)
     push_sent = send_ntfy_push(subject, push_message or subject, priority=priority, tags=tags)
     return {"email": email_sent, "push": push_sent}

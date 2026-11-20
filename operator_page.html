@@ -45,6 +45,11 @@
   .desc { white-space:pre-wrap; font-size:13px; max-height:220px; overflow:auto; border:1px solid var(--line); border-radius:6px; padding:6px; }
   details { margin-top:6px; } summary { cursor:pointer; color:var(--mute); }
   .go { background:var(--run); color:#fff; border-color:var(--run); }
+  .todo { border:2px solid var(--bad); border-radius:10px; background:var(--card); padding:10px 12px; margin-bottom:14px; }
+  .todo.empty { border:1px solid var(--line); }
+  .todo .it { display:flex; flex-wrap:wrap; gap:8px; align-items:flex-start; padding:7px 0; border-top:1px solid var(--line); }
+  .todo .it:first-of-type { border-top:0; }
+  .todo .it .t { flex:1; min-width:220px; font-size:14px; }
 </style>
 </head>
 <body>
@@ -52,6 +57,7 @@
   <h1>Stato operativo <span class="mute" id="upd"></span></h1>
   <input id="q" placeholder="Cerca: id job, numero annuncio o nome (invio)" style="width:100%;padding:8px;margin:0 0 10px;border-radius:8px;border:1px solid var(--line);font:inherit" onkeydown="if(event.key==='Enter'){Q=this.value.trim();load();}">
   <div id="err"></div>
+  <div id="inbox"></div>
   <div class="cards" id="cards"></div>
   <div class="sw" id="sw"></div>
   <div id="agencies"></div>
@@ -208,6 +214,23 @@ async function confirmAgency(id) {
     AG_SIG = ''; load();
   } catch (e) { document.getElementById('err').textContent = 'Errore: ' + e.message; }
 }
+function ago(iso) { const m = Math.max(0, Math.round((Date.now() - Date.parse(iso + 'Z')) / 60000)); return m < 60 ? m + ' min fa' : m < 1440 ? Math.round(m / 60) + ' h fa' : Math.round(m / 1440) + ' g fa'; }
+function jumpJob(id) { Q = id; document.getElementById('q').value = id; load(); }
+function inboxItem(e, withDone) {
+  return '<div class="it"><div class="t"><b>' + esc(e.subject) + '</b> <span class="mute">' + esc(ago(e.at)) + '</span><div class="mute">' + esc(e.text) + '</div>' +
+    (e.job_id ? '<a href="#" onclick="jumpJob(\'' + esc(e.job_id) + '\');return false;">Apri il job' + (e.job_name ? ' ' + esc(e.job_name) : '') + '</a>' : '') + '</div>' +
+    (withDone ? '<button class="go" onclick="inboxDone(\'' + esc(e.id) + '\')">Fatto</button>' : '') + '</div>';
+}
+function paintInbox(ib) {
+  const box = document.getElementById('inbox'), a = (ib && ib.actions) || [], i = (ib && ib.info) || [];
+  let h = a.length ? '<div class="todo"><b style="color:var(--bad)">Da fare (' + a.length + ')</b>' + a.map(e => inboxItem(e, true)).join('') + '</div>'
+                   : '<div class="todo empty"><b style="color:var(--ok)">Niente da fare</b> <span class="mute">- ogni avviso che ricevi per mail o notifica compare qui</span></div>';
+  if (i.length) h += '<details style="margin:-6px 0 14px"><summary>Informazioni (' + i.length + ')</summary><div class="todo empty">' + i.map(e => inboxItem(e, false)).join('') +
+    '<div style="margin-top:6px"><button onclick="inboxInfoDone()">Chiudi tutte le informazioni</button></div></div></details>';
+  box.innerHTML = h;
+}
+async function inboxDone(id) { try { await api('/operator/inbox/' + id + '/done', { method: 'POST' }); load(); } catch (e) { document.getElementById('err').textContent = 'Errore: ' + e.message; } }
+async function inboxInfoDone() { try { await api('/operator/inbox-info-done', { method: 'POST' }); load(); } catch (e) { document.getElementById('err').textContent = 'Errore: ' + e.message; } }
 let FILTER = ''; let Q = '';
 function setFilter(f) { FILTER = (FILTER === f ? '' : f); if (LAST) { load(); } }
 async function load() {
@@ -223,6 +246,7 @@ async function load() {
       '<div class="card" style="cursor:pointer;' + (FILTER === 'waiting' ? 'outline:2px solid var(--warn)' : '') + '" onclick="setFilter(\'waiting\')" title="Job fermi in attesa di una tua decisione (scene segnalate dal QC o rework esauriti). Clic per vedere solo quelli."><b>' + waiting + '</b><span>job che aspettano te</span></div>' +
       '<div class="card" style="cursor:pointer;' + (FILTER === 'review' ? 'outline:2px solid var(--warn)' : '') + '" onclick="setFilter(\'review\')" title="Job gia andati avanti: il sistema ha approvato scene con difetti lievi, da rivedere con calma. Clic per vedere solo quelli."><b>' + pending + '</b><span>job con scene da rivedere</span></div>' +
       '<div class="card"><b>' + (d.release_mode === 'auto' ? 'automatico' : 'con il tuo ok') + '</b><span>rilascio all\'agenzia</span><br><button onclick="setRelease(\'' + (d.release_mode === 'auto' ? 'manual' : 'auto') + '\')">' + (d.release_mode === 'auto' ? 'Passa a: con il mio ok' : 'Passa a: automatico') + '</button></div>';
+    paintInbox(d.inbox);
     paintAgencies(d.agencies_pending || []);
     const s = d.switches, p = (n, v) => '<span class="pill ' + (v ? 'on' : 'off') + '">' + n + ': ' + (v ? 'acceso' : 'spento') + '</span>';
     document.getElementById('sw').innerHTML = p('avvio automatico', s.auto_start) + p('rework automatico', s.auto_rework) + p('approvazione segnalate', s.auto_approve_flags) + p('regola misurata', s.standard_enforce) + '<span class="pill">Luma: ' + esc(s.luma_resolution) + '</span>';
