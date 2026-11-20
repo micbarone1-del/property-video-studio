@@ -30,7 +30,7 @@ succeeds. Editing the file starts a new scenario (counters reset).
 Fault kinds: ok, http_400, http_422, http_429, http_500, timeout, failed
 (Luma accepted then state=failed / fal raises), no_output, quota (ElevenLabs
 quota exceeded), people (Florence mentions a person), slow:<secs>.
-Keys: fal_upload (image uploads), luma_direct, elevenlabs, anthropic, florence, veo, kling, luma_fal, lyra,
+Keys: fal_upload (image uploads), luma_direct, elevenlabs, google_tts, anthropic, florence, veo, kling, luma_fal, lyra,
 ltx, topaz, upscale_image, watermark, fal_other.
 """
 import io
@@ -321,6 +321,24 @@ def _elevenlabs(request):
     return _json_resp(request, 200, {})
 
 
+def _google_tts(request):
+    """2026-11-20: Google TTS (the default voice since 2026-11-19) was not faked: the call was captured and answered 404, so every narration failed."""
+    if request.method == "POST" and urlparse(request.url).path.endswith("/text:synthesize"):
+        fault = _apply_slow(next_fault("google_tts"))
+        inp = _body_json(request).get("input", {})
+        text = inp.get("ssml") or inp.get("text") or ""
+        outbox("google_tts", chars=len(text), fault=fault)
+        if fault.startswith("http_"):
+            return _json_resp(request, int(fault[5:]), {"error": {"message": "[fake] " + fault}})
+        if fault == "timeout":
+            import requests
+            raise requests.exceptions.Timeout("[fake] google tts timeout")
+        import base64
+        plain = re.sub(r"<[^>]+>", "", text)
+        return _json_resp(request, 200, {"audioContent": base64.b64encode(_make_mp3(len(plain) / _SPEECH_CHARS_PER_SEC)).decode()})
+    return _json_resp(request, 200, {})
+
+
 def _route(request):
     host = (urlparse(request.url).hostname or "").lower()
     if host == FAKE_HOST:
@@ -329,6 +347,8 @@ def _route(request):
         return _luma(request)
     if host.endswith("elevenlabs.io"):
         return _elevenlabs(request)
+    if host.endswith("texttospeech.googleapis.com"):
+        return _google_tts(request)
     return None
 
 
