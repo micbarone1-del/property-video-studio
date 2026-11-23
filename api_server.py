@@ -3315,7 +3315,7 @@ async def operator_status(q: str = ""):
                          "auto_approve_flags": on("PVS_AUTO_APPROVE_FLAGS"), "standard_enforce": on("PVS_STANDARD_ENFORCE"),
                          "luma_resolution": luma_resolution()},
             "release_mode": _release_mode(), "agencies_pending": _agencies_pending_payload(),
-            "inbox": _operator_inbox_snapshot(), "jobs": rows[:(300 if (q or "").strip() else 80)]}
+            "inbox": _operator_inbox_snapshot(), "health": _health_snapshot(), "jobs": rows[:(300 if (q or "").strip() else 80)]}
 
 
 def _operator_inbox_snapshot():
@@ -3325,6 +3325,16 @@ def _operator_inbox_snapshot():
     except Exception as e:
         log.warning(f"[Inbox] snapshot failed (non-fatal): {e}")
         return {"actions": [], "info": []}
+
+
+def _health_snapshot():
+    """2026-11-23: the "Salute del sistema" card: the results of the maintenance checks plus the maintenance heartbeat (health_kpi)."""
+    try:
+        import health_kpi
+        return health_kpi.snapshot()
+    except Exception as e:
+        log.warning(f"[Health] snapshot failed (non-fatal): {e}")
+        return {"rows": [], "worst": "warn"}
 
 
 @app.post("/operator/inbox/{entry_id}/done")

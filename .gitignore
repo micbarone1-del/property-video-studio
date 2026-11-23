@@ -24,3 +24,5 @@ standard_shadow_events.jsonl
 operator_inbox.json
 operator_inbox.json.lock
 operator_inbox.json.tmp
+disk_history.json
+disk_history.json.tmp

@@ -50,6 +50,9 @@
   .todo .it { display:flex; flex-wrap:wrap; gap:8px; align-items:flex-start; padding:7px 0; border-top:1px solid var(--line); }
   .todo .it:first-of-type { border-top:0; }
   .todo .it .t { flex:1; min-width:220px; font-size:14px; }
+  .hl { display:flex; flex-wrap:wrap; gap:6px; margin:0 0 12px; }
+  .hl .h { border:1px solid var(--line); background:var(--card); border-radius:8px; padding:5px 9px; font-size:13px; border-left-width:5px; }
+  .hl .h.ok { border-left-color:var(--ok); } .hl .h.warn { border-left-color:var(--warn); } .hl .h.red { border-left-color:var(--bad); font-weight:600; }
 </style>
 </head>
 <body>
@@ -58,6 +61,7 @@
   <input id="q" placeholder="Cerca: id job, numero annuncio o nome (invio)" style="width:100%;padding:8px;margin:0 0 10px;border-radius:8px;border:1px solid var(--line);font:inherit" onkeydown="if(event.key==='Enter'){Q=this.value.trim();load();}">
   <div id="err"></div>
   <div id="inbox"></div>
+  <div class="hl" id="health"></div>
   <div class="cards" id="cards"></div>
   <div class="sw" id="sw"></div>
   <div id="agencies"></div>
@@ -231,6 +235,10 @@ function paintInbox(ib) {
 }
 async function inboxDone(id) { try { await api('/operator/inbox/' + id + '/done', { method: 'POST' }); load(); } catch (e) { document.getElementById('err').textContent = 'Errore: ' + e.message; } }
 async function inboxInfoDone() { try { await api('/operator/inbox-info-done', { method: 'POST' }); load(); } catch (e) { document.getElementById('err').textContent = 'Errore: ' + e.message; } }
+function paintHealth(h) {   // 2026-11-23: system health chips (disk, backups, maintenance heartbeat, service, credits, stuck jobs)
+  const rows = (h && h.rows) || [];
+  document.getElementById('health').innerHTML = rows.map(r => '<span class="h ' + esc(r.status) + '" title="' + esc(r.status) + '"><b>' + esc(r.label) + '</b>: ' + esc(r.value) + '</span>').join('');
+}
 let FILTER = ''; let Q = '';
 function setFilter(f) { FILTER = (FILTER === f ? '' : f); if (LAST) { load(); } }
 async function load() {
@@ -247,6 +255,7 @@ async function load() {
       '<div class="card" style="cursor:pointer;' + (FILTER === 'review' ? 'outline:2px solid var(--warn)' : '') + '" onclick="setFilter(\'review\')" title="Job gia andati avanti: il sistema ha approvato scene con difetti lievi, da rivedere con calma. Clic per vedere solo quelli."><b>' + pending + '</b><span>job con scene da rivedere</span></div>' +
       '<div class="card"><b>' + (d.release_mode === 'auto' ? 'automatico' : 'con il tuo ok') + '</b><span>rilascio all\'agenzia</span><br><button onclick="setRelease(\'' + (d.release_mode === 'auto' ? 'manual' : 'auto') + '\')">' + (d.release_mode === 'auto' ? 'Passa a: con il mio ok' : 'Passa a: automatico') + '</button></div>';
     paintInbox(d.inbox);
+    paintHealth(d.health);
     paintAgencies(d.agencies_pending || []);
     const s = d.switches, p = (n, v) => '<span class="pill ' + (v ? 'on' : 'off') + '">' + n + ': ' + (v ? 'acceso' : 'spento') + '</span>';
     document.getElementById('sw').innerHTML = p('avvio automatico', s.auto_start) + p('rework automatico', s.auto_rework) + p('approvazione segnalate', s.auto_approve_flags) + p('regola misurata', s.standard_enforce) + '<span class="pill">Luma: ' + esc(s.luma_resolution) + '</span>';
