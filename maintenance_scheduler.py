@@ -55,6 +55,8 @@ import smtplib
 import logging
 from datetime import datetime, timedelta
 from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
 from email.mime.multipart import MIMEMultipart
 from pathlib import Path
 
@@ -445,17 +447,23 @@ def clean_test_scratch() -> dict:
 
 # ── Email ────────────────────────────────────────────────────────────────────
 
-def send_maintenance_alert(subject: str, body_html: str) -> bool:
+def send_maintenance_alert(subject: str, body_html: str, attachments=None) -> bool:   # attachments: [(file name, bytes)] (2026-11-23, backup_mail.py)
     recipients = load_alert_emails()
     if not recipients or not all([EMAIL_FROM, EMAIL_PASSWORD]):
         log.warning("[Maintenance] Alert email skipped — no recipients or SMTP creds not configured.")
         return False
     try:
-        msg = MIMEMultipart("alternative")
+        msg = MIMEMultipart("mixed" if attachments else "alternative")
         msg["Subject"] = subject
         msg["From"] = EMAIL_FROM
         msg["To"] = ", ".join(recipients)
         msg.attach(MIMEText(body_html, "html"))
+        for _name, _data in (attachments or []):
+            _part = MIMEBase("application", "octet-stream")
+            _part.set_payload(_data)
+            encoders.encode_base64(_part)
+            _part.add_header("Content-Disposition", "attachment", filename=_name)
+            msg.attach(_part)
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(EMAIL_FROM, EMAIL_PASSWORD)
             server.sendmail(EMAIL_FROM, recipients, msg.as_string())
