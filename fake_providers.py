@@ -286,6 +286,8 @@ def _luma(request):
         _luma_gens[gid] = {"image_url": start, "dur": dur, "polls": 0, "fault": fault,
                            "portrait": body.get("aspect_ratio") in ("9:16", "3:4")}
         return _json_resp(request, 201, {"id": gid, "state": "queued"})
+    if urlparse(request.url).path.endswith("/v1/credits"):
+        return _json_resp(request, 200, {"balance_credits": 17779})     # 2026-11-23: same shape as the real answer
     gid = urlparse(request.url).path.rsplit("/", 1)[-1]
     g = _luma_gens.get(gid)
     if not g:

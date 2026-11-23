@@ -28,6 +28,9 @@ log = logging.getLogger(__name__)
 # ── Thresholds ─────────────────────────────────────────────────────────────────
 FAL_THRESHOLD        = float(os.getenv("FAL_CREDIT_THRESHOLD", "5.00"))
 ELEVENLABS_THRESHOLD = int(os.getenv("ELEVENLABS_CHAR_THRESHOLD", "10000"))
+LUMA_THRESHOLD       = int(os.getenv("LUMA_CREDIT_THRESHOLD", "6000"))    # credits; about USD 18, i.e. a bit more than one full 1080p video (about 9-12 EUR)
+LUMA_USD_PER_CREDIT  = 0.003                                              # Luma pricing guide: a 360p 5 s clip = 20 credits = USD 0.06 (so a 1080p clip, USD 1.20, = 400 credits)
+LUMA_CREDITS_URL     = "https://agents.lumalabs.ai/v1/credits"
 
 # ── Email config ───────────────────────────────────────────────────────────────
 EMAIL_TO       = os.getenv("ALERT_EMAIL_TO", "")
@@ -99,6 +102,25 @@ def get_elevenlabs_credits() -> dict:
         return {"characters_remaining": None, "ok": True, "error": str(e)}
 
 
+def get_luma_credits() -> dict:
+    """Luma Agents API balance: GET https://agents.lumalabs.ai/v1/credits answers {"balance_credits": 17779} (seen 2026-11-23, real key).
+    Returns {"credits": int|None, "usd": float|None, "ok": bool, "error": str|None}. A key Luma refuses (401/403) is NOT ok (the generations fail too);
+    any other failure (timeout, 5xx, odd answer) counts as ok with the error noted, so a hiccup never raises a false alarm. The key is never logged."""
+    key = os.getenv("LUMA_API_KEY", "").strip()
+    if not key:
+        return {"credits": None, "usd": None, "ok": True, "error": "LUMA_API_KEY not set"}
+    try:
+        resp = requests.get(LUMA_CREDITS_URL, headers={"Authorization": f"Bearer {key}"}, timeout=10)
+        if resp.status_code in (401, 403):
+            return {"credits": None, "usd": None, "ok": False, "error": f"Luma ha rifiutato la chiave (HTTP {resp.status_code})"}
+        resp.raise_for_status()
+        credits = int(resp.json()["balance_credits"])
+        return {"credits": credits, "usd": round(credits * LUMA_USD_PER_CREDIT, 2), "ok": credits >= LUMA_THRESHOLD, "error": None}
+    except Exception as e:
+        log.warning(f"[Credits] Luma check failed: {type(e).__name__}")
+        return {"credits": None, "usd": None, "ok": True, "error": f"{type(e).__name__}: {str(e)[:80]}".replace(key, "***")}
+
+
 # ── Combined status ────────────────────────────────────────────────────────────
 
 def get_anthropic_status() -> dict:
@@ -139,11 +161,13 @@ def get_all_credits() -> dict:
     fal  = get_fal_credits()
     el   = get_elevenlabs_credits()
     anth = get_anthropic_status()
+    luma = get_luma_credits()
     return {
         "fal":        fal,
         "elevenlabs": el,
         "anthropic":  anth,
-        "any_low":    not fal["ok"] or not el["ok"] or not anth["ok"],
+        "luma":       luma,
+        "any_low":    not fal["ok"] or not el["ok"] or not anth["ok"] or not luma["ok"],
         "checked_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
     }
 
@@ -216,6 +240,22 @@ def check_and_alert(job_id: str = "", property_name: str = "") -> dict:
           </td>
           <td style="padding:12px;border-bottom:1px solid #eee">
             <a href="https://elevenlabs.io/app/subscription">Top up →</a>
+          </td>
+        </tr>""")
+
+    lu = status.get("luma") or {}
+    if not lu.get("ok", True):
+        what = (f"{lu['credits']:,} crediti (circa ${lu['usd']:.0f}); soglia {LUMA_THRESHOLD:,}" if lu.get("credits") is not None else str(lu.get("error")))
+        warnings.append(f"""
+        <tr>
+          <td style="padding:12px;border-bottom:1px solid #eee">
+            <strong>Luma</strong>
+          </td>
+          <td style="padding:12px;border-bottom:1px solid #eee;color:#c0392b">
+            {what}
+          </td>
+          <td style="padding:12px;border-bottom:1px solid #eee">
+            Ricarica dalla dashboard Luma
           </td>
         </tr>""")
 

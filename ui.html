@@ -3519,6 +3519,8 @@ async function checkCredits() {
       rows += `<div class="cb-row"><span><strong>fal.ai</strong></span><span class="cb-low">€${data.fal.balance.toFixed(2)} rimasti</span><a class="cb-topup" href="https://fal.ai/dashboard" target="_blank">Ricarica →</a></div>`;
     if (!data.elevenlabs.ok && data.elevenlabs.characters_remaining != null)
       rows += `<div class="cb-row"><span><strong>ElevenLabs</strong></span><span class="cb-low">${data.elevenlabs.characters_remaining.toLocaleString()} caratteri rimasti</span><a class="cb-topup" href="https://elevenlabs.io/app/subscription" target="_blank">Ricarica →</a></div>`;
+    if (data.luma && !data.luma.ok)
+      rows += `<div class="cb-row"><span><strong>Luma</strong></span><span class="cb-low">${data.luma.credits != null ? data.luma.credits.toLocaleString() + ' crediti rimasti' : (data.luma.error || 'non verificabile')}</span></div>`;
     rows += `<div class="cb-time">Verificato: ${data.checked_at} · <a href="#" onclick="checkCredits();return false">Aggiorna</a></div>`;
     body.innerHTML   = rows;
     banner.style.display = 'block';

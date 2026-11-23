@@ -226,6 +226,11 @@ def check_credits() -> dict:
             parts.append(f"fal.ai: €{fal_bal:.2f} remaining")
         if el_chars is not None:
             parts.append(f"ElevenLabs: {el_chars:,} characters remaining")
+        lu = credits.get("luma", {})
+        if lu.get("credits") is not None:
+            parts.append(f"Luma: {lu['credits']:,} crediti (circa ${lu['usd']:.0f})")
+        elif lu.get("error") and not lu.get("ok", True):
+            parts.append(f"Luma: {lu['error']}")
         anth = credits.get("anthropic", {})
         if anth:
             parts.append("Claude API: OK" if anth.get("ok") else "Claude API: FAILING")
