@@ -1334,3 +1334,22 @@ Regole di Michele: (1) NESSUNO step manuale nel flusso: escalation = notifica/au
 - Video completo con la nuova narrazione (THRINAKIE, circa 9-12 EUR, rilascio manuale).
 - Riparazione JSON del Director con un nuovo tentativo; guardia per stanze principali mancanti; "Rigenera narrazione" cancella la timeline sui job ancorati.
 - PVS_PARTNER_AGENCY_LIMIT_24H da 20 a 2 al lancio; consegna sicura della chiave; chiave fal inutilizzata e chiave server con scadenza; retention dei backup; riconciliare la fattura Luma con cost_actual.
+
+### 2026-11-23 - Decisioni di Michele
+1. Soglia di allarme Luma: allineata alla ricarica automatica di Luma (sotto 30 USD ricarica 50 USD); scelta 8.000 crediti (circa 24 USD) proposta da me e adottata.
+2. Watchdog del battito: approvato ("Ok per ora"), soglia 30 minuti, ripetizione al massimo ogni 6 ore; frequenza giusta (la manutenzione gira ogni 5 minuti).
+3. Rilascio automatico: decisione nostra, non di Relinx; proposta dei criteri da fare quando saremo stabili e chiusi i punti chiave.
+4. Relinx 401: NON sappiamo se serve una nuova chiave: nessuna offerta di chiave finche' non c'e' un fatto che lo dica (Michele, 2026-11-23: "Facciamo casino. Fermati."). Prima del chase: Michele lo ha gia' fatto, nessuna risposta alle 19:00. Se arriva Relinx: mettiamo in attesa il resto.
+5. Test scene sicure: via libera di Michele a procedere senza la sua revisione cieca ("Fai i QC solo in automatico, senza di me. Se possibile."), con la correzione di metodo scritta sopra.
+6. 3D: Michele non intende Atlas (Marble e' discontinuato) ma uno strumento economico per costruire una nuvola di punti da una foto. Fattibile: profondita' da fal-ai depth-anything v2 (gia in depth_renderer.py, circa 0,001 EUR a immagine) + proiezione 3D con numpy/OpenCV.
+
+### Voci aperte (nuove o cambiate)
+- **Controllo di rotazione con nuvola di punti (3D economico)**: dopo il risultato del giro scene sicure. Test minimo: un clip buono e uno cattivo del primo giro (etichette di Michele come verita'), nuvola dalla foto d'origine, verificare se i fotogrammi in cui la camera gira mostrano contenuto fuori dalla nuvola; costo atteso circa 1 EUR o meno, una sessione. Limiti noti: una sola foto = solo il visibile; focale e scala stimate; profondita' sbagliata su vetri/specchi e ai bordi. Criterio di riuscita da scrivere prima: il numero deve separare i clip buoni dai cattivi. Prezzi di Atlas/Marble: non servono (Marble discontinuato).
+- **Integrazione del controllo 360p nelle scene a rischio**, fasi: (1) secondo giro su scene sicure (in corso), (2) modalita' ombra (registra, non decide), (3) azione. Il controllo di rotazione a Claude va tarato sui falsi allarmi prima di (3).
+- Watchdog: prova dal vivo con manutenzione ferma >30 minuti non fatta (non la facciamo senza ok di Michele).
+- Correggere il commento "USD 18" in credit_monitor.py al prossimo commit.
+- Casella "Da fare": chiudere l'avviso disco superato.
+- Documenti: applicare agli stessi tre file (status.md, backlog.md, AUTOMATION_TEST_PLAN.md) i testi del 20/11 e del 23/11.
+- Voci del 20/11 ancora aperte: criteri di rilascio automatico, tetto di spesa 100 EUR, soglia job fermi 45 minuti, test P1e, segreto di firma dei webhook (da chiedere a Relinx), video THRINAKIE, PVS_PARTNER_AGENCY_LIMIT_24H da 20 a 2 al lancio, chiave fal inutilizzata, retention backup, fattura Luma da riconciliare con cost_actual.
+- Domani 24/11 alle 9:00 promemoria: controllare snap_2026-11-24 piccolo, riga Backup verde, riga Disco aggiornata, quando cancellare a mano jobs_2026-11-23_0300.tar.gz; domenica 29/11 alle 9:00: prima mail automatica cifrata.
+

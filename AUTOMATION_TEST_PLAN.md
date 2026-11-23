@@ -759,3 +759,16 @@ Scoreboard: non ricalcolato, da rifare alla prossima revisione; non arrotondato.
 | Test 360p contro 1080p | scene rischiose a 360p lo sono anche a 1080p | AVVIATO, esito non noto |
 
 Quattro invarianti (nessun job perso, nessun doppio costo, stato finale corretto e visibile, operatore avvisato una volta): rispettate nei test sopra, con due eccezioni note: clip mancanti (due mail, accettato) e tutte le clip fallite (job in attesa, accettato). FMEA: righe da rivalutare con Michele (webhook non consegnato, richiesta ripetuta, tetto di spesa senza avviso, job fermi, clip in parte fallite); i punteggi qui NON sono stati cambiati.
+
+### 2026-11-23 - Test aggiunti e risultati (prova = output incollato da Michele il 23/11, salvo dove scritto)
+| Test | Cosa verifica | Esito |
+|---|---|---|
+| test_luma_credits L1-L22 | saldo Luma, un solo lettore, banner, avviso, manutenzione, simulatore | FAILS 0 (server) |
+| test_heartbeat_watchdog W1-W17 | soglia 30 minuti, ripetizione 6 ore, azzeramento, invio fallito, file rotti, un solo lettore | FAILS 0 (server) |
+| test_exp_res_safe S1-S10 | selezione scene sicure, una per ambiente, costo 10,32 USD | PASS in sandbox, NON lanciato sul server |
+| Prova dal vivo saldo Luma | lettura reale e riga del cruscotto | visto (17.779 crediti) |
+| Prova dal vivo watchdog | decisione "ok" con invio finto, nessun file di stato | visto; mail reale con manutenzione ferma NON vista |
+| Prova dal vivo banner con Luma sotto soglia | banner con saldo basso | NON visto (solo test) |
+| Giro scene sicure | falsi allarmi del controllo di rotazione, coerenza 360p/1080p | AVVIATO, esito non noto |
+
+Quattro invarianti: nessuna novita' rispetto al 20/11 per job persi o doppio costo; informare l'operatore una volta: il watchdog ripete al massimo ogni 6 ore (una mail per periodo), il saldo Luma avvisa dentro i controlli gia esistenti. FMEA: proposte da rivalutare con Michele - manutenzione ferma senza accorgersene (O era alto, ora con rilevamento: D in calo), credito Luma esaurito a meta' lavoro (mitigato da ricarica automatica e allarme a 8.000 crediti); i punteggi qui NON sono stati cambiati.
