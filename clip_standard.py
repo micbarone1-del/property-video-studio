@@ -149,12 +149,32 @@ def parse_judge(raw):
     try:
         d = json.loads(raw[a:b + 1])
     except Exception:
-        return None
+        d = _merge_objects(raw)
+        if d is None:
+            return None
     if not isinstance(d, dict):
         return None
     v = str(d.get("verdict") or "").lower()
     d["verdict"] = v if v in ("pass", "review", "fail") else "review"
     return d
+
+
+def _merge_objects(raw):
+    """2026-11-23: the model sometimes answers with two JSON objects and prose between them. Fallback ONLY when the plain parse failed: merge the top-level JSON objects found (later keys win); None unless a verdict is among them."""
+    dec, i, merged = json.JSONDecoder(), 0, {}
+    while True:
+        i = raw.find("{", i)
+        if i < 0:
+            break
+        try:
+            obj, end = dec.raw_decode(raw, i)
+        except Exception:
+            i += 1
+            continue
+        if isinstance(obj, dict):
+            merged.update(obj)
+        i = end
+    return merged if "verdict" in merged else None
 
 
 def decide(geo: dict, judge) -> tuple:
@@ -192,6 +212,38 @@ def plan_lines(plan, n):
             % (plan.get("move"), plan.get("travel"), str(plan.get("target"))[:80], n))
 
 
+EXTRA_PROMPT = (
+    "Two EXTRA fields, independent of the verdict, speed and direction (they only add data; answer those exactly as before). Put both INSIDE the same single JSON object, as the keys "
+    "\"revealed\" and \"extended_scene\". \"revealed\": things visible in later frames but NOT inside frame 1 (parts of walls, rooms, buildings, windows, objects that appear "
+    "because the view turned or because the picture was extended); for each give {\"what\": short, \"frames\": \"4-6\", \"in_frame1\": \"no\" if frame 1 shows nothing of it, "
+    "\"hint\" if frame 1 shows a small hidden or partial part of it, \"yes\" if it was already clearly visible}; do not list things that only get bigger because the camera moved closer. "
+    "\"extended_scene\": true if the scene seems to continue beyond the edges of frame 1 with content that was never photographed, else false.\n")
+
+
+def judge_prompt_extra() -> str:
+    """2026-11-23: JUDGE_PROMPT with the two extra keys INSIDE its answer example (the first version appended them after it and the model answered with two JSON objects and prose in 3 of 16 calls)."""
+    head, tail = JUDGE_PROMPT.split("Answer with JSON only:", 1)
+    tail = tail.replace('"reason": "one short sentence"}}', '"reason": "one short sentence", "revealed": [{{"what": "short", "frames": "4-6", "in_frame1": "no"}}], "extended_scene": false}}')
+    return head + EXTRA_PROMPT.replace("{", "{{").replace("}", "}}") + "Answer with JSON only (ONE single JSON object, nothing before or after it):" + tail
+
+
+def extra_enabled() -> bool:
+    """2026-11-23: PVS_STANDARD_EXTRA=1 adds the two questions (revealed, extended_scene) to the SAME judge call. Default OFF. Shadow only: nothing reads the answers for a decision."""
+    return os.getenv("PVS_STANDARD_EXTRA", "").strip() == "1"
+
+
+def extra_flags(judge) -> dict:
+    """{} when the judge did not answer the extra questions, else revealed_no / revealed_hint (counts) and extended_scene. NEVER raises."""
+    try:
+        if not isinstance(judge, dict) or ("revealed" not in judge and "extended_scene" not in judge):
+            return {}
+        rev = [x for x in (judge.get("revealed") or []) if isinstance(x, dict)] if isinstance(judge.get("revealed"), list) else []
+        return {"revealed_no": sum(str(x.get("in_frame1")).lower() == "no" for x in rev), "revealed_hint": sum(str(x.get("in_frame1")).lower() == "hint" for x in rev),
+                "extended_scene": bool(judge.get("extended_scene")) if isinstance(judge.get("extended_scene"), bool) else None}
+    except Exception:
+        return {}
+
+
 def evaluate(clip_path, usage_out=None, ask=None, model=None, plan=None) -> dict:
     """Measures one clip. NEVER raises. `ask(images, prompt, usage_out)` -> text can be injected (tests); default = vision_analysis._claude_vision_call."""
     res = {"standard": "v0", "geo": None, "judge": None, "standard_verdict": None, "reasons": [], "error": None,
@@ -210,7 +262,7 @@ def evaluate(clip_path, usage_out=None, ask=None, model=None, plan=None) -> dict
         geo_line = ""
         if os.getenv("PVS_STANDARD_FEED_NUMBER", "").strip() == "1" and res["geo"].get("ok"):
             geo_line = f"\nSoftware measurement: {round(res['geo']['new_max'] * 100)}% of the picture in some frame lies outside the area visible in frame 1."
-        prompt = JUDGE_PROMPT.format(n=len(frames_tmp)) + geo_line + plan_lines(plan, len(frames_tmp))
+        prompt = (judge_prompt_extra() if extra_enabled() else JUDGE_PROMPT).format(n=len(frames_tmp)) + geo_line + plan_lines(plan, len(frames_tmp))
         res["plan"] = ({k: plan.get(k) for k in ("move", "travel", "target")} if plan else None)
         if ask is None:
             import vision_analysis as va
@@ -248,6 +300,7 @@ def record(clip_path, res, stage=None) -> bool:
               "standard": res.get("standard_verdict"), "reasons": res.get("reasons"), "error": res.get("error"),
               "measured": res.get("measured_verdict"), "zoom_rate": g.get("zoom_rate"), "speed_over": res.get("speed_over_limit"),
               "pace": res.get("pace"), "plan": res.get("plan"), "plan_check": j.get("plan_check"), "arrival": res.get("arrival")}
+        ev.update(extra_flags(j))
         if stage:
             ev["stage"] = stage
         with _LOCK:
@@ -282,7 +335,10 @@ def summary(path=None) -> dict:
             "speed": {k: sum(1 for e in ev if e.get("speed") == k) for k in SPEED_WORDS},
             "speed_unknown": sum(1 for e in ev if e.get("speed") not in SPEED_WORDS),
             "speed_unknown_rate": round(sum(1 for e in ev if e.get("speed") not in SPEED_WORDS) / n, 3) if n else None,
-            "pace_applied": sum(1 for e in ev if (e.get("pace") or {}).get("applied"))}
+            "pace_applied": sum(1 for e in ev if (e.get("pace") or {}).get("applied")),
+            "extra": {"asked": sum(1 for e in ev if "revealed_no" in e), "revealed_no": sum(1 for e in ev if (e.get("revealed_no") or 0) > 0),
+                      "extended": sum(1 for e in ev if e.get("extended_scene") is True),
+                      "flag_and_geo": sum(1 for e in ev if ((e.get("revealed_no") or 0) > 0 or e.get("extended_scene") is True) and (e.get("new_max") or 0) > 0.05)}}
 
 # ── Verification of the judge's "new object" claims (2026-11-05, EXPERIMENT: not called by evaluate() yet) ──────────────────────────────────────────────────
 VERIFY_PROMPT = """These {n} frames are in time order from a 5 second real-estate video made from ONE still photo (frame 1 is the photo itself).

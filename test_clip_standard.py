@@ -94,5 +94,40 @@ calls.clear(); cs.evaluate(pan, ask=ask_pass)
 check("S27 no plan: prompt unchanged", "PLANNED" not in calls[0][1])
 rp = cs.evaluate(pan, ask=lambda im, p, u: '{"verdict": "pass", "plan_check": {"past_target": true}}', plan={"move": "static", "travel": "short", "target": "x"})
 check("S28 plan_check passes through and is recorded; verdict untouched", rp["judge"]["plan_check"]["past_target"] is True and rp["plan"]["move"] == "static" and '"plan_check": j.get("plan_check")' in open(cs.__file__).read())
+# 2026-11-23: extra questions (revealed, extended_scene) in the SAME call, shadow only, default OFF
+os.environ.pop("PVS_STANDARD_EXTRA", None)
+calls.clear(); cs.evaluate(pan, ask=ask_pass)
+check("S29 extra OFF by default: prompt has no extra questions", "extended_scene" not in calls[0][1] and cs.extra_enabled() is False)
+os.environ["PVS_STANDARD_EXTRA"] = "1"
+calls.clear(); cs.evaluate(pan, ask=ask_pass)
+check("S30 extra ON: the two questions travel in the same single call, verdict rules untouched", len(calls) == 1 and "extended_scene" in calls[0][1] and "revealed" in calls[0][1] and cs.JUDGE_PROMPT.split("{n}")[1][:40] in calls[0][1])
+ans = '{"verdict": "pass", "speed": "slow", "direction": "static", "revealed": [{"what": "wall", "frames": "4-6", "in_frame1": "no"}, {"what": "lamp", "frames": "2", "in_frame1": "hint"}, "junk"], "extended_scene": true}'
+rx = cs.evaluate(pan, ask=lambda im, p, u: ans)
+rn = cs.evaluate(pan, ask=lambda im, p, u: '{"verdict": "pass", "speed": "slow", "direction": "static"}')
+check("S31 answers parsed; standard_verdict is the same with or without the extra keys", rx["standard_verdict"] == rn["standard_verdict"] and rx["judge"]["speed"] == "slow")
+check("S32 extra_flags counts no/hint, ignores junk, never raises", cs.extra_flags(rx["judge"]) == {"revealed_no": 1, "revealed_hint": 1, "extended_scene": True} and cs.extra_flags(None) == {} and cs.extra_flags({"verdict": "pass"}) == {} and cs.extra_flags({"revealed": "x", "extended_scene": "yes"}) == {"revealed_no": 0, "revealed_hint": 0, "extended_scene": None})
+ef = tmp / "extra.jsonl"; os.environ["PVS_STANDARD_SHADOW_FILE"] = str(ef)
+cs.record(pan, rx); cs.record(pan, rn)
+evs = [json.loads(l) for l in ef.read_text().splitlines()]
+check("S33 record: extra fields only on the clip that answered them", evs[0].get("revealed_no") == 1 and evs[0].get("extended_scene") is True and "revealed_no" not in evs[1])
+sm = cs.summary(str(ef))
+check("S34 summary counts the extra answers", sm["extra"]["asked"] == 1 and sm["extra"]["revealed_no"] == 1 and sm["extra"]["extended"] == 1 and sm["extra"]["flag_and_geo"] in (0, 1))
+os.environ.pop("PVS_STANDARD_EXTRA", None)
+# 2026-11-23 v2: extra keys inside the answer example + tolerant parse of a two-object answer
+RAW_A = '{"invented":[{"frames":"3-6","what":"A light grey curtain appears on the right edge."}],"animated":[],"direction":"sideways","speed":"slow","verdict":"review","reason":"needs a check."}\n\nExtra keys:\n\n"revealed": [{"what":"Curtain","frames":"3-6","in_frame1":"hint"}],\n"extended_scene": false\n\nHere is the full JSON with the extra keys merged in:\n\n{"invented":[],"animated":[],"direction":"sideways","speed":"slow","verdict":"review","reason":"x","revealed":[{"what":"Curtain","frames":"3-6","in_frame1":"hint"},{"what":"Tile","frames":"4-6","in_frame1":"no"}],"extended_scene":false}'
+RAW_B = '{"invented":[{"frames":"4-6","what":"white car"}],"animated":[],"direction":"sideways","speed":"slow","verdict":"fail","reason":"Vehicles move."}\n\nExtra keys:\n\n{"revealed":[{"what":"side wall","frames":"5-6","in_frame1":"hint"}],"extended_scene":true}'
+os.environ["PVS_STANDARD_EXTRA"] = "1"
+pe = cs.judge_prompt_extra()
+check("S35 extra prompt: the keys sit inside the answer example, single-object instruction, old rules untouched", pe.index("ONE single JSON object") < pe.index('"extended_scene": false}') and "Add two keys" not in pe and cs.JUDGE_PROMPT.split("{n}")[1][:40] in pe and pe.format(n=6).count("{") == pe.format(n=6).count("}"))
+calls.clear(); cs.evaluate(pan, ask=ask_pass)
+check("S36 evaluate sends exactly that prompt, once", len(calls) == 1 and calls[0][1].startswith(pe.format(n=6)[:200]) and "ONE single JSON object" in calls[0][1])
+os.environ.pop("PVS_STANDARD_EXTRA", None)
+calls.clear(); cs.evaluate(pan, ask=ask_pass)
+check("S37 extra OFF: prompt identical to the original judge prompt", calls[0][1] == cs.JUDGE_PROMPT.format(n=6) and "ONE single JSON" not in calls[0][1])
+pa, pb = cs.parse_judge(RAW_A), cs.parse_judge(RAW_B)
+check("S38 two-object answers are recovered (merged), verdict and extra keys present", pa["verdict"] == "review" and len(pa["revealed"]) == 2 and pb["verdict"] == "fail" and pb["extended_scene"] is True and pb["revealed"][0]["in_frame1"] == "hint")
+check("S39 plain JSON parses as before; garbage and verdict-less fragments stay None", cs.parse_judge('{"verdict": "pass", "speed": "slow"}')["verdict"] == "pass" and cs.parse_judge("no json here") is None and cs.parse_judge('{"revealed": []} and {"x": 1}') is None and cs.parse_judge('{"verdict": "pa') is None)
+rb = cs.evaluate(pan, ask=lambda im, p, u: RAW_B)
+check("S40 evaluate with a two-object answer: judge usable, no error", rb["judge"] is not None and rb["error"] is None and rb["judge"]["verdict"] == "fail")
 print("FAILS:", fails)
 sys.exit(1 if fails else 0)
