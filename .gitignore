@@ -26,3 +26,4 @@ operator_inbox.json.lock
 operator_inbox.json.tmp
 disk_history.json
 disk_history.json.tmp
+heartbeat_watchdog_state.json

@@ -3253,6 +3253,11 @@ async def _auto_start_loop():
             await _auto_start_tick()
         except Exception as e:
             log.warning(f"[AutoStart] tick failed (non-fatal): {e}")
+        try:
+            import heartbeat_watchdog      # 2026-11-23: mails once if the maintenance cron has stopped (blocking SMTP runs in a thread)
+            await asyncio.to_thread(heartbeat_watchdog.tick)
+        except Exception as e:
+            log.warning(f"[Watchdog] tick failed (non-fatal): {e}")
         await asyncio.sleep(60)
 
 
