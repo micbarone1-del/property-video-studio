@@ -124,10 +124,13 @@ check("S36 evaluate sends exactly that prompt, once", len(calls) == 1 and calls[
 os.environ.pop("PVS_STANDARD_EXTRA", None)
 calls.clear(); cs.evaluate(pan, ask=ask_pass)
 check("S37 extra OFF: prompt identical to the original judge prompt", calls[0][1] == cs.JUDGE_PROMPT.format(n=6) and "ONE single JSON" not in calls[0][1])
+check("S41 switch OFF: a two-object answer is still unusable (behaviour unchanged)", cs.parse_judge(RAW_A) is None and cs.parse_judge(RAW_B) is None)
+os.environ["PVS_STANDARD_EXTRA"] = "1"
 pa, pb = cs.parse_judge(RAW_A), cs.parse_judge(RAW_B)
 check("S38 two-object answers are recovered (merged), verdict and extra keys present", pa["verdict"] == "review" and len(pa["revealed"]) == 2 and pb["verdict"] == "fail" and pb["extended_scene"] is True and pb["revealed"][0]["in_frame1"] == "hint")
 check("S39 plain JSON parses as before; garbage and verdict-less fragments stay None", cs.parse_judge('{"verdict": "pass", "speed": "slow"}')["verdict"] == "pass" and cs.parse_judge("no json here") is None and cs.parse_judge('{"revealed": []} and {"x": 1}') is None and cs.parse_judge('{"verdict": "pa') is None)
 rb = cs.evaluate(pan, ask=lambda im, p, u: RAW_B)
 check("S40 evaluate with a two-object answer: judge usable, no error", rb["judge"] is not None and rb["error"] is None and rb["judge"]["verdict"] == "fail")
+os.environ.pop("PVS_STANDARD_EXTRA", None)
 print("FAILS:", fails)
 sys.exit(1 if fails else 0)

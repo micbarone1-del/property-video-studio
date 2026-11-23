@@ -149,7 +149,7 @@ def parse_judge(raw):
     try:
         d = json.loads(raw[a:b + 1])
     except Exception:
-        d = _merge_objects(raw)
+        d = _merge_objects(raw) if extra_enabled() else None
         if d is None:
             return None
     if not isinstance(d, dict):
@@ -160,7 +160,7 @@ def parse_judge(raw):
 
 
 def _merge_objects(raw):
-    """2026-11-23: the model sometimes answers with two JSON objects and prose between them. Fallback ONLY when the plain parse failed: merge the top-level JSON objects found (later keys win); None unless a verdict is among them."""
+    """2026-11-23: the model sometimes answers with two JSON objects and prose between them. Fallback ONLY when the plain parse failed AND PVS_STANDARD_EXTRA=1 (2026-11-23: no behaviour change while the switch is off): merge the top-level JSON objects found (later keys win); None unless a verdict is among them."""
     dec, i, merged = json.JSONDecoder(), 0, {}
     while True:
         i = raw.find("{", i)
