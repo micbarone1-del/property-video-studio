@@ -109,6 +109,7 @@ function nameCell(j) {
   if (j.status === 'done') links.push('<a href="/jobs/' + j.job_id + '/preview" target="_blank">Guarda</a>', '<a href="/jobs/' + j.job_id + '/download" target="_blank">Scarica</a>');
   const open = ((j.stops_detail && j.stops_detail.length) || j.rework_failed || (j.review_pending && j.auto_approved_scenes && j.auto_approved_scenes.length));
   links.push('<a href="#" onclick="toggle(\'' + j.job_id + '\');return false;">' + (open ? 'Rivedi scene' : 'Dettagli') + '</a>');
+  links.push('<a href="/?job=' + encodeURIComponent(j.job_id) + '" target="_blank" rel="noopener">Apri nell\'app</a>');
   return '<b>' + esc(j.name || j.job_id) + '</b>' + (j.listing ? ' <span class="tag">annuncio ' + esc(j.listing) + '</span>' : '') + '<div class="mute">' + esc(j.job_id) + ' - ' + esc(j.source || 'manuale') + ' - ' + esc((j.created_at || '').replace('T', ' ').slice(0, 16)) + '</div><div class="mute">' + links.join(' - ') + '</div><div id="rev-' + j.job_id + '"></div>';
 }
 function rwBlock(j) {
@@ -222,7 +223,8 @@ function ago(iso) { const m = Math.max(0, Math.round((Date.now() - Date.parse(is
 function jumpJob(id) { Q = id; document.getElementById('q').value = id; load(); }
 function inboxItem(e, withDone) {
   return '<div class="it"><div class="t"><b>' + esc(e.subject) + '</b> <span class="mute">' + esc(ago(e.at)) + '</span><div class="mute">' + esc(e.text) + '</div>' +
-    (e.job_id ? '<a href="#" onclick="jumpJob(\'' + esc(e.job_id) + '\');return false;">Apri il job' + (e.job_name ? ' ' + esc(e.job_name) : '') + '</a>' : '') + '</div>' +
+    (e.job_id ? '<a href="#" onclick="jumpJob(\'' + esc(e.job_id) + '\');return false;">Apri il job' + (e.job_name ? ' ' + esc(e.job_name) : '') + '</a>' : '') +
+    (e.job_id ? ' <a href="/?job=' + encodeURIComponent(e.job_id) + '" target="_blank" rel="noopener">Apri nell\'app</a>' : '') + '</div>' +
     (withDone ? '<button class="go" onclick="inboxDone(\'' + esc(e.id) + '\')">Fatto</button>' : '') + '</div>';
 }
 function paintInbox(ib) {

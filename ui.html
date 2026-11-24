@@ -242,6 +242,8 @@
   .maint-banner  { display:none; padding:8px 12px; border-radius:var(--radius); font-size:.82rem; font-weight:600; margin-bottom:10px; border:1px solid; }
   #maint-btn { background:none; border:1px solid rgba(255,255,255,.4); color:#fff; border-radius:var(--radius); padding:5px 12px; font-size:.75rem; cursor:pointer; margin-left:8px; position:relative; }
   #maint-btn:hover { background:rgba(255,255,255,.1); }
+  #dash-btn { background:none; border:1px solid rgba(255,255,255,.4); color:#fff; border-radius:var(--radius); padding:5px 12px; font-size:.75rem; cursor:pointer; margin-left:8px; }
+  #dash-btn:hover { background:rgba(255,255,255,.1); }
   #maint-btn.red::after { content:''; position:absolute; top:-3px; right:-3px; width:8px; height:8px; border-radius:50%; background:#e74c3c; }
   .maint-emails-section { margin-top:14px; padding-top:12px; border-top:1px solid var(--rule); }
   .maint-emails-label { font-size:.75rem; color:var(--muted); margin-bottom:6px; }
@@ -274,6 +276,7 @@
   <button id="maint-btn" onclick="openMaintenance()">🔧 Maintenance</button>
   <button id="pause-gen-btn" onclick="toggleGenerationPause()" style="display:none">⏸ Pause generation</button>
   <button id="cost-btn" onclick="openCostReport()">💰 Costi</button>
+  <button id="dash-btn" onclick="location.href='/operator-page'">📊 Cruscotto</button>
   <span id="credit-dot" onclick="document.getElementById('credit-banner').scrollIntoView({behavior:'smooth'})" title="Credit status"></span>
 </header>
 
@@ -1917,6 +1920,19 @@ function showApp() {
   document.getElementById('login-screen').classList.remove('visible');
   populateAgencyDropdowns();
   loadTtsVoices();  // 2026-10-08: needs SESSION_KEY (a const declared further down), so it can only run after login
+  openJobFromUrl();  // 2026-11-24: link from the operator dashboard (/?job=ID)
+}
+
+// 2026-11-24: the operator dashboard links here with /?job=ID so a problem job can be reworked. It reuses editJob (the existing load-into-the-editor
+// and QC-review path, no second implementation); the parameter is removed from the address first so a refresh does not reopen it.
+function openJobFromUrl() {
+  try {
+    const id = new URLSearchParams(location.search).get('job');
+    if (!id) return;
+    history.replaceState(null, '', location.pathname);
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) { showError('Link al job non valido'); return; }
+    editJob(id, id.split('_rw')[0]);
+  } catch (e) { console.error('openJobFromUrl:', e); }
 }
 
 
