@@ -376,7 +376,7 @@ async function kpiPaintTiles(p) {
   } catch (e) { document.getElementById('kpierr').textContent = 'Errore: ' + e.message; }
 }
 function kpiTile(k) {
-  const p = kpiParse(location.hash) || { w: '24h', n: 20 };
+  const p = kpiParse(location.hash) || { w: kpiStripWin(), n: 20 };
   if (k === 'health') { kpiGo(''); setTimeout(function () { const h = document.getElementById('health'); if (h) h.scrollIntoView({ behavior: 'smooth' }); }, 60); return; }
   kpiGo(kpiHash(k, p.w, p.n));
 }
@@ -394,12 +394,14 @@ async function kpiPaintList(p) {
       '<td><a href="/?job=' + encodeURIComponent(r.job_id) + '" target="_blank" rel="noopener">Apri nell\'app</a> · <a href="#" onclick="Q=\'' + esc(r.job_id) + '\';kpiGo(\'\');load();return false">nel cruscotto</a></td></tr>').join('');
   } catch (e) { document.getElementById('kpierr').textContent = 'Errore: ' + e.message; }
 }
+function kpiStripWin() { let w = ''; try { w = localStorage.getItem('pvs_kpi_strip_w') || ''; } catch (e) {} return ['24h', '7d', '30d'].indexOf(w) >= 0 ? w : '30d'; }
+function kpiStripSet(w) { try { localStorage.setItem('pvs_kpi_strip_w', w); } catch (e) {} kpiPaintStrip(); }
 async function kpiPaintStrip() {   // 2026-11-24: preview on the main dashboard (24 h); failures stay quiet, the dashboard must never break because of it
   const box = document.getElementById('kpistrip');
   if (!box || document.body.classList.contains('kpi-on')) return;
   try {
-    const d = await api('/operator/kpi?window=24h');
-    box.innerHTML = '<div class="ksh"><b>Indicatori, ultime 24 ore</b> <a href="#kpi?w=24h">tutti gli indicatori e i dettagli →</a></div><div class="ks">' + kpiStripHtml(d, esc) + '</div>';
+    const w = kpiStripWin(); const d = await api('/operator/kpi?window=' + w);
+    box.innerHTML = '<div class="ksh"><b>Indicatori</b> ' + KPI_WINDOWS.map(x => '<button class="kw' + (x[0] === w ? ' on' : '') + '" onclick="kpiStripSet(\'' + x[0] + '\')">' + x[1] + '</button>').join(' ') + ' <a href="#kpi?w=' + w + '">tutti gli indicatori e i dettagli →</a></div><div class="ks">' + kpiStripHtml(d, esc) + '</div>';
   } catch (e) { box.innerHTML = ''; }
 }
 function kpiRoute() {
