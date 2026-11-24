@@ -588,6 +588,7 @@
 
 <script>
 const API_BASE = '';
+const SESSION_KEY = 'pvs_access';   // 2026-11-24: declared up here: checkGenerationPauseStatus() runs at load and used it before its old place further down (TDZ error on every load)
 
 
 // ── Video library ──────────────────────────────────────────────────────────────
@@ -1337,6 +1338,7 @@ async function editJob(jobId, baseJobId) {
     }
 
 
+    const imgFailed = [];   // 2026-11-24: preview images that did not load, shown to the user instead of a silent empty picture
     for (let i = 0; i < scenesConfig.length; i++) {
       const scene = scenesConfig[i];
       try {
@@ -1345,9 +1347,11 @@ async function editJob(jobId, baseJobId) {
           const blob = await imgRes.blob();
           loadedFiles.push(new File([blob], `scene_${i}.jpg`, { type: blob.type || 'image/jpeg' }));
         } else {
+          imgFailed.push((i + 1) + ': HTTP ' + imgRes.status);
           loadedFiles.push(new File([], `scene_${i}.jpg`, { type: 'image/jpeg' }));
         }
       } catch(e) {
+        imgFailed.push((i + 1) + ': ' + (e && e.message ? e.message : 'rete'));
         loadedFiles.push(new File([], `scene_${i}.jpg`, { type: 'image/jpeg' }));
       }
       loadedUserData[i] = {
@@ -1380,6 +1384,9 @@ async function editJob(jobId, baseJobId) {
     showError(isFreshDraft
       ? `${scenesConfig.length} scene caricate — rivedi le scene e la narrazione, poi premi Genera Video quando sei pronto.`
       : `${scenesConfig.length} scene caricate da ${jobId} — modifica, aggiungi scene o usa ↺ Rifai`);
+    if (imgFailed.length) {
+      errorMsg.innerHTML += `<div class="alert alert-error">⚠ ${imgFailed.length} anteprime su ${scenesConfig.length} non caricate (scena: ${imgFailed.join(', ')}). Ricarica la pagina con aggiornamento forzato.</div>`;
+    }
     // 2026-10-08 (backlog item 53): showQcReview() used to run ONLY from the live polling loop, so reopening a job still
     // in awaiting_approval never brought the approve/redo panel back. Same single render function, now also called here;
     // any other job hides a panel left over from a previously opened one.
@@ -1877,7 +1884,6 @@ authFetch('/jobs/').then(r => r.json()).then(d => {
 
 
 // ── Login ──────────────────────────────────────────────────────────────────────
-const SESSION_KEY = 'pvs_access';
 
 
 async function checkLogin() {
@@ -1931,8 +1937,9 @@ function openJobFromUrl() {
     if (!id) return;
     history.replaceState(null, '', location.pathname);
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) { showError('Link al job non valido'); return; }
+    showError('Apro il job ' + id + '…');   // 2026-11-24: visible at once, so a slow or failing load is never mistaken for "only the app opened"
     editJob(id, id.split('_rw')[0]);
-  } catch (e) { console.error('openJobFromUrl:', e); }
+  } catch (e) { console.error('openJobFromUrl:', e); showError('Errore aprendo il job: ' + e.message); }
 }
 
 
