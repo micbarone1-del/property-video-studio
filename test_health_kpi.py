@@ -19,11 +19,11 @@ def check(name, cond):
 DAY, GB = 86400, 1024 ** 3
 now = time.time()
 # HK1-HK2 history
-h = hk.record_disk(100 * GB, now=now - 20 * DAY)
+h = hk.record_disk(100 * GB, now=now - 40 * DAY)
 h = hk.record_disk(101 * GB, now=now)
-check("HK1 a sample older than 14 days is dropped, the new one kept", [s["u"] for s in h] == [101 * GB])
+check("HK1 a sample older than 31 days is dropped, the new one kept", [s["u"] for s in h] == [101 * GB])
 h = hk.record_disk(102 * GB, now=now + 60)
-check("HK2 two samples less than 10 minutes apart: only the first is kept", len(h) == 1)
+check("HK2 two samples less than 15 minutes apart: only the first is kept", len(h) == 1)
 # HK3-HK6 forecast
 lin = lambda days, per_day: [{"t": now - (days - i * 0.25) * DAY, "u": int((100 + per_day * i * 0.25) * GB)} for i in range(int(days * 4) + 1)]
 check("HK3 no forecast with less than 2 days of history", hk.forecast_days(lin(1.5, 10), 30 * GB, now) is None)
@@ -33,6 +33,8 @@ check("HK5 a flat or shrinking disk gives no forecast", hk.forecast_days([{"t": 
 saw = [{"t": now - (4 - i * 0.25) * DAY, "u": int((100 + (7.5 if i % 4 == 3 else 0) + 0.5 * i * 0.25) * GB)} for i in range(17)]
 check("HK6 a sawtooth (nightly backup then prune) does not crash and gives a number or None", hk.forecast_days(saw, 30 * GB, now) is None or hk.forecast_days(saw, 30 * GB, now) > 0)
 check("HK6b garbage history never raises", hk.forecast_days([{"x": 1}], 1, now) is None)
+h = hk.record_disk(103 * GB, now=now + 2000, extra={"p": 41.5, "m": 22.0, "s": 0, "junk": "x"})
+check("HK2b a sample 15+ minutes later carries the extra fields (disk %, memory %, stuck), junk dropped", h[-1].get("p") == 41.5 and h[-1].get("m") == 22.0 and h[-1].get("s") == 0 and "junk" not in h[-1])
 # HK7-HK10 backups
 b = Path(T) / "bk"; b.mkdir()
 check("HK7 empty backup folder: count 0", hk.backup_info(now=now)["count"] == 0)
