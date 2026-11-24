@@ -18,7 +18,7 @@ chk("L3 ?job=abc12345 opens the job with the editJob path and cleans the address
 chk("L4 a rework id keeps its base id", run("?job=abc12345_rw2")[2] == ["edit", "abc12345_rw2", "abc12345"])
 chk("L5 a hostile value is refused, never reaches editJob", all(c[0] != "edit" for c in run("?job=" + "%3Cscript%3E")) and any(c[0] == "err" for c in run("?job=" + "%3Cscript%3E")))
 chk("L6 the header has the dashboard button", 'id="dash-btn" onclick="location.href=\'/operator-page\'"' in ui)
-chk("L7 dashboard: a link to the app on every job row and on inbox items", op.count("/?job=' + encodeURIComponent(") == 2)
+chk("L7 dashboard: a link to the app on every job row, on inbox items and in the KPI lists (3 places)", op.count("/?job=' + encodeURIComponent(") == 3)
 chk("L8 editJob reports preview images that fail to load (no silent empty picture)", "imgFailed.push(" in ui and "anteprime su" in ui)
 chk("L9 SESSION_KEY is declared before first use (no TDZ error at load)", ui.find("const SESSION_KEY") < ui.find("checkGenerationPauseStatus();"))
 print("RESULT:", "ALL PASS" if ok else "FAILURES"); sys.exit(0 if ok else 1)
