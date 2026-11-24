@@ -821,3 +821,25 @@ Quattro invarianti: nessun job perso, nessun doppio costo, stato finale visibile
 | Avvio automatico finto, rifiuto bozza non idonea | C2 e C10 respinti, job in draft, avviso all'operatore | PASS (istanza finta) |
 | Avvio automatico finto, avvio da solo | il job parte senza Genera | NON ESEGUITO (serve un finto piu' fedele) |
 | Isolamento istanza finta: avviso in outbox, nessuna mail | email catturata, ntfy bloccato; Michele non ha ricevuto nulla | PASS |
+
+<!-- DOC-2026-11-24f -->
+### 2026-11-24 (sera) - Test indicatori KPI e fascia sul cruscotto
+Stato per test, senza arrotondare. "Server" = output incollato da Michele; "ambiente di prova" = mio ambiente, non prova di produzione.
+| Test | Cosa verifica | Esito | Dove |
+|---|---|---|---|
+| test_kpi_stats K1-K24 | calcoli KPI, finestre 24h/7d/30d, liste, endpoint presenti, note_status prima della scrittura atomica del job | PASS (FAILS 0) | ambiente di prova e server |
+| test_kpi_page P1-P13 | pagina KPI, percorso a clic, funzioni pure testate con node | PASS | ambiente di prova e server (versione sha a9c5292f85) |
+| test_kpi_page P14-P15 | fascia: 7 tessere, testo con caratteri speciali, selettori, aggiornamento 60 s, finestra ricordata | PASS | ambiente di prova (sha afaafac47a); sul server c'e' la versione vecchia senza P14-P15 reali: ripetere il pull |
+| test_health_kpi HK1, HK2, HK2b | 31 giorni di storia, passo 15 minuti, campi aggiuntivi p/m/s | PASS | ambiente di prova; sul server non rilanciato in questa sessione |
+| test_open_job_url L1-L9 | link cruscotto-app (3 link) | PASS | server (e ambiente di prova) |
+| Prova nel browser con dati finti (Playwright) | fascia sulla home, clic tessera, indietro, link diretti | PASS | ambiente di prova, dati finti |
+| Istanza finta, Michele | pagina Indicatori, endpoint con dati veri, clic | PASS ("Ok for now"; il numero di righe non cambia perche' ci sono pochi job) | porta 8001 |
+| Produzione, Michele | fascia con grafici a 30 giorni | PASS ("Grafici ok") | porta 8000, 24/11 sera |
+| Scrittura /root/pvs_last_deployed_hash.txt a fine deploy | file aggiornato a cb8457b | PASS | produzione, output di Michele |
+| Avvio automatico "avvia da solo" | bozza Relinx idonea avviata dal ciclo | PASS | solo istanza finta (job e0fc98ec) |
+| Tempo di generazione con dati veri | registrazione orari su job nuovo | NON ESEGUITO | serve un job reale dopo il deploy |
+| Job fermi con un caso vero | tessera e dettaglio con job fermo | NON ESEGUITO | nessun job fermo |
+| Memoria e job fermi nel tempo | campioni ogni 15 minuti in produzione | PARZIALE | un solo campione visto (disco 17,9%, memoria 6,1%); storico da verificare domani |
+| Prova dal vivo patch link d999966 | avviso "Apro il job", anteprime | NON ESEGUITO | da Michele |
+- **Rischio (FMEA)**: la modifica di _save_job (registro degli stati) tocca il percorso dello stato del job; il controllo K (static) verifica che note_status venga chiamato prima della scrittura atomica, ma **le righe FMEA di stato del job non sono state ri-valutate in questo aggiornamento**: da fare e da far rivedere a Michele (punteggi = proposta). Nessun job perso o costo doppio osservato; nessuna prova di carico.
+- Quattro invarianti: nessun job perso e nessun costo doppio: nessuna evidenza di violazione, non provati con test specifico sul registro; stato finale visibile: sì per la fascia; operatore informato una volta: non toccato.
