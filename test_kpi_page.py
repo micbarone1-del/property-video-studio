@@ -21,6 +21,9 @@ out.gapPaths = (gap.match(/ M/g) || []).length + (gap.match(/d="M/g) || []).leng
 out.empty = kpiChart([{t:'2026-11-24T10:00:00',v:null}], null, false, '', '24h').indexOf('nessun dato') >= 0;
 out.two = (kpiChart(pts, pts, false, '%', '24h').match(/stroke-dasharray/g) || []).length;
 out.esc = kpiChart([{t:'2026-11-24T10:00:00<b>',v:1}], null, true, '', '24h').indexOf('<b>') < 0;
+const fake = {window:'24h', tiles:{}}; KPI_ORDER.forEach(k => { fake.tiles[k] = {label:'L<'+k, unit:'', points:[{t:'2026-11-24T10:00:00',v:1},{t:'2026-11-24T11:00:00',v:2}], total:2, total2:3, detail:'d"x'}; });
+const strip = kpiStripHtml(fake, s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])));
+out.stripTiles = (strip.match(/class="kt"/g) || []).length; out.stripEsc = strip.indexOf('L<') < 0 && strip.indexOf('d"x') < 0; out.stripEmpty = kpiStripHtml({tiles:{}}, s => s) === '';
 out.v = [kpiValueText('cost', {value: 12}), kpiValueText('gen_time', {value: 9.5}), kpiValueText('rework', {value: 2}), kpiValueText('stuck', {value: 61}), kpiValueText('failed', {value: 'input_not_suitable'})];
 console.log(JSON.stringify(out));
 """
@@ -39,5 +42,7 @@ check("P9 no data in the window says so", o.get("empty") is True)
 check("P10 a second series is drawn dashed", o.get("two") == 1)
 check("P11 text inside the chart is escaped", o.get("esc") is True)
 check("P12 list values: cost, minutes, rework, stuck, failure code", o.get("v") == ["12.00 EUR", "9.5 min", "2 scene rifatte", "fermo da 61 min", "input_not_suitable"])
-check("P13 the page has the Indicatori button, the view box and the route hook", 'id="kpi-btn"' in page and 'id="kpiview"' in page and "addEventListener('hashchange', kpiRoute)" in page)
+check("P13 the page has the Indicatori button, the view box and the route hook", 'id="kpi-btn"' in page and 'id="kpiview"' in page and "addEventListener('hashchange'" in page and "kpiRoute();" in page)
+check("P14 the preview strip builds one small tile per KPI with the same chart, text escaped, empty data gives nothing", o.get("stripTiles") == 7 and o.get("stripEsc") is True and o.get("stripEmpty") is True)
+check("P15 the main dashboard has the strip box, a 'tutti gli indicatori' link and a refresh every 60 s", 'id="kpistrip"' in page and "tutti gli indicatori" in page and "setInterval(kpiPaintStrip, 60000)" in page)
 print("test_kpi_page FAILS", FAILS); sys.exit(1 if FAILS else 0)
