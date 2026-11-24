@@ -788,3 +788,14 @@ Quattro invarianti: nessuna novita' rispetto al 20/11 per job persi o doppio cos
 | Log 401 del 19/11 | prova che l'errore fosse lato Relinx | NON VERIFICABILE (log assente) |
 
 Quattro invarianti: nessun job perso, nessun doppio costo, stato finale visibile, operatore avvisato una volta: nessuna novita' rispetto al 23/11; le modifiche sono in sola misura.
+
+<!-- DOC-2026-11-24b -->
+### 2026-11-24 (09:56) - Test e prove (prova = output incollato da Michele, salvo dove scritto)
+| Test | Cosa verifica | Esito |
+|---|---|---|
+| test_standard_enforce E1-E9 + E3a | enforcement solo con i due interruttori; E3a: ENFORCE=1 da solo non boccia | FAILS 0 (server e sandbox) |
+| test_clip_standard S1-S41 | giudice e domande extra | FAILS 0 (server) |
+| Deploy 24/11 cb9c25b | valori nel processo vivo, EXTRA=1, ARRIVAL=0, release manual | PASS |
+| Misura tempi clip | pausa massima tra clip per sessione (53 sessioni) | eseguita; nessun blocco vero; 19,7 minuti non spiegati |
+| Tempo Luma caso peggiore | durata di una singola clip | NON misurato direttamente |
+| Estensione giudice passo 5 e 6 | primo job vero senza campi extra; confronto prima/dopo | NON ESEGUITI (conto alla rovescia in corso) |

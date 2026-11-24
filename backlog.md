@@ -1360,3 +1360,10 @@ Regole di Michele: (1) NESSUNO step manuale nel flusso: escalation = notifica/au
 - **plan_check**: togliere dal prompt entro il 7/12 salvo uso emerso. **Nuvola di punti**: scartata, 3D low-cost non perseguito per ora.
 - **Relinx**: chiedere quale chiave API usano (attiva pt_54820049); log del 19/11 non disponibile. Segreto di firma webhook e criteri di rilascio automatico ancora da definire.
 - **Da fare**: aggiornare E3; correggere commento clip_standard.py ~281 e "USD 18"; riguardare hyf e sdl; promemoria 29/11 09:00 (prima mail cifrata, partita alle 04:30); decidere a mano quando cancellare jobs_2026-11-23_0300.tar.gz; impostazioni di lancio (limite partner 20 a 2, tetto, soglia job fermi 45 min).
+
+<!-- DOC-2026-11-24b -->
+### 2026-11-24 (09:56) - Aggiornamento delle voci aperte
+- **Fatto 24/11 (cb9c25b)**: test E3 aggiornato, commento clip_standard.py, commento soglia Luma in credit_monitor.py. Domande extra accese in misura, conto alla rovescia dal 24/11 09:52: 40 clip o 14/12/2026.
+- **Soglia job fermi 45 minuti**: misurata su 53 sessioni, nessun blocco vero, tenuta; rivedere dopo i primi video reali. Da fare se serve: capire la pausa di 19,7 minuti del job 3844bb19 e controllare che il monitor non scatti durante le pause di rework.
+- **In attesa (pilota senza data)**: impostazioni di lancio (limite partner 20 a 2, passaggio ad automatico e soglia piu' alta durante il pilota). fal.ai in ricarica automatica. Relinx in migrazione: nessuna richiesta (chiave API, segreto webhook, criteri di rilascio) finche' non riprendono i contatti.
+- **Tue**: etichette di hyf e sdl; cancellazione manuale del tar.gz dopo il 29/11; promemoria 29/11 09:00 impostato e verificato nella lista dei compiti.
