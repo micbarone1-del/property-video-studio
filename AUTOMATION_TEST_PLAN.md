@@ -799,3 +799,12 @@ Quattro invarianti: nessun job perso, nessun doppio costo, stato finale visibile
 | Misura tempi clip | pausa massima tra clip per sessione (53 sessioni) | eseguita; nessun blocco vero; 19,7 minuti non spiegati |
 | Tempo Luma caso peggiore | durata di una singola clip | NON misurato direttamente |
 | Estensione giudice passo 5 e 6 | primo job vero senza campi extra; confronto prima/dopo | NON ESEGUITI (conto alla rovescia in corso) |
+
+<!-- DOC-2026-11-24d -->
+### 2026-11-24 (10:30) - Test aggiunti
+| Test | Cosa verifica | Esito |
+|---|---|---|
+| test_open_job_url L1-L7 | /?job=ID apre il job con editJob, ID ostile rifiutato, link nel cruscotto e pulsante nell'app | PASS (server) |
+| Click dal vivo cruscotto-app | apertura reale di un job dal cruscotto, pulsante Cruscotto, link con login | NON ESEGUITO |
+| test_deploy_rollback R1-R8 | punto di ritorno dal commit registrato, ripiego segnalato, stop senza punto, commit sconosciuto, uguale a HEAD, scrittura solo a fine deploy | PASS (server) |
+| Scrittura di /root/pvs_last_deployed_hash.txt a fine deploy | primo deploy reale con lo script nuovo | NON ESEGUITO |
