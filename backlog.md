@@ -1353,3 +1353,10 @@ Regole di Michele: (1) NESSUNO step manuale nel flusso: escalation = notifica/au
 - Voci del 20/11 ancora aperte: criteri di rilascio automatico, tetto di spesa 100 EUR, soglia job fermi 45 minuti, test P1e, segreto di firma dei webhook (da chiedere a Relinx), video THRINAKIE, PVS_PARTNER_AGENCY_LIMIT_24H da 20 a 2 al lancio, chiave fal inutilizzata, retention backup, fattura Luma da riconciliare con cost_actual.
 - Domani 24/11 alle 9:00 promemoria: controllare snap_2026-11-24 piccolo, riga Backup verde, riga Disco aggiornata, quando cancellare a mano jobs_2026-11-23_0300.tar.gz; domenica 29/11 alle 9:00: prima mail automatica cifrata.
 
+<!-- DOC-2026-11-24 -->
+### 2026-11-24 - Requisiti e decisioni emersi il 23/11 sera
+- **QC unico (decisione di Michele)**: una sola chiamata a Claude, al massimo un segnale misurato, una sola funzione di decisione. Nessuno strato in piu'. Candidata: domande extra (N o X) piu' new_max>0.05 (12/15 e 3/25 su 40 clip, soglia scelta sugli stessi dati: indicativa). Stato: NON progettato.
+- **Regola per ogni funzione "in misura"**: scadenza o limite di video, poi si rilegge il log e si decide produzione, ricalibrare o togliere. Extra del giudice: 40 clip o 14/12/2026 dall'accensione. Accensione di PVS_STANDARD_EXTRA solo con ok di Michele; prima confronto distribuzione verdetti prima/dopo.
+- **plan_check**: togliere dal prompt entro il 7/12 salvo uso emerso. **Nuvola di punti**: scartata, 3D low-cost non perseguito per ora.
+- **Relinx**: chiedere quale chiave API usano (attiva pt_54820049); log del 19/11 non disponibile. Segreto di firma webhook e criteri di rilascio automatico ancora da definire.
+- **Da fare**: aggiornare E3; correggere commento clip_standard.py ~281 e "USD 18"; riguardare hyf e sdl; promemoria 29/11 09:00 (prima mail cifrata, partita alle 04:30); decidere a mano quando cancellare jobs_2026-11-23_0300.tar.gz; impostazioni di lancio (limite partner 20 a 2, tetto, soglia job fermi 45 min).

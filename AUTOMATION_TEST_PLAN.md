@@ -772,3 +772,19 @@ Quattro invarianti (nessun job perso, nessun doppio costo, stato finale corretto
 | Giro scene sicure | falsi allarmi del controllo di rotazione, coerenza 360p/1080p | AVVIATO, esito non noto |
 
 Quattro invarianti: nessuna novita' rispetto al 20/11 per job persi o doppio costo; informare l'operatore una volta: il watchdog ripete al massimo ogni 6 ore (una mail per periodo), il saldo Luma avvisa dentro i controlli gia esistenti. FMEA: proposte da rivalutare con Michele - manutenzione ferma senza accorgersene (O era alto, ora con rilevamento: D in calo), credito Luma esaurito a meta' lavoro (mitigato da ricarica automatica e allarme a 8.000 crediti); i punteggi qui NON sono stati cambiati.
+
+<!-- DOC-2026-11-24 -->
+### 2026-11-24 - Test aggiunti e risultati (prova = output incollato da Michele, salvo dove scritto)
+| Test | Cosa verifica | Esito |
+|---|---|---|
+| Estensione giudice 1: patch compila, S29-S41 | prompt identico con interruttore spento (S37), lettura tollerante solo acceso (S41) | PASS |
+| Estensione giudice 2: suite esistenti | test_standard_3b 32/32, test_clip_qc 44/44, test_clip_pace | PASS; test_standard_enforce E3 FAIL preesistente |
+| Estensione giudice 3: prova reale 2 clip | risposte leggibili, verdetti informativi | PASS strutturale; prova v2 20/20 leggibili (campione piccolo) |
+| Estensione giudice 4: dopo il deploy | valori PVS_*, EXTRA assente | PASS (output 23/11) |
+| Estensione giudice 5: primo job vero | eventi shadow senza campi extra | NON ESEGUITO |
+| Estensione giudice 6: confronto prima/dopo | all'accensione | NON ESEGUITO |
+| Backup 24/11 | snap piccola, riga Backup verde, Disco aggiornato | PASS (151 MB; cruscotto 09:32) |
+| Ripristino da copia snap | recupero reale | NON ESEGUITO |
+| Log 401 del 19/11 | prova che l'errore fosse lato Relinx | NON VERIFICABILE (log assente) |
+
+Quattro invarianti: nessun job perso, nessun doppio costo, stato finale visibile, operatore avvisato una volta: nessuna novita' rispetto al 23/11; le modifiche sono in sola misura.
