@@ -65,6 +65,7 @@ def _check_access(request: Request) -> bool:
 # the web UI; this supports multiple partners (e.g. Relinx), each with
 # their own revocable key, hashed at rest -- see partner_api.py.
 import partner_api
+import status_log   # 2026-11-24 (KPI dashboard): moment of every status change, written inside the job record
 import partner_webhook
 import partner_duplicates
 import partner_messages
@@ -569,6 +570,7 @@ def _save_job(job_id: str):
         job = JOBS.get(job_id)
         if not job:
             return
+        status_log.note_status(job)   # 2026-11-24: only writes two extra keys, never raises, never read to decide anything
         meta_path = JOBS_DIR / job_id / "job_meta.json"
         meta_path.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write_json(meta_path, job)
@@ -3330,6 +3332,35 @@ def _operator_inbox_snapshot():
     except Exception as e:
         log.warning(f"[Inbox] snapshot failed (non-fatal): {e}")
         return {"actions": [], "info": []}
+
+
+
+@app.get("/operator/kpi")
+async def operator_kpi(window: str = "24h"):
+    """2026-11-24: the KPI tiles (chart of a value over a time window). Pure computation in kpi_stats; samples from health_kpi."""
+    try:
+        import kpi_stats, health_kpi
+        return kpi_stats.build(dict(JOBS), health_kpi.load_samples(), datetime.utcnow(), window)
+    except Exception as e:
+        log.warning(f"[KPI] build failed (non-fatal): {e}")
+        raise HTTPException(status_code=500, detail="KPI non disponibili")
+
+
+@app.get("/operator/kpi/list")
+async def operator_kpi_list(kind: str = "completed", n: int = 20):
+    """2026-11-24: the drill-down list behind a tile: the last n jobs of a kind (completed, failed, cost, rework, gen_time) or the jobs stuck now."""
+    import kpi_stats
+    n = max(1, min(int(n), 200))
+    if kind == "stuck":
+        import maintenance_scheduler
+        rows = []
+        for jid, mins in maintenance_scheduler.find_stuck_jobs(JOBS_DIR, time.time()):
+            j = JOBS.get(jid) or {}
+            rows.append({"job_id": jid, "name": j.get("property_name"), "status": j.get("status"), "t": None, "approx": False, "value": mins})
+        return {"kind": kind, "n": n, "rows": rows[:n]}
+    if kind not in ("completed", "failed", "cost", "rework", "gen_time"):
+        raise HTTPException(status_code=400, detail="kind sconosciuto")
+    return {"kind": kind, "n": n, "rows": kpi_stats.list_items(dict(JOBS), kind, datetime.utcnow(), n)}
 
 
 def _health_snapshot():
