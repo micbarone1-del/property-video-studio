@@ -25,10 +25,23 @@ PY
 echo "none running"
 
 step "2/7 rollback point"
-ROLLBACK=$(cat /root/pvs_rollback_hash.txt 2>/dev/null)
-[ -n "$ROLLBACK" ] || stop "/root/pvs_rollback_hash.txt missing: it must be written BEFORE the git pull"
-echo "rollback commit: $ROLLBACK   (to go back: git checkout --detach $ROLLBACK && ./start.sh)"
+# 2026-11-24: the rollback point is the commit that was RUNNING in production before this deploy = the one the previous deploy recorded
+# (LAST_FILE, written at the end of a successful deploy). The old hand-written file is only a fallback: on 24/11 it still held the
+# commit of the day before and the script printed it as the rollback point (a rollback to it would also have undone the 23/11 deploy).
+LAST_FILE="${PVS_LAST_DEPLOYED_FILE:-/root/pvs_last_deployed_hash.txt}"
+ROLLBACK_FILE="${PVS_ROLLBACK_FILE:-/root/pvs_rollback_hash.txt}"
+if [ -s "$LAST_FILE" ]; then
+  ROLLBACK=$(cat "$LAST_FILE"); SRC="commit recorded by the previous deploy"
+else
+  ROLLBACK=$(cat "$ROLLBACK_FILE" 2>/dev/null); SRC="hand-written file $ROLLBACK_FILE (NOT verified: may be old)"
+fi
+[ -n "$ROLLBACK" ] || stop "no rollback point: $LAST_FILE and $ROLLBACK_FILE are both missing or empty"
+git cat-file -e "$ROLLBACK^{commit}" 2>/dev/null || stop "rollback commit $ROLLBACK is not in this repository"
+echo "$ROLLBACK" > "$ROLLBACK_FILE"
+echo "rollback commit: $ROLLBACK   source: $SRC"
+echo "(to go back: git checkout --detach $ROLLBACK && ./start.sh)"
 echo "now at: $(git rev-parse --short HEAD)"
+if [ "$ROLLBACK" = "$(git rev-parse HEAD)" ]; then echo "note: the rollback point is the same as HEAD (nothing new is being deployed)"; fi
 
 step "3/7 the new code is on disk"
 grep -q "CENTRAL_X_MIN" movement_director.py || stop "director fix not on disk (movement_director.py)"
@@ -67,6 +80,7 @@ step "7/7 what production really runs with"
 curl -s -m 5 http://127.0.0.1:8000/health; echo
 PID=$(fuser 8000/tcp 2>/dev/null | awk '{print $1}')
 echo "server pid: $PID, commit: $(git rev-parse --short HEAD)"
-tr '\0' '\n' < /proc/$PID/environ | grep -E '^PVS_(LUMA_RESOLUTION|AUTO_|PARTNER|PACE|ARRIVAL|NARRATION|ACCEPT|DIRECTOR|STANDARD|ANCHOR)' | sort
+tr '\0' '\n' < /proc/$PID/environ | grep -E '^PVS_(LUMA_RESOLUTION|AUTO_|PARTNER|PACE|ARRIVAL|NARRATION|ACCEPT|DIRECTOR|STANDARD|ANCHOR|DEFAULT_VOICE|FACT_MASK)' | sort
 grep -h -E "\[Release\] mode|auto.start" /tmp/property-video.log | tail -3 | cut -c1-160
+git rev-parse HEAD > "$LAST_FILE"   # 2026-11-24: what production runs now = the next deploy's rollback point
 printf '\033[1;42;30m DEPLOY DONE \033[0m\n'
