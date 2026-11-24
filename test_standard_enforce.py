@@ -5,7 +5,8 @@ import cv2, numpy as np
 tmp = Path(tempfile.mkdtemp())
 os.environ["PVS_STANDARD_SHADOW_FILE"] = str(tmp / "shadow.jsonl")
 os.environ["PVS_STANDARD_SHADOW"] = "1"
-os.environ["PVS_STANDARD_ENFORCE"] = "0"  # explicit: vision_analysis load_dotenv() would otherwise bring in the real .env value
+os.environ["PVS_STANDARD_ENFORCE"] = "0"
+os.environ["PVS_STANDARD_GEOMETRY_REJECT"] = "0"  # same reason; since 2026-11-16 the geometry rejects only with BOTH switches  # explicit: vision_analysis load_dotenv() would otherwise bring in the real .env value
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 for name in ("fal_client",):           # only to import vision_analysis in a sandbox without the provider package
     if name not in sys.modules:
@@ -47,9 +48,12 @@ b = va.analyse_output(pan, str(photo), "large")
 check("E1 enforcement OFF (default): a pan keeps the verdict of the existing QC (pass) and carries the shadow result", b["verdict"] == "pass" and b["standard_shadow"]["measured_verdict"] == "reject" and "standard_enforced" not in b)
 check("E2 a push-in is pass either way", a["verdict"] == "pass" and a["standard_shadow"]["measured_verdict"] == "pass")
 os.environ["PVS_STANDARD_ENFORCE"] = "1"
+b2a = va.analyse_output(pan, str(photo), "large")
+check("E3a ENFORCE=1 alone does NOT reject on geometry (since 2026-11-16 it needs GEOMETRY_REJECT=1 too)", b2a["verdict"] == "pass" and "standard_enforced" not in b2a)
+os.environ["PVS_STANDARD_GEOMETRY_REJECT"] = "1"
 b2 = va.analyse_output(pan, str(photo), "large")
 a2 = va.analyse_output(push, str(photo), "large")
-check("E3 enforcement ON: the pan becomes reject with a readable issue, flagged as enforced", b2["verdict"] == "reject" and b2.get("standard_enforced") and any("Standard qualita'" in i for i in b2["issues"]))
+check("E3 enforcement ON (both switches): the pan becomes reject with a readable issue, flagged as enforced", b2["verdict"] == "reject" and b2.get("standard_enforced") and any("Standard qualita'" in i for i in b2["issues"]))
 check("E4 enforcement ON: the push-in is untouched", a2["verdict"] == "pass" and "standard_enforced" not in a2)
 JUDGE = '{"verdict": "fail", "reason": "invented stuff"}'
 a3 = va.analyse_output(push, str(photo), "large")

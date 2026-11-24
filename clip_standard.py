@@ -331,7 +331,7 @@ def summary(path=None) -> dict:
             "by_geometry": sum(1 for e in rej if (e.get("new_max") or 0) > NEW_MAX_LIMIT), "by_judge": sum(1 for e in rej if e.get("judge") == "fail"),
             "geo_not_measured": sum(1 for e in ev if not e.get("geo_ok")), "errors": sum(1 for e in ev if e.get("error")),
             "judge": {k: sum(1 for e in ev if e.get("judge") == k) for k in ("pass", "review", "fail")},
-            # 2026-11-09: the judge's speed word drives the pace fix (clip_pace); a clip whose speed was NOT recognised is monitored here
+            # 2026-11-24: the pace fix (clip_pace) uses the MEASURED motion_peak, NOT the judge's speed word (since 2026-11-09); the word is only recorded, and a clip whose speed was NOT recognised is monitored here
             "speed": {k: sum(1 for e in ev if e.get("speed") == k) for k in SPEED_WORDS},
             "speed_unknown": sum(1 for e in ev if e.get("speed") not in SPEED_WORDS),
             "speed_unknown_rate": round(sum(1 for e in ev if e.get("speed") not in SPEED_WORDS) / n, 3) if n else None,

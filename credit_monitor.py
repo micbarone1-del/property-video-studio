@@ -28,7 +28,7 @@ log = logging.getLogger(__name__)
 # ── Thresholds ─────────────────────────────────────────────────────────────────
 FAL_THRESHOLD        = float(os.getenv("FAL_CREDIT_THRESHOLD", "5.00"))
 ELEVENLABS_THRESHOLD = int(os.getenv("ELEVENLABS_CHAR_THRESHOLD", "10000"))
-LUMA_THRESHOLD       = int(os.getenv("LUMA_CREDIT_THRESHOLD", "6000"))    # credits; about USD 18, i.e. a bit more than one full 1080p video (about 9-12 EUR)
+LUMA_THRESHOLD       = int(os.getenv("LUMA_CREDIT_THRESHOLD", "6000"))    # credits; default 6000 = USD 18 at LUMA_USD_PER_CREDIT; the production .env sets 8000 (about USD 24)
 LUMA_USD_PER_CREDIT  = 0.003                                              # Luma pricing guide: a 360p 5 s clip = 20 credits = USD 0.06 (so a 1080p clip, USD 1.20, = 400 credits)
 LUMA_CREDITS_URL     = "https://agents.lumalabs.ai/v1/credits"
 
