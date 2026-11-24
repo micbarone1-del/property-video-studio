@@ -437,6 +437,26 @@ def _speech_text(words):
     return " ".join(" ".join(out).split()[:words])
 
 
+def _fake_scene_script(prompt):
+    """2026-11-24: reply to scene_script.build_prompt with six SAFE sentences (no number, feature word, promo word or floor; the opening says
+    sale/rent only as the listing does; opening and closing name the agency; the closing invites to contact). Before this the fake answered
+    with a generic text, the real fact check rejected it 3 times and the auto start refused every fake draft (C2/C10)."""
+    m = re.search(r"Listing text:\n---\n(.*?)\n---", prompt, re.S)
+    desc = (m.group(1) if m else "").lower()
+    a = re.search(r"\nAgency: ([^\n]+)", prompt)
+    agency = a.group(1).strip() if a and not a.group(1).startswith("(") else "L'agenzia"
+    kind = "in vendita " if any(k in desc for k in ("vendita", "vendesi", "vendiamo", "vendere")) else (
+        "in affitto " if any(k in desc for k in ("affitto", "affittasi", "locazione", "locare")) else "")
+    return json.dumps([
+        f"{agency} presenta questo immobile {kind}in una zona tranquilla.",
+        "Un immobile con spazi comodi e ben distribuiti.",
+        "Ecco un ambiente della casa mostrato con cura.",
+        "Questo ambiente completa la zona principale della casa.",
+        "Qui si vede un altro spazio interno dell'immobile.",
+        f"Contattate {agency} per ricevere maggiori informazioni.",
+    ], ensure_ascii=False)
+
+
 def _fake_claude_text(prompt, max_tokens):
     if "Answer with ONLY the category word" in prompt:
         return "living"
@@ -445,6 +465,8 @@ def _fake_claude_text(prompt, max_tokens):
                            "first_frame": "fake first frame", "last_frame": "fake last frame"})
     if "classify ONE real-estate photo" in prompt:  # vision_analysis.ROOM_PROMPT (2026-10-10)
         return json.dumps({"room": "living", "size": "large", "depth": "medium", "confidence": 0.9, "description": "fake living room"})
+    if "You write the Italian voiceover of a 30-second real estate video" in prompt:   # scene_script.build_prompt (2026-11-24)
+        return _fake_scene_script(prompt)
     n = len(re.findall(r"Photo \d+:", prompt))
     if n:
         return "[" + ", ".join(str(i) for i in range(1, n + 1)) + "]"
