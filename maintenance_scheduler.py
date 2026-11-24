@@ -181,7 +181,11 @@ def check_disk() -> dict:
     pct = round(used / total * 100, 1)
     free_gb = free // (1024**3)
     status = "red" if pct >= DISK_RED_PCT else "warn" if pct >= DISK_WARN_PCT else "ok"
-    days = health_kpi.forecast_days(health_kpi.record_disk(used), free)   # 2026-11-23: the trend, not only the level
+    try:   # 2026-11-24 (KPI dashboard): the same sample also carries disk %, memory % and the stuck jobs, so the dashboard has a history of them
+        _stuck_now = len(find_stuck_jobs(JOBS_DIR, datetime.now().timestamp())) if JOBS_DIR.exists() else 0
+    except Exception:
+        _stuck_now = None
+    days = health_kpi.forecast_days(health_kpi.record_disk(used, extra={"p": pct, "m": health_kpi.memory_pct(), "s": _stuck_now}), free)   # 2026-11-23: the trend, not only the level
     if days is not None and days < DISK_FORECAST_RED_DAYS:
         status = "red"
     elif days is not None and days < DISK_FORECAST_WARN_DAYS and status == "ok":
