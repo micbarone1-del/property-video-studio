@@ -59,6 +59,9 @@
   .kt { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px 12px; cursor:pointer; color:var(--ink); }
   .kt:hover { border-color:var(--run); }
   .kt .kh { font-size:13px; color:var(--mute); } .kt .kv { font-size:24px; font-weight:600; }
+  .ks { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:8px; margin:0 0 12px; }
+  .ks .kt { padding:6px 8px; } .ks .kt .kv { font-size:17px; } .ks .kt .kh { font-size:12px; }
+  .ksh { display:flex; flex-wrap:wrap; gap:8px; align-items:baseline; margin:0 0 6px; font-size:13px; color:var(--mute); }
   body.kpi-on main > *:not(h1):not(#kpiview) { display:none; }
   body:not(.kpi-on) #kpiview { display:none; }
 </style>
@@ -71,6 +74,7 @@
   <div id="err"></div>
   <div id="kpiview"></div>
   <div id="inbox"></div>
+  <div id="kpistrip"></div>
   <div class="hl" id="health"></div>
   <div class="cards" id="cards"></div>
   <div class="sw" id="sw"></div>
@@ -340,6 +344,15 @@ function kpiValueText(kind, r) {   // the "value" cell of a drill-down row
   if (kind === 'completed') return r.value != null ? Number(r.value).toFixed(2) + ' EUR' : '';
   return r.value == null ? '' : String(r.value);
 }
+function kpiStripHtml(d, esc) {   // the preview strip on the main dashboard: the same tiles and the same chart, small, 24 h
+  return KPI_ORDER.map(k => {
+    const t = d.tiles && d.tiles[k]; if (!t) return '';
+    const unit = t.unit || '';
+    const val = k === 'health' ? kpiNum(t.total, '%') + ' / ' + kpiNum(t.total2, '%') : kpiNum(t.total, unit);
+    return '<div class="kt" onclick="kpiTile(\'' + k + '\')" title="' + esc(t.detail || '') + '"><div class="kh">' + esc(t.label) + '</div><div class="kv">' + esc(val) + '</div>' +
+      kpiChart(t.points, t.points2, !!KPI_BARS[k], unit, d.window || '24h') + '</div>';
+  }).join('');
+}
 /*KPI-PURE-END*/
 const KPI_TITLES = { completed: 'Video completati', failed: 'Video falliti', gen_time: 'Tempo di generazione (i più lenti tra gli ultimi)', cost_avg: 'Costo per video', rework_pct: 'Job con rework', stuck: 'Job fermi adesso' };
 let KPI_TIMER = null;
@@ -381,6 +394,14 @@ async function kpiPaintList(p) {
       '<td><a href="/?job=' + encodeURIComponent(r.job_id) + '" target="_blank" rel="noopener">Apri nell\'app</a> · <a href="#" onclick="Q=\'' + esc(r.job_id) + '\';kpiGo(\'\');load();return false">nel cruscotto</a></td></tr>').join('');
   } catch (e) { document.getElementById('kpierr').textContent = 'Errore: ' + e.message; }
 }
+async function kpiPaintStrip() {   // 2026-11-24: preview on the main dashboard (24 h); failures stay quiet, the dashboard must never break because of it
+  const box = document.getElementById('kpistrip');
+  if (!box || document.body.classList.contains('kpi-on')) return;
+  try {
+    const d = await api('/operator/kpi?window=24h');
+    box.innerHTML = '<div class="ksh"><b>Indicatori, ultime 24 ore</b> <a href="#kpi?w=24h">tutti gli indicatori e i dettagli →</a></div><div class="ks">' + kpiStripHtml(d, esc) + '</div>';
+  } catch (e) { box.innerHTML = ''; }
+}
 function kpiRoute() {
   const p = kpiParse(location.hash);
   document.body.classList.toggle('kpi-on', !!p);
@@ -389,8 +410,9 @@ function kpiRoute() {
   window.scrollTo(0, 0);
   if (p.tile) { kpiPaintList(p); } else { kpiPaintTiles(p); KPI_TIMER = setInterval(function () { const c = kpiParse(location.hash); if (c && !c.tile) kpiPaintTiles(c); }, 60000); }
 }
-window.addEventListener('hashchange', kpiRoute);
+window.addEventListener('hashchange', function () { kpiRoute(); if (!kpiParse(location.hash)) kpiPaintStrip(); });
 kpiRoute();
+kpiPaintStrip(); setInterval(kpiPaintStrip, 60000);
 load(); setInterval(function () { if (!Object.keys(OPEN).some(function (k) { return OPEN[k]; })) load(); }, 15000);   // 2026-11-09: no refresh while a review form is open (it reset the choices and the video)
 </script>
 </body>
