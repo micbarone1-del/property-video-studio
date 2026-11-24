@@ -1378,3 +1378,10 @@ Regole di Michele: (1) NESSUNO step manuale nel flusso: escalation = notifica/au
 - **Collegamento dashboard-app**: parte (a) e (b) FATTE e pubblicate (aaf8748): "Apri nell'app" dal cruscotto, pulsante "Cruscotto" nell'app. Prova dal vivo di Michele ancora da fare. Aperto: dove vive la dashboard (c). **KPI stile Hostinger**: invariato, non progettato.
 - **Debito "punto di ritorno sbagliato in deploy_relinx_prod.sh"**: CHIUSO (34828b5), da riconfermare al prossimo deploy reale.
 - **Debiti ancora aperti**: LABEL_TO_CATEGORY inutilizzata, etichetta "max 15" gradi, store_logo_png percorso assoluto, campo overlay nell'audit foto, plan_check (entro 7/12).
+
+<!-- DOC-2026-11-24e -->
+### 2026-11-24 (pomeriggio) - Stato e nuove voci
+- **Link dashboard-app**: patch d999966 (avviso "Apro il job", anteprime mancanti segnalate, SESSION_KEY in cima). Prova dal vivo di Michele da fare. Causa del primo caricamento con punti interrogativi NON stabilita.
+- **Prova end-to-end con provider finti**: fatta e PASS fino al webhook dopo il rilascio (vedi status.md). Debiti: (1) e2e_fake.py generato con sed da prod_dryrun.py, da decidere se metterlo in repo; (2) il finto Claude deve produrre narrazione con fatti dell'annuncio e invito finale, altrimenti l'avvio automatico rifiuta la bozza (C2/C10) e il ramo "avvia da solo" non si prova; (3) start_fake_auto.sh (istanza finta con valori di produzione) generato con sed da start_fake.sh, non in repo.
+- **QC unico (requisito aggiornato)**: tre esiti, non due: passa, rifai, chiedi a Michele. Le "allucinazioni passabili" (HYF, SDL: tenda plausibile con rotazione) vanno a Michele, non si decidono in automatico.
+- **KPI dashboard stile Hostinger**: richiesta di Michele (esecuzione e salute, finestra di tempo); non progettata.

@@ -808,3 +808,16 @@ Quattro invarianti: nessun job perso, nessun doppio costo, stato finale visibile
 | Click dal vivo cruscotto-app | apertura reale di un job dal cruscotto, pulsante Cruscotto, link con login | NON ESEGUITO |
 | test_deploy_rollback R1-R8 | punto di ritorno dal commit registrato, ripiego segnalato, stop senza punto, commit sconosciuto, uguale a HEAD, scrittura solo a fine deploy | PASS (server) |
 | Scrittura di /root/pvs_last_deployed_hash.txt a fine deploy | primo deploy reale con lo script nuovo | NON ESEGUITO |
+
+<!-- DOC-2026-11-24e -->
+### 2026-11-24 (pomeriggio) - Test aggiunti
+| Test | Cosa verifica | Esito |
+|---|---|---|
+| test_open_job_url L8-L9 | anteprime mancanti segnalate; SESSION_KEY dichiarata prima dell'uso | PASS (server) |
+| Link dal cruscotto con la patch d999966 | avviso "Apro il job", anteprime, nessun errore rosso | NON ESEGUITO |
+| e2e finto A1 chiave sbagliata, A2 una foto | 401; rifiuto con messaggio italiano | PASS (istanza finta, 24/11) |
+| e2e finto B accettazione con etichette | 20 foto, job accettato | PASS (istanza finta) |
+| e2e finto B generazione, QC, nessun webhook prima del rilascio, webhook dopo | done in circa 7 min, 6/6 pass, 0 webhook prima, completed con link dopo | PASS (istanza finta; non prova la qualita' dei video) |
+| Avvio automatico finto, rifiuto bozza non idonea | C2 e C10 respinti, job in draft, avviso all'operatore | PASS (istanza finta) |
+| Avvio automatico finto, avvio da solo | il job parte senza Genera | NON ESEGUITO (serve un finto piu' fedele) |
+| Isolamento istanza finta: avviso in outbox, nessuna mail | email catturata, ntfy bloccato; Michele non ha ricevuto nulla | PASS |
