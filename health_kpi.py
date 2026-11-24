@@ -9,11 +9,11 @@ from datetime import datetime
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
-HISTORY_DAYS = 14          # disk samples older than this are dropped
+HISTORY_DAYS = 31          # samples older than this are dropped (2026-11-24: was 14; the 800-sample cap below made it about 5 days in practice)
 MIN_SPAN_DAYS = 2.0        # no forecast before the history covers this many days
 MIN_SAMPLES = 4
-MAX_SAMPLES = 800
-MIN_GAP_S = 600            # at most one sample per 10 minutes
+MAX_SAMPLES = 3200         # 2026-11-24: 31 days at one sample per 15 minutes is 2976 (was 800 = about 5.5 days at 10 minutes)
+MIN_GAP_S = 900            # at most one sample per 15 minutes
 HEARTBEAT_WARN_MIN = 12    # the cron runs every 5 minutes
 HEARTBEAT_RED_MIN = 20
 LABELS = (("disk_usage", "Disco"), ("backup_health", "Backup"), ("service_status", "Servizio"), ("credits", "Crediti API"), ("stuck_jobs", "Job fermi"))
@@ -40,15 +40,19 @@ def _load_history(path=None) -> list:
         return []
 
 
-def record_disk(used_bytes: int, now: float = None, path=None) -> list:
-    """Adds one (time, used bytes) sample, drops old ones, returns the history. Never raises (returns what it has)."""
+def record_disk(used_bytes: int, now: float = None, path=None, extra: dict = None) -> list:
+    """Adds one (time, used bytes) sample, drops old ones, returns the history. Never raises (returns what it has).
+    2026-11-24: `extra` adds fields to the same sample (KPI dashboard: p = disk %, m = memory %, s = stuck jobs): ONE sampler, not two."""
     now = time.time() if now is None else now
     p = Path(path or history_file())
     h = _load_history(p)
     try:
         h = [s for s in h if s["t"] >= now - HISTORY_DAYS * 86400]
         if not h or now - h[-1]["t"] >= MIN_GAP_S:
-            h.append({"t": round(now), "u": int(used_bytes)})
+            smp = {"t": round(now), "u": int(used_bytes)}
+            if extra:
+                smp.update({k: v for k, v in extra.items() if isinstance(v, (int, float))})
+            h.append(smp)
         h = h[-MAX_SAMPLES:]
         tmp = p.with_name(p.name + ".tmp")
         tmp.write_text(json.dumps(h))
@@ -56,6 +60,23 @@ def record_disk(used_bytes: int, now: float = None, path=None) -> list:
     except Exception:
         pass
     return h
+
+
+def memory_pct():
+    """Memory in use, in percent (from /proc/meminfo); None when it cannot be read."""
+    try:
+        d = {}
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            k, v = line.split(":", 1)
+            d[k] = int(v.split()[0])
+        return round(100.0 * (d["MemTotal"] - d["MemAvailable"]) / d["MemTotal"], 1)
+    except Exception:
+        return None
+
+
+def load_samples(path=None) -> list:
+    """The stored samples (for the KPI dashboard)."""
+    return _load_history(path)
 
 
 def forecast_days(history: list, free_bytes: int, now: float = None):
