@@ -146,6 +146,9 @@ def spoken_units(text):
     text = re.sub(num + r"\s*(?:mq|m\u00b2|m2)(?![\w\u00b2])", r"\1 metri quadri", text, flags=re.I)  # '60 mq' / '60m2'
     text = re.sub(r"(?<!\w)mq(?!\w)\.?", "metri quadri", text, flags=re.I)  # a bare 'mq'
     text = re.sub(r"\bmetri quadrati\b", "metri quadri", text, flags=re.I)
+    # 2026-11-25 (Michele, real job da983c2e: '110,00 metri quadri' was read 'centodieci virgola zero zero'): a decimal part made only of zeros
+    # (one or two digits: ',0' ',00' '.00') is never spoken. 'Exactly one or two zeros not followed by a digit' keeps '1.000' (thousands) and '2,50' intact.
+    text = re.sub(r"(?<=\d)[.,]0{1,2}(?!\d)", "", text)
     return text
 
 
