@@ -1459,3 +1459,11 @@ Regole di Michele: (1) NESSUNO step manuale nel flusso: escalation = notifica/au
 - Da definire prima di costruire: i campi (specchio o vetro, apertura su altro ambiente, oggetto ingombrante vicino, bordi scuri); costo per foto, da misurare (nessun numero oggi); dove salvarli (job_meta della scena e poi nel registro); una volta per foto, con cache; accordo tra due formulazioni della domanda prima di fidarsi (il giudice cambia verdetto sul 34% dei clip).
 - Collegamento: le caratteristiche misurate diventano condizioni delle regole e contesto del confronto tra movimenti (learning_apply.pick_alt_move). Nessuna regola puo' usarle prima di avere dati.
 - Stato: non fatto. Domande aperte: priorita' e costo.
+
+<!-- DOC-2026-11-25p -->
+## DOC-2026-11-25p - Cosa resta dopo l'implementazione del ciclo di apprendimento
+- Osservare il primo job vero in produzione (narration_rejections reali, learn_shadow, campi scena nel registro) e il primo giro del ciclo con la versione attuale (26/11). Stato: non fatto.
+- Scheda di approvazione sul cruscotto (livello 1 e 2, as-is / to-be), verifica di parita' filtri-prompt della narrazione, misura dell'ambiente (voce 25n), cron o avviso per i guasti del ciclo: non fatto, vedi voci 25m e 25n.
+- Seme fase 1b: ritrovare le chiavi dei round 1103-1105 (leggere il tar da 7,5 GB senza timeout, in background) oppure chiudere. Stato: aperto.
+- Spiegare l'aumento del tasso di scene difettose da circa 0,20 a 0,35 (cambio di condizioni?). Stato: non indagato.
+- Ri-valutare le righe FMEA toccate e proporle a Michele. Stato: non fatto.

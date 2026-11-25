@@ -53,3 +53,7 @@ Dati oggi in job_meta: modo (anchored, per_scene, testo unico), numero di tentat
 <!-- DOC-2026-11-25j -->
 ## 10. Stato al 2026-11-25
 Fasi 2-4 scritte e provate in unit test, su server ma NON in produzione. Fase 3 attiva in ombra (learn_shadow nel registro scene_risk), fase 4 spenta (interruttore + scadenza + ritorno automatico via `learning_apply.py check`, da collegare a un cron). Ponte con la produzione: solo learning_rules.json, scritto da learning_loop.py con le regole che HOLDS. Classificazione in scene_kinds.py. Oggi 0 regole caricate: corretto con pochi dati. Per la narrazione i motivi di rifiuto si raccolgono solo dopo il deploy.
+
+<!-- DOC-2026-11-25p -->
+## 11. Stato a fine implementazione (2026-11-25 sera)
+Fasi 2 e 3 in produzione (passive), fase 4 spenta, ciclo automatico giornaliero nel controllo di manutenzione (primo giro eseguito: 0 regole). Simulazione sul passato: nessun segnale distinguibile dal caso; seme: 0 scene (chiavi non trovate). Confronto tra movimenti nelle condizioni ambientali della regola; minimo 5 job distinti. Dettagli e limiti in status.md DOC-2026-11-25p.

@@ -878,3 +878,13 @@ Righe FMEA non ri-valutate (da proporre a Michele).
 
 <!-- DOC-2026-11-25k -->
 - 2026-11-25 prova istanza finta con codice fasi 2-4: job 76365d06 done, QC 6/6, narration_rejections presente: PASS (flusso, non qualita'). Job vero in produzione col codice nuovo: NON ESEGUITO. learning_loop.py su dati reali dopo refactor: gira, 0 regole che reggono.
+
+<!-- DOC-2026-11-25p -->
+## DOC-2026-11-25p - Test ciclo di apprendimento, stato a fine implementazione
+| Test | Cosa | Stato |
+|---|---|---|
+| test_learning_cycle C1-C12 | decisioni, applicazione automatica, ritorno, avvisi (notificatore finto) | PASS (sandbox e server) |
+| test_learning_apply A1-A28, test_learning_loop L1-L13, test_learning_replay R1-R8, test_learning_seed S1-S13, test_narration_log N1-N16 | componenti | PASS (sandbox e server) |
+| Giro reale del ciclo nel cron di produzione (versione precedente) | 102 scene, 0 regole, nessun errore | PASS (1 giro; versione attuale: primo giro 26/11) |
+| Istanza finta con codice attuale, job 85a36151 | done, QC 6/6, nessun learn_*, 0 Traceback | PASS (flusso, non qualita') |
+| Avvisi con mail e push veri; regola applicata in generazione; job vero col codice nuovo | | NON ESEGUITO |
