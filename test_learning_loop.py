@@ -81,14 +81,14 @@ nj2 = {"z": {"narration_mode": "anchored", "narration_script_fallback": "per_sce
 check("L9b narration_script_fallback is read as an outcome label", ll.build_narration_rows(nj2)[0]["l_script_fallback"] is True)
 check("L9 narration: rows built, fallback labelled, missing reasons reported (not invented)", rep["narration"]["rows"] == 60 and "not stored" in rep["narration"]["missing_data"])
 
-# L10 read-only: main writes ONLY learning_report.json, nothing under jobs/
+# L10 read-only: main writes ONLY learning_report.json and learning_rules.json (2026-11-25), nothing under jobs/
 d = tempfile.mkdtemp(); jd = Path(d) / "jobs"; (jd / "j1").mkdir(parents=True)
 (jd / "j1" / "job_meta.json").write_text(json.dumps(jobs["j1"]))
 before = sorted(str(p) for p in Path(d).rglob("*"))
 os.environ["PVS_DATA_DIR"] = d
 ll.main([str(jd)])
 after = sorted(str(p) for p in Path(d).rglob("*"))
-check("L10 running it creates only learning_report.json; the jobs folder is untouched", [a for a in after if a not in before] == [str(Path(d) / "learning_report.json")])
+check("L10 running it creates only learning_report.json + learning_rules.json; the jobs folder is untouched", sorted(a for a in after if a not in before) == sorted([str(Path(d) / "learning_report.json"), str(Path(d) / "learning_rules.json")]))
 
 # L11 not imported by the production code
 src = "".join((Path(__file__).parent / f).read_text(encoding="utf-8", errors="ignore") for f in ("api_server.py", "video_generation.py", "listing_scraper.py", "vision_analysis.py"))
