@@ -1968,7 +1968,7 @@ async def _prepare_url_draft_work(job_id, url, property_name, agency_id, voice_i
         "narration_duration_secs": narration["speech_duration_secs"],   # 2026-10-15: was the VIDEO length, mislabelled
         "narration_sync": narration.get("sync"),
         "narration_mode": narration.get("narration_mode"),   # 2026-10-22 (Patch B): per_scene | single_text
-        "narration_script_fallback": narration.get("script_fallback_reason"),
+        "narration_script_fallback": narration.get("script_fallback_reason"), "narration_rejections": narration.get("narration_rejections"),   # 2026-11-25 (learning loop phase 2)
         "scene_facts": narration.get("scene_facts"),   # 2026-10-28: what the photos plainly showed, for review
         "scene_facts_error": narration.get("scene_facts_error"),
         "timeline": narration.get("timeline"),   # 2026-10-23 (Patch J): anchor-driven timeline (None = classic 5 s clips)
@@ -2477,7 +2477,7 @@ async def _build_relinx_job_in_background(job_id: str, payload: RelinxVideoReque
             "narration_duration_secs": narration["speech_duration_secs"],   # 2026-10-15: was the VIDEO length, mislabelled
             "narration_sync": narration.get("sync"),
             "narration_mode": narration.get("narration_mode"),   # 2026-10-22 (Patch B): per_scene | single_text
-            "narration_script_fallback": narration.get("script_fallback_reason"),
+            "narration_script_fallback": narration.get("script_fallback_reason"), "narration_rejections": narration.get("narration_rejections"),   # 2026-11-25 (learning loop phase 2)
             "scene_facts": narration.get("scene_facts"),   # 2026-10-28: what the photos plainly showed, for review
             "scene_facts_error": narration.get("scene_facts_error"),
             "timeline": narration.get("timeline"),   # 2026-10-23 (Patch J)
