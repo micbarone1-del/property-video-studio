@@ -5,7 +5,7 @@ Each run: (1) learning_loop.report on the real registry + jobs, writes learning_
 FULLY PROVEN (written before looking at any result), ALL of:
   a. the rule has been in learning_rules.json (held on the hold-out) for at least PROVEN_MIN_DAYS days in a row;
   b. the shadow phase is due (learning_apply.report phase3_due: 40 firing scenes or 14/12/2026);
-  c. on production scenes after the rule was first seen, scenes matching it (learn_shadow) are >= SHADOW_MIN_N, with a bad rate >= 1.3x the rest and >= 10 points above;
+  c. on production scenes after the rule was first seen, scenes matching it (learn_shadow) are >= SHADOW_MIN_N and from >= MIN_JOBS distinct jobs, with a bad rate >= 1.3x the rest and >= 10 points above;
   d. the rule names a movement ('move' in its condition) and learning_apply.pick_alt_move finds a better one in the registry.
 Then the cycle writes apply=on with an expiry (APPLY_DAYS days, renewed every day the conditions still hold) for THAT rule only, and sends ONE notification.
 Revert: learning_apply.revert_check; if it says REVERT, apply goes off, the revert file blocks everything (also the manual switch) until a human removes it, ONE notification.
@@ -62,7 +62,8 @@ def shadow_evidence(rule_id, since_ts, events):
     bad = lambda xs: (sum(1 for e in xs if la._bad(e)) / len(xs)) if xs else None
     rm, rr = bad(m), bad(rest)
     ok = bool(len(m) >= SHADOW_MIN_N and rm is not None and rr is not None and rm >= ll.HOLDOUT_MIN_RATIO * rr and rm - rr >= ll.HOLDOUT_MIN_GAP)
-    return {"n": len(m), "rate": rm, "rest_rate": rr, "ok": ok}
+    jobs = len({e.get("job") for e in m})
+    return {"n": len(m), "jobs": jobs, "rate": rm, "rest_rate": rr, "ok": bool(ok and jobs >= ll.MIN_JOBS)}
 
 
 def _default_notify(subject, body):
@@ -109,7 +110,7 @@ def _run(today, notify, jobs_dir):
         cond = dict((c[0], c[1]) for c in r["cond"])
         ev = shadow_evidence(r["id"], seen[r["id"]]["ts"], events)
         days = _days_between(seen[r["id"]]["date"], today)
-        alt = la.pick_alt_move(cond.get("move"), events) if "move" in cond else None
+        alt = la.pick_alt_move(cond.get("move"), events, ctx=r["cond"]) if "move" in cond else None
         evidence[r["id"]] = {**ev, "days_held": days, "alt_move": alt}
         if days >= PROVEN_MIN_DAYS and due and ev["ok"] and alt and not reverted and not la.revert_file().exists():
             proven.append(r["id"])
