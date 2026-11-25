@@ -57,6 +57,11 @@ def record(job_id, scene_id, scene, verdict, *, stage="first", movement=None, ti
             return False
         ev = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "job": str(job_id), "scene": str(scene_id), "cat": category_of(scene),
               "move": str(movement or (scene or {}).get("pov_movement") or "?"), "tier": tier, "stage": stage, "verdict": verdict}
+        sc = scene or {}
+        for k, mx in (("anchor", 80), ("anchor_side", 12), ("depth", 12), ("space_type", 40)):   # 2026-11-25 (learning loop phase 2): raw scene fields, read-time classification
+            v = sc.get(k)
+            if v not in (None, ""):
+                ev[k] = str(v)[:mx]
         if previous:
             ev["previous"] = previous
         line = json.dumps(ev, ensure_ascii=False) + "\n"
