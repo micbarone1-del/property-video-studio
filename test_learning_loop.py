@@ -18,7 +18,7 @@ def make_rows(n_jobs, signal, seed):
             cat = rnd.choice(["living", "kitchen", "bedroom", "bathroom"]); ak = rnd.choice(["generic", "specific"]); mv = rnd.choice(["push", "rotate"])
             p = 0.6 if (signal and cat == "living" and ak == "generic") else 0.2
             rows.append({"job": jid, "scene": f"scene_{s:03d}", "split": ll.split_of(jid), "cat": cat, "move": mv, "tier": "t", "plan_kind": "forward",
-                         "anchor_kind": ak, "depth": "?", "reflective": "none", "l_qc": rnd.random() < p, "l_persistent": None, "l_detector": None})
+                         "anchor_kind": ak, "depth": "?", "l_qc": rnd.random() < p, "l_persistent": None, "l_detector": None})
     return rows
 
 # L1 the split is by JOB and deterministic
@@ -77,6 +77,8 @@ check("L8 broken lines, missing files and empty jobs do not raise", ll.report([{
 # L9 narration rows: fallback and the honest 'reasons not stored' note
 nj = {f"n{i}": {"narration_mode": "anchored" if i % 3 else "per_scene", "script_attempts": 1 if i % 3 else 6, "source_description": "x" * (100 if i % 2 else 2000), "scenes_config": [{}] * 6, "source": "relinx"} for i in range(60)}
 rep = ll.report([], [], nj)
+nj2 = {"z": {"narration_mode": "anchored", "narration_script_fallback": "per_scene", "scenes_config": []}}
+check("L9b narration_script_fallback is read as an outcome label", ll.build_narration_rows(nj2)[0]["l_script_fallback"] is True)
 check("L9 narration: rows built, fallback labelled, missing reasons reported (not invented)", rep["narration"]["rows"] == 60 and "not stored" in rep["narration"]["missing_data"])
 
 # L10 read-only: main writes ONLY learning_report.json, nothing under jobs/
