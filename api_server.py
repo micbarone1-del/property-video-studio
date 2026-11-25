@@ -1719,6 +1719,13 @@ async def _apply_vision_analysis_to_scenes(scenes_config: list, scene_image_path
         except Exception as e:
             log.warning(f"[{log_prefix}] Vision analysis failed for scene {i}, "
                         f"keeping category-based default: {e}")
+    # 2026-11-25 (learning loop phase 4, OFF unless PVS_LEARN_APPLY=1 + PVS_LEARN_APPLY_UNTIL): soft movement constraint from rules that held on unseen jobs
+    try:
+        import learning_apply
+        for _sc in scenes_config:
+            learning_apply.on_plan(_sc)
+    except Exception:
+        pass
     # 2026-10-28 (P3): the facade approach is for the first facade only (one shared rule, both URL and partner paths come through here)
     _demoted = camera_plan.keep_first_facade_approach(scenes_config)
     if _demoted:
