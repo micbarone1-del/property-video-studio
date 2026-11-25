@@ -49,6 +49,7 @@ import os
 import camera_plan
 import re
 import math
+import narration_log as _nl
 import json
 import time
 import logging
@@ -1942,6 +1943,7 @@ def _write_standard_scene_script(description: str, address: str, price: str, age
                 elif lc["fixed"] or lc["remaining"]:
                     log.warning(f"[Scraper] Per-scene script: Italian corrections not used (remaining {lc['remaining']}), original kept")
                 return {"ok": True, "sentences": sentences, "attempts": attempt, "problems": [], "error": None}
+            _nl.note("per_scene", attempt, problems)
             log.warning(f"[Scraper] Per-scene script attempt {attempt} rejected: {problems} | sentences: {sentences}")
             feedback = ("\n\nYour previous answer was REJECTED for these reasons. Fix all of them, return the full JSON array again:\n- "
                         + "\n- ".join(problems))
@@ -2027,6 +2029,7 @@ def _anchored_narration(description: str, address: str, price: str, voice_id: st
                 feedback = (f"\n\nYour previous text was (edit THIS text, do not start from zero):\n{text}\n\n"
                             "It was REJECTED for these reasons. Fix all of them, return the full JSON object again:\n- "
                             + "\n- ".join(problems))
+                _nl.note("anchored", attempt, problems)
                 log.warning(f"[Scraper] Anchored narration attempt {attempt} rejected: {problems} | text: {text}")
                 continue
             meas = _measure_tts_duration(text, voice_id)
@@ -2154,6 +2157,7 @@ def _block_narration(description: str, address: str, price: str, voice_id: str, 
                 reason = f"blocks rejected: {problems}"
                 feedback = ("\n\nYour previous blocks were:\n" + json.dumps({"blocks": blocks}, ensure_ascii=False)
                             + "\n\nThey were REJECTED for these reasons. Fix all of them, return the full JSON object again:\n- " + "\n- ".join(problems))
+                _nl.note("blocks", attempt, problems)
                 log.warning(f"[Scraper] Block narration attempt {attempt} rejected: {problems} | blocks: {blocks}")
                 continue
             # 2026-10-26: Italian spelling/grammar check BEFORE any voice is spent on the text (draft 7ff8ec4b: "garantono"). The corrections are word
@@ -2170,6 +2174,7 @@ def _block_narration(description: str, address: str, price: str, voice_id: str, 
                     feedback = ("\n\nYour previous blocks were:\n" + json.dumps({"blocks": blocks}, ensure_ascii=False)
                                 + "\n\nThey were REJECTED because of language errors. Fix them, keep everything else, return the full JSON object again:\n- "
                                 + "\n- ".join(_ic.feedback_lines(lc["fixed"] + lc["remaining"])))
+                    _nl.note("blocks_italian", attempt, reason)
                     log.warning(f"[Scraper] Block narration attempt {attempt} rejected: {reason} | blocks: {blocks}")
                     continue
                 else:
@@ -2447,6 +2452,7 @@ def generate_narration_and_derive_scenes(
     # the ONE entry point of both workflows. With PVS_SCENE_FACTS on (standard 6-scene video only) the plainly visible facts of the scene
     # photos are appended to the listing text, then the unchanged narration core runs. Any failure leaves the listing text as it was.
     facts, facts_error = None, None
+    _tok = _nl.begin()   # 2026-11-25 (learning loop phase 2): passive record of the rejection reasons
     if (scene_photos and scene_facts_enabled() and (not premium) and scene_sequence
             and len(scene_sequence) == STANDARD_SCENES and len(scene_photos) == STANDARD_SCENES):
         info = describe_scenes_for_narration([dict(ph, label=CATEGORY_ITALIAN_LABELS.get(c, c)) for ph, c in zip(scene_photos, scene_sequence)])
@@ -2457,8 +2463,12 @@ def generate_narration_and_derive_scenes(
         else:
             facts_error = info["error"]
             log.warning(f"[Scraper] Scene facts not used: {facts_error}")
-    result = _generate_narration_core(description, address, price, voice_id, premium, agency_name, scene_category_order, scene_sequence)
+    try:
+        result = _generate_narration_core(description, address, price, voice_id, premium, agency_name, scene_category_order, scene_sequence)
+    finally:
+        _rej = _nl.end(_tok)
     if isinstance(result, dict):
+        result["narration_rejections"] = _rej
         result["scene_facts"] = facts
         result["scene_facts_error"] = facts_error
     return result
