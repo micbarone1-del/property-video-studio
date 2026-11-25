@@ -62,6 +62,16 @@ def record(job_id, scene_id, scene, verdict, *, stage="first", movement=None, ti
             v = sc.get(k)
             if v not in (None, ""):
                 ev[k] = str(v)[:mx]
+        for k in ("learn_applied", "learn_prev_move"):   # 2026-11-25 (phase 4): what the learning loop changed in this scene, so the effect can be measured
+            if sc.get(k):
+                ev[k] = sc[k]
+        try:   # phase 3 (shadow): the held rules this scene matches; nothing is changed
+            import learning_apply
+            ids = learning_apply.matching(sc, ev["move"], ev["cat"], tier)
+            if ids:
+                ev["learn_shadow"] = ids
+        except Exception:
+            pass
         if previous:
             ev["previous"] = previous
         line = json.dumps(ev, ensure_ascii=False) + "\n"
