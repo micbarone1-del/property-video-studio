@@ -30,6 +30,8 @@ HERE = Path(__file__).resolve().parent
 HOLDOUT_PCT = 30            # share of JOBS kept aside
 MIN_TRAIN_N = 10            # a rule needs this many train scenes to be proposed
 MIN_HOLD_N = 10             # ... and this many hold-out scenes to be judged
+MIN_JOBS = 5                # 2026-11-25: ... from at least this many DISTINCT jobs (scenes of one listing are correlated); hold-out: MIN_HOLD_JOBS
+MIN_HOLD_JOBS = 3
 MIN_LIFT = 1.5              # train: rule rate / baseline rate
 Z_TRAIN = 1.28              # Wilson lower bound (about 80% one-sided) must stay above the train baseline
 HOLDOUT_MIN_RATIO = 1.3     # hold-out: rule rate >= 1.3 x hold-out baseline ...
@@ -192,7 +194,7 @@ def find_rules(train_rows, label, features):
     for cond in candidate_conditions(train_rows, features):
         sub = [r for r in train_rows if _matches(r, cond)]
         k, n = _rate(sub, label)
-        if n < MIN_TRAIN_N:
+        if n < MIN_TRAIN_N or len({r.get("job") for r in sub if r.get(label) is not None}) < MIN_JOBS:
             continue
         rate = k / n
         lo, _ = wilson(k, n, Z_TRAIN)
@@ -212,7 +214,7 @@ def check_holdout(rules, hold_rows, label):
         sub = [x for x in hold_rows if _matches(x, cond)]
         k, n = _rate(sub, label)
         rate = (k / n) if n else None
-        holds = bool(n >= MIN_HOLD_N and base is not None and rate is not None and rate >= HOLDOUT_MIN_RATIO * base and rate - base >= HOLDOUT_MIN_GAP)
+        holds = bool(n >= MIN_HOLD_N and len({x.get("job") for x in sub if x.get(label) is not None}) >= MIN_HOLD_JOBS and base is not None and rate is not None and rate >= HOLDOUT_MIN_RATIO * base and rate - base >= HOLDOUT_MIN_GAP)
         res.append({**r, "hold_n": n, "hold_bad": k, "hold_rate": (round(rate, 3) if rate is not None else None),
                     "hold_baseline": (round(base, 3) if base is not None else None), "hold_wilson": list(wilson(k, n, 1.0)),
                     "status": "HOLDS" if holds else ("not enough hold-out data" if n < MIN_HOLD_N else "DOES NOT HOLD")})
