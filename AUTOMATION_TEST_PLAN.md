@@ -864,3 +864,14 @@ Stato per test, senza arrotondare. "Server" = output incollato da Michele; "ambi
 - Limite dei test: sono dati sintetici costruiti da me; provano il metodo (divisione, soglie), non che esista un segnale vero nei dati reali.
 - FMEA: nessuna riga aggiornata in questa voce. Q5 (allucinazione non vista, S9 O5 D8 = 360, ACT) resta 360: il ciclo non ha ancora ridotto O ne' D. Proposta di nuova riga di prevenzione: "scena a rischio inviata a Luma senza che nessuna regola appresa la escluda", da valutare con Michele quando ci saranno dati.
 - Test sul 360p contro 1080p (log incollati 24/11): nessuna etichetta umana, nessun risultato; letture automatiche di rotazione in disaccordo tra risoluzioni su due scene (pochi clip).
+
+<!-- DOC-2026-11-25j -->
+## DOC-2026-11-25j - Test fasi 2-4 ciclo di apprendimento
+| Test | Cosa | Stato |
+|---|---|---|
+| test_narration_log N1-N16 | motivi di rifiuto, campi scena, nessuna fuga nel partner API | PASS (sandbox e server) |
+| test_learning_apply A1-A24 | ombra, interruttore, scadenza, solo movimento, ritorno, export | PASS (sandbox e server) |
+| test_learning_loop (L10 aggiornato) | sola lettura, due file scritti | PASS (sandbox e server) |
+| prova end-to-end istanza finta con fasi 2-4 | job completo con codice nuovo | NON ESEGUITO |
+| fase 4 su job vero | applicazione movimento e ritorno | NON ESEGUITO |
+Righe FMEA non ri-valutate (da proporre a Michele).

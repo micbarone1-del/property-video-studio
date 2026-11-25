@@ -1714,3 +1714,13 @@ Incidente disco e riga "Salute del sistema" (health_kpi); backup_v2 con snapshot
 ### 2026-11-25 - Solo discusso, nulla iniziato
 - **Documentazione in inglese per un contractor:** requisito di Michele registrato in backlog.md (DOC-2026-11-25h) con ambito, vincoli, proposta e domande aperte. Nessuna traduzione fatta, nessun costo misurato. Nota emersa: la repo e' pubblica e i documenti contengono dettagli commerciali; da decidere prima di dare accesso a un contractor.
 - **Metodo di aggiornamento dei documenti:** Michele ha chiesto di NON sostituire interi file ma aggiungere le sezioni dal terminale; da ora le sezioni si aggiungono con uno script che controlla il marcatore e non duplica (docs_append_2026-11-24.py).
+
+<!-- DOC-2026-11-25j -->
+## DOC-2026-11-25j - Ciclo di apprendimento fasi 2-4 (2026-11-25)
+- Stato reale: codice su GitHub e sul server (pull fatto, sha verificate, py_compile OK), NON in produzione (produzione ancora cb8457b, nessun riavvio, nessun deploy). Nessun job vero eseguito con il codice nuovo.
+- Fase 2 (registrazione): narration_log.py registra il codice di ogni rifiuto di narrazione (per scena, ancorata, blocchi, italiano) in job_meta `narration_rejections`; scene_risk salva anche anchor, anchor_side, depth, space_type. Il partner API non li espone (test N13).
+- Fase 3 (ombra): learning_apply.matching() aggiunge `learn_shadow` alla riga del registro scene_risk; `python3 learning_apply.py` conta le scene che scattano (obiettivo 40 o 14/12/2026). Oggi: rules_loaded 0, scenes_firing 0 (output reale sul server).
+- Fase 4 (applicazione): spenta. Richiede PVS_LEARN_APPLY=1 + PVS_LEARN_APPLY_UNTIL; cambia solo pov_movement verso un movimento gia' visto nei dati con tasso <= 0,8x; mai testo dei prompt. `python3 learning_apply.py check` scrive learning_apply_revert.json se i tassi peggiorano.
+- Architettura: la classificazione delle scene vive solo in scene_kinds.py (prima era in learning_loop.py); learning_loop non e' importato dalla produzione, il ponte e' learning_rules.json.
+- Prove: test_narration_log N1-N16, test_learning_apply A1-A24, test_learning_loop (L10 aggiornato), test_scene_risk, test_block_narration 75/75, test_scene_script 85/85: tutti PASS (sandbox; sul server PASS per i quattro test nuovi/toccati). NON eseguito: prova end-to-end sull'istanza finta, job vero.
+- Limiti noti: il tier non e' noto in pianificazione (regole con tier solo in ombra); il controllo di ritorno non e' collegato a cron; fase 4 mai provata su job vero; righe FMEA non ri-valutate.

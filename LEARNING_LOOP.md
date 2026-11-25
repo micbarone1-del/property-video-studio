@@ -49,3 +49,7 @@ Dati oggi in job_meta: modo (anchored, per_scene, testo unico), numero di tentat
 - Seme da prove: stesse scene analizzate molte volte con varianti di prompt; contare ogni scena una sola volta.
 - Rischio di rinforzare un errore: una regola che evita una combinazione la fa sparire dai dati; il controllo dopo l'applicazione deve guardare anche il tasso complessivo, non solo il sottogruppo.
 - Non verificato: i nomi esatti dei campi di scena nel job_meta reale (anchor, anchor_side, depth, reflective_surface): il codice li legge in modo tollerante, ma la prima esecuzione sul server dira' quali mancano.
+
+<!-- DOC-2026-11-25j -->
+## 10. Stato al 2026-11-25
+Fasi 2-4 scritte e provate in unit test, su server ma NON in produzione. Fase 3 attiva in ombra (learn_shadow nel registro scene_risk), fase 4 spenta (interruttore + scadenza + ritorno automatico via `learning_apply.py check`, da collegare a un cron). Ponte con la produzione: solo learning_rules.json, scritto da learning_loop.py con le regole che HOLDS. Classificazione in scene_kinds.py. Oggi 0 regole caricate: corretto con pochi dati. Per la narrazione i motivi di rifiuto si raccolgono solo dopo il deploy.

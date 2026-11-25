@@ -1422,3 +1422,12 @@ Regole di Michele: (1) NESSUNO step manuale nel flusso: escalation = notifica/au
 - Contratto e legale (non sono un avvocato): riservatezza (NDA), cessione della proprieta' intellettuale del codice scritto, dati personali (foto e annunci delle agenzie, dati di agenzia): DPA_DRAFT.md esiste gia', da rivedere con un consulente prima di coinvolgere un esterno.
 - Ordine proposto: (1) controllo segreti e repo privata; (2) onboarding breve in inglese con le regole assolute; (3) accessi minimi e chiavi di test; (4) traduzione completa (voce 25h).
 - Domande aperte: il contractor avra' accesso al server di produzione? chi approva i suoi deploy? un secondo controllo sulle cancellazioni? sorveglianza degli accessi (log)?
+
+<!-- DOC-2026-11-25j -->
+## DOC-2026-11-25j - Da fare dopo fasi 2-4 del ciclo di apprendimento
+- Deploy in produzione di fasi 2-4: prima prova end-to-end sull'istanza finta con un job, poi deploy_relinx_prod.sh. Fino ad allora la registrazione dei motivi di rifiuto NON raccoglie dati reali. Stato: non fatto.
+- Collegare `learning_apply.py check` a un cron (o al campionatore health) PRIMA di accendere PVS_LEARN_APPLY. Stato: non fatto.
+- Rilancio periodico di `python3 learning_loop.py jobs` per produrre learning_rules.json (oggi solo a mano). Stato: non fatto.
+- Fase 1b: caricare come seme i clip delle prove gia' etichettati (jobs/_test_scratch). Stato: non fatto.
+- Tier non noto in pianificazione: decidere se applicare le regole con tier in un secondo punto (scelta del modello) o lasciarle in ombra. Domanda aperta.
+- Ri-valutare le righe FMEA toccate (narrazione, registro scene, movimento) e proporle a Michele. Stato: non fatto.
