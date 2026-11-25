@@ -33,7 +33,7 @@ MIN_LIFT = 1.5              # train: rule rate / baseline rate
 Z_TRAIN = 1.28              # Wilson lower bound (about 80% one-sided) must stay above the train baseline
 HOLDOUT_MIN_RATIO = 1.3     # hold-out: rule rate >= 1.3 x hold-out baseline ...
 HOLDOUT_MIN_GAP = 0.10      # ... and at least 10 points above it
-FEATURES = ("cat", "move", "tier", "plan_kind", "anchor_kind", "depth", "reflective")
+FEATURES = ("cat", "move", "tier", "plan_kind", "anchor_kind", "depth")   # reflective_surface is NOT in the real job_meta (checked on the server 2026-11-25): removed
 NARRATION_FEATURES = ("desc_len", "n_scenes", "source", "has_price")
 GENERIC_ANCHORS = ("centre of the frame", "center of the frame", "centre of", "center of", "middle of the")
 BAD_VERDICTS = ("flag", "reject", "failed")
@@ -120,8 +120,7 @@ def plan_kind(move):
 def scene_features(scene, move, cat, tier):
     s = scene or {}
     return {"cat": str(cat or "?"), "move": str(move or "?"), "tier": str(tier or "?"), "plan_kind": plan_kind(move),
-            "anchor_kind": anchor_kind(s), "depth": str(s.get("depth") or "?"),
-            "reflective": str(s.get("reflective_surface") or "none")}
+            "anchor_kind": anchor_kind(s), "depth": str(s.get("depth") or "?")}
 
 
 # ── dataset ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -163,7 +162,7 @@ def _desc_len_bucket(job):
 
 def build_narration_rows(jobs):
     """One row per job that has a narration mode. Outcome: l_fallback = the narration did NOT come out anchored (per_scene or single text);
-       l_retries = 3 or more attempts. The REASON of each rejection is not stored in job_meta today: reported as missing data, not guessed."""
+       l_script_fallback = the job field narration_script_fallback is set (value format NOT verified: read as true/false); l_retries = 3 or more attempts (script_attempts is NOT in the real job_meta: label stays None). The REASON of each rejection is not stored in job_meta today: reported as missing data, not guessed."""
     rows = []
     for jid, j in jobs.items():
         n = j.get("narration") if isinstance(j.get("narration"), dict) else {}
@@ -173,7 +172,8 @@ def build_narration_rows(jobs):
         att = j.get("script_attempts", n.get("script_attempts"))
         rows.append({"job": jid, "split": split_of(jid), "desc_len": _desc_len_bucket(j), "n_scenes": str(len(j.get("scenes_config") or [])),
                      "source": str(j.get("source") or "?"), "has_price": str(bool(j.get("source_price") or j.get("price"))),
-                     "l_fallback": mode != "anchored", "l_retries": (None if att is None else int(att) >= 3),
+                     "l_fallback": mode != "anchored", "l_script_fallback": bool(j.get("narration_script_fallback") or n.get("narration_script_fallback")),
+                     "l_retries": (None if att is None else int(att) >= 3),
                      "has_reasons": bool(j.get("narration_rejections") or n.get("narration_rejections"))})
     return rows
 
@@ -253,7 +253,7 @@ def report(risk_events, shadow_events, jobs):
     rows = build_scene_rows(risk_events, shadow_events, jobs)
     nrows = build_narration_rows(jobs)
     return {"video": analyse(rows, ("l_qc", "l_persistent", "l_detector"), FEATURES),
-            "narration": {**analyse(nrows, ("l_fallback", "l_retries"), NARRATION_FEATURES),
+            "narration": {**analyse(nrows, ("l_fallback", "l_script_fallback", "l_retries"), NARRATION_FEATURES),
                           "jobs_with_rejection_reasons": sum(1 for r in nrows if r["has_reasons"]),
                           "missing_data": "the reason of each narration rejection is not stored in job_meta (phase 2 recording)" if nrows and not any(r["has_reasons"] for r in nrows) else ""},
             "criteria": {"holdout_pct": HOLDOUT_PCT, "min_train_n": MIN_TRAIN_N, "min_hold_n": MIN_HOLD_N, "min_lift": MIN_LIFT,
