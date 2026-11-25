@@ -76,4 +76,17 @@ a = src("api_server.py")
 chk("A22 hook is wrapped in try and calls only on_plan", "learning_apply.on_plan(_sc)" in a and a.count("learning_apply") == 2)
 chk("A23 production modules do not import learning_loop", all(("import learning_loop" not in src(x) and "from learning_loop" not in src(x)) for x in ("api_server.py", "scene_risk.py", "learning_apply.py", "scene_kinds.py")))
 chk("A24 learning_apply never writes into jobs/", "jobs" not in src("learning_apply.py").replace("jobs not used", "").replace("jobs that", "").replace("unseen jobs", ""))
+
+# context-conditioned alternative (2026-11-25): compared only among scenes sharing the rule's environment conditions
+def evd(job, move, bad, depth, i):
+    return {"ts": f"2026-11-0{1 + i % 8}T00:{i % 60:02d}:00", "job": job, "scene": f"s{i}", "cat": "bedroom", "move": move, "tier": "lux", "stage": "first", "verdict": "flag" if bad else "pass", "depth": depth, "anchor": "the wardrobe"}
+ctx_ev = []
+for i in range(30): ctx_ev.append(evd(f"d{i}", "walk_in_explore", i % 2 == 0, "deep", i))        # deep: walk 50% bad
+for i in range(30): ctx_ev.append(evd(f"e{i}", "outward_view", i % 10 == 0, "deep", 100 + i))   # deep: outward 10% bad
+for i in range(30): ctx_ev.append(evd(f"f{i}", "walk_in_explore", i % 10 == 0, "shallow", 200 + i))  # shallow: walk 10% bad
+for i in range(30): ctx_ev.append(evd(f"g{i}", "outward_view", i % 2 == 0, "shallow", 300 + i))   # shallow: outward 50% bad
+chk("A25 inside depth=deep the better movement is outward_view", la.pick_alt_move("walk_in_explore", ctx_ev, ctx=[("depth", "deep")]) == "outward_view")
+chk("A26 inside depth=shallow the other way round: outward_view has no better alternative", la.pick_alt_move("outward_view", ctx_ev, ctx=[("depth", "shallow")]) == "walk_in_explore" and la.pick_alt_move("outward_view", ctx_ev, ctx=[("depth", "deep")]) is None)
+chk("A27 without context the global mix hides it (both 30%): no clear winner", la.pick_alt_move("walk_in_explore", ctx_ev) is None)
+chk("A28 events without depth (before phase 2) and a rule that needs depth: nothing changes", la.pick_alt_move("walk_in_explore", [{k: v for k, v in e.items() if k != "depth"} for e in ctx_ev], ctx=[("depth", "deep")]) is None)
 print("FAILS", FAILS); sys.exit(1 if FAILS else 0)
