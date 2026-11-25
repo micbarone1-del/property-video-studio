@@ -1431,3 +1431,9 @@ Regole di Michele: (1) NESSUNO step manuale nel flusso: escalation = notifica/au
 - Fase 1b: caricare come seme i clip delle prove gia' etichettati (jobs/_test_scratch). Stato: non fatto.
 - Tier non noto in pianificazione: decidere se applicare le regole con tier in un secondo punto (scelta del modello) o lasciarle in ombra. Domanda aperta.
 - Ri-valutare le righe FMEA toccate (narrazione, registro scene, movimento) e proporle a Michele. Stato: non fatto.
+
+<!-- DOC-2026-11-25k -->
+## DOC-2026-11-25k - Dopo il deploy delle fasi 2-4
+- Osservare il primo job vero: controllare narration_rejections, learn_shadow e i campi scena nel registro. Stato: non fatto.
+- Hold-out troppo piccolo (18 scene): le regole non si possono confermare finche' non cresce; non abbassare le soglie. Stato: in attesa di dati.
+- Seme da prove etichettate (fase 1b) per accelerare: non fatto.

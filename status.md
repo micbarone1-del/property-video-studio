@@ -1724,3 +1724,9 @@ Incidente disco e riga "Salute del sistema" (health_kpi); backup_v2 con snapshot
 - Architettura: la classificazione delle scene vive solo in scene_kinds.py (prima era in learning_loop.py); learning_loop non e' importato dalla produzione, il ponte e' learning_rules.json.
 - Prove: test_narration_log N1-N16, test_learning_apply A1-A24, test_learning_loop (L10 aggiornato), test_scene_risk, test_block_narration 75/75, test_scene_script 85/85: tutti PASS (sandbox; sul server PASS per i quattro test nuovi/toccati). NON eseguito: prova end-to-end sull'istanza finta, job vero.
 - Limiti noti: il tier non e' noto in pianificazione (regole con tier solo in ombra); il controllo di ritorno non e' collegato a cron; fase 4 mai provata su job vero; righe FMEA non ri-valutate.
+
+<!-- DOC-2026-11-25k -->
+## DOC-2026-11-25k - Deploy fasi 2-4 in produzione (2026-11-25 13:40 UTC)
+- Produzione ora su 22d99df (rollback cb8457b), deploy_relinx_prod.sh alt, DEPLOY DONE, /health ok, 0 job in corso. Prova sull'istanza finta (porta 8001, annuncio relinx.it vero 44 foto, provider finti): job 76365d06 done, QC 6/6 pass, narration_rejections presente ([]), nessun learn_*, 0 Traceback. Il registro scene e' spento sull'istanza finta.
+- learning_loop.py sul server dopo il refactor (scene_kinds.py): 102 scene (train 84, hold-out 18), 88 narrazioni; 0 regole che reggono; 6 candidate su l_qc senza dati di hold-out sufficienti (hold-out n=4). Attenzione: anchor_kind=none (31% contro 20%) puo' essere solo l'effetto di job vecchi senza ancora salvata, NON e' un segnale. learning_rules.json: 0 regole.
+- NON verificato: nessun job vero ha ancora attraversato il codice nuovo; campi nuovi (narration_rejections reali, learn_shadow, ancora/profondita' nel registro) non osservati in produzione. Fase 4 spenta. Da fare: osservare il primo job vero, collegare `learning_apply.py check` a un cron, rilanciare learning_loop.py periodicamente.

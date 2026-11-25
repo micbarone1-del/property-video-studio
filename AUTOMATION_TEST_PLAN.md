@@ -875,3 +875,6 @@ Stato per test, senza arrotondare. "Server" = output incollato da Michele; "ambi
 | prova end-to-end istanza finta con fasi 2-4 | job completo con codice nuovo | NON ESEGUITO |
 | fase 4 su job vero | applicazione movimento e ritorno | NON ESEGUITO |
 Righe FMEA non ri-valutate (da proporre a Michele).
+
+<!-- DOC-2026-11-25k -->
+- 2026-11-25 prova istanza finta con codice fasi 2-4: job 76365d06 done, QC 6/6, narration_rejections presente: PASS (flusso, non qualita'). Job vero in produzione col codice nuovo: NON ESEGUITO. learning_loop.py su dati reali dopo refactor: gira, 0 regole che reggono.
