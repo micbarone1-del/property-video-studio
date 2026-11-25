@@ -65,16 +65,38 @@ def matching(scene, move, cat, tier):
         return []
 
 
-def apply_enabled(now=None) -> bool:
+def _auto_state(now=None):
+    """Automatic switch written by learning_cycle.py (learning_state.json): {"apply": {"on", "until", "rules"}}. Returns the list of proven rule ids or None."""
     try:
-        if os.getenv("PVS_LEARN_APPLY", "").strip().lower() not in ("1", "true", "yes", "on"):
+        a = (json.loads((_data() / "learning_state.json").read_text(encoding="utf-8")).get("apply") or {})
+        if a.get("on") and (now or time.strftime("%Y-%m-%d")) <= str(a.get("until") or ""):
+            return list(a.get("rules") or [])
+    except Exception:
+        pass
+    return None
+
+
+def apply_enabled(now=None) -> bool:
+    """Manual switch (env + mandatory expiry) OR the automatic one (only for the rules learning_cycle proved). The revert file blocks both."""
+    try:
+        if revert_file().exists():
             return False
-        until = os.getenv("PVS_LEARN_APPLY_UNTIL", "").strip()
-        if not until or (now or time.strftime("%Y-%m-%d")) > until:
-            return False
-        return not revert_file().exists()
+        if os.getenv("PVS_LEARN_APPLY", "").strip().lower() in ("1", "true", "yes", "on"):
+            until = os.getenv("PVS_LEARN_APPLY_UNTIL", "").strip()
+            if until and (now or time.strftime("%Y-%m-%d")) <= until:
+                return True
+        return _auto_state(now) is not None
     except Exception:
         return False
+
+
+def allowed_rule_ids(now=None):
+    """None = every held rule (manual switch); a list = only the rules learning_cycle proved (automatic switch)."""
+    try:
+        manual = os.getenv("PVS_LEARN_APPLY", "").strip().lower() in ("1", "true", "yes", "on") and os.getenv("PVS_LEARN_APPLY_UNTIL", "").strip() >= (now or time.strftime("%Y-%m-%d"))
+        return None if manual else (_auto_state(now) or [])
+    except Exception:
+        return []
 
 
 def _events():
@@ -127,7 +149,8 @@ def on_plan(scene, cat=None, tier=None) -> bool:
             return False
         move = scene.get("pov_movement")
         ids = matching(scene, move, cat or scene.get("category") or scene.get("space_type"), tier)
-        movers = [r for r in load_rules() if r["id"] in ids and any(k in ("move", "plan_kind") for k, _ in r["cond"])]
+        allowed = allowed_rule_ids()
+        movers = [r for r in load_rules() if r["id"] in ids and (allowed is None or r["id"] in allowed) and any(k in ("move", "plan_kind") for k, _ in r["cond"])]
         if not movers:
             return False
         alt = pick_alt_move(move, _events())
