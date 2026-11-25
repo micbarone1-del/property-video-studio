@@ -17,6 +17,7 @@ Rules of the method (written BEFORE looking at data, see LEARNING_LOOP.md):
   python3 learning_loop.py [jobs_dir]     prints the report and writes learning_report.json next to the event files
 """
 import hashlib
+import time
 import json
 import math
 import os
@@ -35,7 +36,7 @@ HOLDOUT_MIN_RATIO = 1.3     # hold-out: rule rate >= 1.3 x hold-out baseline ...
 HOLDOUT_MIN_GAP = 0.10      # ... and at least 10 points above it
 FEATURES = ("cat", "move", "tier", "plan_kind", "anchor_kind", "depth")   # reflective_surface is NOT in the real job_meta (checked on the server 2026-11-25): removed
 NARRATION_FEATURES = ("desc_len", "n_scenes", "source", "has_price")
-GENERIC_ANCHORS = ("centre of the frame", "center of the frame", "centre of", "center of", "middle of the")
+from scene_kinds import GENERIC_ANCHORS, anchor_kind, plan_kind, scene_features   # one shared implementation (2026-11-25)
 BAD_VERDICTS = ("flag", "reject", "failed")
 
 
@@ -103,24 +104,6 @@ def scene_of_job(job, scene_id):
     if i is not None and 0 <= i < len(sc) and isinstance(sc[i], dict):
         return sc[i]
     return {}
-
-
-def anchor_kind(scene):
-    a = str((scene or {}).get("anchor") or "").strip().lower()
-    if not a:
-        return "none"
-    return "generic" if any(g in a for g in GENERIC_ANCHORS) else "specific"
-
-
-def plan_kind(move):
-    m = str(move or "").lower()
-    return "static" if m in ("subtle_rotate", "static", "hold") else ("forward" if m and m != "?" else "?")
-
-
-def scene_features(scene, move, cat, tier):
-    s = scene or {}
-    return {"cat": str(cat or "?"), "move": str(move or "?"), "tier": str(tier or "?"), "plan_kind": plan_kind(move),
-            "anchor_kind": anchor_kind(s), "depth": str(s.get("depth") or "?")}
 
 
 # ── dataset ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -275,6 +258,17 @@ def _print(rep):
         print("  NOTE narration:", rep["narration"]["missing_data"])
 
 
+def export_rules(rep):
+    """Only the rules that HOLD on the hold-out, for learning_apply.py (the only bridge to production: a JSON file, no import)."""
+    out = {"generated": time.strftime("%Y-%m-%dT%H:%M:%S"), "rules": []}
+    for lab, d in rep.get("video", {}).get("labels", {}).items():
+        for r in d.get("holding", []):
+            cond = [list(c) for c in r["cond"]]
+            out["rules"].append({"id": lab + ":" + "&".join(f"{k}={v}" for k, v in cond), "label": lab, "cond": cond, "rate": r.get("rate"),
+                                 "hold_rate": r.get("hold_rate"), "hold_baseline": r.get("hold_baseline"), "n": r.get("n"), "hold_n": r.get("hold_n")})
+    return out
+
+
 def main(argv=None):
     argv = argv if argv is not None else sys.argv[1:]
     data = Path(os.getenv("PVS_DATA_DIR") or HERE)
@@ -285,6 +279,8 @@ def main(argv=None):
     try:
         (data / "learning_report.json").write_text(json.dumps(rep, ensure_ascii=False, indent=1), encoding="utf-8")
         print("written:", data / "learning_report.json")
+        (data / "learning_rules.json").write_text(json.dumps(export_rules(rep), ensure_ascii=False, indent=1), encoding="utf-8")
+        print("written:", data / "learning_rules.json")
     except Exception as e:
         print("report not written:", e)
     return 0
