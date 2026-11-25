@@ -119,10 +119,25 @@ def _bad(e):
     return e.get("verdict") in ("flag", "reject", "failed")
 
 
-def pick_alt_move(current, events):
-    """A movement seen in the registry (so a valid one) with n >= MIN_N and a bad rate <= MIN_MOVE_GAIN x the current movement's. None if there is none."""
+def _ev_features(e):
+    return scene_kinds.scene_features({"anchor": e.get("anchor"), "depth": e.get("depth")}, e.get("move"), e.get("cat"), e.get("tier"))
+
+
+def pick_alt_move(current, events, ctx=None):
+    """A movement seen in the registry (so a valid one) with n >= MIN_N and a bad rate <= MIN_MOVE_GAIN x the current movement's, compared ONLY among scenes that
+    share the environment conditions of the rule (ctx: its condition without move / plan_kind, e.g. depth=deep): the movement is not judged across different
+    kinds of space. Events recorded before phase 2 have no depth/anchor, so a rule that needs them finds nothing and nothing changes. None if there is no clear winner."""
     try:
-        first = [e for e in events if e.get("stage") == "first" and e.get("move") not in (None, "?")]
+        want = [(k, v) for k, v in (ctx or []) if k not in ("move", "plan_kind")]
+        first = []
+        for e in events:
+            if e.get("stage") != "first" or e.get("move") in (None, "?"):
+                continue
+            if want:
+                f = _ev_features(e)
+                if not all(f.get(k) == v for k, v in want):
+                    continue
+            first.append(e)
         by = {}
         for e in first:
             k = by.setdefault(e["move"], [0, 0]); k[1] += 1; k[0] += 1 if _bad(e) else 0
@@ -153,13 +168,15 @@ def on_plan(scene, cat=None, tier=None) -> bool:
         movers = [r for r in load_rules() if r["id"] in ids and (allowed is None or r["id"] in allowed) and any(k in ("move", "plan_kind") for k, _ in r["cond"])]
         if not movers:
             return False
-        alt = pick_alt_move(move, _events())
-        if not alt:
-            return False
-        scene["learn_prev_move"] = move
-        scene["pov_movement"] = alt
-        scene["learn_applied"] = [r["id"] for r in movers]
-        return True
+        events = _events()
+        for r in movers:
+            alt = pick_alt_move(move, events, ctx=r["cond"])
+            if alt:
+                scene["learn_prev_move"] = move
+                scene["pov_movement"] = alt
+                scene["learn_applied"] = [r["id"]]
+                return True
+        return False
     except Exception:
         return False
 
