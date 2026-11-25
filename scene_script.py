@@ -100,7 +100,7 @@ def words(sentence: str) -> list:
 
 # 2026-10-25: one wording for the three prompts below (it was triplicated). Square metres are spoken 'metri quadri'
 # (the voice spells 'mq' letter by letter and stops after the abbreviation); voice_generation.spoken_units is the safety net.
-NUMBERS_RULE = "- Numbers: copy them as the listing writes them, number first (e.g. '650 metri quadri'). Always write square metres in full as 'metri quadri': never 'mq', never 'm2', never 'metri quadrati'."
+NUMBERS_RULE = "- Numbers: copy them as the listing writes them, number first (e.g. '650 metri quadri'). Always write square metres in full as 'metri quadri': never 'mq', never 'm2', never 'metri quadrati'. Never write a decimal part made of zeros: '110 metri quadri', not '110,00 metri quadri'."
 VERB_RULE = ("- Every sentence needs a conjugated verb. A noun phrase alone is NOT a sentence: never 'Il giardino terrazzato di circa 60 metri quadri.' "
              "but 'Il giardino terrazzato misura circa 60 metri quadri.' (or 'Il giardino è di circa 60 metri quadri'). Keep the short sentences short, but with a verb.")
 
