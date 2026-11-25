@@ -1467,3 +1467,10 @@ Regole di Michele: (1) NESSUNO step manuale nel flusso: escalation = notifica/au
 - Seme fase 1b: ritrovare le chiavi dei round 1103-1105 (leggere il tar da 7,5 GB senza timeout, in background) oppure chiudere. Stato: aperto.
 - Spiegare l'aumento del tasso di scene difettose da circa 0,20 a 0,35 (cambio di condizioni?). Stato: non indagato.
 - Ri-valutare le righe FMEA toccate e proporle a Michele. Stato: non fatto.
+
+## 2026-11-25 (DOC-2026-11-25q) - open items from the production test job da983c2e
+- OPEN (decision needed): when the only photo of a core room (kitchen) is excluded, the fill rule duplicates the living room. Choose: pick another environment, or keep. Not decided.
+- OPEN: record the model used per Claude call in claude_usage (today aggregated); decide on temperature 0 for narration (not set, default; unproven benefit; Sonnet 5.5 may reject the parameter).
+- DEFERRED by Michele 2026-11-25: historical or architectural facts of a listing rendered without context ("La facciata e' a graffito"); he does not want another prompt rule now.
+- OPEN: re-run the same listing in production to verify kitchen present, no furniture, "110 metri quadri"; costs real money, needs Michele's ok.
+- OPEN: a real watermark photo is needed to test the new overlay prompt in the opposite direction.
