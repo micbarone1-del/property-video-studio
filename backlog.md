@@ -1474,3 +1474,5 @@ Regole di Michele: (1) NESSUNO step manuale nel flusso: escalation = notifica/au
 - DEFERRED by Michele 2026-11-25: historical or architectural facts of a listing rendered without context ("La facciata e' a graffito"); he does not want another prompt rule now.
 - OPEN: re-run the same listing in production to verify kitchen present, no furniture, "110 metri quadri"; costs real money, needs Michele's ok.
 - OPEN: a real watermark photo is needed to test the new overlay prompt in the opposite direction.
+
+- CORRECTION 2026-11-25 (DOC-2026-11-25q): the OPEN item "fill rule duplicates the living room when the only kitchen photo is excluded" is CLOSED. select_photos_for_scene_count already backfills missing categories in PRIORITY_ORDER (outdoor first when there is no facade). In job da983c2e it filled with a 2nd exterior and a 2nd living only because the kitchen was wrongly excluded (wall notice read as watermark, fixed). No policy decision needed (Michele 2026-11-25).
