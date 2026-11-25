@@ -97,5 +97,21 @@ check("L11 no production module imports learning_loop (phase 1 cannot change a j
 # L12 scratch folders are skipped
 (jd / "_test_scratch").mkdir(); (jd / "_test_scratch" / "job_meta.json").write_text("{}")
 check("L12 jobs/_test_scratch is not read as a job", "_test_scratch" not in ll.load_jobs(jd))
+
+# L13 distinct jobs (2026-11-25): a pattern from many scenes of only 2 jobs is not a rule; the same pattern over 6 jobs is
+def _rows(jobs_n, per_job):
+    out = []
+    for j in range(jobs_n):
+        for k in range(per_job):
+            hit = j < 2 or jobs_n >= 6
+            out.append({"job": f"j{j}", "scene": f"s{k}", "split": "train", "cat": "kitchen" if hit else "bath", "move": "m", "tier": "luma", "plan_kind": "forward", "anchor_kind": "specific", "depth": "?", "l_qc": hit})
+    for j in range(20):
+        for k in range(3):
+            out.append({"job": f"o{j}", "scene": f"s{k}", "split": "train", "cat": "living", "move": "n", "tier": "luma", "plan_kind": "forward", "anchor_kind": "specific", "depth": "?", "l_qc": False})
+    return out
+two = ll.find_rules(_rows(2, 7), "l_qc", ll.FEATURES)
+six = ll.find_rules(_rows(6, 3), "l_qc", ll.FEATURES)
+check("L13a 14 scenes from only 2 jobs: no rule", not any(("cat", "kitchen") in [tuple(c) for c in r["cond"]] for r in two["rules"]))
+check("L13b 18 scenes from 6 jobs: the rule is found", any([tuple(c) for c in r["cond"]] == [("cat", "kitchen")] for r in six["rules"]))
 print("test_learning_loop FAILS", fails)
 sys.exit(1 if fails else 0)
