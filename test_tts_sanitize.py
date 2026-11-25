@@ -79,5 +79,8 @@ import scene_script as _ss
 _cnt = sum(1 for f, a in ((_ss.build_prompt, ("d", "a", "Gallo", ["x"] * 6)), (_ss.build_anchored_prompt, ("d", "a", "Gallo", ["x"] * 6))) if _ss.NUMBERS_RULE in f(*a))
 check("U9 the two older prompts use the shared NUMBERS_RULE", _cnt == 2, str(_cnt))
 check("U10 the blocks prompt uses it too", _ss.NUMBERS_RULE in _ss.build_blocks_prompt("d", "a", "Gallo", ["x"] * 6, list(range(6))))
+check("U11 zero decimals are never spoken (real job da983c2e: '110,00')", U("Misura 110,00 metri quadri, poi 110.00 mq e 12,0 mq") == "Misura 110 metri quadri, poi 110 metri quadri e 12 metri quadri", U("Misura 110,00 metri quadri, poi 110.00 mq e 12,0 mq"))
+check("U12 thousands and real decimals untouched", U("1.000 e 1.050 e 2,50 e 100,000") == "1.000 e 1.050 e 2,50 e 100,000", U("1.000 e 1.050 e 2,50 e 100,000"))
+check("U13 the shared prompt rule says it", "decimal part made of zeros" in _ss.NUMBERS_RULE)
 print(f"RESULT: {'ALL PASS' if not fails else 'FAILURES'} ({total - len(fails)}/{total})")
 sys.exit(1 if fails else 0)
