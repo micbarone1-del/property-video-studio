@@ -29,4 +29,10 @@ chk("R5 read-only: no file writes", "write_text" not in src and "open(" not in s
 import glob
 prod = [f for f in glob.glob("*.py") if not f.startswith(("test_", "exp_", "learning_"))]
 chk("R6 not imported by production", all("learning_replay" not in open(f, encoding="utf-8", errors="ignore").read() for f in prod))
+d = lr.details(rec)
+chk("R7 details: one entry per distinct rule, windows listed in order", d and all(isinstance(v, list) and v for v in d.values()) and any("kitchen" in k and "move=b" in k for k in d), list(d)[:4])
+import io, contextlib
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf): lr.print_details(rec)
+chk("R8 print_details prints one line per rule", len(buf.getvalue().strip().splitlines()) == len(d))
 print("FAILS", F); sys.exit(1 if F else 0)
