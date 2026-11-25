@@ -1437,3 +1437,17 @@ Regole di Michele: (1) NESSUNO step manuale nel flusso: escalation = notifica/au
 - Osservare il primo job vero: controllare narration_rejections, learn_shadow e i campi scena nel registro. Stato: non fatto.
 - Hold-out troppo piccolo (18 scene): le regole non si possono confermare finche' non cresce; non abbassare le soglie. Stato: in attesa di dati.
 - Seme da prove etichettate (fase 1b) per accelerare: non fatto.
+
+<!-- DOC-2026-11-25l -->
+## DOC-2026-11-25l - Rivedere complessita' dei moduli e workflow paralleli (richiesta di Michele, 2026-11-25)
+- Problema: per ogni piccola modifica si e' aggiunto un modulo invece di aggiornare quelli esistenti. Per un'AI o un umano (contractor) capire cosa succede e mantenerlo diventa sempre piu' difficile, in modo non lineare.
+- Gia' emersi: tre copie dello stesso calcolo, due funzioni 'assembla il video', tre meccanismi di rework (vedi disciplina architetturale). Il 25/11 il ciclo di apprendimento ha aggiunto 7 moduli (scene_kinds, narration_log, learning_apply, learning_loop, learning_replay, learning_seed, learning_cycle): da riesaminare anche questi.
+- Da fare, nulla fatto: (1) mappa di sola lettura: moduli, righe, chi li importa e chi li chiama; (2) cercare workflow paralleli (manuale/URL, vecchio/nuovo, frontend/backend); (3) per ogni modulo piccolo: fondere in uno esistente, o motivare per iscritto perche' resta separato; (4) regola per il futuro: prima cercare il modulo esistente dove va la modifica, un modulo nuovo richiede una riga di motivazione in status.md; (5) 'mappa dei moduli' in inglese per il contractor (collegata alla voce 25h).
+- Vincoli: il percorso di generazione si tocca solo con punto di ritorno e prova end-to-end; nessuna rifattorizzazione senza test che dimostrino lo stesso comportamento.
+- Domanda aperta: priorita' rispetto al pilota. Proposta: fare prima la mappa (solo lettura) e decidere dopo.
+<!-- DOC-2026-11-25m -->
+## DOC-2026-11-25m - Regole del ciclo di apprendimento: permessi, soglie, scheda di approvazione (proposta, NON costruito)
+- Livello 0 automatico (esiste): sceglie tra valori gia' esistenti (movimento). Livello 1 chiede una volta: nuovo input (rifare l'ancora, foto alternativa prima). Livello 2 chiede sempre: qualunque testo di prompt o narrazione; il ciclo propone, non scrive.
+- Soglie: candidare almeno 10 scene e 5 job distinti (oggi solo scene: lacuna) e 1,5x la base; tenere hold-out almeno 10 scene, 1,3x e 10 punti; applicare in ombra almeno 10 scene, 7 giorni, 1,3x e 10 punti; testo: prova su 10 job senza peggiorare fatti e tentativi. Nessuna risposta in 7 giorni: regola spenta, pipeline mai ferma.
+- Scheda sul cruscotto (as-is / to-be): regola in italiano semplice; numeri; 2-3 casi reali di oggi (clip o testo rifiutato con il motivo); cosa cambia (movimento: clip simili gia' fatti con quel movimento, eventuale 1 clip a 360p; narrazione: riga di prompt aggiunta + rigenerazione su 10 annunci passati, vecchio e nuovo affiancati con esito controllo fatti); pulsanti Approva con scadenza, Rifiuta, Servono piu' dati. Costo della prova: da misurare.
+- Narrazione: ogni regola dei filtri deve stare gia' nel prompt (prevenzione, il filtro e' il backup). Verifica fatta solo per il prezzo (nel prompt: si). Da fare: verifica di parita' filtri-prompt, poi i codici di rifiuto reali dicono quali regole mancano nel prompt. Movimento: il confronto va fatto dentro la stessa categoria di stanza (oggi e' globale: da correggere prima di accendere).
