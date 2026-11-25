@@ -836,9 +836,9 @@ PHOTO_QUALITY_PROMPT = (
     "painted. Answer soft only when this is clearly visible.\n"
     "- blocky: clearly pixelated, with visible squares or JPEG blocks, banding, flat posterized colour patches or heavy noise.\n"
     "SECOND word = what is laid over the photo, independent of the first word:\n"
-    "- none: nothing.\n"
+    "- none: nothing laid over the photo. A sign, notice, poster, label or any text that is part of the scene itself (printed on a wall, a door, a product) is none.\n"
     "- portal: a semi-transparent text or logo of a listing portal, such as immobiliare.it.\n"
-    "- agency: a solid logo, banner, ribbon, contact bar or text of the real estate agency (for example kw HOME, a ribbon in a corner).\n"
+    "- agency: a solid logo, banner, ribbon, contact bar or text of the real estate agency (for example kw HOME, a ribbon in a corner), laid over the photo and not part of the scene.\n"
     "Examples of final lines: ANSWER: ok none / ANSWER: soft portal / ANSWER: blocky agency / ANSWER: ok portal."
 )
 PHOTO_QUALITY_WORDS = ("ok", "soft", "blocky")
@@ -2362,6 +2362,8 @@ SCENE_FACTS_PROMPT = (
     "'soggiorno con angolo cottura'. Rules:\n"
     "- Say only what is CLEARLY visible and certain. When in doubt, write an empty string.\n"
     "- NEVER describe colours, materials (tiles, wood, brick...), windows, shutters, furniture style, light or the condition of the room. No numbers at all.\n"
+    "- NEVER mention furniture or movable objects (bookcases, shelves, sofas, tables, chairs, beds, wardrobes, TV, lamps, rugs, plants, decorations): in a sale they can be removed. "
+    "Only the layout and the fixed features count; a function of the space such as 'zona pranzo' or 'angolo cottura' is fine, the object itself ('tavolo', 'libreria') is not.\n"
     "- 'ampio' or 'spazioso' only if the room is clearly large; never 'luminoso'.\n"
     "- Outdoor features count only if visible (balcone, terrazzo, giardino); for a view say what is seen (alberi, edifici, cielo), never what kind of place it is.\n"
     "- No judgement of condition or value (new, renovated, luxury, recent), no price, no location, never say the room is empty.\n"
@@ -2371,7 +2373,9 @@ SCENE_FACTS_PROMPT = (
 _SCENE_FACT_VISIBLE_OK = ("piscin", "giardin", "terrazz", "balcon", "vista", "mare", "lago", "parco", "pergol", "portic", "veranda", "uliv", "cancell", "camin")
 _SCENE_FACT_WORDS = ("ristruttur", "recent", "lusso", "pregio", "€", "euro", "prezzo", "vuot", "terracott", "cotto", "ceramic", "legno",
                      "stanza", "cucina", "bagno", "camera", "soggiorno", "salone",
-                     "piazz", "cortil", "strad", "cement", "pietra", "mattoni", "intonac", "metall", "ferro", "vetro", "granit", "graniglia", "plastic")
+                     "piazz", "cortil", "strad", "cement", "pietra", "mattoni", "intonac", "metall", "ferro", "vetro", "granit", "graniglia", "plastic",
+                     # 2026-11-25 (Michele, job da983c2e 'soggiorno con libreria centrale'): furniture and movable objects are never a fact of a sale
+                     "libreri", "scaffal", " mobil", "arred", "divan", "poltron", "tavol", "sedi", "televis", "credenz", "comod", "lampad", "tappet", "pianta", "decora")
 
 
 def _scene_fact_banned() -> tuple:
@@ -2394,7 +2398,7 @@ def parse_scene_facts(raw: str, n: int):
     facts, banned = [], _scene_fact_banned()
     for x in data:
         x = " ".join(x.split())
-        if len(x.split()) > 14 or any(c.isdigit() for c in x) or any(w in x.lower() for w in banned):
+        if len(x.split()) > 14 or any(c.isdigit() for c in x) or any(w in " " + x.lower() for w in banned):   # leading space: " mobil" must not hit "immobile"
             x = ""
         facts.append(x)
     return facts if any(facts) else None
