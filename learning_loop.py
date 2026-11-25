@@ -232,8 +232,8 @@ def analyse(rows, labels, features):
     return out
 
 
-def report(risk_events, shadow_events, jobs):
-    rows = build_scene_rows(risk_events, shadow_events, jobs)
+def report(risk_events, shadow_events, jobs, extra_rows=None):
+    rows = build_scene_rows(risk_events, shadow_events, jobs) + list(extra_rows or [])   # extra_rows: the seed (phase 1b), kept apart by src="seed"
     nrows = build_narration_rows(jobs)
     return {"video": analyse(rows, ("l_qc", "l_persistent", "l_detector"), FEATURES),
             "narration": {**analyse(nrows, ("l_fallback", "l_script_fallback", "l_retries"), NARRATION_FEATURES),
@@ -272,10 +272,24 @@ def export_rules(rep):
 def main(argv=None):
     argv = argv if argv is not None else sys.argv[1:]
     data = Path(os.getenv("PVS_DATA_DIR") or HERE)
-    jobs_dir = Path(argv[0]) if argv else Path(os.getenv("PVS_JOBS_DIR") or (HERE / "jobs"))
-    rep = report(load_jsonl(os.getenv("PVS_SCENE_RISK_FILE") or data / "scene_risk_events.jsonl"),
-                 load_jsonl(os.getenv("PVS_STANDARD_SHADOW_FILE") or data / "standard_shadow_events.jsonl"), load_jobs(jobs_dir))
+    pos = [a for a in argv if not a.startswith("--")]
+    jobs_dir = Path(pos[0]) if pos else Path(os.getenv("PVS_JOBS_DIR") or (HERE / "jobs"))
+    risk = load_jsonl(os.getenv("PVS_SCENE_RISK_FILE") or data / "scene_risk_events.jsonl")
+    shadow = load_jsonl(os.getenv("PVS_STANDARD_SHADOW_FILE") or data / "standard_shadow_events.jsonl")
+    jobs = load_jobs(jobs_dir)
+    seed = "--seed" in argv
+    extra = None
+    if seed:
+        import learning_seed
+        prod = {(r["job"], r["scene"]) for r in build_scene_rows(risk, shadow, jobs)}
+        scratch = Path(os.getenv("PVS_VOLUME_SCRATCH") or (jobs_dir / "_test_scratch"))
+        extra, st = learning_seed.seed_rows(scratch, jobs, HERE / "motion_labels.json", skip=prod)
+        print("SEED (phase 1b, exploratory):", st)
+    rep = report(risk, shadow, jobs, extra)
     _print(rep)
+    if seed:
+        print("SEED run: nothing is written (no learning_report.json, no learning_rules.json); rules found here are only a hint to check in shadow on production data.")
+        return 0
     try:
         (data / "learning_report.json").write_text(json.dumps(rep, ensure_ascii=False, indent=1), encoding="utf-8")
         print("written:", data / "learning_report.json")
