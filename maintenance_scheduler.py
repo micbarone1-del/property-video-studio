@@ -90,6 +90,7 @@ CHECK_INTERVALS = {
     "fallback_rate":         60,
     "test_scratch_size":     360,
     "cleanup_verification":  1440,
+    "learning_cycle":        1440,   # 2026-11-25: the automatic learning loop (learning_cycle.py), once a day
 }
 ALERT_COOLDOWN_MINUTES = 60  # don't re-email more than once/hour for an ongoing issue
 
@@ -538,6 +539,21 @@ def _warn_alert_on_cooldown(last_run: dict, name: str) -> bool:
         return False
 
 
+def check_learning_cycle() -> dict:
+    """2026-11-25: runs the automatic learning loop (learning_cycle.py). Informational: it never goes red; a crash shows as a warn on the panel (no alert).
+    The only notifications it sends are the two it decides itself (a rule fully proven and applied, a rule switched off by the revert check)."""
+    base = {"name": "learning_cycle", "title": "Learning loop"}
+    try:
+        import learning_cycle
+        r = learning_cycle.run()
+    except Exception as e:
+        return {**base, "status": "warn", "summary": "The learning cycle could not run.", "detail": str(e), "it": f"ciclo di apprendimento non eseguito: {e}"}
+    if not r.get("ok"):
+        return {**base, "status": "warn", "summary": "The learning cycle failed.", "detail": str(r.get("error")), "it": f"ciclo di apprendimento in errore: {r.get('error')}"}
+    it = (f"{r['rules_holding']} regole che reggono - {r['scenes_firing']} scene in ombra - applicazione " + (f"ACCESA fino al {r['apply_until']}" if r["apply_on"] else "spenta"))
+    return {**base, "status": "ok", "summary": "Learning loop ran.", "detail": it, "it": it}
+
+
 # ── Registry — check name -> function ───────────────────────────────────────
 CHECK_FUNCTIONS = {
     "service_status":       check_service,
@@ -548,6 +564,7 @@ CHECK_FUNCTIONS = {
     "fallback_rate":        check_fallback_rate,
     "test_scratch_size":    check_test_scratch,
     "cleanup_verification": check_cleanup_ran,
+    "learning_cycle":       check_learning_cycle,
 }
 
 
