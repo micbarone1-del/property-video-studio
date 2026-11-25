@@ -843,3 +843,24 @@ Stato per test, senza arrotondare. "Server" = output incollato da Michele; "ambi
 | Prova dal vivo patch link d999966 | avviso "Apro il job", anteprime | NON ESEGUITO | da Michele |
 - **Rischio (FMEA)**: la modifica di _save_job (registro degli stati) tocca il percorso dello stato del job; il controllo K (static) verifica che note_status venga chiamato prima della scrittura atomica, ma **le righe FMEA di stato del job non sono state ri-valutate in questo aggiornamento**: da fare e da far rivedere a Michele (punteggi = proposta). Nessun job perso o costo doppio osservato; nessuna prova di carico.
 - Quattro invarianti: nessun job perso e nessun costo doppio: nessuna evidenza di violazione, non provati con test specifico sul registro; stato finale visibile: sì per la fascia; operatore informato una volta: non toccato.
+
+<!-- DOC-2026-11-24g -->
+### 2026-11-24 (notte) - Test del ciclo di apprendimento (fase 1)
+| Test | Cosa verifica | Esito | Dove |
+|---|---|---|---|
+| test_learning_loop L1, L1b | divisione per job, deterministica, circa 30% tenuto da parte | PASS | sandbox |
+| L2 | un segnale piantato (soggiorno + ancora generica) viene trovato e regge sul 30% | PASS | sandbox, dati sintetici |
+| L3 | senza schema reale il 30% non conferma regole (6 giri, al massimo 1 falsa) | PASS | sandbox, dati sintetici |
+| L4 | un falso schema forte sul 70% e assente sul 30% risulta "DOES NOT HOLD" | PASS | sandbox |
+| L5, L6 | pochi dati = nessuna regola; pochi dati nel 30% = mai "HOLDS" | PASS | sandbox |
+| L7, L7b, L7c | unione dei registri e delle etichette; etichetta non misurabile = None, non indovinata | PASS | sandbox |
+| L8 | righe rotte e file mancanti non fanno eccezioni | PASS | sandbox |
+| L9 | narrazione: righe costruite, motivi non salvati dichiarati e non inventati | PASS | sandbox |
+| L10 | l'esecuzione crea solo learning_report.json; jobs/ intatto | PASS | sandbox |
+| L11 | nessun modulo di produzione importa learning_loop | PASS | sandbox |
+| L12 | jobs/_test_scratch non e' letto come job | PASS | sandbox |
+| Esecuzione su dati veri del server | rapporto con numeri reali, campi di scena trovati | NON ESEGUITO | server |
+| Fase 2 (registrazione), fase 3 (in ombra), fase 4 (applicazione) | | NON ESEGUITI | |
+- Limite dei test: sono dati sintetici costruiti da me; provano il metodo (divisione, soglie), non che esista un segnale vero nei dati reali.
+- FMEA: nessuna riga aggiornata in questa voce. Q5 (allucinazione non vista, S9 O5 D8 = 360, ACT) resta 360: il ciclo non ha ancora ridotto O ne' D. Proposta di nuova riga di prevenzione: "scena a rischio inviata a Luma senza che nessuna regola appresa la escluda", da valutare con Michele quando ci saranno dati.
+- Test sul 360p contro 1080p (log incollati 24/11): nessuna etichetta umana, nessun risultato; letture automatiche di rotazione in disaccordo tra risoluzioni su due scene (pochi clip).
