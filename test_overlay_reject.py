@@ -29,12 +29,26 @@ allp[4]["category"] = "kitchen"
 bc = {"living": allp[:4], "kitchen": [allp[4]]}
 ls.filter_poor_quality_candidates(bc, assess=A(), enforce=True)
 by = {p["url"]: p for p in allp}
-check("rejected ones leave the pool", [p["url"] for p in bc["living"]] == ["u3"])
-check("portal watermark out in a partner job", by["u1"].get("overlay_rejected") and ls.photo_exclusion(by["u1"]) == "watermark o logo sulla foto")
-check("agency logo out in a partner job", by["u2"].get("overlay_rejected"))
+# 2026-11-26: the Haiku overlay word is a LABEL only; the exclusion is decided by the one vision answer ("marked")
+check("rejected (soft) ones leave the pool, overlay-labelled ones stay", sorted(p["url"] for p in bc["living"]) == ["u1", "u2", "u3"])
+check("Haiku portal / agency word is only a label (never an exclusion)", not by["u1"].get("overlay_rejected") and not by["u2"].get("overlay_rejected") and by["u1"]["overlay"] == "portal" and ls.photo_exclusion(by["u1"]) is None)
 check("clean photo kept", ls.photo_exclusion(by["u3"]) is None)
 check("soft photo keeps the quality reason", ls.photo_exclusion(by["u4"]) == "scarsa qualità")
-check("URL job (no reject_overlay): watermark only labelled", not by["u5"].get("overlay_rejected") and by["u5"]["overlay"] == "portal" and ls.photo_exclusion(by["u5"]) is None)
+check("URL job: watermark only labelled", not by["u5"].get("overlay_rejected") and by["u5"]["overlay"] == "portal" and ls.photo_exclusion(by["u5"]) is None)
+# the decision: refine_exterior_outdoor_with_vision reads the ONE answer (what, source, ok); source "marked" = overlay laid over the photo
+T = {"m1": ("kitchen", "marked", True), "m2": ("living", "marked", True), "c1": ("living", "photo", True), "n1": ("kitchen", "photo", True)}
+ls._describe_photo = lambda url, fb=None: T[url]
+ls._describe_cache.clear()
+mk2 = lambda url, cat, rej: {"url": url, "category": cat, "reject_overlay": True} if rej else {"url": url, "category": cat}
+ph = [mk2("m1", "kitchen", True), mk2("m2", "living", False), mk2("c1", "living", True), mk2("n1", "kitchen", True)]
+summ = ls.refine_exterior_outdoor_with_vision(ph)
+q = {p["url"]: p for p in ph}
+check("partner job: a marked photo is excluded with the overlay reason", q["m1"].get("overlay_rejected") and ls.photo_exclusion(q["m1"]) == "watermark o logo sulla foto")
+check("partner job: its category is untouched (it only leaves the usable photos)", q["m1"]["category"] == "kitchen")
+check("URL job: a marked photo is only labelled", q["m2"].get("overlay_vision") == "marked" and not q["m2"].get("overlay_rejected") and ls.photo_exclusion(q["m2"]) is None)
+check("a plain photo (wall notice answered photo) stays usable", ls.photo_exclusion(q["c1"]) is None and ls.photo_exclusion(q["n1"]) is None)
+check("summary counts the overlay removals", summ.get("overlay_removed") == 1)
+check("the vision prompt defines marked and the notice exception", "marked:" in ls._VISION_DESCRIBE_PROMPT and "NOT marked" in ls._VISION_DESCRIBE_PROMPT)
 check("vision side default 768", ls.VISION_MAX_SIDE == 768)
 os.environ["PVS_VISION_MAX_SIDE"] = "1280"; check("vision side env 1280", ls._vision_side_from_env() == 1280)
 os.environ["PVS_VISION_MAX_SIDE"] = "abc"; check("bad env falls back", ls._vision_side_from_env() == 768)
