@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
@@ -192,6 +192,9 @@
   .sc-drag-handle { cursor:grab; padding:4px 8px; color:var(--muted); font-size:1rem; user-select:none; }
   .sc-drag-handle:active { cursor:grabbing; }
   .sc-drag-handle:hover { color:var(--accent); }
+  .sc-move-wrap { display:inline-flex; flex-direction:column; gap:2px; margin-right:6px; }
+  .sc-move { min-width:36px; min-height:28px; padding:2px 8px; font-size:.8rem; border:1px solid var(--border,#d9d2c3); background:#fff; border-radius:6px; cursor:pointer; }
+  .sc-move:disabled { opacity:.3; cursor:default; }
 
 
   /* Add scene button */
@@ -2119,6 +2122,34 @@ function onDrop(event, targetIndex) {
 }
 
 
+// 2026-11-26: move a scene up (-1) or down (+1) with buttons, because HTML5 drag and drop does not work on iPad/trackpad.
+// Before a job exists only (currentJobId null): afterwards scene ids, QC and rework state are tied to the index.
+function moveScene(i, d) {
+  const j = i + d;
+  if (currentJobId || j < 0 || j >= files.length) return;
+  saveSceneData();
+  [files[i], files[j]] = [files[j], files[i]];
+  const swapKey = (obj) => {
+    const hi = Object.prototype.hasOwnProperty.call(obj, i), hj = Object.prototype.hasOwnProperty.call(obj, j);
+    const vi = obj[i], vj = obj[j];
+    delete obj[i]; delete obj[j];
+    if (hj) obj[i] = vj;
+    if (hi) obj[j] = vi;
+  };
+  swapKey(sceneUserData);
+  swapKey(sceneAnalysis);
+  swapKey(reworkOpen);
+  [newlyAddedSceneIndices, durationChangedSceneIndices].forEach(st => {
+    const hi = st.has(i), hj = st.has(j);
+    st.delete(i); st.delete(j);
+    if (hj) st.add(i);
+    if (hi) st.add(j);
+  });
+  renderScenes();
+  updateCostEstimate();
+}
+
+
 // ── Add new scenes after upload ────────────────────────────────────────────────
 function addMoreScenes(input) {
   const newFiles = [...input.files].filter(f => f.type.startsWith('image/'));
@@ -2431,6 +2462,7 @@ function renderScenes() {
           ondragstart="onDragStart(event,${i})"
           ondragend="onDragEnd(event)"
           title="Trascina per riordinare">⠿</span>
+        ${currentJobId ? '' : `<span class="sc-move-wrap"><button type="button" class="sc-move" onclick="moveScene(${i},-1)" ${i===0?'disabled':''} title="Sposta su">▲</button><button type="button" class="sc-move" onclick="moveScene(${i},1)" ${i===files.length-1?'disabled':''} title="Sposta giù">▼</button></span>`}
         <img class="sc-thumb" src="${url}" />
         <div>
           <div class="sc-num">Scena ${i+1} <span style="opacity:.6">(scene_${String(i).padStart(3,'0')})</span></div>
