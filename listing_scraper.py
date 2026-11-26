@@ -691,9 +691,12 @@ _VISION_DESCRIBE_PROMPT = (
     "- aerial: a real photograph taken FROM THE AIR (drone or aerial view looking down on roofs, streets or land from high above), a satellite image or a map; ALSO a photo taken from a high point (upper-floor balcony, roof, terrace edge, hill) that looks clearly DOWNWARDS so that streets, roofs, gardens or cars below fill much of the picture. A view that looks straight out at the horizon from a balcony is NOT aerial.\n"
     "- detail: a close-up of a detail, an object, a single tree or plant, a door or a wall.\n"
     "- other: anything else.\n\n"
-    "SECOND word: photo or render.\n"
+    "SECOND word: photo, banner, marked or render.\n"
     "- photo: a real photograph taken by a person.\n"
     "- banner: a real photograph with a ribbon, banner, stamp or big text laid over it that states the sale status or an offer (for example VENDUTO, SOLD, RISERVATO, AFFITTATO, TRATTATIVA RISERVATA, NUOVO PREZZO). A small logo or a faint watermark is NOT a banner: that is photo.\n"
+    "- marked: a real photograph with a graphic laid OVER it that is not part of the room: a semi-transparent watermark or logo of a listing portal "
+    "(for example immobiliare.it), or a logo, ribbon, banner or contact bar of the real estate agency. A sign, poster, notice, label or any printed text that is part "
+    "of the scene itself (on a wall, a door, a product) is NOT marked: that is photo.\n"
     "- render: a drawing, an architectural render, a CGI image, a 3D visualisation or a sketch (even if it looks realistic, with perfect colours, "
     "people drawn as silhouettes or a computer-generated sky and plants).\n\n"
     "Answer with ONLY two words, for example: kitchen photo"
@@ -804,7 +807,7 @@ def _describe_photo(image_url: str, fallback_url: str = None) -> tuple:
         return "other", "photo", False
     toks = word.split()
     what = toks[0] if toks and toks[0] in DESCRIBE_WHAT else "other"
-    source = "render" if len(toks) > 1 and toks[1] in ("render", "illustration", "rendering", "drawing", "sketch") else ("banner" if len(toks) > 1 and toks[1] == "banner" else "photo")
+    source = "render" if len(toks) > 1 and toks[1] in ("render", "illustration", "rendering", "drawing", "sketch") else ("banner" if len(toks) > 1 and toks[1] == "banner" else ("marked" if len(toks) > 1 and toks[1] == "marked" else "photo"))
     if toks and toks[0] in ("render", "illustration"):
         what, source = "other", "render"
     _describe_cache[image_url] = (what, source, True)
@@ -1064,10 +1067,8 @@ def filter_poor_quality_candidates(by_category: dict, assess=None, enforce=None)
             p["overlay"] = r.get("overlay")
             # 2026-11-17 (Michele): in a partner job (reject_overlay, no watermark removal) a portal watermark or an agency logo takes the photo out:
             # the video model keeps it visible, hallucinates around it, and it can collide with our own logo. Logos/watermarks as a feature: backlog.
-            if p.get("reject_overlay") and p["overlay"] in ("portal", "agency"):
-                p["overlay_rejected"] = True
-                if enforce:
-                    p["quality_rejected"] = True
+            # 2026-11-26: the Haiku overlay word is a LABEL only now (selection_report). The exclusion of a watermark / agency logo in a partner job is decided
+            # by the one vision answer (Sonnet, "marked" in refine_exterior_outdoor_with_vision), so two checks can no longer disagree.
             p["quality_by_model"] = r.get("by_model")
             p["blockiness"] = r.get("blockiness")
             if r["verdict"] in PHOTO_QUALITY_POOR:
@@ -1152,6 +1153,8 @@ def _photo_source(image_url: str, fallback_url: str = None) -> tuple:
         return "illustration", ok
     if src == "banner":
         return "banner", ok     # 2026-11-17 (Michele): a photo with a VENDUTO / SOLD banner is not used
+    if src == "marked":
+        return "marked", ok     # 2026-11-26: a portal watermark or an agency logo laid over the photo (the ONE overlay question, asked of Sonnet with the room kind)
     return ("aerial" if what == "aerial" else "photo"), ok
 
 
@@ -1259,7 +1262,7 @@ def refine_exterior_outdoor_with_vision(photos: list, max_photos: int = MAX_PHOT
     src_check = [p for p in photos if p.get("category") in CATEGORIES and p.get("url")][:MAX_SOURCE_CHECK] if aerial_filter_enabled() else []
     with ThreadPoolExecutor(max_workers=CLASSIFY_WORKERS) as ex:
         src_results = list(ex.map(lambda p: _photo_source(p["url"], p.get("original_url")), src_check))
-    aerials = illustrations = renders_kept = banners = second_look_saved = 0
+    aerials = illustrations = renders_kept = banners = second_look_saved = overlay_out = 0
     if render_second_look_enabled():
         again = [i for i, (p_, (w_, ok_)) in enumerate(zip(src_check, src_results)) if ok_ and w_ == "illustration" and p_.get("category") in INTERIOR_CATEGORIES]
         with ThreadPoolExecutor(max_workers=CLASSIFY_WORKERS) as ex:
@@ -1272,13 +1275,21 @@ def refine_exterior_outdoor_with_vision(photos: list, max_photos: int = MAX_PHOT
                 src_check[i]["render_second_look"] = "render"
     # 2026-11-06 (PVS_ACCEPT_RENDERS, default off; Michele: "fammi vedere come viene" for new-build listings such as 1327): when the listing has NO real
     # photo at all, renders of INTERIOR rooms stay in the selection (marked render_accepted); exterior / aerial renders and everything else still leave it.
-    real_n = sum(1 for (w, ok_) in src_results if ok_ and w == "photo")
+    real_n = sum(1 for (w, ok_) in src_results if ok_ and w in ("photo", "marked"))
     keep_renders = accept_renders_enabled() and real_n == 0
     for p, (word, ok) in zip(src_check, src_results):
         if not ok:
             continue
         if word == "illustration" and keep_renders and p.get("category") in INTERIOR_CATEGORIES:
             p["render_accepted"] = True; renders_kept += 1
+            continue
+        if word == "marked":
+            # 2026-11-26 (Michele, job da983c2e): the overlay decision lives HERE, in the one vision answer (Sonnet), not in the Haiku quality call whose overlay word was
+            # inconsistent (status 2026-10-29 BN; a wall notice read as "portal" once in three). Partner job (reject_overlay): the photo is out, reason "watermark o logo
+            # sulla foto" (photo_exclusion reads overlay_rejected); URL job: only labelled.
+            p["overlay_vision"] = "marked"
+            if p.get("reject_overlay"):
+                p["overlay_rejected"] = True; overlay_out += 1
             continue
         if word == "banner":
             p["category_before_source"] = p.get("category"); p["category"] = "uncategorized"; p["category_source"] = "vision_banner"; banners += 1
@@ -1321,7 +1332,7 @@ def refine_exterior_outdoor_with_vision(photos: list, max_photos: int = MAX_PHOT
             p["category_source"] = "page_label_checked" if ok else "page_fallback"
     summary = {"method": "exterior_outdoor_check", "checked": len(todo), "confirmed": confirmed, "living_checked": len(living), "halls_removed_from_living": halls,
                "swapped_exterior_outdoor": swapped, "excluded_as_other": excluded,
-               "kept_page_label_after_failure": fallback, "not_checked_over_cap": len(over), "label_mismatch_removed": mismatched, "aerial_removed": aerials, "illustrations_removed": illustrations, "banners_removed": banners, "renders_saved_by_second_look": second_look_saved, "renders_accepted": renders_kept}
+               "kept_page_label_after_failure": fallback, "not_checked_over_cap": len(over), "label_mismatch_removed": mismatched, "aerial_removed": aerials, "illustrations_removed": illustrations, "banners_removed": banners, "overlay_removed": overlay_out, "renders_saved_by_second_look": second_look_saved, "renders_accepted": renders_kept}
     log.info(f"[Scraper] Exterior/outdoor check: {summary}")
     return summary
 
@@ -1510,7 +1521,7 @@ def build_selection_report(photos: list, selection: dict, scene_count_requested=
             "url_used": p.get("url_used"), "used_fallback": bool(p.get("used_fallback", False)),
             "resolution_upgraded": p.get("resolution_upgraded"),
             "rank_position": p.get("rank_position"), "rank_status": p.get("rank_status"),
-            "quality": p.get("quality"), "overlay": p.get("overlay"), "quality_by_model": p.get("quality_by_model"),
+            "quality": p.get("quality"), "overlay": p.get("overlay"), "overlay_vision": p.get("overlay_vision"), "quality_by_model": p.get("quality_by_model"),
             "blockiness": p.get("blockiness"),
             "feature_visible": p.get("feature_visible"),      # 2026-11-12: answer of the room-feature check (fixtures / bed / kitchen visible); None = not asked
             "same_view_as_first": p.get("same_view_as_first"),   # 2026-11-12: True = the same view as the category's best photo (only used when nothing else existed)      # 2026-11-12: answer of the room-feature check (fixtures / bed / kitchen visible); None = not asked
