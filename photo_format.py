@@ -41,11 +41,33 @@ def border_box(img) -> tuple:
     return (left, top, w - right, h - bottom)
 
 
-def trimmed_size(image_bytes: bytes) -> tuple:
-    """(width, height) of the photo once its white border is cut: what the landscape / portrait vote must look at."""
-    from PIL import Image
+def open_upright(image_bytes: bytes):
+    """2026-11-27: the ONE place a photo is opened for the video. Returns (image, changed). The image has its EXIF orientation applied (a phone portrait is stored
+    sideways plus a tag; before this the tag was ignored and a bathroom reached Luma lying on its side, job 575efc11) and no alpha / palette mode (a PNG with
+    transparency could not be written as JPEG: 'cannot write mode RGBA as JPEG', HTTP 500 on upload, 2026-11-27). Transparent pixels become white.
+    changed = the pixels differ from the file, so the original bytes must not be reused as they are."""
+    from PIL import Image, ImageOps
     import io
     img = Image.open(io.BytesIO(image_bytes))
+    changed = False
+    if img.getexif().get(274, 1) in (2, 3, 4, 5, 6, 7, 8):
+        img = ImageOps.exif_transpose(img)
+        changed = True
+    if img.mode not in ("RGB", "L"):
+        if img.mode in ("RGBA", "LA", "PA") or "transparency" in img.info:
+            img = img.convert("RGBA")
+            flat = Image.new("RGB", img.size, (255, 255, 255))
+            flat.paste(img, mask=img.getchannel("A"))
+            img = flat
+        else:
+            img = img.convert("RGB")
+        changed = True
+    return img, changed
+
+
+def trimmed_size(image_bytes: bytes) -> tuple:
+    """(width, height) of the photo once its white border is cut: what the landscape / portrait vote must look at."""
+    img, _ = open_upright(image_bytes)
     l, t, r, b = border_box(img)
     return (r - l, b - t)
 
@@ -72,9 +94,8 @@ def normalize_photo_to_format(image_bytes: bytes, target_format: str) -> bytes:
         landscape photo going into a portrait job): plain CENTER crop --
         no equivalent left/right framing bias for typical room photos.
     """
-    from PIL import Image
     import io
-    img = Image.open(io.BytesIO(image_bytes))
+    img, changed = open_upright(image_bytes)
     box = border_box(img)
     trimmed = box != (0, 0) + img.size
     if trimmed:
@@ -85,7 +106,7 @@ def normalize_photo_to_format(image_bytes: bytes, target_format: str) -> bytes:
 
     # a trimmed photo is always cut to the exact shape (a 2 % mismatch would be stretched by the assembly); an untouched one keeps the old tolerance
     if abs(current_ratio - target_ratio) / target_ratio < (0.002 if trimmed else 0.02):
-        if not trimmed:
+        if not trimmed and not changed:
             return image_bytes  # already an effective match, don't bother cropping
         buf = io.BytesIO(); img.save(buf, format='JPEG', quality=95)
         return buf.getvalue()
